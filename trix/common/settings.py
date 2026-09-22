@@ -90,6 +90,16 @@ class ResolveSettings(BaseModel):
     cache: int = 60
 
 
+class ReplicationSettings(BaseModel):
+    peers: list = Field(default_factory=list)
+    interval: int = 300
+    enabled: bool = True
+
+
+class TriggerSettings(BaseModel):
+    luna_hashes: int = 60
+
+
 class PluginSettings(BaseModel):
     directory: str = '/trinity/local/trix/daemon/plugins'
     enabled: list = Field(default_factory=list)
@@ -105,6 +115,8 @@ class Settings(BaseModel):
     luna: LunaSettings = Field(default_factory=LunaSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     resolve: ResolveSettings = Field(default_factory=ResolveSettings)
+    replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
+    triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
 
 
@@ -156,6 +168,12 @@ def load(path: str = '') -> Settings:
         users=_csv(get('RESOLVE', 'USERS', 'local')),
         groups=_csv(get('RESOLVE', 'GROUPS', 'local')),
         cache=seconds(get('RESOLVE', 'CACHE', '60s'), 60))
+    data.replication = ReplicationSettings(
+        peers=_csv(get('REPLICATION', 'PEERS', '')),
+        interval=seconds(get('REPLICATION', 'INTERVAL', '300s'), 300),
+        enabled=_bool(get('REPLICATION', 'ENABLED', 'yes')))
+    data.triggers = TriggerSettings(
+        luna_hashes=seconds(get('TRIGGERS', 'LUNA_HASHES', '60s'), 60))
     data.plugins = PluginSettings(
         directory=get('PLUGINS', 'DIRECTORY', data.plugins.directory),
         enabled=_csv(get('PLUGINS', 'ENABLED', '')))

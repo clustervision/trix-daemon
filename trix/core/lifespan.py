@@ -39,6 +39,8 @@ from trix.common.constants import DEFAULT_LEVEL, WILDCARD_CAPABILITY
 from trix.common.settings import current as settings
 from trix.core.plugins import loader
 from trix.core.render.engine import current as renders
+from trix.core.render.triggers import current as luna_hashes
+from trix.core.replication.sweep import current as sweep
 from trix.core.security import keys, principals
 from trix.db import engine as database
 from trix.db import models
@@ -92,9 +94,16 @@ def start(app: FastAPI) -> None:
     done = renders().run_all()
     LOGGER.info('reconciled %d render(s) before opening the listeners', done)
 
+    # Both are background timers, so they start after the reconcile: the first
+    # answer a caller gets should come from a render, not from an empty cache.
+    luna_hashes().start()
+    sweep().start()
+
 
 def stop(app: FastAPI) -> None:
-    """Nothing here holds a lock or a queue, so there is nothing to drain."""
+    """Stop the timers. Nothing here holds a queue, so there is nothing to drain."""
+    luna_hashes().shutdown()
+    sweep().shutdown()
     LOGGER.info('shutting down')
 
 

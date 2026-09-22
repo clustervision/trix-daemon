@@ -35,11 +35,15 @@ from pydantic import BaseModel
 from trix.common import logging as trixlog
 from trix.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    PLUGIN_STATE_LOADED)
-from trix.common.errors import PluginRefused
+from trix.common.errors import NotFound, PluginRefused
 from trix.core.plugins import loader
 from trix.core.plugins.registry import current as registry
+from trix.core.replication import tables
+from trix.core.replication.sweep import current as sweep
 from trix.core.render.engine import current as renders
+from trix.core.render.triggers import current as luna_hashes
 from trix.core.security.gate import Caller, guard
+from trix.db import engine as database
 
 LOGGER = trixlog.get('system')
 
@@ -104,3 +108,38 @@ def notify(body: Change, caller: Caller = Depends(guard('system.notify'))) -> di
     woken = renders().notify(f'luna.{body.object}' if body.object else '')
     LOGGER.info('notified of %s %s, woke %d render(s)', body.object, body.name, len(woken))
     return {'rendered': woken}
+
+
+@router.get('/replication/hashes', summary='One hash per replicated table')
+def replication_hashes(caller: Caller = Depends(guard('system.read'))) -> dict:
+    """What a peer compares against before copying anything."""
+    handle = database.session()
+    try:
+        return {'hashes': tables.hashes(handle)}
+    finally:
+        handle.close()
+
+
+@router.get('/replication/table/{name}', summary='One replicated table as documents')
+def replication_table(name: str, caller: Caller = Depends(guard('system.read'))) -> dict:
+    """Addressed by name rather than by identifier, because identifiers are local."""
+    if name not in tables.MODELS:
+        raise NotFound(f'{name} is not a replicated table')
+    handle = database.session()
+    try:
+        return {'table': name, 'documents': tables.export_table(handle, name)}
+    finally:
+        handle.close()
+
+
+@router.post('/replication/sweep', summary='Reconcile with every peer now')
+def replication_sweep(caller: Caller = Depends(guard('system.write'))) -> dict:
+    """The same pass the timer makes, run on demand."""
+    return {'results': sweep().once()}
+
+
+@router.get('/triggers', summary='The state of the fallback trigger')
+def trigger_state(caller: Caller = Depends(guard('system.read'))) -> dict:
+    """Whether Luna's table hashes are actually answering here."""
+    return {'luna_hashes': luna_hashes().state(),
+            'replication': sweep().last or {'at': 0, 'results': []}}

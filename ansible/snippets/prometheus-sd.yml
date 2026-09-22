@@ -1,0 +1,41 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+---
+# Replace the luna_nodes job in site/controller.yml, inside the
+# prometheus_server_additional_sd list on the trinity/prometheus-server role.
+#
+# Before, pointing at Luna:
+#   - job_name: luna_nodes
+#     http_sd_configs:
+#     - url: "{{ luna_protocol }}://localhost:7050/export/prometheus"
+#
+# After, pointing at trix-daemon. The document is served from the render rather
+# than rebuilt per poll, so the cost of a poll that changes nothing is one hash
+# comparison instead of a pass over every node.
+#
+# The plain listener is on the loopback, which is where Prometheus runs, so this
+# needs no certificate and no token. The endpoint declares itself public for
+# exactly this reason, because service discovery presents no credentials.
+
+- job_name: luna_nodes
+  http_sd_configs:
+    - url: "http://{{ trixd_plain_bind }}:{{ trixd_plain_port }}/api/v1/prometheus/renders/targets"
+  metric_relabel_configs:
+    # Drop transient systemd unit states to reduce cardinality.
+    - source_labels: ['__name__', 'state']
+      regex: 'node_systemd_unit_state;(activating|deactivating)'
+      action: drop

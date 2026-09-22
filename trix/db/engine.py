@@ -36,7 +36,6 @@ from sqlalchemy.engine import Engine
 from sqlalchemy.orm import Session, sessionmaker
 
 from trix.common import logging as trixlog
-from trix.db.models import Base
 
 LOGGER = trixlog.get('db')
 
@@ -65,15 +64,34 @@ def _pragmas(dbapi_connection, record) -> None:
         cursor.close()
 
 
+MIGRATIONS: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrations')
+
+
+def migrate(url: str) -> str:
+    """Bring the schema to head.
+
+    On an empty file that is the initial revision, so there is no separate create
+    path to keep in step with the migrations.
+    """
+    from alembic import command
+    from alembic.config import Config
+
+    config = Config()
+    config.set_main_option('script_location', MIGRATIONS)
+    config.set_main_option('sqlalchemy.url', url)
+    command.upgrade(config, 'head')
+    return MIGRATIONS
+
+
 def start(url: str) -> Engine:
     """Open the database and make sure the schema is present."""
     global _engine, _factory
     path = _sqlite_path(url)
     if path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
+    migrate(url)
     _engine = create_engine(url, future=True, connect_args={'check_same_thread': False}
                             if url.startswith('sqlite') else {})
-    Base.metadata.create_all(_engine)
     _factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     LOGGER.info('database ready at %s', path or url)
     return _engine

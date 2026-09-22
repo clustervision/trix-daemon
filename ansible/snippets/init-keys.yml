@@ -1,0 +1,86 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+---
+# Append to site/roles/trinity/init/tasks/keys.yml, beside the blocks that already
+# create luna's secret.key and the omapi key. Same create-once idiom: generate if
+# absent, import if present, so a re-run never replaces a key that tokens were
+# signed with.
+#
+# The keypair has to exist before either daemon starts. A key that must exist
+# before the first token can be signed cannot be signed by the thing that needs
+# it, which is why this is here and not in the trix-daemon role.
+
+- block:
+  - name: Verify if the trix signing key exists
+    stat:
+      path: "{{ trix_ssl }}/trix.ed25519"
+    register: stat_trix_key
+
+  - block:
+    - name: Generate the trix-daemon keypair
+      command: >-
+        {{ trix_local }}/python/bin/python3 -c
+        "from cryptography.hazmat.primitives import serialization as s;
+        from cryptography.hazmat.primitives.asymmetric import ed25519 as e;
+        k=e.Ed25519PrivateKey.generate();
+        open('{{ trix_ssl }}/trix.ed25519','wb').write(k.private_bytes(s.Encoding.PEM,
+        s.PrivateFormat.PKCS8, s.NoEncryption()));
+        open('{{ trix_ssl }}/trix.ed25519.pub','wb').write(k.public_key().public_bytes(
+        s.Encoding.PEM, s.PublicFormat.SubjectPublicKeyInfo))"
+      args:
+        creates: "{{ trix_ssl }}/trix.ed25519"
+
+    - name: Restrict the private key
+      file:
+        path: "{{ trix_ssl }}/trix.ed25519"
+        mode: '0600'
+    when: not stat_trix_key.stat.exists
+
+  # An HA pair must hold the same key, or a token minted on one controller is
+  # refused by the other. Push it through the sync directory exactly as the
+  # ds389 and ssl-cert roles do with theirs.
+  - block:
+    - name: Ensure the trix sync directory exists
+      file:
+        path: '{{ trix_sync }}/trix'
+        state: directory
+
+    - name: Add the trix keypair to sync
+      copy:
+        remote_src: true
+        src: '{{ trix_ssl }}/{{ item }}'
+        dest: '{{ trix_sync }}/trix/'
+        mode: '0600'
+      loop:
+        - trix.ed25519
+        - trix.ed25519.pub
+    when:
+      - primary | default(True)
+      - ha | default(False)
+
+  - name: Copy the trix keypair from sync
+    copy:
+      remote_src: true
+      src: '{{ trix_sync }}/trix/{{ item }}'
+      dest: '{{ trix_ssl }}/'
+      mode: '0600'
+    loop:
+      - trix.ed25519
+      - trix.ed25519.pub
+    when:
+      - not primary | default(False)
+      - ha | default(False)
