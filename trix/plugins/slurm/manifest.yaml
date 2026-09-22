@@ -1,0 +1,60 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: slurm
+backend: backend
+description: >
+  The managed blocks of the slurm node, partition and gres files, rendered from
+  Luna's nodes through the trinityx-config-slurm package. One writer per file.
+
+schemas:
+  partitions:
+    partitions: {type: object}
+  config:
+    nodes_file:      {type: string, optional: true}
+    partitions_file: {type: string, optional: true}
+    gres_file:       {type: string, optional: true}
+    manager:         {type: string, optional: true}
+    reconfigure:     {type: string, optional: true}
+
+endpoints:
+  - path: config
+    methods: [GET, PATCH]
+    capability: slurm.write
+    handler: config
+    schema: config
+    summary: Where this plugin writes and what it runs afterwards
+
+  - path: partitions
+    methods: [GET, PATCH]
+    capability: slurm.write
+    handler: partitions
+    schema: partitions
+    summary: The partition definitions the render uses
+
+  - path: renders/config
+    methods: [GET]
+    capability: slurm.read
+    handler: render_config
+    render:
+      inputs: [luna.node, luna.group, partitions]
+      triggers: [luna.hook, luna.hashes]
+      coalesce: 2s
+      serve: json
+      files: /etc/slurm
+      blocks: TrinityX
+      after: [scontrol reconfigure]
+    summary: What the last render wrote

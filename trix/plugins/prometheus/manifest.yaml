@@ -1,0 +1,107 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: prometheus
+backend: backend
+description: >
+  The whole Prometheus surface as one plugin: service discovery targets, the
+  generic and service rule files, the per-node hardware rules and the settings
+  they are generated from. One plugin means one writer of the configuration.
+
+schemas:
+  rules:
+    groups:   {type: array, items: object}
+  settings:
+    settings: {type: object}
+  hw_rules:
+    force:    {type: boolean, optional: true}
+    nhc:      {type: boolean, optional: true}
+    disabled: {type: boolean, optional: true}
+  tuning:
+    drop:               {type: array, items: string, optional: true}
+    rule_group_interval: {type: string, optional: true}
+    scrape_interval:    {type: string, optional: true}
+    retention_size:     {type: string, optional: true}
+  config:
+    rules_directory: {type: string, optional: true}
+    prometheus_url:  {type: string, optional: true}
+    reload_command:  {type: string, optional: true}
+
+endpoints:
+  - path: config
+    methods: [GET, PATCH]
+    capability: monitoring.write
+    handler: config
+    schema: config
+    summary: Where this plugin writes, and what it reloads
+
+  - path: rules
+    methods: [GET, PATCH]
+    capability: monitoring.write
+    handler: rules
+    schema: rules
+    summary: The generic and service alert rules
+
+  - path: settings
+    methods: [GET, PATCH]
+    capability: monitoring.write
+    handler: settings
+    schema: settings
+    summary: The settings hardware rules are generated from
+
+  - path: tuning
+    methods: [GET, PATCH]
+    capability: monitoring.write
+    handler: tuning
+    schema: tuning
+    summary: Drop lists, intervals and retention
+
+  - path: hw-rules/<node>
+    methods: [GET]
+    capability: monitoring.read
+    handler: get_hw_rules
+    summary: The hardware rules held for one node
+
+  - path: hw-rules/<node>
+    methods: [PATCH]
+    capability: monitoring.node-self
+    token: node
+    handler: import_hw_rules
+    schema: hw_rules
+    summary: A node asks for its own hardware rules to be generated
+
+  - path: renders/targets
+    methods: [GET]
+    capability: monitoring.read
+    public: true
+    handler: render_targets
+    render:
+      inputs: [luna.node, luna.network]
+      triggers: [luna.hook, luna.hashes]
+      serve: json
+      coalesce: 2s
+    summary: Service discovery targets, served from the render
+
+  - path: renders/rule-files
+    methods: [GET]
+    capability: monitoring.read
+    handler: render_rule_files
+    render:
+      inputs: [settings, rules, luna.node]
+      triggers: [luna.hook]
+      files: /trinity/local/etc/prometheus_server/rules/
+      after: [prometheus reload]
+    summary: The rule files on disk

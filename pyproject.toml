@@ -1,0 +1,67 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+# Packaging for trix-daemon. The wheel is published to the internal index and
+# installed by the Ansible role into the shared interpreter, as luna2-daemon is.
+
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "trix-daemon"
+version = "1.0"
+description = "TrinityX control-plane daemon for everything that is not a physical node"
+readme = "README.md"
+requires-python = ">=3.10"
+license = { text = "GPL-3.0-or-later" }
+authors = [{ name = "ClusterVision Development team", email = "support@clustervision.com" }]
+maintainers = [{ name = "ClusterVision Development team", email = "support@clustervision.com" }]
+keywords = ["trinityx", "trix", "daemon", "clustervision"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: System Administrators",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3.10",
+]
+dependencies = [
+    "fastapi==0.141.1",
+    "hypercorn==0.18.0",
+    "pydantic>=2.9.0",
+    "pydantic-settings==2.15.0",
+    "SQLAlchemy==2.0.54",
+    "alembic==1.20.0",
+    "PyJWT>=2.8.0",
+    "cryptography>=41.0.3",
+    "PyYAML>=6.0.0",
+    "requests>=2.29.0",
+]
+
+[project.scripts]
+trix-daemon = "trix.server:main"
+
+[project.urls]
+Homepage = "https://gitlab.taurusgroup.one/clustervision/trix-daemon"
+
+[tool.setuptools.packages.find]
+include = ["trix*"]
+
+[tool.setuptools.package-data]
+trix = ["config/*.ini", "config/*.service", "config/*.yaml", "plugins/*/manifest.yaml"]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
+testpaths = ["tests"]
