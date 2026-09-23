@@ -21,13 +21,13 @@
 Minting and verifying JSON web tokens. Same format as Luna, asymmetric algorithm.
 """
 
-__author__      = 'Sumit Sharma'
-__copyright__   = 'Copyright 2026, TrinityX Project'
-__license__     = 'GPL'
-__version__     = '1.0'
-__maintainer__  = 'Sumit Sharma'
-__email__       = 'sumit.sharma@clustervision.com'
-__status__      = 'Development'
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
 
 from datetime import datetime, timedelta, timezone
 

@@ -21,13 +21,13 @@
 The entry point: read the ini, build the application, serve TLS and plain together.
 """
 
-__author__      = 'Sumit Sharma'
-__copyright__   = 'Copyright 2026, TrinityX Project'
-__license__     = 'GPL'
-__version__     = '1.0'
-__maintainer__  = 'Sumit Sharma'
-__email__       = 'sumit.sharma@clustervision.com'
-__status__      = 'Development'
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
 
 import argparse
 import asyncio

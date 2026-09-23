@@ -21,13 +21,13 @@
 The Alembic environment. The URL comes from trix.ini unless one is passed in.
 """
 
-__author__      = 'Sumit Sharma'
-__copyright__   = 'Copyright 2026, TrinityX Project'
-__license__     = 'GPL'
-__version__     = '1.0'
-__maintainer__  = 'Sumit Sharma'
-__email__       = 'sumit.sharma@clustervision.com'
-__status__      = 'Development'
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
 
 from alembic import context
 from sqlalchemy import engine_from_config, pool

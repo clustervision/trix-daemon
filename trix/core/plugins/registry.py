@@ -21,13 +21,13 @@
 What is loaded right now, in what state, and which routes belong to which plugin.
 """
 
-__author__      = 'Sumit Sharma'
-__copyright__   = 'Copyright 2026, TrinityX Project'
-__license__     = 'GPL'
-__version__     = '1.0'
-__maintainer__  = 'Sumit Sharma'
-__email__       = 'sumit.sharma@clustervision.com'
-__status__      = 'Development'
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
 
 from trix.common.constants import (PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
                                    PLUGIN_STATE_REFUSED)

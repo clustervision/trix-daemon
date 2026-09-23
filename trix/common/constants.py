@@ -21,13 +21,13 @@
 Values that never change and never touch the filesystem.
 """
 
-__author__      = 'Sumit Sharma'
-__copyright__   = 'Copyright 2026, TrinityX Project'
-__license__     = 'GPL'
-__version__     = '1.0'
-__maintainer__  = 'Sumit Sharma'
-__email__       = 'sumit.sharma@clustervision.com'
-__status__      = 'Development'
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
 
 DAEMON_NAME: str = 'trix-daemon'
 DAEMON_VERSION: str = '1.0'
