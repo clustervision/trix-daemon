@@ -69,7 +69,9 @@ class Token(BaseModel):
 @router.post('/token', response_model=Token, status_code=201,
              summary='Exchange credentials for a token')
 def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
-    """Resolve the caller through the chain, then sign a token naming them."""
+    """
+    Resolve the caller through the chain, then sign a token naming them.
+    """
     who = principals.authenticate(handle, body.username, body.password)
     if who is None:
         LOGGER.warning('failed login for %s', body.username)
@@ -80,7 +82,8 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
 @router.post('/node/{node}', response_model=Token,
              summary='Exchange a node measurement for a node-scoped token')
 def issue_node(node: str, body: NodeProof) -> Token:
-    """Verify the measurement against Luna's record of that node.
+    """
+    Verify the measurement against Luna's record of that node.
 
     No shared signing secret is involved at any point: Luna is asked what it holds
     for this node, and the answer is compared. That keeps working unchanged when
@@ -102,7 +105,9 @@ def issue_node(node: str, body: NodeProof) -> Token:
 
 @router.get('/whoami', summary='What this token says about its bearer')
 def whoami(caller: Caller = Depends(guard())) -> dict:
-    """Useful when a client wants to know what it is holding."""
+    """
+    Useful when a client wants to know what it is holding.
+    """
     return {
         'principal': caller.name,
         'kind': caller.kind,

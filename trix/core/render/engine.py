@@ -58,7 +58,9 @@ class Render:
         self.last_error: str = ''
 
     def wants(self, changed: str) -> bool:
-        """Whether a change to this kind of object is one of our inputs."""
+        """
+        Whether a change to this kind of object is one of our inputs.
+        """
         if not changed:
             return True
         return any(str(item) == changed or str(item).startswith(f'{changed}.')
@@ -86,7 +88,9 @@ class Engine:
             return item
 
     def reader(self, plugin: str, path: str):
-        """The path operation that answers a poll from what was rendered."""
+        """
+        The path operation that answers a poll from what was rendered.
+        """
 
         def read(caller=None):
             item = self.renders.get(f'{plugin}/{path}')
@@ -101,7 +105,9 @@ class Engine:
         return read
 
     def run(self, item: Render) -> bool:
-        """Produce the output. Never leaves a half-written result behind."""
+        """
+        Produce the output. Never leaves a half-written result behind.
+        """
         with self.lock:
             try:
                 produced = item.producer()
@@ -119,7 +125,9 @@ class Engine:
             return True
 
     def run_all(self) -> int:
-        """The reconcile on start: every render, once, over what is on disk."""
+        """
+        The reconcile on start: every render, once, over what is on disk.
+        """
         done = 0
         for item in list(self.renders.values()):
             if self.run(item):
@@ -127,7 +135,9 @@ class Engine:
         return done
 
     def notify(self, changed: str = '') -> list:
-        """A change landed. Coalesce, then render whatever declared it as an input."""
+        """
+        A change landed. Coalesce, then render whatever declared it as an input.
+        """
         woken = []
         now = time.monotonic()
         for item in list(self.renders.values()):
@@ -149,7 +159,9 @@ class Engine:
                      self.renders.values(), key=lambda entry: entry.key)]
 
     def _record(self, item: Render) -> None:
-        """Keep the local note of when this last ran. Never fatal."""
+        """
+        Keep the local note of when this last ran. Never fatal.
+        """
         try:
             handle = database.session()
         except Exception:
@@ -174,5 +186,7 @@ _engine: Engine = Engine()
 
 
 def current() -> Engine:
-    """The render engine for this process."""
+    """
+    The render engine for this process.
+    """
     return _engine

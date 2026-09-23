@@ -40,12 +40,16 @@ target_metadata = Base.metadata
 
 
 def database_url() -> str:
-    """Whatever the caller set, or the configured one."""
+    """
+    Whatever the caller set, or the configured one.
+    """
     return config.get_main_option('sqlalchemy.url') or configuration.load().database.url
 
 
 def run_migrations_offline() -> None:
-    """Emit the statements without a connection, for review."""
+    """
+    Emit the statements without a connection, for review.
+    """
     context.configure(url=database_url(), target_metadata=target_metadata,
                       literal_binds=True, render_as_batch=True,
                       dialect_opts={'paramstyle': 'named'})
@@ -54,7 +58,9 @@ def run_migrations_offline() -> None:
 
 
 def run_migrations_online() -> None:
-    """Apply against the real database."""
+    """
+    Apply against the real database.
+    """
     section = config.get_section(config.config_ini_section) or {}
     section['sqlalchemy.url'] = database_url()
     connectable = engine_from_config(section, prefix='sqlalchemy.', poolclass=pool.NullPool)

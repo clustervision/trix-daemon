@@ -39,7 +39,9 @@ from trix.db import models
 
 
 def _peer(tmp_path, name='peer.db'):
-    """A second, independent database standing in for the other controller."""
+    """
+    A second, independent database standing in for the other controller.
+    """
     url = f'sqlite:///{tmp_path / name}'
     database.migrate(url)
     handle = sessionmaker(bind=create_engine(url, future=True), future=True)()
@@ -47,7 +49,9 @@ def _peer(tmp_path, name='peer.db'):
 
 
 def test_the_schema_comes_from_a_migration(rig):
-    """Not from create_all, so the first schema change has somewhere to go."""
+    """
+    Not from create_all, so the first schema change has somewhere to go.
+    """
     handle = database.session()
     try:
         stamped = handle.execute(text('select version_num from alembic_version')).scalar()
@@ -81,7 +85,9 @@ def test_a_write_changes_exactly_one_table_hash(rig):
 
 
 def test_a_document_is_keyed_by_name_not_by_identifier(rig):
-    """Autoincrement is local, so an identifier means nothing to the peer."""
+    """
+    Autoincrement is local, so an identifier means nothing to the peer.
+    """
     handle = database.session()
     try:
         handle.add(models.Usergroup(name='operators', origin='here'))
@@ -94,7 +100,9 @@ def test_a_document_is_keyed_by_name_not_by_identifier(rig):
 
 
 def test_the_merge_carries_rows_across_and_resolves_the_names(rig, tmp_path):
-    """A membership references two rows whose identifiers differ on each side."""
+    """
+    A membership references two rows whose identifiers differ on each side.
+    """
     peer = _peer(tmp_path)
     peer.add(models.Principal(name='alice', kind='user', source='local', origin='peer'))
     peer.add(models.Usergroup(name='operators', origin='peer'))
@@ -151,7 +159,9 @@ def test_the_newer_version_wins_and_the_older_is_ignored(rig, tmp_path):
 
 
 def test_a_row_whose_dependency_is_missing_is_deferred(rig, tmp_path):
-    """It is picked up on a later pass rather than inserted against nothing."""
+    """
+    It is picked up on a later pass rather than inserted against nothing.
+    """
     peer = _peer(tmp_path, 'peer3.db')
     peer.add(models.Principal(name='bob', kind='user', source='local', origin='peer'))
     peer.add(models.Usergroup(name='admins', origin='peer'))
@@ -192,6 +202,8 @@ def test_the_trigger_state_is_reported(client, headers):
 
 
 def test_a_single_controller_runs_no_sweep(rig):
-    """With no peers there is nothing to reconcile with, and no thread."""
+    """
+    With no peers there is nothing to reconcile with, and no thread.
+    """
     from trix.core.replication.sweep import current as sweep
     assert sweep().start() is False

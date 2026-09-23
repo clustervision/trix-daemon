@@ -55,7 +55,9 @@ MODULE_PREFIX: str = 'trix_plugin_'
 
 
 def discover(directory: str = '') -> dict:
-    """Every plugin on disk: a directory with a manifest, or a single script."""
+    """
+    Every plugin on disk: a directory with a manifest, or a single script.
+    """
     directory = directory or settings().plugins.directory
     found = {}
     if not os.path.isdir(directory):
@@ -71,14 +73,18 @@ def discover(directory: str = '') -> dict:
 
 
 def _purge(name: str) -> None:
-    """Drop the plugin's modules so a re-plug genuinely runs the new code."""
+    """
+    Drop the plugin's modules so a re-plug genuinely runs the new code.
+    """
     prefix = f'{MODULE_PREFIX}{name}'
     for module in [key for key in sys.modules if key == prefix or key.startswith(prefix + '.')]:
         sys.modules.pop(module, None)
 
 
 def _import_package(name: str, path: str):
-    """Import a plugin directory as a package, so its own imports resolve."""
+    """
+    Import a plugin directory as a package, so its own imports resolve.
+    """
     package = f'{MODULE_PREFIX}{name}'
     init = os.path.join(path, '__init__.py')
     if os.path.isfile(init):
@@ -96,7 +102,9 @@ def _import_package(name: str, path: str):
 
 
 def _import_script(name: str, path: str):
-    """Import a single-file plugin, which is the shape Luna's plugins have."""
+    """
+    Import a single-file plugin, which is the shape Luna's plugins have.
+    """
     module_name = f'{MODULE_PREFIX}{name}'
     spec = importlib.util.spec_from_file_location(module_name, path)
     module = importlib.util.module_from_spec(spec)
@@ -106,7 +114,9 @@ def _import_script(name: str, path: str):
 
 
 def _from_script(name: str, path: str):
-    """Read a manifest off a Plugin class attribute, and return the backend."""
+    """
+    Read a manifest off a Plugin class attribute, and return the backend.
+    """
     module = _import_script(name, path)
     plugin_class = getattr(module, 'Plugin', None)
     if plugin_class is None:
@@ -126,7 +136,9 @@ def _from_script(name: str, path: str):
 
 
 def _from_directory(name: str, path: str):
-    """Read manifest.yaml and import the backend module it names."""
+    """
+    Read manifest.yaml and import the backend module it names.
+    """
     document = manifests.read_yaml(os.path.join(path, 'manifest.yaml'))
     manifest = manifests.parse(document)
     package = _import_package(name, path)
@@ -141,7 +153,9 @@ def _from_directory(name: str, path: str):
 
 
 def _register_renders(manifest, backend) -> None:
-    """Hand every declared render to the engine, with its producer."""
+    """
+    Hand every declared render to the engine, with its producer.
+    """
     engine = renders()
     engine.forget(manifest.plugin)
     for endpoint in manifest.endpoints:
@@ -157,7 +171,9 @@ def _register_renders(manifest, backend) -> None:
 
 
 def load(app: FastAPI, name: str, path: str = '') -> LoadedPlugin:
-    """Load or reload one plugin. On a refusal nothing already serving is disturbed."""
+    """
+    Load or reload one plugin. On a refusal nothing already serving is disturbed.
+    """
     known = registry()
     if name == RESERVED_PLUGIN:
         reason = f'{RESERVED_PLUGIN} is reserved for the pass-through to Luna'
@@ -211,7 +227,9 @@ def load(app: FastAPI, name: str, path: str = '') -> LoadedPlugin:
 
 
 def unload(app: FastAPI, name: str) -> LoadedPlugin:
-    """Take a plugin out of the route table. Its paths answer 404 from the next request."""
+    """
+    Take a plugin out of the route table. Its paths answer 404 from the next request.
+    """
     known = registry()
     if known.get(name) is None:
         raise NotFound(f'no plugin named {name}')
@@ -225,7 +243,9 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
 
 
 def load_all(app: FastAPI) -> dict:
-    """Load everything discovered, honouring the enabled list and stored state."""
+    """
+    Load everything discovered, honouring the enabled list and stored state.
+    """
     wanted = settings().plugins.enabled
     disabled = _disabled_names()
     result = {}
@@ -258,7 +278,9 @@ def _disabled_names() -> set:
 
 
 def _remember(entry: LoadedPlugin) -> None:
-    """Record what this plugin is doing, so a restart agrees with the running state."""
+    """
+    Record what this plugin is doing, so a restart agrees with the running state.
+    """
     handle = database.session()
     try:
         row = handle.scalar(select(models.PluginState)

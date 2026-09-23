@@ -46,7 +46,9 @@ PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 
 @pytest.fixture()
 def rig(tmp_path):
-    """A configured daemon: its own database, its own keypair, its own plugins."""
+    """
+    A configured daemon: its own database, its own keypair, its own plugins.
+    """
     plugins = tmp_path / 'plugins'
     shutil.copytree(PLUGIN_SOURCE, plugins)
     trust = tmp_path / 'trust.d'
@@ -74,13 +76,17 @@ def rig(tmp_path):
 
 @pytest.fixture()
 def client(rig):
-    """A client speaking to that daemon."""
+    """
+    A client speaking to that daemon.
+    """
     return TestClient(rig)
 
 
 @pytest.fixture()
 def token(client):
-    """A token for the seeded administrator."""
+    """
+    A token for the seeded administrator.
+    """
     answer = client.post('/api/v1/auth/token',
                          json={'username': 'tester', 'password': 'secret'})
     assert answer.status_code == 201, answer.text
@@ -89,5 +95,7 @@ def token(client):
 
 @pytest.fixture()
 def headers(token):
-    """Ready to pass to a request."""
+    """
+    Ready to pass to a request.
+    """
     return {'x-access-tokens': token}

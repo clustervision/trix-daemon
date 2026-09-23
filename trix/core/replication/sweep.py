@@ -70,7 +70,9 @@ class Sweep:
         return answer.json()
 
     def pass_over(self, peer: str) -> dict:
-        """Compare hashes with one peer and take whatever differs."""
+        """
+        Compare hashes with one peer and take whatever differs.
+        """
         handle = database.session()
         try:
             theirs = (self._get(peer, 'hashes') or {}).get('hashes') or {}
@@ -90,7 +92,9 @@ class Sweep:
             handle.close()
 
     def once(self) -> list:
-        """One pass over every configured peer."""
+        """
+        One pass over every configured peer.
+        """
         results = []
         for peer in settings().replication.peers:
             try:
@@ -108,7 +112,9 @@ class Sweep:
             self.once()
 
     def start(self) -> bool:
-        """Only when peers are configured: one controller has nothing to reconcile."""
+        """
+        Only when peers are configured: one controller has nothing to reconcile.
+        """
         config = settings().replication
         if not config.enabled or not config.peers:
             LOGGER.info('no replication peers configured, so no sweep is running')
@@ -127,5 +133,7 @@ _sweep: Sweep = Sweep()
 
 
 def current() -> Sweep:
-    """The sweep for this process."""
+    """
+    The sweep for this process.
+    """
     return _sweep

@@ -90,7 +90,9 @@ class Endpoint(BaseModel):
 
     @property
     def route_path(self) -> str:
-        """The manifest writes <name>; Starlette wants {name}."""
+        """
+        The manifest writes <name>; Starlette wants {name}.
+        """
         return PATH_VARIABLE.sub(r'{\1}', self.path).strip('/')
 
 
@@ -112,7 +114,9 @@ class Manifest(BaseModel):
 
 
 def parse(document: dict) -> Manifest:
-    """Turn a manifest document into a Manifest, refusing anything unusable."""
+    """
+    Turn a manifest document into a Manifest, refusing anything unusable.
+    """
     try:
         manifest = Manifest(**document)
         manifest.endpoints = [item if isinstance(item, Endpoint) else Endpoint(**item)
@@ -140,7 +144,9 @@ def parse(document: dict) -> Manifest:
 
 
 def build_models(manifest: Manifest) -> dict:
-    """Make one request model per declared schema."""
+    """
+    Make one request model per declared schema.
+    """
     models = {}
     for name, fields in manifest.schemas.items():
         spec = {}
@@ -165,7 +171,9 @@ def build_models(manifest: Manifest) -> dict:
 
 
 def read_yaml(path: str) -> dict:
-    """Read a manifest.yaml from disk."""
+    """
+    Read a manifest.yaml from disk.
+    """
     import yaml
     with open(path, 'r', encoding='utf-8') as handle:
         document = yaml.safe_load(handle)

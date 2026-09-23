@@ -48,7 +48,9 @@ class LoadedPlugin:
         self.routes: list = []
 
     def summary(self) -> dict:
-        """What the control endpoint reports."""
+        """
+        What the control endpoint reports.
+        """
         return {
             'name': self.name,
             'state': self.state,
@@ -76,7 +78,9 @@ class Registry:
         return self.plugins.get(name)
 
     def refuse(self, name: str, reason: str, origin: str = '') -> LoadedPlugin:
-        """Record a refusal without disturbing whatever is already serving."""
+        """
+        Record a refusal without disturbing whatever is already serving.
+        """
         existing = self.plugins.get(name)
         if existing is not None and existing.state == PLUGIN_STATE_LOADED:
             existing.reason = reason
@@ -104,7 +108,9 @@ class Registry:
         return ''
 
     def paths(self, skip: str = '') -> dict:
-        """Every path a loaded plugin serves, so a collision can be named."""
+        """
+        Every path a loaded plugin serves, so a collision can be named.
+        """
         taken = {}
         for name, entry in self.plugins.items():
             if name == skip or entry.state != PLUGIN_STATE_LOADED:
@@ -122,5 +128,7 @@ _registry: Registry = Registry()
 
 
 def current() -> Registry:
-    """The registry for this process."""
+    """
+    The registry for this process.
+    """
     return _registry

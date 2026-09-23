@@ -37,7 +37,9 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
 def now() -> datetime:
-    """Timestamps are stored in UTC, because two controllers compare them."""
+    """
+    Timestamps are stored in UTC, because two controllers compare them.
+    """
     return datetime.now(timezone.utc)
 
 

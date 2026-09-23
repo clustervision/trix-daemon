@@ -44,7 +44,9 @@ BLOCK_END: str = '# --- end {manager} managed block ---'
 
 
 def write(path: str, content: str, mode: int = 0o644) -> str:
-    """Write through a temporary file and rename, so a reader never sees a partial one."""
+    """
+    Write through a temporary file and rename, so a reader never sees a partial one.
+    """
     directory = os.path.dirname(path) or '.'
     try:
         os.makedirs(directory, exist_ok=True)
@@ -60,13 +62,17 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
 
 
 def write_yaml(path: str, document, mode: int = 0o644) -> str:
-    """The same, for a document."""
+    """
+    The same, for a document.
+    """
     return write(path, yaml.safe_dump(document, default_flow_style=False, sort_keys=False,
                                       explicit_start=True), mode)
 
 
 def read_text(path: str, fallback: str = '') -> str:
-    """The file, or the fallback when it is not there."""
+    """
+    The file, or the fallback when it is not there.
+    """
     if not os.path.isfile(path):
         return fallback
     with open(path, 'r', encoding='utf-8') as handle:
@@ -74,7 +80,8 @@ def read_text(path: str, fallback: str = '') -> str:
 
 
 def set_managed_block(path: str, manager: str, content: str, mode: int = 0o644) -> str:
-    """Replace our block in a file somebody else also writes to.
+    """
+    Replace our block in a file somebody else also writes to.
 
     Everything outside the two markers is left exactly as it was found, which is
     what lets a site keep its own lines in the same file.
@@ -95,7 +102,9 @@ def set_managed_block(path: str, manager: str, content: str, mode: int = 0o644) 
 
 
 def get_managed_block(path: str, manager: str) -> str:
-    """What our block currently holds, or an empty string."""
+    """
+    What our block currently holds, or an empty string.
+    """
     start = BLOCK_START.format(manager=manager)
     end = BLOCK_END.format(manager=manager)
     existing = read_text(path)

@@ -48,7 +48,8 @@ DEFAULT_CONFIG: dict = {
 
 
 def _generator():
-    """The packaged generator, imported only when a render actually runs.
+    """
+    The packaged generator, imported only when a render actually runs.
 
     It is absent on a controller that does not run slurm, and that is not an
     error until something asks for a render.
@@ -62,7 +63,9 @@ def _generator():
 
 
 def node_set() -> list:
-    """The node and group pairs the generator expects, read from Luna by name."""
+    """
+    The node and group pairs the generator expects, read from Luna by name.
+    """
     client = luna()
     nodes = client.nodes()
     return [{'name': name, 'group': node.get('group') or ''}
@@ -73,19 +76,25 @@ class Backend:
     """A thin shell around the package. The rendering logic stays where it is."""
 
     def config(self, body: dict = None) -> dict:
-        """Where this plugin writes and what it runs afterwards."""
+        """
+        Where this plugin writes and what it runs afterwards.
+        """
         if body:
             return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
         return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
 
     def partitions(self, body: dict = None) -> dict:
-        """The partition definitions the render uses."""
+        """
+        The partition definitions the render uses.
+        """
         if body:
             return declarations.write(PLUGIN, 'partitions', '', body)
         return declarations.read(PLUGIN, 'partitions', '', {'partitions': {}})
 
     def render_config(self) -> dict:
-        """Write the managed blocks, then reconfigure slurm."""
+        """
+        Write the managed blocks, then reconfigure slurm.
+        """
         settings = self.config()
         fullset = node_set()
         if not fullset:

@@ -65,7 +65,9 @@ def _present(x_access_tokens: str, authorization: str) -> str:
 
 
 def guard(capability: str = '', token_kind: str = TOKEN_KIND_USER):
-    """Build the dependency for one endpoint."""
+    """
+    Build the dependency for one endpoint.
+    """
 
     def dependency(request: Request,
                    x_access_tokens: str = Header(default=None),

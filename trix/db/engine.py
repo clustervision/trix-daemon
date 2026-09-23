@@ -55,7 +55,9 @@ def _sqlite_path(url: str) -> str:
 
 @event.listens_for(Engine, 'connect')
 def _pragmas(dbapi_connection, record) -> None:
-    """Write-ahead logging and a busy timeout: several threads share one file."""
+    """
+    Write-ahead logging and a busy timeout: several threads share one file.
+    """
     if dbapi_connection.__class__.__module__.startswith('sqlite3'):
         cursor = dbapi_connection.cursor()
         cursor.execute('PRAGMA journal_mode=WAL')
@@ -68,7 +70,8 @@ MIGRATIONS: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migr
 
 
 def migrate(url: str) -> str:
-    """Bring the schema to head.
+    """
+    Bring the schema to head.
 
     On an empty file that is the initial revision, so there is no separate create
     path to keep in step with the migrations.
@@ -84,7 +87,9 @@ def migrate(url: str) -> str:
 
 
 def start(url: str) -> Engine:
-    """Open the database and make sure the schema is present."""
+    """
+    Open the database and make sure the schema is present.
+    """
     global _engine, _factory
     path = _sqlite_path(url)
     if path:
@@ -98,17 +103,23 @@ def start(url: str) -> Engine:
 
 
 def engine() -> Engine:
-    """The engine this daemon opened."""
+    """
+    The engine this daemon opened.
+    """
     return _engine
 
 
 def session() -> Session:
-    """A new session. The caller closes it."""
+    """
+    A new session. The caller closes it.
+    """
     return _factory()
 
 
 def scoped():
-    """Session dependency for a path operation."""
+    """
+    Session dependency for a path operation.
+    """
     handle = _factory()
     try:
         yield handle

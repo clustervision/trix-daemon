@@ -59,7 +59,9 @@ GROUP_FLAGS: dict = {
 
 
 def _flags(body: dict, mapping: dict) -> list:
-    """Turn the validated body into obol arguments, skipping what was not sent."""
+    """
+    Turn the validated body into obol arguments, skipping what was not sent.
+    """
     argv = []
     for field, flag in mapping.items():
         value = body.get(field)
@@ -72,7 +74,8 @@ def _flags(body: dict, mapping: dict) -> list:
 
 
 def _normalise(record: dict) -> dict:
-    """389ds names the membership attribute differently from openldap.
+    """
+    389ds names the membership attribute differently from openldap.
 
     The users application reads 'member', so keep answering with it whichever
     backend is underneath.
@@ -87,18 +90,24 @@ class Backend:
     """One method per handler the manifest declares, and nothing else."""
 
     def list_users(self) -> list:
-        """Every user obol can see."""
+        """
+        Every user obol can see.
+        """
         return shell.run_json([OBOL, '-J', 'user', 'list'], TIMEOUT) or []
 
     def get_user(self, name: str) -> dict:
-        """One user, or 404."""
+        """
+        One user, or 404.
+        """
         result = shell.run([OBOL, '-J', 'user', 'show', name], TIMEOUT)
         if not result.ok:
             raise NotFound(f'no user named {name}')
         return _normalise(shell.run_json([OBOL, '-J', 'user', 'show', name], TIMEOUT) or {})
 
     def create_user(self, body: dict) -> dict:
-        """Create a user. The name comes from the body, not from the path."""
+        """
+        Create a user. The name comes from the body, not from the path.
+        """
         name = (body or {}).get('username')
         if not name:
             raise BadRequest('username is required')
@@ -109,7 +118,9 @@ class Backend:
         return self.get_user(name)
 
     def update_user(self, name: str, body: dict) -> dict:
-        """Change the fields that were sent, and leave the rest alone."""
+        """
+        Change the fields that were sent, and leave the rest alone.
+        """
         if not shell.run([OBOL, '-J', 'user', 'show', name], TIMEOUT).ok:
             raise NotFound(f'no user named {name}')
         argv = _flags(body, USER_FLAGS)
@@ -120,7 +131,9 @@ class Backend:
         return self.get_user(name)
 
     def delete_user(self, name: str) -> dict:
-        """Remove a user."""
+        """
+        Remove a user.
+        """
         if not shell.run([OBOL, '-J', 'user', 'show', name], TIMEOUT).ok:
             raise NotFound(f'no user named {name}')
         shell.run([OBOL, 'user', 'delete', name], TIMEOUT, check=True)
@@ -128,18 +141,24 @@ class Backend:
         return {'message': f'user {name} deleted'}
 
     def list_groups(self) -> list:
-        """Every group obol can see."""
+        """
+        Every group obol can see.
+        """
         records = shell.run_json([OBOL, '-J', 'group', 'list'], TIMEOUT) or []
         return [_normalise(item) for item in records] if isinstance(records, list) else records
 
     def get_group(self, name: str) -> dict:
-        """One group, or 404."""
+        """
+        One group, or 404.
+        """
         if not shell.run([OBOL, '-J', 'group', 'show', name], TIMEOUT).ok:
             raise NotFound(f'no group named {name}')
         return _normalise(shell.run_json([OBOL, '-J', 'group', 'show', name], TIMEOUT) or {})
 
     def create_group(self, body: dict) -> dict:
-        """Create a group."""
+        """
+        Create a group.
+        """
         name = (body or {}).get('groupname')
         if not name:
             raise BadRequest('groupname is required')
@@ -150,7 +169,9 @@ class Backend:
         return self.get_group(name)
 
     def update_group(self, name: str, body: dict) -> dict:
-        """Change the fields that were sent."""
+        """
+        Change the fields that were sent.
+        """
         if not shell.run([OBOL, '-J', 'group', 'show', name], TIMEOUT).ok:
             raise NotFound(f'no group named {name}')
         argv = _flags(body, GROUP_FLAGS)
@@ -161,7 +182,9 @@ class Backend:
         return self.get_group(name)
 
     def delete_group(self, name: str) -> dict:
-        """Remove a group."""
+        """
+        Remove a group.
+        """
         if not shell.run([OBOL, '-J', 'group', 'show', name], TIMEOUT).ok:
             raise NotFound(f'no group named {name}')
         shell.run([OBOL, 'group', 'delete', name], TIMEOUT, check=True)

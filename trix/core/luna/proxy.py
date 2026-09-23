@@ -59,7 +59,8 @@ def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
 
 
 async def forward(path: str, request: Request) -> Response:
-    """Hand /api/v1/luna/xyz to Luna as /xyz, byte for byte, both ways.
+    """
+    Hand /api/v1/luna/xyz to Luna as /xyz, byte for byte, both ways.
 
     Nothing is renamed and nothing is re-modelled. Enforcement stays in Luna, which
     is the only place that decides what a Luna object permits. The call itself is

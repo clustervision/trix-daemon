@@ -46,7 +46,9 @@ LEVELS: dict = {
 
 
 def setup(level: str = 'info', logfile: str = '') -> logging.Logger:
-    """Configure the daemon logger. Safe to call more than once."""
+    """
+    Configure the daemon logger. Safe to call more than once.
+    """
     logger = logging.getLogger(LOGGER_NAME)
     logger.setLevel(LEVELS.get(str(level).lower(), logging.INFO))
     logger.handlers.clear()
@@ -70,5 +72,7 @@ def setup(level: str = 'info', logfile: str = '') -> logging.Logger:
 
 
 def get(name: str = '') -> logging.Logger:
-    """The daemon logger, or a named child of it."""
+    """
+    The daemon logger, or a named child of it.
+    """
     return logging.getLogger(f'{LOGGER_NAME}.{name}' if name else LOGGER_NAME)

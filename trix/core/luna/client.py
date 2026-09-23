@@ -58,7 +58,8 @@ class LunaClient:
         return f'{config.protocol}://{config.endpoint}'
 
     def _authenticate(self) -> str:
-        """Fetch a token from Luna.
+        """
+        Fetch a token from Luna.
 
         Interim: Luna still authenticates with a username and a password, so the
         credentials come from trix.ini. TRIX-2085 replaces this with a service
@@ -86,7 +87,9 @@ class LunaClient:
             return {TOKEN_HEADER: self.token}
 
     def request(self, method: str, uri: str, payload=None, params: dict = None):
-        """One call to Luna, refreshing the token once if it has expired."""
+        """
+        One call to Luna, refreshing the token once if it has expired.
+        """
         config = settings().luna
         url = f'{self.base}/{uri.lstrip("/")}'
         for attempt in (1, 2):
@@ -120,12 +123,16 @@ class LunaClient:
         return self.request('POST', uri, payload=payload)
 
     def nodes(self) -> dict:
-        """Every node, keyed by name."""
+        """
+        Every node, keyed by name.
+        """
         answer = self.get('config/node') or {}
         return (answer.get('config') or {}).get('node') or {}
 
     def node(self, name: str) -> dict:
-        """One node by name, or None."""
+        """
+        One node by name, or None.
+        """
         answer = self.get(f'config/node/{name}') or {}
         found = (answer.get('config') or {}).get('node') or {}
         return found.get(name)
@@ -139,7 +146,8 @@ class LunaClient:
         return (answer.get('config') or {}).get('network') or {}
 
     def table_hashes(self) -> dict:
-        """Luna's per-table hashes, used as the fallback change trigger.
+        """
+        Luna's per-table hashes, used as the fallback change trigger.
 
         Luna answers this only on the HA master, so an empty answer is normal on a
         single controller and must not be read as "nothing changed".
@@ -152,5 +160,7 @@ _client: LunaClient = LunaClient()
 
 
 def current() -> LunaClient:
-    """The Luna client for this process."""
+    """
+    The Luna client for this process.
+    """
     return _client

@@ -54,7 +54,9 @@ class Result:
 
 
 def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False) -> Result:
-    """Run a command as an argument list. Never a shell string, always a timeout."""
+    """
+    Run a command as an argument list. Never a shell string, always a timeout.
+    """
     if not argv or not isinstance(argv, (list, tuple)):
         raise BackendFailure('a command must be given as an argument list')
     LOGGER.debug('running %s', ' '.join(str(item) for item in argv))
@@ -75,7 +77,9 @@ def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False) -> Resu
 
 
 def run_json(argv: list, timeout: int = DEFAULT_TIMEOUT):
-    """Run a command that answers JSON and return the parsed document."""
+    """
+    Run a command that answers JSON and return the parsed document.
+    """
     result = run(argv, timeout=timeout, check=True)
     if not result.out:
         return None

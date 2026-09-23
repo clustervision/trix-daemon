@@ -39,7 +39,9 @@ from trix.core.luna import proxy
 
 
 def create_app(with_lifespan: bool = True) -> FastAPI:
-    """Build the daemon. Plugin routes are added later, at load time."""
+    """
+    Build the daemon. Plugin routes are added later, at load time.
+    """
     app = FastAPI(
         title='TrinityX trix-daemon',
         description='Everything in TrinityX that is not a physical node.',

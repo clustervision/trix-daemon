@@ -41,12 +41,16 @@ LOGGER = trixlog.get('declarations')
 
 
 def _origin() -> str:
-    """Which controller wrote this. The anti-entropy merge compares it."""
+    """
+    Which controller wrote this. The anti-entropy merge compares it.
+    """
     return socket.gethostname().split('.')[0]
 
 
 def read(plugin: str, kind: str, name: str = '', fallback=None):
-    """The stored document, or the fallback when nothing has been written yet."""
+    """
+    The stored document, or the fallback when nothing has been written yet.
+    """
     handle = database.session()
     try:
         row = handle.scalar(
@@ -60,7 +64,9 @@ def read(plugin: str, kind: str, name: str = '', fallback=None):
 
 
 def write(plugin: str, kind: str, name: str, body: dict) -> dict:
-    """Replace the document, bumping its version so a peer can order the two."""
+    """
+    Replace the document, bumping its version so a peer can order the two.
+    """
     handle = database.session()
     try:
         row = handle.scalar(
@@ -88,14 +94,18 @@ def write(plugin: str, kind: str, name: str, body: dict) -> dict:
 
 
 def merge(plugin: str, kind: str, name: str, body: dict, defaults: dict) -> dict:
-    """Change only the keys that were sent, leaving the rest as they were."""
+    """
+    Change only the keys that were sent, leaving the rest as they were.
+    """
     held = read(plugin, kind, name, dict(defaults))
     held.update({key: value for key, value in (body or {}).items() if value is not None})
     return write(plugin, kind, name, held)
 
 
 def listing(plugin: str, kind: str = '') -> list:
-    """Every document a plugin owns, optionally of one kind."""
+    """
+    Every document a plugin owns, optionally of one kind.
+    """
     handle = database.session()
     try:
         query = select(models.Declaration).where(models.Declaration.plugin == plugin)

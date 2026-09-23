@@ -40,7 +40,9 @@ from trix.common.constants import DAEMON_NAME, DAEMON_VERSION
 
 
 def build_config(config):
-    """Hypercorn serves the TLS bind and the plain one from the same process."""
+    """
+    Hypercorn serves the TLS bind and the plain one from the same process.
+    """
     from hypercorn.config import Config
 
     served = Config()
@@ -66,7 +68,9 @@ def build_config(config):
 
 
 def serve(config_file: str = '') -> int:
-    """Load, build and run until asked to stop."""
+    """
+    Load, build and run until asked to stop.
+    """
     from hypercorn.asyncio import serve as hypercorn_serve
 
     config = configuration.set_current(configuration.load(config_file))
@@ -80,7 +84,9 @@ def serve(config_file: str = '') -> int:
 
 
 def keygen(config_file: str = '') -> int:
-    """Write this daemon's keypair. The installer calls this, never the daemon."""
+    """
+    Write this daemon's keypair. The installer calls this, never the daemon.
+    """
     from trix.core.security import keys
 
     config = configuration.set_current(configuration.load(config_file))
@@ -96,7 +102,9 @@ def keygen(config_file: str = '') -> int:
 
 
 def main(argv: list = None) -> int:
-    """Command line for the unit and for the installer."""
+    """
+    Command line for the unit and for the installer.
+    """
     parser = argparse.ArgumentParser(prog=DAEMON_NAME, description=__doc__)
     parser.add_argument('--config', default='', help='path to trix.ini')
     parser.add_argument('--version', action='version', version=DAEMON_VERSION)

@@ -55,7 +55,9 @@ class LunaHashes:
         self.quiet: bool = False
 
     def once(self) -> list:
-        """Fetch the hashes, wake whatever declared a changed table as an input."""
+        """
+        Fetch the hashes, wake whatever declared a changed table as an input.
+        """
         self.last_pass = time.time()
         try:
             current = luna().table_hashes()
@@ -120,5 +122,7 @@ _hashes: LunaHashes = LunaHashes()
 
 
 def current() -> LunaHashes:
-    """The Luna hash poller for this process."""
+    """
+    The Luna hash poller for this process.
+    """
     return _hashes

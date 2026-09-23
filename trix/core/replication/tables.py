@@ -85,7 +85,9 @@ def _common(row) -> dict:
 
 
 def to_document(handle: Session, table: str, row) -> dict:
-    """One row as a document keyed by names rather than by identifiers."""
+    """
+    One row as a document keyed by names rather than by identifiers.
+    """
     body = dict(_common(row))
     if table == 'principal':
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
@@ -117,7 +119,9 @@ def to_document(handle: Session, table: str, row) -> dict:
 
 
 def export_table(handle: Session, table: str) -> list:
-    """Every row of one table, in a deterministic order."""
+    """
+    Every row of one table, in a deterministic order.
+    """
     model = MODELS[table]
     documents = [to_document(handle, table, row)
                  for row in handle.scalars(select(model)).all()]
@@ -125,12 +129,16 @@ def export_table(handle: Session, table: str) -> list:
 
 
 def table_hash(handle: Session, table: str) -> str:
-    """A digest of the table's contents, for deciding whether to copy anything."""
+    """
+    A digest of the table's contents, for deciding whether to copy anything.
+    """
     return hashlib.sha256(dumps(export_table(handle, table), sort_keys=True).encode()).hexdigest()
 
 
 def hashes(handle: Session) -> dict:
-    """One hash per replicated table."""
+    """
+    One hash per replicated table.
+    """
     return {table: table_hash(handle, table) for table in ORDER}
 
 
@@ -165,7 +173,8 @@ def _find(handle: Session, table: str, key: list):
 
 
 def _columns(handle: Session, table: str, document: dict) -> dict:
-    """The column values for a document, resolving every name to a local identifier.
+    """
+    The column values for a document, resolving every name to a local identifier.
 
     None means a row this one depends on has not arrived yet. The sweep skips it
     and picks it up on the next pass, which is why the table order matters.
@@ -208,7 +217,9 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
 
 
 def _newer(incoming: dict, row) -> bool:
-    """Last writer wins, by version first and then by the timestamp."""
+    """
+    Last writer wins, by version first and then by the timestamp.
+    """
     theirs = int(incoming.get('version') or 1)
     ours = int(row.version or 1)
     if theirs != ours:
@@ -217,7 +228,8 @@ def _newer(incoming: dict, row) -> bool:
 
 
 def merge_table(handle: Session, table: str, documents: list) -> dict:
-    """Take whatever the peer holds that is newer than ours.
+    """
+    Take whatever the peer holds that is newer than ours.
 
     A conflict, meaning the same version and the same timestamp with different
     content, keeps the local row and is logged. It cannot be resolved by a rule,

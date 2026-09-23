@@ -59,7 +59,9 @@ class Claims:
 
 def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
          source: str = 'local', node: str = '') -> str:
-    """Sign a token with this daemon's private key."""
+    """
+    Sign a token with this daemon's private key.
+    """
     if kind not in TOKEN_KINDS:
         raise Unauthenticated(f'unknown token kind {kind}')
     ring = keys.current()
@@ -81,7 +83,9 @@ def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
 
 
 def verify(token: str) -> Claims:
-    """Check a token against the issuers this daemon is configured to trust."""
+    """
+    Check a token against the issuers this daemon is configured to trust.
+    """
     if not token:
         raise Unauthenticated('a valid token is missing')
     try:
@@ -109,6 +113,8 @@ def verify(token: str) -> Claims:
 
 
 def service_token(expiry: int = 300) -> str:
-    """A short-lived token naming this daemon, for talking to the other one."""
+    """
+    A short-lived token naming this daemon, for talking to the other one.
+    """
     ring = keys.current()
     return mint(ring.issuer, kind=TOKEN_KIND_SERVICE, expiry=expiry, source='local')

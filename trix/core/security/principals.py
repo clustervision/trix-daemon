@@ -50,14 +50,18 @@ DIGEST_ROUNDS: int = 200000
 
 
 def hash_password(password: str) -> str:
-    """Store a password as a salted derivation, never as a plain digest."""
+    """
+    Store a password as a salted derivation, never as a plain digest.
+    """
     salt = os.urandom(16)
     derived = hashlib.pbkdf2_hmac('sha256', password.encode(), salt, DIGEST_ROUNDS)
     return f'{DIGEST_SCHEME}${DIGEST_ROUNDS}${salt.hex()}${derived.hex()}'
 
 
 def verify_password(password: str, stored: str) -> bool:
-    """Constant-time check against a stored derivation."""
+    """
+    Constant-time check against a stored derivation.
+    """
     try:
         scheme, rounds, salt, expected = stored.split('$')
         if scheme != DIGEST_SCHEME:
@@ -117,7 +121,9 @@ def _from_local(handle: Session, name: str) -> Resolved:
 
 
 def _from_directory(handle: Session, name: str) -> Resolved:
-    """389ds through obol, which is where the cluster users are."""
+    """
+    389ds through obol, which is where the cluster users are.
+    """
     try:
         record = shell.run_json(['obol', '-J', 'user', 'show', name], timeout=20)
     except Exception as error:
@@ -139,7 +145,9 @@ SOURCES: dict = {
 
 
 def resolve(handle: Session, name: str) -> Resolved:
-    """Walk the configured chain. First answer wins, a failing source is skipped."""
+    """
+    Walk the configured chain. First answer wins, a failing source is skipped.
+    """
     config = settings().resolve
     cached = CACHE.get(f'user:{name}', config.cache)
     if cached is not None:
@@ -161,7 +169,9 @@ def resolve(handle: Session, name: str) -> Resolved:
 
 
 def authenticate(handle: Session, name: str, password: str) -> Resolved:
-    """Check a password against the local table, then the directory."""
+    """
+    Check a password against the local table, then the directory.
+    """
     row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
     if row is not None and row.enabled and row.password_digest:
         if verify_password(password, row.password_digest):
@@ -175,7 +185,9 @@ def authenticate(handle: Session, name: str, password: str) -> Resolved:
 
 
 def capabilities(handle: Session, who: Resolved) -> set:
-    """Every capability this principal holds, through its grants and usergroups."""
+    """
+    Every capability this principal holds, through its grants and usergroups.
+    """
     if who is None:
         return set()
     if handle.scalar(select(models.Grant.id).limit(1)) is None:
@@ -201,7 +213,9 @@ def capabilities(handle: Session, who: Resolved) -> set:
 
 
 def permits(held: set, wanted: str) -> bool:
-    """Whether a held capability set covers the one an endpoint declared."""
+    """
+    Whether a held capability set covers the one an endpoint declared.
+    """
     if not wanted or WILDCARD_CAPABILITY in held or wanted in held:
         return True
     # monitoring.* covers monitoring.read without listing every verb.

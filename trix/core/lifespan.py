@@ -49,7 +49,8 @@ LOGGER = trixlog.get('lifespan')
 
 
 def seed(handle) -> None:
-    """One level carrying every capability, and the administrator from the ini.
+    """
+    One level carrying every capability, and the administrator from the ini.
 
     No grant is created. Until one exists the gate permits everything, which is
     what a cluster does today and what keeps an upgrade a non-event.
@@ -75,7 +76,9 @@ def seed(handle) -> None:
 
 
 def start(app: FastAPI) -> None:
-    """Everything that must be true before the first request is accepted."""
+    """
+    Everything that must be true before the first request is accepted.
+    """
     config = settings()
     database.start(config.database.url)
 
@@ -101,7 +104,9 @@ def start(app: FastAPI) -> None:
 
 
 def stop(app: FastAPI) -> None:
-    """Stop the timers. Nothing here holds a queue, so there is nothing to drain."""
+    """
+    Stop the timers. Nothing here holds a queue, so there is nothing to drain.
+    """
     luna_hashes().shutdown()
     sweep().shutdown()
     LOGGER.info('shutting down')
@@ -109,7 +114,9 @@ def stop(app: FastAPI) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Run the startup sequence, serve, then shut down."""
+    """
+    Run the startup sequence, serve, then shut down.
+    """
     start(app)
     try:
         yield

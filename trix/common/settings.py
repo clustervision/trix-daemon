@@ -42,7 +42,9 @@ _FACTOR = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, '': 3600}
 
 
 def seconds(value: str, fallback: int = 3600) -> int:
-    """Turn 30s, 5m, 1h or a bare number into seconds."""
+    """
+    Turn 30s, 5m, 1h or a bare number into seconds.
+    """
     found = _DURATION.match(str(value or ''))
     if not found:
         return fallback
@@ -129,7 +131,9 @@ def _bool(value: str) -> bool:
 
 
 def load(path: str = '') -> Settings:
-    """Read the ini into a Settings object, falling back to the defaults above."""
+    """
+    Read the ini into a Settings object, falling back to the defaults above.
+    """
     path = path or os.environ.get('TRIX_CONFIG') or DEFAULT_CONFIG
     parser = RawConfigParser()
     parser.read(path)
@@ -184,12 +188,16 @@ _current: Settings = Settings()
 
 
 def set_current(value: Settings) -> Settings:
-    """Hold the settings the running daemon was started with."""
+    """
+    Hold the settings the running daemon was started with.
+    """
     global _current
     _current = value
     return _current
 
 
 def current() -> Settings:
-    """The settings the running daemon was started with."""
+    """
+    The settings the running daemon was started with.
+    """
     return _current

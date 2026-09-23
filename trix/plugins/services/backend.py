@@ -58,7 +58,9 @@ class Backend:
     """Named units only, and one verb per call."""
 
     def catalogue(self, body: dict = None) -> dict:
-        """Which names this daemon will act on, and the unit each one means."""
+        """
+        Which names this daemon will act on, and the unit each one means.
+        """
         if body:
             return declarations.write(PLUGIN, 'catalogue', '', body)
         return declarations.read(PLUGIN, 'catalogue', '', dict(DEFAULT_CATALOGUE))
@@ -73,19 +75,25 @@ class Backend:
         return unit
 
     def list_services(self) -> dict:
-        """Every controllable service with its current state."""
+        """
+        Every controllable service with its current state.
+        """
         answer = {}
         for name in sorted(self._units()):
             answer[name] = self._state(self._units()[name])
         return {'services': answer}
 
     def status(self, name: str) -> dict:
-        """Whether one service is running."""
+        """
+        Whether one service is running.
+        """
         unit = self._unit(name)
         return {'service': name, 'unit': unit, **self._state(unit)}
 
     def act(self, name: str, action: str, caller=None) -> dict:
-        """Start, stop, restart or reload one service."""
+        """
+        Start, stop, restart or reload one service.
+        """
         action = str(action).lower()
         if action not in ACTIONS:
             raise BadRequest(f'{action} is not one of {", ".join(ACTIONS)}')
@@ -106,7 +114,9 @@ class Backend:
         }
 
     def _state(self, unit: str) -> dict:
-        """What systemd says about a unit right now."""
+        """
+        What systemd says about a unit right now.
+        """
         active = shell.run([SYSTEMCTL, 'is-active', unit], timeout=TIMEOUT)
         enabled = shell.run([SYSTEMCTL, 'is-enabled', unit], timeout=TIMEOUT)
         return {'active': active.out or 'unknown', 'enabled': enabled.out or 'unknown'}

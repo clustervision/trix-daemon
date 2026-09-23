@@ -77,7 +77,9 @@ class Backend:
     # ---------------------------------------------------------------- config
 
     def config(self, body: dict = None) -> dict:
-        """Where this plugin writes and what it reloads."""
+        """
+        Where this plugin writes and what it reloads.
+        """
         if body:
             return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
         return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
@@ -91,7 +93,9 @@ class Backend:
     # ---------------------------------------------------------------- rules
 
     def rules(self, body: dict = None) -> dict:
-        """The generic and service alert rules, as documents rather than files."""
+        """
+        The generic and service alert rules, as documents rather than files.
+        """
         if body:
             stored = declarations.write(PLUGIN, 'rules', '', body)
             self._write_rule_documents(stored)
@@ -100,7 +104,9 @@ class Backend:
         return declarations.read(PLUGIN, 'rules', '', {'groups': []})
 
     def settings(self, body: dict = None) -> dict:
-        """The settings the hardware rules are generated from."""
+        """
+        The settings the hardware rules are generated from.
+        """
         if body:
             stored = declarations.write(PLUGIN, 'settings', '', body)
             self._write_settings(stored)
@@ -111,7 +117,9 @@ class Backend:
         return {'settings': self._read_settings_file()}
 
     def tuning(self, body: dict = None) -> dict:
-        """Drop lists, rule group intervals, scrape intervals and retention."""
+        """
+        Drop lists, rule group intervals, scrape intervals and retention.
+        """
         if body:
             return declarations.merge(PLUGIN, 'tuning', '', body, {})
         return declarations.read(PLUGIN, 'tuning', '', {})
@@ -119,7 +127,9 @@ class Backend:
     # ------------------------------------------------------------- hardware
 
     def get_hw_rules(self, node: str) -> dict:
-        """What is currently held for one node."""
+        """
+        What is currently held for one node.
+        """
         path = os.path.join(self._rules_dir(), HW_RULES.format(node=node.split('.')[0]))
         if not os.path.isfile(path):
             raise NotFound(f'no hardware rules held for {node}')
@@ -127,7 +137,8 @@ class Backend:
             return yaml.safe_load(handle) or {}
 
     def import_hw_rules(self, node: str, body: dict = None) -> dict:
-        """Generate this node's rule file from what Prometheus knows about it.
+        """
+        Generate this node's rule file from what Prometheus knows about it.
 
         The node asks for this itself after boot, with a token scoped to itself.
         """
@@ -156,7 +167,9 @@ class Backend:
                                                for group in document.get('groups', []))}
 
     def _generate_hw_rules(self, node: str) -> dict:
-        """Ask Prometheus which components this node has, and build a rule each."""
+        """
+        Ask Prometheus which components this node has, and build a rule each.
+        """
         components = self._components(node)
         if not components:
             raise BackendFailure(
@@ -181,7 +194,9 @@ class Backend:
         return {'groups': [{'name': f'trix.hw.{node.split(".")[0]}', 'rules': rules}]}
 
     def _components(self, node: str) -> list:
-        """Query the hardware exporter's series for this node."""
+        """
+        Query the hardware exporter's series for this node.
+        """
         url = self._config().get('prometheus_url', DEFAULT_CONFIG['prometheus_url'])
         query = f'lshw_component_info{{hostname=~"{node.split(".")[0]}.*"}}'
         try:
@@ -197,7 +212,9 @@ class Backend:
     # --------------------------------------------------------------- renders
 
     def render_targets(self) -> list:
-        """The service discovery document, built once per change, not per poll."""
+        """
+        The service discovery document, built once per change, not per poll.
+        """
         nodes = luna().nodes()
         targets = []
         for exporter, port in EXPORTERS.items():
@@ -215,7 +232,9 @@ class Backend:
         return targets
 
     def render_rule_files(self) -> dict:
-        """Write the generic and service rule documents, then reload."""
+        """
+        Write the generic and service rule documents, then reload.
+        """
         stored = declarations.read(PLUGIN, 'rules', '', None)
         if stored is None:
             return {'written': []}
@@ -225,7 +244,9 @@ class Backend:
         return {'written': written}
 
     def _write_rule_documents(self, stored: dict) -> list:
-        """Generic rules and service rules go to the two files Luna used."""
+        """
+        Generic rules and service rules go to the two files Luna used.
+        """
         directory = self._rules_dir()
         written = []
         groups = (stored or {}).get('groups') or []
@@ -252,7 +273,9 @@ class Backend:
             return yaml.safe_load(handle) or {}
 
     def reload(self) -> bool:
-        """Tell Prometheus to re-read what we wrote."""
+        """
+        Tell Prometheus to re-read what we wrote.
+        """
         command = self._config().get('reload_command', DEFAULT_CONFIG['reload_command'])
         result = shell.run(command.split(), timeout=30)
         if not result.ok:
@@ -261,7 +284,9 @@ class Backend:
 
 
 def _provision_address(node: dict) -> str:
-    """The address on the interface the node provisions over."""
+    """
+    The address on the interface the node provisions over.
+    """
     wanted = node.get('provision_interface')
     for interface in node.get('interfaces') or []:
         if interface.get('interface') == wanted:

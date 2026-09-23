@@ -90,7 +90,9 @@ class ServiceUnavailable(TrixError):
 
 
 def register(app: FastAPI) -> None:
-    """Attach one handler for the whole hierarchy."""
+    """
+    Attach one handler for the whole hierarchy.
+    """
 
     @app.exception_handler(TrixError)
     async def _handler(request: Request, exc: TrixError) -> JSONResponse:

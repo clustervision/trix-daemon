@@ -45,7 +45,9 @@ DEFAULT_CONFIG: dict = {
 
 
 def _generator():
-    """The packaged generator, imported only when a render actually runs."""
+    """
+    The packaged generator, imported only when a render actually runs.
+    """
     try:
         from trinityx_config_genders import Generate
     except ImportError as error:
@@ -58,13 +60,17 @@ class Backend:
     """A thin shell around the package."""
 
     def config(self, body: dict = None) -> dict:
-        """Where this plugin writes."""
+        """
+        Where this plugin writes.
+        """
         if body:
             return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
         return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
 
     def render_genders(self) -> dict:
-        """Write the genders file from Luna's nodes."""
+        """
+        Write the genders file from Luna's nodes.
+        """
         fullset = node_set()
         if not fullset:
             LOGGER.info('no nodes yet, so nothing to write')

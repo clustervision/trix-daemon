@@ -52,7 +52,9 @@ class KeyRing:
         self.trusted: dict = {}
 
     def load(self, private_path: str, trust_dir: str) -> 'KeyRing':
-        """Read the private key and every public key in the trust directory."""
+        """
+        Read the private key and every public key in the trust directory.
+        """
         self.private = read_private(private_path)
         self.trusted = read_trust(trust_dir)
         self.trusted[self.key_id] = self.private.public_key()
@@ -61,12 +63,16 @@ class KeyRing:
         return self
 
     def public_key(self, key_id: str):
-        """The public key for a key identifier, or None when it is not trusted."""
+        """
+        The public key for a key identifier, or None when it is not trusted.
+        """
         return self.trusted.get(key_id)
 
 
 def generate(private_path: str, public_path: str = '') -> str:
-    """Write a new keypair. Called at bootstrap, never by the running daemon."""
+    """
+    Write a new keypair. Called at bootstrap, never by the running daemon.
+    """
     private = ed25519.Ed25519PrivateKey.generate()
     os.makedirs(os.path.dirname(private_path), exist_ok=True)
     blob = private.private_bytes(
@@ -87,7 +93,9 @@ def generate(private_path: str, public_path: str = '') -> str:
 
 
 def read_private(path: str):
-    """Load the private key, or say plainly that the daemon cannot mint anything."""
+    """
+    Load the private key, or say plainly that the daemon cannot mint anything.
+    """
     if not os.path.isfile(path):
         raise TrixError(f'no signing key at {path}; the installer generates it at bootstrap')
     with open(path, 'rb') as handle:
@@ -98,7 +106,9 @@ def read_private(path: str):
 
 
 def read_trust(directory: str) -> dict:
-    """Every <key-id>.pub in the trust directory, indexed by key identifier."""
+    """
+    Every <key-id>.pub in the trust directory, indexed by key identifier.
+    """
     trusted = {}
     if not os.path.isdir(directory):
         LOGGER.warning('no trust directory at %s: only our own tokens will verify', directory)
@@ -124,12 +134,16 @@ _ring: KeyRing = KeyRing()
 
 
 def set_current(ring: KeyRing) -> KeyRing:
-    """Hold the key ring the running daemon loaded."""
+    """
+    Hold the key ring the running daemon loaded.
+    """
     global _ring
     _ring = ring
     return _ring
 
 
 def current() -> KeyRing:
-    """The key ring the running daemon loaded."""
+    """
+    The key ring the running daemon loaded.
+    """
     return _ring

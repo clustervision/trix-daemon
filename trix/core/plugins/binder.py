@@ -46,7 +46,9 @@ BODY_VERBS: tuple = ('POST', 'PATCH', 'PUT')
 
 
 def _call(handler, supplied: dict):
-    """Pass a handler only the arguments it actually declares."""
+    """
+    Pass a handler only the arguments it actually declares.
+    """
     accepted = inspect.signature(handler).parameters
     if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in accepted.values()):
         return handler(**supplied)
@@ -54,7 +56,9 @@ def _call(handler, supplied: dict):
 
 
 def _endpoint_function(handler, endpoint: Endpoint, body_model):
-    """Build a path operation whose signature FastAPI can introspect."""
+    """
+    Build a path operation whose signature FastAPI can introspect.
+    """
 
     def operation(**kwargs):
         caller = kwargs.pop('caller', None)
@@ -82,7 +86,9 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model):
 
 
 def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter:
-    """One router for the whole plugin. Refuses rather than serving half of it."""
+    """
+    One router for the whole plugin. Refuses rather than serving half of it.
+    """
     router = APIRouter(prefix=f'{API_PREFIX}/{manifest.plugin}', tags=[manifest.plugin])
 
     for endpoint in manifest.endpoints:

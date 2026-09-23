@@ -40,19 +40,25 @@ from trix.core.security import tokens
 
 
 def _serves(app, path: str) -> bool:
-    """Whether the route table carries this exact path."""
+    """
+    Whether the route table carries this exact path.
+    """
     return any(getattr(route, 'path', None) == path for route in app.router.routes)
 
 
 def test_health_needs_no_token(client):
-    """A health check that needs a token is not a health check."""
+    """
+    A health check that needs a token is not a health check.
+    """
     answer = client.get(f'{API_PREFIX}/system/health')
     assert answer.status_code == 200
     assert answer.json()['status'] == 'ok'
 
 
 def test_token_is_a_jwt_signed_with_our_key(token):
-    """Same format as Luna, asymmetric algorithm, key identifier in the header."""
+    """
+    Same format as Luna, asymmetric algorithm, key identifier in the header.
+    """
     header = jwt.get_unverified_header(token)
     assert header['alg'] == 'EdDSA'
     assert header['kid'] == 'trix-test'
@@ -62,7 +68,9 @@ def test_token_is_a_jwt_signed_with_our_key(token):
 
 
 def test_a_token_carries_no_permissions(token):
-    """The token says who. The store says what."""
+    """
+    The token says who. The store says what.
+    """
     claims = tokens.verify(token).raw
     for forbidden in ('capabilities', 'permissions', 'roles', 'level', 'grants'):
         assert forbidden not in claims
@@ -74,7 +82,9 @@ def test_an_endpoint_refuses_without_a_token(client):
 
 
 def test_every_plugin_endpoint_declares_a_capability(rig):
-    """Derived from the loaded manifests: it fails on the first one that forgets."""
+    """
+    Derived from the loaded manifests: it fails on the first one that forgets.
+    """
     from trix.core.plugins.registry import current as registry
     for entry in registry().plugins.values():
         if entry.manifest is None:
@@ -84,7 +94,9 @@ def test_every_plugin_endpoint_declares_a_capability(rig):
 
 
 def test_the_published_document_matches_the_route_table(rig):
-    """Enumerate one, assert the other."""
+    """
+    Enumerate one, assert the other.
+    """
     document = rig.openapi()
     published = set(document['paths'])
     registered = {route.path for route in rig.router.routes
@@ -94,7 +106,9 @@ def test_the_published_document_matches_the_route_table(rig):
 
 
 def test_luna_is_reserved(rig):
-    """No plugin may claim the one-API route to Luna."""
+    """
+    No plugin may claim the one-API route to Luna.
+    """
     with pytest.raises(PluginRefused) as raised:
         loader.load(rig, RESERVED_PLUGIN)
     assert RESERVED_PLUGIN in str(raised.value)
@@ -108,7 +122,9 @@ def test_a_manifest_without_a_capability_is_refused():
 
 
 def test_a_manifest_naming_a_missing_handler_is_refused(rig, tmp_path):
-    """Half a plugin is worse than none, so the whole plugin is refused."""
+    """
+    Half a plugin is worse than none, so the whole plugin is refused.
+    """
     broken = tmp_path / 'plugins' / 'broken'
     broken.mkdir()
     (broken / 'manifest.yaml').write_text(
@@ -123,7 +139,9 @@ def test_a_manifest_naming_a_missing_handler_is_refused(rig, tmp_path):
 
 
 def test_a_plugin_plugs_and_unplugs_while_the_daemon_runs(rig, client, headers):
-    """The whole point of the loader: no restart, and the document follows."""
+    """
+    The whole point of the loader: no restart, and the document follows.
+    """
     listed = f'{API_PREFIX}/directory/users'
     assert _serves(rig, listed)
 
@@ -140,7 +158,9 @@ def test_a_plugin_plugs_and_unplugs_while_the_daemon_runs(rig, client, headers):
 
 
 def test_a_refused_reload_changes_nothing(rig, client, headers, tmp_path):
-    """The previously loaded plugin keeps serving, and the call says why."""
+    """
+    The previously loaded plugin keeps serving, and the call says why.
+    """
     listed = f'{API_PREFIX}/services'
     before = len(rig.router.routes)
 
@@ -156,7 +176,9 @@ def test_a_refused_reload_changes_nothing(rig, client, headers, tmp_path):
 
 
 def test_no_path_is_served_twice(rig):
-    """Except under the reserved Luna subtree, which is a single catch-all."""
+    """
+    Except under the reserved Luna subtree, which is a single catch-all.
+    """
     seen = {}
     for route in rig.router.routes:
         path = getattr(route, 'path', '')
@@ -169,7 +191,9 @@ def test_no_path_is_served_twice(rig):
 
 
 def test_a_node_token_is_refused_on_a_user_endpoint(rig, client):
-    """A node carries a token for itself and nothing else."""
+    """
+    A node carries a token for itself and nothing else.
+    """
     node_token = tokens.mint('node001', kind='node', node='node001')
     answer = client.get(f'{API_PREFIX}/directory/users',
                         headers={'x-access-tokens': node_token})
