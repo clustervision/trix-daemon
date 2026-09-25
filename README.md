@@ -54,12 +54,17 @@ reaches it only through a notification. Neither imports the other.
 
 | Port | Protocol | Notes |
 |---|---|---|
-| 8051 | HTTPS | `BIND`, with a certificate and key |
-| 8050 | HTTP | `INSECURE_BIND`, on the loopback by default |
+| 8050 | HTTPS | `BIND`, with the cluster certificate and key |
+| 8051 | HTTP | `INSECURE_BIND`, on the loopback by default |
 
 Both are served from one Hypercorn process. A token crossing the cluster network
 in clear text is readable by anything on it, which is why the plain listener is
 not exposed by default.
+
+`CERTFILE` and `KEYFILE` are the cluster certificate and key, the same pair Luna
+serves on 7050. The Ansible role templates them from `ssl_certificate` and
+`ssl_certificate_key`, which is where Luna's own `gunicorn.py` gets them, so the
+two daemons cannot drift onto different certificates.
 
 ## Running it
 
@@ -104,7 +109,7 @@ class Backend:
 Drop that in the plugins directory and plug it in without restarting anything:
 
 ```
-curl -X POST http://127.0.0.1:8050/api/v1/system/plugins/hello/reload \
+curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload \
      -H "x-access-tokens: $TOKEN"
 ```
 

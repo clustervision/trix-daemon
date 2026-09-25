@@ -51,8 +51,8 @@ dependency points one way only.
 
 ```yaml
 trixd_enabled: true
-trixd_tls_port: 8051
-trixd_plain_port: 8050
+trixd_tls_port: 8050
+trixd_plain_port: 8051
 trixd_plain_bind: 127.0.0.1        # the loopback, unless you mean to expose it
 trixd_token_algorithm: HS256       # what luna2-daemon signs with; EdDSA is the other
 trixd_pip: trix_daemon-1.0-py3-none-any.whl

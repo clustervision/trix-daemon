@@ -24,6 +24,7 @@ LOGFILE = {{ trixd_log_dir }}/trix-daemon.log
 [API]
 BIND = 0.0.0.0:{{ trixd_tls_port }}
 INSECURE_BIND = {{ trixd_plain_bind }}:{{ trixd_plain_port }}
+; The same pair luna2's gunicorn.py.j2 is templated from.
 CERTFILE = {{ ssl_certificate }}
 KEYFILE = {{ ssl_certificate_key }}
 EXPIRY = {{ trixd_token_expiry }}

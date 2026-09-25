@@ -30,8 +30,8 @@ trixd_log_dir: /var/log/trix
 trixd_pip: trix_daemon-1.0-py3-none-any.whl
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 
-trixd_tls_port: 8051
-trixd_plain_port: 8050
+trixd_tls_port: 8050
+trixd_plain_port: 8051
 # The loopback by default. A token on the cluster network in clear text is
 # readable by anything on it, and that interface is in the trusted zone.
 trixd_plain_bind: 127.0.0.1
