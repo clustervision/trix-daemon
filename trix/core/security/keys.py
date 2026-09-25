@@ -108,9 +108,7 @@ class KeyRing:
     def verifying_key(self, key_id: str = ""):
         """
         What a presented token is checked against, or None when nothing trusts it.
-
-        Under a shared secret there is one answer and no key identifier to look up,
-        which is also why a token Luna minted carries no kid header for us to read.
+        A shared secret has one answer and no key id, as Luna's own tokens carry.
         """
         if self.shared:
             return self.secret or None

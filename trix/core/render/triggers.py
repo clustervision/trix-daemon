@@ -42,10 +42,8 @@ LOGGER = trixlog.get("triggers")
 
 class LunaHashes:
     """
-    One request and one comparison per pass.
-
-    This is what makes the hook allowed to be lossy: a notification that never
-    arrives is picked up here instead.
+    One request and one comparison per pass, which is what lets the hook be lossy:
+    a notification that never arrives is picked up here instead.
     """
 
     def __init__(self) -> None:

@@ -81,10 +81,8 @@ def read_text(path: str, fallback: str = "") -> str:
 
 def set_managed_block(path: str, manager: str, content: str, mode: int = 0o644) -> str:
     """
-    Replace our block in a file somebody else also writes to.
-
-    Everything outside the two markers is left exactly as it was found, which is
-    what lets a site keep its own lines in the same file.
+    Replace our block in a file somebody else also writes to. Everything outside
+    the two markers is left as found, so a site keeps its own lines.
     """
     start = BLOCK_START.format(manager=manager)
     end = BLOCK_END.format(manager=manager)

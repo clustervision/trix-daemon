@@ -39,11 +39,8 @@ LOGGER = trixlog.get("swap")
 
 def exchange(app: FastAPI, name: str, router: APIRouter = None) -> list:
     """
-    Replace one plugin's routes with a new set, or with none.
-
-    The list is rebuilt and assigned, never mutated in place: a request already
-    inside a handler keeps the table it resolved against and finishes, while the
-    next request sees the new one. There is no half-built state in between.
+    Replace one plugin's routes with a new set, or with none. The list is rebuilt
+    and assigned, never mutated, so no request ever sees a half-built table.
     """
     drop = registry().owned_routes(name)
     keep = [route for route in app.router.routes if id(route) not in drop]

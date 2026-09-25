@@ -49,10 +49,8 @@ DEFAULT_CONFIG: dict = {
 
 def _generator():
     """
-    The packaged generator, imported only when a render actually runs.
-
-    It is absent on a controller that does not run slurm, and that is not an
-    error until something asks for a render.
+    The packaged generator, imported only when a render runs. It is absent where
+    slurm is not installed, which is not an error until a render asks for it.
     """
     try:
         from trinityx_config_slurm import Generate

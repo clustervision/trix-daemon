@@ -71,10 +71,8 @@ MIGRATIONS: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migr
 
 def migrate(url: str) -> str:
     """
-    Bring the schema to head.
-
-    On an empty file that is the initial revision, so there is no separate create
-    path to keep in step with the migrations.
+    Bring the schema to head. On an empty file that is the initial revision, so no
+    separate create path has to be kept in step with the migrations.
     """
     from alembic import command
     from alembic.config import Config

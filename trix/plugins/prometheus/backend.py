@@ -140,9 +140,8 @@ class Backend:
 
     def import_hw_rules(self, node: str, body: dict = None) -> dict:
         """
-        Generate this node's rule file from what Prometheus knows about it.
-
-        The node asks for this itself after boot, with a token scoped to itself.
+        Generate this node's rule file from what Prometheus knows about it. The
+        node asks for this itself after boot, with a token scoped to itself.
         """
         body = body or {}
         short = node.split(".")[0]

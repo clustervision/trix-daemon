@@ -89,11 +89,8 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
              summary="Exchange a node measurement for a node-scoped token")
 def issue_node(node: str, body: NodeProof) -> Token:
     """
-    Verify the measurement against Luna's record of that node.
-
-    No shared signing secret is involved at any point: Luna is asked what it holds
-    for this node, and the answer is compared. That keeps working unchanged when
-    Luna moves to asymmetric keys of its own.
+    Verify the measurement against Luna's record of that node: Luna is asked what
+    it holds and the answer is compared, so no signing secret is involved.
     """
     record = luna().node(node)
     if not record:

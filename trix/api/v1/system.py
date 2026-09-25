@@ -109,10 +109,8 @@ def render_listing(caller: Caller = Depends(guard("system.read"))) -> dict:
 @router.post("/notify", summary="A Luna object changed")
 def notify(body: Change, caller: Caller = Depends(guard("system.notify"))) -> dict:
     """
-    Luna's hook posts here and does not wait for the answer.
-
-    Losing one of these is acceptable: the hash comparison on the slow timer is
-    the fallback that catches up.
+    Luna's hook posts here and does not wait. Losing one is acceptable: the hash
+    comparison on the slow timer catches up.
     """
     woken = renders().notify(f"luna.{body.object}" if body.object else "")
     LOGGER.info("notified of %s %s, woke %d render(s)", body.object, body.name, len(woken))

@@ -75,10 +75,8 @@ def _flags(body: dict, mapping: dict) -> list:
 
 def _normalise(record: dict) -> dict:
     """
-    389ds names the membership attribute differently from openldap.
-
-    The users application reads 'member', so keep answering with it whichever
-    backend is underneath.
+    389ds names the membership attribute differently from openldap. The users
+    application reads "member", so answer with it whichever is underneath.
     """
     if isinstance(record, dict) and "member" not in record and "uniqueMember" in record:
         record = dict(record)

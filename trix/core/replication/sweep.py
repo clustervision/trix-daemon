@@ -51,10 +51,8 @@ TIMEOUT: int = 30
 
 class Sweep:
     """
-    One thread, one pass per interval, one comparison per table.
-
-    There is no order to keep between documents, so there is no gap to stop on and
-    nothing to replay. A peer that is away simply misses a pass.
+    One thread, one pass per interval, one comparison per table. Documents keep no
+    order, so there is no gap to stop on: a peer that is away misses a pass.
     """
 
     def __init__(self) -> None:

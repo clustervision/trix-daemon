@@ -61,11 +61,8 @@ class LunaClient:
 
     def _authenticate(self) -> str:
         """
-        Fetch a token from Luna.
-
-        Interim: Luna still authenticates with a username and a password, so the
-        credentials come from trix.ini. TRIX-2085 replaces this with a service
-        principal, and only this method changes when it does.
+        Fetch a token from Luna, which still wants a username and a password from
+        trix.ini. TRIX-2085 replaces that with a service principal, only here.
         """
         config = settings().luna
         try:
@@ -149,10 +146,8 @@ class LunaClient:
 
     def table_hashes(self) -> dict:
         """
-        Luna's per-table hashes, used as the fallback change trigger.
-
-        Luna answers this only on the HA master, so an empty answer is normal on a
-        single controller and must not be read as "nothing changed".
+        Luna's per-table hashes, the fallback change trigger. Luna answers only on
+        the HA master, so empty is normal here and is not "nothing changed".
         """
         answer = self.get("table/hashes") or {}
         return (answer.get("table") or {}).get("hashes") or {}

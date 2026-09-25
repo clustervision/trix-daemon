@@ -174,10 +174,8 @@ def _find(handle: Session, table: str, key: list):
 
 def _columns(handle: Session, table: str, document: dict) -> dict:
     """
-    The column values for a document, resolving every name to a local identifier.
-
-    None means a row this one depends on has not arrived yet. The sweep skips it
-    and picks it up on the next pass, which is why the table order matters.
+    The column values for a document, every name resolved to a local identifier.
+    None means a row it depends on has not arrived, so the next pass retries it.
     """
     key = document["key"]
     if table == "principal":
@@ -229,11 +227,8 @@ def _newer(incoming: dict, row) -> bool:
 
 def merge_table(handle: Session, table: str, documents: list) -> dict:
     """
-    Take whatever the peer holds that is newer than ours.
-
-    A conflict, meaning the same version and the same timestamp with different
-    content, keeps the local row and is logged. It cannot be resolved by a rule,
-    and at human write rates it should not happen.
+    Take whatever the peer holds that is newer than ours. Same version and same
+    timestamp with different content keeps the local row and is logged.
     """
     model = MODELS[table]
     added = updated = conflicts = deferred = 0

@@ -50,10 +50,8 @@ LOGGER = trixlog.get("lifespan")
 
 def seed(handle) -> None:
     """
-    One level carrying every capability, and the administrator from the ini.
-
-    No grant is created. Until one exists the gate permits everything, which is
-    what a cluster does today and what keeps an upgrade a non-event.
+    One level carrying every capability, and the administrator from the ini. No
+    grant is made, and until one exists the gate permits everything, as today.
     """
     level = handle.scalar(select(models.Level).where(models.Level.name == DEFAULT_LEVEL))
     if level is None:
