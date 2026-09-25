@@ -40,9 +40,9 @@ from trix.common.errors import PluginRefused
 from trix.core.plugins.manifest import Endpoint, Manifest
 from trix.core.security.gate import Caller, guard
 
-LOGGER = trixlog.get('binder')
+LOGGER = trixlog.get("binder")
 
-BODY_VERBS: tuple = ('POST', 'PATCH', 'PUT')
+BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
 
 
 def _call(handler, supplied: dict):
@@ -61,26 +61,26 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model):
     """
 
     def operation(**kwargs):
-        caller = kwargs.pop('caller', None)
-        body = kwargs.pop('body', None)
+        caller = kwargs.pop("caller", None)
+        body = kwargs.pop("body", None)
         supplied = dict(kwargs)
         if body is not None:
-            supplied['body'] = body.model_dump() if isinstance(body, BaseModel) else body
-        supplied['caller'] = caller
+            supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
+        supplied["caller"] = caller
         return _call(handler, supplied)
 
     parameters = [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, annotation=str)
                   for name in endpoint.variables]
     if body_model is not None:
-        parameters.append(inspect.Parameter('body', inspect.Parameter.KEYWORD_ONLY,
+        parameters.append(inspect.Parameter("body", inspect.Parameter.KEYWORD_ONLY,
                                             annotation=body_model))
     if not endpoint.public:
         parameters.append(inspect.Parameter(
-            'caller', inspect.Parameter.KEYWORD_ONLY, annotation=Caller,
+            "caller", inspect.Parameter.KEYWORD_ONLY, annotation=Caller,
             default=Depends(guard(endpoint.capability, endpoint.token))))
 
     operation.__signature__ = inspect.Signature(parameters)
-    operation.__name__ = (endpoint.handler or 'render').replace('-', '_')
+    operation.__name__ = (endpoint.handler or "render").replace("-", "_")
     operation.__doc__ = endpoint.summary or None
     return operation
 
@@ -89,7 +89,7 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
     """
     One router for the whole plugin. Refuses rather than serving half of it.
     """
-    router = APIRouter(prefix=f'{API_PREFIX}/{manifest.plugin}', tags=[manifest.plugin])
+    router = APIRouter(prefix=f"{API_PREFIX}/{manifest.plugin}", tags=[manifest.plugin])
 
     for endpoint in manifest.endpoints:
         if endpoint.render is not None:
@@ -97,25 +97,25 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
             if not endpoint.render.serve:
                 continue
             if renderer is None:
-                raise PluginRefused(f'{endpoint.path} declares a render with no engine')
+                raise PluginRefused(f"{endpoint.path} declares a render with no engine")
             handler = renderer.reader(manifest.plugin, endpoint.path)
         else:
             handler = getattr(backend, endpoint.handler, None)
             if handler is None or not callable(handler):
                 raise PluginRefused(
                     f'{endpoint.path or "/"} names handler {endpoint.handler}, '
-                    f'which {manifest.backend} does not have')
+                    f"which {manifest.backend} does not have")
 
         body_model = models.get(endpoint.body_schema) if endpoint.body_schema else None
         for verb in endpoint.methods:
             verb = verb.upper()
             wants_body = body_model if verb in BODY_VERBS else None
             router.add_api_route(
-                '/' + endpoint.route_path if endpoint.route_path else '',
+                "/" + endpoint.route_path if endpoint.route_path else "",
                 _endpoint_function(handler, endpoint, wants_body),
                 methods=[verb],
-                name=f'{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}',
-                summary=endpoint.summary or f'{verb} {endpoint.path}',
+                name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",
+                summary=endpoint.summary or f"{verb} {endpoint.path}",
             )
-            LOGGER.debug('bound %s %s/%s', verb, router.prefix, endpoint.route_path)
+            LOGGER.debug("bound %s %s/%s", verb, router.prefix, endpoint.route_path)
     return router

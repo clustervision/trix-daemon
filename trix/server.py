@@ -51,23 +51,23 @@ def build_config(config):
 
     if config.api.certfile and config.api.keyfile:
         if not os.path.isfile(config.api.certfile):
-            raise SystemExit(f'certificate {config.api.certfile} is missing')
+            raise SystemExit(f"certificate {config.api.certfile} is missing")
         served.bind = [config.api.bind]
         served.certfile = config.api.certfile
         served.keyfile = config.api.keyfile
     if config.api.insecure_bind:
         served.insecure_bind = [config.api.insecure_bind]
     if not served.bind and not served.insecure_bind:
-        raise SystemExit('neither BIND nor INSECURE_BIND is usable; check trix.ini')
+        raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trix.ini")
 
     served.workers = 1
-    served.accesslog = '-'
-    served.errorlog = '-'
+    served.accesslog = "-"
+    served.errorlog = "-"
     served.graceful_timeout = 10
     return served
 
 
-def serve(config_file: str = '') -> int:
+def serve(config_file: str = "") -> int:
     """
     Load, build and run until asked to stop.
     """
@@ -75,7 +75,7 @@ def serve(config_file: str = '') -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     logger = trixlog.setup(config.logger.level, config.logger.logfile)
-    logger.info('%s %s starting from %s', DAEMON_NAME, DAEMON_VERSION, config.config_file)
+    logger.info("%s %s starting from %s", DAEMON_NAME, DAEMON_VERSION, config.config_file)
 
     from trix.app import create_app
     application = create_app()
@@ -83,21 +83,21 @@ def serve(config_file: str = '') -> int:
     return 0
 
 
-def keygen(config_file: str = '') -> int:
+def keygen(config_file: str = "") -> int:
     """
     Write this daemon's keypair. The installer calls this, never the daemon.
     """
     from trix.core.security import keys
 
     config = configuration.set_current(configuration.load(config_file))
-    trixlog.setup(config.logger.level, '')
+    trixlog.setup(config.logger.level, "")
     if os.path.isfile(config.tokens.private_key):
-        print(f'{config.tokens.private_key} already exists; refusing to replace it')
+        print(f"{config.tokens.private_key} already exists; refusing to replace it")
         return 1
     public = keys.generate(config.tokens.private_key)
-    print(f'wrote {config.tokens.private_key} and {public}')
-    print(f'copy {public} to the other daemon trust directory as '
-          f'{config.tokens.key_id}.pub')
+    print(f"wrote {config.tokens.private_key} and {public}")
+    print(f"copy {public} to the other daemon trust directory as "
+          f"{config.tokens.key_id}.pub")
     return 0
 
 
@@ -106,17 +106,17 @@ def main(argv: list = None) -> int:
     Command line for the unit and for the installer.
     """
     parser = argparse.ArgumentParser(prog=DAEMON_NAME, description=__doc__)
-    parser.add_argument('--config', default='', help='path to trix.ini')
-    parser.add_argument('--version', action='version', version=DAEMON_VERSION)
-    parser.add_argument('command', nargs='?', default='serve',
-                        choices=('serve', 'keygen'),
-                        help='serve the API, or write the signing keypair')
+    parser.add_argument("--config", default="", help="path to trix.ini")
+    parser.add_argument("--version", action="version", version=DAEMON_VERSION)
+    parser.add_argument("command", nargs="?", default="serve",
+                        choices=("serve", "keygen"),
+                        help="serve the API, or write the signing keypair")
     args = parser.parse_args(argv)
 
-    if args.command == 'keygen':
+    if args.command == "keygen":
         return keygen(args.config)
     return serve(args.config)
 
 
-if __name__ == '__main__':
+if __name__ == "__main__":
     sys.exit(main())

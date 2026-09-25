@@ -39,47 +39,49 @@ from trix.common.constants import (TOKEN_ALGORITHM, TOKEN_KIND_NODE, TOKEN_KIND_
 from trix.common.errors import Unauthenticated
 from trix.core.security import keys
 
-LOGGER = trixlog.get('tokens')
+LOGGER = trixlog.get("tokens")
 
 
 class Claims:
-    """What a verified token said."""
+    """
+    What a verified token said.
+    """
 
     def __init__(self, payload: dict) -> None:
         self.raw = payload
-        self.subject: str = payload.get('sub', '')
-        self.kind: str = payload.get('kind', TOKEN_KIND_USER)
-        self.source: str = payload.get('src', '')
-        self.issuer: str = payload.get('iss', '')
-        self.node: str = payload.get('node', '')
+        self.subject: str = payload.get("sub", "")
+        self.kind: str = payload.get("kind", TOKEN_KIND_USER)
+        self.source: str = payload.get("src", "")
+        self.issuer: str = payload.get("iss", "")
+        self.node: str = payload.get("node", "")
 
     def __repr__(self) -> str:
-        return f'<Claims {self.subject} kind={self.kind} iss={self.issuer}>'
+        return f"<Claims {self.subject} kind={self.kind} iss={self.issuer}>"
 
 
 def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
-         source: str = 'local', node: str = '') -> str:
+         source: str = "local", node: str = "") -> str:
     """
     Sign a token with this daemon's private key.
     """
     if kind not in TOKEN_KINDS:
-        raise Unauthenticated(f'unknown token kind {kind}')
+        raise Unauthenticated(f"unknown token kind {kind}")
     ring = keys.current()
     if ring.private is None:
-        raise Unauthenticated('this daemon holds no signing key')
+        raise Unauthenticated("this daemon holds no signing key")
     issued = datetime.now(timezone.utc)
     payload = {
-        'iss': ring.issuer,
-        'sub': subject,
-        'kind': kind,
-        'src': source,
-        'iat': issued,
-        'exp': issued + timedelta(seconds=expiry),
+        "iss": ring.issuer,
+        "sub": subject,
+        "kind": kind,
+        "src": source,
+        "iat": issued,
+        "exp": issued + timedelta(seconds=expiry),
     }
     if kind == TOKEN_KIND_NODE:
-        payload['node'] = node or subject
+        payload["node"] = node or subject
     return jwt.encode(payload, ring.private, algorithm=TOKEN_ALGORITHM,
-                      headers={'kid': ring.key_id})
+                      headers={"kid": ring.key_id})
 
 
 def verify(token: str) -> Claims:
@@ -87,28 +89,28 @@ def verify(token: str) -> Claims:
     Check a token against the issuers this daemon is configured to trust.
     """
     if not token:
-        raise Unauthenticated('a valid token is missing')
+        raise Unauthenticated("a valid token is missing")
     try:
         header = jwt.get_unverified_header(token)
     except jwt.PyJWTError:
-        raise Unauthenticated('token is invalid') from None
+        raise Unauthenticated("token is invalid") from None
 
-    key_id = header.get('kid', '')
+    key_id = header.get("kid", "")
     public = keys.current().public_key(key_id)
     if public is None:
-        LOGGER.warning('token presented with untrusted key id %r', key_id)
-        raise Unauthenticated('token was signed by an issuer this daemon does not trust')
+        LOGGER.warning("token presented with untrusted key id %r", key_id)
+        raise Unauthenticated("token was signed by an issuer this daemon does not trust")
 
     try:
         payload = jwt.decode(token, public, algorithms=[TOKEN_ALGORITHM])
     except jwt.ExpiredSignatureError:
-        raise Unauthenticated('token has expired') from None
+        raise Unauthenticated("token has expired") from None
     except jwt.PyJWTError:
-        raise Unauthenticated('token is invalid') from None
+        raise Unauthenticated("token is invalid") from None
 
     claims = Claims(payload)
     if claims.kind not in TOKEN_KINDS:
-        raise Unauthenticated('token carries an unknown kind')
+        raise Unauthenticated("token carries an unknown kind")
     return claims
 
 
@@ -117,4 +119,4 @@ def service_token(expiry: int = 300) -> str:
     A short-lived token naming this daemon, for talking to the other one.
     """
     ring = keys.current()
-    return mint(ring.issuer, kind=TOKEN_KIND_SERVICE, expiry=expiry, source='local')
+    return mint(ring.issuer, kind=TOKEN_KIND_SERVICE, expiry=expiry, source="local")

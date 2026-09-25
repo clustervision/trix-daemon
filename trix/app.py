@@ -43,11 +43,11 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     Build the daemon. Plugin routes are added later, at load time.
     """
     app = FastAPI(
-        title='TrinityX trix-daemon',
-        description='Everything in TrinityX that is not a physical node.',
+        title="TrinityX trix-daemon",
+        description="Everything in TrinityX that is not a physical node.",
         version=DAEMON_VERSION,
-        openapi_url=f'{API_PREFIX}/openapi.json',
-        docs_url=f'{API_PREFIX}/docs',
+        openapi_url=f"{API_PREFIX}/openapi.json",
+        docs_url=f"{API_PREFIX}/docs",
         redoc_url=None,
         lifespan=lifespan if with_lifespan else None,
     )
@@ -56,8 +56,8 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     app.include_router(system.router)
     app.include_router(proxy.router)
 
-    @app.get('/', include_in_schema=False)
+    @app.get("/", include_in_schema=False)
     def root() -> dict:
-        return {'daemon': DAEMON_NAME, 'version': DAEMON_VERSION, 'api': API_PREFIX}
+        return {"daemon": DAEMON_NAME, "version": DAEMON_VERSION, "api": API_PREFIX}
 
     return app

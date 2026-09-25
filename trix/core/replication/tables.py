@@ -39,22 +39,22 @@ from sqlalchemy.orm import Session
 from trix.common import logging as trixlog
 from trix.db import models
 
-LOGGER = trixlog.get('replication')
+LOGGER = trixlog.get("replication")
 
 # Autoincrement is local: the peer inserts its own row and gets its own number, so
 # a document is addressed by the columns the request was made with and never by id.
-ORDER: tuple = ('principal', 'usergroup', 'level', 'membership', 'level_capability',
-                'grant', 'permission', 'declaration')
+ORDER: tuple = ("principal", "usergroup", "level", "membership", "level_capability",
+                "grant", "permission", "declaration")
 
 MODELS: dict = {
-    'principal': models.Principal,
-    'usergroup': models.Usergroup,
-    'level': models.Level,
-    'membership': models.Membership,
-    'level_capability': models.LevelCapability,
-    'grant': models.Grant,
-    'permission': models.Permission,
-    'declaration': models.Declaration,
+    "principal": models.Principal,
+    "usergroup": models.Usergroup,
+    "level": models.Level,
+    "membership": models.Membership,
+    "level_capability": models.LevelCapability,
+    "grant": models.Grant,
+    "permission": models.Permission,
+    "declaration": models.Declaration,
 }
 
 
@@ -63,14 +63,14 @@ def _stamp(value) -> str:
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).isoformat()
-    return str(value or '')
+    return str(value or "")
 
 
 def _name_of(handle: Session, model, row_id):
     if not row_id:
-        return ''
+        return ""
     row = handle.get(model, row_id)
-    return row.name if row is not None else ''
+    return row.name if row is not None else ""
 
 
 def _id_of(handle: Session, model, name: str):
@@ -80,8 +80,8 @@ def _id_of(handle: Session, model, name: str):
 
 
 def _common(row) -> dict:
-    return {'version': row.version or 1, 'origin': row.origin or '',
-            'updated_at': _stamp(row.updated_at)}
+    return {"version": row.version or 1, "origin": row.origin or "",
+            "updated_at": _stamp(row.updated_at)}
 
 
 def to_document(handle: Session, table: str, row) -> dict:
@@ -89,30 +89,30 @@ def to_document(handle: Session, table: str, row) -> dict:
     One row as a document keyed by names rather than by identifiers.
     """
     body = dict(_common(row))
-    if table == 'principal':
+    if table == "principal":
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
                     password_digest=row.password_digest, enabled=bool(row.enabled))
-    elif table in ('usergroup', 'level'):
+    elif table in ("usergroup", "level"):
         body.update(key=[row.name], name=row.name)
-    elif table == 'membership':
+    elif table == "membership":
         body.update(key=[_name_of(handle, models.Principal, row.principal_id),
                          _name_of(handle, models.Usergroup, row.usergroup_id)])
-    elif table == 'level_capability':
+    elif table == "level_capability":
         body.update(key=[_name_of(handle, models.Level, row.level_id), row.capability],
                     capability=row.capability)
-    elif table == 'grant':
+    elif table == "grant":
         body.update(key=[_name_of(handle, models.Principal, row.principal_id),
                          _name_of(handle, models.Usergroup, row.usergroup_id),
-                         _name_of(handle, models.Level, row.level_id), row.scope or ''],
-                    scope=row.scope or '')
-    elif table == 'permission':
+                         _name_of(handle, models.Level, row.level_id), row.scope or ""],
+                    scope=row.scope or "")
+    elif table == "permission":
         body.update(key=[row.object_kind, row.object_name],
                     object_kind=row.object_kind, object_name=row.object_name,
                     owner=_name_of(handle, models.Principal, row.owner_id),
                     usergroup=_name_of(handle, models.Usergroup, row.usergroup_id),
                     owner_bits=row.owner_bits, group_bits=row.group_bits,
                     other_bits=row.other_bits)
-    elif table == 'declaration':
+    elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
                     kind=row.kind, name=row.name, body=dict(row.body or {}))
     return body
@@ -125,7 +125,7 @@ def export_table(handle: Session, table: str) -> list:
     model = MODELS[table]
     documents = [to_document(handle, table, row)
                  for row in handle.scalars(select(model)).all()]
-    return sorted(documents, key=lambda item: [str(part) for part in item['key']])
+    return sorted(documents, key=lambda item: [str(part) for part in item["key"]])
 
 
 def table_hash(handle: Session, table: str) -> str:
@@ -144,28 +144,28 @@ def hashes(handle: Session) -> dict:
 
 def _find(handle: Session, table: str, key: list):
     model = MODELS[table]
-    if table in ('principal', 'usergroup', 'level'):
+    if table in ("principal", "usergroup", "level"):
         return handle.scalar(select(model).where(model.name == key[0]))
-    if table == 'membership':
+    if table == "membership":
         principal = _id_of(handle, models.Principal, key[0])
         usergroup = _id_of(handle, models.Usergroup, key[1])
         if not principal or not usergroup:
             return None
         return handle.scalar(select(model).where(model.principal_id == principal,
                                                  model.usergroup_id == usergroup))
-    if table == 'level_capability':
+    if table == "level_capability":
         level = _id_of(handle, models.Level, key[0])
         if not level:
             return None
         return handle.scalar(select(model).where(model.level_id == level,
                                                  model.capability == key[1]))
-    if table == 'grant':
+    if table == "grant":
         return handle.scalar(select(model).where(
             model.principal_id == _id_of(handle, models.Principal, key[0]),
             model.usergroup_id == _id_of(handle, models.Usergroup, key[1]),
             model.level_id == _id_of(handle, models.Level, key[2]),
-            model.scope == (key[3] or '')))
-    if table == 'permission':
+            model.scope == (key[3] or "")))
+    if table == "permission":
         return handle.scalar(select(model).where(model.object_kind == key[0],
                                                  model.object_name == key[1]))
     return handle.scalar(select(model).where(model.plugin == key[0], model.kind == key[1],
@@ -179,52 +179,52 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
     None means a row this one depends on has not arrived yet. The sweep skips it
     and picks it up on the next pass, which is why the table order matters.
     """
-    key = document['key']
-    if table == 'principal':
-        return {'name': key[0], 'kind': document.get('kind', 'user'),
-                'source': document.get('source', 'local'),
-                'password_digest': document.get('password_digest', ''),
-                'enabled': bool(document.get('enabled', True))}
-    if table in ('usergroup', 'level'):
-        return {'name': key[0]}
-    if table == 'membership':
+    key = document["key"]
+    if table == "principal":
+        return {"name": key[0], "kind": document.get("kind", "user"),
+                "source": document.get("source", "local"),
+                "password_digest": document.get("password_digest", ""),
+                "enabled": bool(document.get("enabled", True))}
+    if table in ("usergroup", "level"):
+        return {"name": key[0]}
+    if table == "membership":
         principal = _id_of(handle, models.Principal, key[0])
         usergroup = _id_of(handle, models.Usergroup, key[1])
         if not principal or not usergroup:
             return None
-        return {'principal_id': principal, 'usergroup_id': usergroup}
-    if table == 'level_capability':
+        return {"principal_id": principal, "usergroup_id": usergroup}
+    if table == "level_capability":
         level = _id_of(handle, models.Level, key[0])
         if not level:
             return None
-        return {'level_id': level, 'capability': key[1]}
-    if table == 'grant':
+        return {"level_id": level, "capability": key[1]}
+    if table == "grant":
         level = _id_of(handle, models.Level, key[2])
         if not level:
             return None
-        return {'principal_id': _id_of(handle, models.Principal, key[0]),
-                'usergroup_id': _id_of(handle, models.Usergroup, key[1]),
-                'level_id': level, 'scope': key[3] or ''}
-    if table == 'permission':
-        return {'object_kind': key[0], 'object_name': key[1],
-                'owner_id': _id_of(handle, models.Principal, document.get('owner', '')),
-                'usergroup_id': _id_of(handle, models.Usergroup, document.get('usergroup', '')),
-                'owner_bits': document.get('owner_bits', 'rwu'),
-                'group_bits': document.get('group_bits', 'r'),
-                'other_bits': document.get('other_bits', '')}
-    return {'plugin': key[0], 'kind': key[1], 'name': key[2],
-            'body': dict(document.get('body') or {})}
+        return {"principal_id": _id_of(handle, models.Principal, key[0]),
+                "usergroup_id": _id_of(handle, models.Usergroup, key[1]),
+                "level_id": level, "scope": key[3] or ""}
+    if table == "permission":
+        return {"object_kind": key[0], "object_name": key[1],
+                "owner_id": _id_of(handle, models.Principal, document.get("owner", "")),
+                "usergroup_id": _id_of(handle, models.Usergroup, document.get("usergroup", "")),
+                "owner_bits": document.get("owner_bits", "rwu"),
+                "group_bits": document.get("group_bits", "r"),
+                "other_bits": document.get("other_bits", "")}
+    return {"plugin": key[0], "kind": key[1], "name": key[2],
+            "body": dict(document.get("body") or {})}
 
 
 def _newer(incoming: dict, row) -> bool:
     """
     Last writer wins, by version first and then by the timestamp.
     """
-    theirs = int(incoming.get('version') or 1)
+    theirs = int(incoming.get("version") or 1)
     ours = int(row.version or 1)
     if theirs != ours:
         return theirs > ours
-    return str(incoming.get('updated_at') or '') > _stamp(row.updated_at)
+    return str(incoming.get("updated_at") or "") > _stamp(row.updated_at)
 
 
 def merge_table(handle: Session, table: str, documents: list) -> dict:
@@ -242,24 +242,24 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
         if columns is None:
             deferred += 1
             continue
-        row = _find(handle, table, document['key'])
+        row = _find(handle, table, document["key"])
         if row is None:
-            handle.add(model(version=int(document.get('version') or 1),
-                             origin=document.get('origin', ''), **columns))
+            handle.add(model(version=int(document.get("version") or 1),
+                             origin=document.get("origin", ""), **columns))
             added += 1
             continue
         if _newer(document, row):
             for column, value in columns.items():
                 setattr(row, column, value)
-            row.version = int(document.get('version') or 1)
-            row.origin = document.get('origin', '')
+            row.version = int(document.get("version") or 1)
+            row.origin = document.get("origin", "")
             updated += 1
-        elif (int(document.get('version') or 1) == int(row.version or 1)
-              and str(document.get('updated_at') or '') == _stamp(row.updated_at)
+        elif (int(document.get("version") or 1) == int(row.version or 1)
+              and str(document.get("updated_at") or "") == _stamp(row.updated_at)
               and document != to_document(handle, table, row)):
             conflicts += 1
-            LOGGER.warning('conflict on %s %s: same version and time, different content; '
-                           'keeping the local row', table, document['key'])
+            LOGGER.warning("conflict on %s %s: same version and time, different content; "
+                           "keeping the local row", table, document["key"])
     handle.commit()
-    return {'added': added, 'updated': updated, 'conflicts': conflicts,
-            'deferred': deferred}
+    return {"added": added, "updated": updated, "conflicts": conflicts,
+            "deferred": deferred}

@@ -34,16 +34,16 @@ from trix.common.errors import BackendFailure
 from trix.core.luna.client import current as luna
 from trix.utils import declarations, shell
 
-LOGGER = trixlog.get('slurm')
+LOGGER = trixlog.get("slurm")
 
-PLUGIN: str = 'slurm'
+PLUGIN: str = "slurm"
 
 DEFAULT_CONFIG: dict = {
-    'nodes_file': '/etc/slurm/slurm-nodes.conf',
-    'partitions_file': '/etc/slurm/slurm-partitions.conf',
-    'gres_file': '/etc/slurm/gres.conf',
-    'manager': 'TrinityX',
-    'reconfigure': '/usr/bin/scontrol reconfigure',
+    "nodes_file": "/etc/slurm/slurm-nodes.conf",
+    "partitions_file": "/etc/slurm/slurm-partitions.conf",
+    "gres_file": "/etc/slurm/gres.conf",
+    "manager": "TrinityX",
+    "reconfigure": "/usr/bin/scontrol reconfigure",
 }
 
 
@@ -58,7 +58,7 @@ def _generator():
         from trinityx_config_slurm import Generate
     except ImportError as error:
         raise BackendFailure(
-            f'trinityx_config_slurm is not installed on this controller: {error}') from None
+            f"trinityx_config_slurm is not installed on this controller: {error}") from None
     return Generate()
 
 
@@ -68,28 +68,30 @@ def node_set() -> list:
     """
     client = luna()
     nodes = client.nodes()
-    return [{'name': name, 'group': node.get('group') or ''}
+    return [{"name": name, "group": node.get("group") or ""}
             for name, node in sorted(nodes.items())]
 
 
 class Backend:
-    """A thin shell around the package. The rendering logic stays where it is."""
+    """
+    A thin shell around the package. The rendering logic stays where it is.
+    """
 
     def config(self, body: dict = None) -> dict:
         """
         Where this plugin writes and what it runs afterwards.
         """
         if body:
-            return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
-        return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
+            return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
+        return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def partitions(self, body: dict = None) -> dict:
         """
         The partition definitions the render uses.
         """
         if body:
-            return declarations.write(PLUGIN, 'partitions', '', body)
-        return declarations.read(PLUGIN, 'partitions', '', {'partitions': {}})
+            return declarations.write(PLUGIN, "partitions", "", body)
+        return declarations.read(PLUGIN, "partitions", "", {"partitions": {}})
 
     def render_config(self) -> dict:
         """
@@ -98,22 +100,22 @@ class Backend:
         settings = self.config()
         fullset = node_set()
         if not fullset:
-            LOGGER.info('no nodes yet, so nothing to write')
-            return {'nodes': 0, 'files': []}
+            LOGGER.info("no nodes yet, so nothing to write")
+            return {"nodes": 0, "files": []}
 
         files = {
-            'nodes': settings['nodes_file'],
-            'partitions': settings['partitions_file'],
-            'gres': settings['gres_file'],
+            "nodes": settings["nodes_file"],
+            "partitions": settings["partitions_file"],
+            "gres": settings["gres_file"],
         }
         written = _generator().all_configs(nodes=fullset, configs=files,
-                                           manager=settings['manager'])
+                                           manager=settings["manager"])
         if not written:
-            raise BackendFailure('the slurm generator reported a failure')
+            raise BackendFailure("the slurm generator reported a failure")
 
-        result = shell.run(settings['reconfigure'].split(), timeout=60)
+        result = shell.run(settings["reconfigure"].split(), timeout=60)
         if not result.ok:
-            LOGGER.error('scontrol reconfigure failed: %s', result.err or result.out)
-        LOGGER.info('wrote the slurm blocks for %d node(s)', len(fullset))
-        return {'nodes': len(fullset), 'files': sorted(files.values()),
-                'reconfigured': result.ok}
+            LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
+        LOGGER.info("wrote the slurm blocks for %d node(s)", len(fullset))
+        return {"nodes": len(fullset), "files": sorted(files.values()),
+                "reconfigured": result.ok}

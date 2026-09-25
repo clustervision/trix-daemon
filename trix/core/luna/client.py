@@ -39,23 +39,25 @@ from trix.common.constants import TOKEN_HEADER
 from trix.common.errors import ServiceUnavailable
 from trix.common.settings import current as settings
 
-LOGGER = trixlog.get('luna')
+LOGGER = trixlog.get("luna")
 
 urllib3.disable_warnings()
 
 
 class LunaClient:
-    """A thin client. It never models a Luna object, it only carries one."""
+    """
+    A thin client. It never models a Luna object, it only carries one.
+    """
 
     def __init__(self) -> None:
         self.session = requests.Session()
         self.lock = threading.Lock()
-        self.token: str = ''
+        self.token: str = ""
 
     @property
     def base(self) -> str:
         config = settings().luna
-        return f'{config.protocol}://{config.endpoint}'
+        return f"{config.protocol}://{config.endpoint}"
 
     def _authenticate(self) -> str:
         """
@@ -68,16 +70,16 @@ class LunaClient:
         config = settings().luna
         try:
             answer = self.session.post(
-                f'{self.base}/token',
-                json={'username': config.username, 'password': config.password},
+                f"{self.base}/token",
+                json={"username": config.username, "password": config.password},
                 timeout=config.timeout, verify=config.verify_certificate)
         except requests.RequestException as error:
-            raise ServiceUnavailable(f'Luna is not answering: {error}') from None
+            raise ServiceUnavailable(f"Luna is not answering: {error}") from None
         if answer.status_code >= 400:
-            raise ServiceUnavailable(f'Luna refused our credentials: {answer.status_code}')
-        token = (answer.json() or {}).get('token', '')
+            raise ServiceUnavailable(f"Luna refused our credentials: {answer.status_code}")
+        token = (answer.json() or {}).get("token", "")
         if not token:
-            raise ServiceUnavailable('Luna returned no token')
+            raise ServiceUnavailable("Luna returned no token")
         return token
 
     def _headers(self) -> dict:
@@ -98,16 +100,16 @@ class LunaClient:
                     method, url, headers=self._headers(), json=payload, params=params,
                     timeout=config.timeout, verify=config.verify_certificate)
             except requests.RequestException as error:
-                raise ServiceUnavailable(f'Luna is not answering: {error}') from None
+                raise ServiceUnavailable(f"Luna is not answering: {error}") from None
             if answer.status_code in (401, 403) and attempt == 1:
                 with self.lock:
-                    self.token = ''
+                    self.token = ""
                 continue
             if answer.status_code == 404:
                 return None
             if answer.status_code >= 400:
                 raise ServiceUnavailable(
-                    f'Luna answered {answer.status_code} for {uri}')
+                    f"Luna answered {answer.status_code} for {uri}")
             if not answer.content:
                 return None
             try:
@@ -117,33 +119,33 @@ class LunaClient:
         return None
 
     def get(self, uri: str, params: dict = None):
-        return self.request('GET', uri, params=params)
+        return self.request("GET", uri, params=params)
 
     def post(self, uri: str, payload=None):
-        return self.request('POST', uri, payload=payload)
+        return self.request("POST", uri, payload=payload)
 
     def nodes(self) -> dict:
         """
         Every node, keyed by name.
         """
-        answer = self.get('config/node') or {}
-        return (answer.get('config') or {}).get('node') or {}
+        answer = self.get("config/node") or {}
+        return (answer.get("config") or {}).get("node") or {}
 
     def node(self, name: str) -> dict:
         """
         One node by name, or None.
         """
-        answer = self.get(f'config/node/{name}') or {}
-        found = (answer.get('config') or {}).get('node') or {}
+        answer = self.get(f"config/node/{name}") or {}
+        found = (answer.get("config") or {}).get("node") or {}
         return found.get(name)
 
     def groups(self) -> dict:
-        answer = self.get('config/group') or {}
-        return (answer.get('config') or {}).get('group') or {}
+        answer = self.get("config/group") or {}
+        return (answer.get("config") or {}).get("group") or {}
 
     def networks(self) -> dict:
-        answer = self.get('config/network') or {}
-        return (answer.get('config') or {}).get('network') or {}
+        answer = self.get("config/network") or {}
+        return (answer.get("config") or {}).get("network") or {}
 
     def table_hashes(self) -> dict:
         """
@@ -152,8 +154,8 @@ class LunaClient:
         Luna answers this only on the HA master, so an empty answer is normal on a
         single controller and must not be read as "nothing changed".
         """
-        answer = self.get('table/hashes') or {}
-        return (answer.get('table') or {}).get('hashes') or {}
+        answer = self.get("table/hashes") or {}
+        return (answer.get("table") or {}).get("hashes") or {}
 
 
 _client: LunaClient = LunaClient()

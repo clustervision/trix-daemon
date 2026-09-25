@@ -41,7 +41,7 @@ from trix.core.lifespan import start
 from trix.core.security import keys
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             'trix', 'plugins')
+                             "trix", "plugins")
 
 
 @pytest.fixture()
@@ -49,22 +49,22 @@ def rig(tmp_path):
     """
     A configured daemon: its own database, its own keypair, its own plugins.
     """
-    plugins = tmp_path / 'plugins'
+    plugins = tmp_path / "plugins"
     shutil.copytree(PLUGIN_SOURCE, plugins)
-    trust = tmp_path / 'trust.d'
+    trust = tmp_path / "trust.d"
     trust.mkdir()
 
-    ini = tmp_path / 'trix.ini'
+    ini = tmp_path / "trix.ini"
     ini.write_text(
-        '[LOGGER]\nLEVEL = warning\nLOGFILE =\n'
-        '[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n'
-        'USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n'
+        "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
+        "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
+        "USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n"
         f'[TOKENS]\nPRIVATE_KEY = {tmp_path / "trix.ed25519"}\nKEY_ID = trix-test\n'
-        f'TRUST = {trust}\nISSUER = trix-daemon\n'
+        f"TRUST = {trust}\nISSUER = trix-daemon\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trix.db"}\n'
-        '[RESOLVE]\nUSERS = local\nGROUPS = local\nCACHE = 0s\n'
-        f'[PLUGINS]\nDIRECTORY = {plugins}\nENABLED = directory, services\n',
-        encoding='utf-8')
+        "[RESOLVE]\nUSERS = local\nGROUPS = local\nCACHE = 0s\n"
+        f"[PLUGINS]\nDIRECTORY = {plugins}\nENABLED = directory, services\n",
+        encoding="utf-8")
 
     config = configuration.set_current(configuration.load(str(ini)))
     keys.generate(config.tokens.private_key)
@@ -87,10 +87,10 @@ def token(client):
     """
     A token for the seeded administrator.
     """
-    answer = client.post('/api/v1/auth/token',
-                         json={'username': 'tester', 'password': 'secret'})
+    answer = client.post("/api/v1/auth/token",
+                         json={"username": "tester", "password": "secret"})
     assert answer.status_code == 201, answer.text
-    return answer.json()['token']
+    return answer.json()["token"]
 
 
 @pytest.fixture()
@@ -98,4 +98,4 @@ def headers(token):
     """
     Ready to pass to a request.
     """
-    return {'x-access-tokens': token}
+    return {"x-access-tokens": token}

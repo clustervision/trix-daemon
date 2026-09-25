@@ -41,38 +41,40 @@ from trix.core.luna.client import current as luna
 from trix.utils import declarations, files
 from trix.utils import shell
 
-LOGGER = trixlog.get('prometheus')
+LOGGER = trixlog.get("prometheus")
 
 urllib3.disable_warnings()
 
-PLUGIN: str = 'prometheus'
+PLUGIN: str = "prometheus"
 
 DEFAULT_CONFIG: dict = {
-    'rules_directory': '/trinity/local/etc/prometheus_server/rules/',
-    'prometheus_url': 'http://localhost:9090',
-    'reload_command': 'systemctl reload prometheus-server',
+    "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
+    "prometheus_url": "http://localhost:9090",
+    "reload_command": "systemctl reload prometheus-server",
 }
 
 # Exporter name to the port it answers on. A node is a target once per exporter.
 EXPORTERS: dict = {
-    'node': 14200,
-    'ipmi': 14202,
-    'nvidia': 14203,
-    'slurm_job': 14207,
-    'lshw': 14208,
+    "node": 14200,
+    "ipmi": 14202,
+    "nvidia": 14203,
+    "slurm_job": 14207,
+    "lshw": 14208,
 }
 
-GENERIC_RULES: str = 'trix.generic.rules'
-SERVICE_RULES: str = 'trix.service.rules'
-HW_RULES: str = 'trix.hw.{node}.rules'
-SETTINGS_FILE: str = 'rules_settings.yaml'
+GENERIC_RULES: str = "trix.generic.rules"
+SERVICE_RULES: str = "trix.service.rules"
+HW_RULES: str = "trix.hw.{node}.rules"
+SETTINGS_FILE: str = "rules_settings.yaml"
 
 # The labels a hardware rule is built from, as the lshw exporter reports them.
-COMPONENT_LABELS: tuple = ('hostname', 'component', 'vendor', 'product', 'serial')
+COMPONENT_LABELS: tuple = ("hostname", "component", "vendor", "product", "serial")
 
 
 class Backend:
-    """One writer of the Prometheus configuration."""
+    """
+    One writer of the Prometheus configuration.
+    """
 
     # ---------------------------------------------------------------- config
 
@@ -81,14 +83,14 @@ class Backend:
         Where this plugin writes and what it reloads.
         """
         if body:
-            return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
-        return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
+            return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
+        return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def _config(self) -> dict:
-        return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
+        return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def _rules_dir(self) -> str:
-        return self._config().get('rules_directory', DEFAULT_CONFIG['rules_directory'])
+        return self._config().get("rules_directory", DEFAULT_CONFIG["rules_directory"])
 
     # ---------------------------------------------------------------- rules
 
@@ -97,32 +99,32 @@ class Backend:
         The generic and service alert rules, as documents rather than files.
         """
         if body:
-            stored = declarations.write(PLUGIN, 'rules', '', body)
+            stored = declarations.write(PLUGIN, "rules", "", body)
             self._write_rule_documents(stored)
             self.reload()
             return stored
-        return declarations.read(PLUGIN, 'rules', '', {'groups': []})
+        return declarations.read(PLUGIN, "rules", "", {"groups": []})
 
     def settings(self, body: dict = None) -> dict:
         """
         The settings the hardware rules are generated from.
         """
         if body:
-            stored = declarations.write(PLUGIN, 'settings', '', body)
+            stored = declarations.write(PLUGIN, "settings", "", body)
             self._write_settings(stored)
             return stored
-        held = declarations.read(PLUGIN, 'settings', '', None)
+        held = declarations.read(PLUGIN, "settings", "", None)
         if held is not None:
             return held
-        return {'settings': self._read_settings_file()}
+        return {"settings": self._read_settings_file()}
 
     def tuning(self, body: dict = None) -> dict:
         """
         Drop lists, rule group intervals, scrape intervals and retention.
         """
         if body:
-            return declarations.merge(PLUGIN, 'tuning', '', body, {})
-        return declarations.read(PLUGIN, 'tuning', '', {})
+            return declarations.merge(PLUGIN, "tuning", "", body, {})
+        return declarations.read(PLUGIN, "tuning", "", {})
 
     # ------------------------------------------------------------- hardware
 
@@ -130,10 +132,10 @@ class Backend:
         """
         What is currently held for one node.
         """
-        path = os.path.join(self._rules_dir(), HW_RULES.format(node=node.split('.')[0]))
+        path = os.path.join(self._rules_dir(), HW_RULES.format(node=node.split(".")[0]))
         if not os.path.isfile(path):
-            raise NotFound(f'no hardware rules held for {node}')
-        with open(path, 'r', encoding='utf-8') as handle:
+            raise NotFound(f"no hardware rules held for {node}")
+        with open(path, "r", encoding="utf-8") as handle:
             return yaml.safe_load(handle) or {}
 
     def import_hw_rules(self, node: str, body: dict = None) -> dict:
@@ -143,28 +145,28 @@ class Backend:
         The node asks for this itself after boot, with a token scoped to itself.
         """
         body = body or {}
-        short = node.split('.')[0]
+        short = node.split(".")[0]
         path = os.path.join(self._rules_dir(), HW_RULES.format(node=short))
 
-        if not body.get('force') and os.path.isfile(path):
-            with open(path, 'r', encoding='utf-8') as handle:
-                document = yaml.safe_load(handle) or {'groups': []}
+        if not body.get("force") and os.path.isfile(path):
+            with open(path, "r", encoding="utf-8") as handle:
+                document = yaml.safe_load(handle) or {"groups": []}
         else:
             document = self._generate_hw_rules(node)
 
-        for group in document.get('groups', []):
-            for rule in group.get('rules', []):
-                labels = rule.setdefault('labels', {})
-                if body.get('nhc') is not None:
-                    labels['nhc'] = bool(body['nhc'])
-                if body.get('disabled') is not None:
-                    labels['disabled'] = bool(body['disabled'])
+        for group in document.get("groups", []):
+            for rule in group.get("rules", []):
+                labels = rule.setdefault("labels", {})
+                if body.get("nhc") is not None:
+                    labels["nhc"] = bool(body["nhc"])
+                if body.get("disabled") is not None:
+                    labels["disabled"] = bool(body["disabled"])
 
         files.write_yaml(path, document)
         self.reload()
-        LOGGER.info('hardware rules written for %s', short)
-        return {'hostname': node, 'rules': sum(len(group.get('rules', []))
-                                               for group in document.get('groups', []))}
+        LOGGER.info("hardware rules written for %s", short)
+        return {"hostname": node, "rules": sum(len(group.get("rules", []))
+                                               for group in document.get("groups", []))}
 
     def _generate_hw_rules(self, node: str) -> dict:
         """
@@ -173,41 +175,41 @@ class Backend:
         components = self._components(node)
         if not components:
             raise BackendFailure(
-                f'no data found for {node}; the hardware exporter has not been scraped yet')
+                f"no data found for {node}; the hardware exporter has not been scraped yet")
 
-        settings = self.settings().get('settings') or {}
+        settings = self.settings().get("settings") or {}
         rules = []
         for component in components:
-            name = component.get('component', 'component')
-            selector = ','.join(f'{key}="{value}"' for key, value in component.items()
+            name = component.get("component", "component")
+            selector = ",".join(f'{key}="{value}"' for key, value in component.items()
                                 if key in COMPONENT_LABELS and value)
-            severity = str(settings.get(name, {}).get('severity', 'warning'))
+            severity = str(settings.get(name, {}).get("severity", "warning"))
             rules.append({
-                'alert': f'{name}_missing_on_{node.split(".")[0]}',
-                'expr': f'absent(lshw_component_info{{{selector}}})',
-                'for': str(settings.get(name, {}).get('for', '5m')),
-                'labels': {'severity': severity, 'category': 'hardware',
-                           'nhc': True, 'disabled': False, 'hostname': node},
-                'annotations': {
-                    'description': f'{name} reported by {node} is no longer present'},
+                "alert": f'{name}_missing_on_{node.split(".")[0]}',
+                "expr": f"absent(lshw_component_info{{{selector}}})",
+                "for": str(settings.get(name, {}).get("for", "5m")),
+                "labels": {"severity": severity, "category": "hardware",
+                           "nhc": True, "disabled": False, "hostname": node},
+                "annotations": {
+                    "description": f"{name} reported by {node} is no longer present"},
             })
-        return {'groups': [{'name': f'trix.hw.{node.split(".")[0]}', 'rules': rules}]}
+        return {"groups": [{"name": f'trix.hw.{node.split(".")[0]}', "rules": rules}]}
 
     def _components(self, node: str) -> list:
         """
         Query the hardware exporter's series for this node.
         """
-        url = self._config().get('prometheus_url', DEFAULT_CONFIG['prometheus_url'])
+        url = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         query = f'lshw_component_info{{hostname=~"{node.split(".")[0]}.*"}}'
         try:
-            answer = requests.get(f'{url}/api/v1/query', params={'query': query},
+            answer = requests.get(f"{url}/api/v1/query", params={"query": query},
                                   timeout=20, verify=False)
         except requests.RequestException as error:
-            raise BackendFailure(f'Prometheus is not answering: {error}') from None
+            raise BackendFailure(f"Prometheus is not answering: {error}") from None
         if answer.status_code >= 400:
-            raise BackendFailure(f'Prometheus answered {answer.status_code}')
-        result = ((answer.json() or {}).get('data') or {}).get('result') or []
-        return [item.get('metric', {}) for item in result]
+            raise BackendFailure(f"Prometheus answered {answer.status_code}")
+        result = ((answer.json() or {}).get("data") or {}).get("result") or []
+        return [item.get("metric", {}) for item in result]
 
     # --------------------------------------------------------------- renders
 
@@ -219,29 +221,29 @@ class Backend:
         targets = []
         for exporter, port in EXPORTERS.items():
             for name, node in nodes.items():
-                address = _provision_address(node) or node.get('hostname') or name
+                address = _provision_address(node) or node.get("hostname") or name
                 entry = {
-                    'targets': [f'{address}:{port}'],
-                    'labels': {'exporter': exporter,
-                               'hostname': node.get('hostname') or name},
+                    "targets": [f"{address}:{port}"],
+                    "labels": {"exporter": exporter,
+                               "hostname": node.get("hostname") or name},
                 }
-                if node.get('group'):
-                    entry['labels']['luna_group'] = node['group']
+                if node.get("group"):
+                    entry["labels"]["luna_group"] = node["group"]
                 targets.append(entry)
-        LOGGER.info('rendered %d target(s) for %d node(s)', len(targets), len(nodes))
+        LOGGER.info("rendered %d target(s) for %d node(s)", len(targets), len(nodes))
         return targets
 
     def render_rule_files(self) -> dict:
         """
         Write the generic and service rule documents, then reload.
         """
-        stored = declarations.read(PLUGIN, 'rules', '', None)
+        stored = declarations.read(PLUGIN, "rules", "", None)
         if stored is None:
-            return {'written': []}
+            return {"written": []}
         written = self._write_rule_documents(stored)
         if written:
             self.reload()
-        return {'written': written}
+        return {"written": written}
 
     def _write_rule_documents(self, stored: dict) -> list:
         """
@@ -249,37 +251,37 @@ class Backend:
         """
         directory = self._rules_dir()
         written = []
-        groups = (stored or {}).get('groups') or []
-        generic = [item for item in groups if not str(item.get('name', '')).startswith('service')]
-        service = [item for item in groups if str(item.get('name', '')).startswith('service')]
+        groups = (stored or {}).get("groups") or []
+        generic = [item for item in groups if not str(item.get("name", "")).startswith("service")]
+        service = [item for item in groups if str(item.get("name", "")).startswith("service")]
         for filename, subset in ((GENERIC_RULES, generic), (SERVICE_RULES, service)):
             if not subset:
                 continue
             path = os.path.join(directory, filename)
-            files.write_yaml(path, {'groups': subset})
+            files.write_yaml(path, {"groups": subset})
             written.append(path)
         return written
 
     def _write_settings(self, stored: dict) -> str:
-        path = os.path.join(os.path.dirname(self._rules_dir().rstrip('/')), SETTINGS_FILE)
-        files.write_yaml(path, (stored or {}).get('settings') or {})
+        path = os.path.join(os.path.dirname(self._rules_dir().rstrip("/")), SETTINGS_FILE)
+        files.write_yaml(path, (stored or {}).get("settings") or {})
         return path
 
     def _read_settings_file(self) -> dict:
-        path = os.path.join(os.path.dirname(self._rules_dir().rstrip('/')), SETTINGS_FILE)
+        path = os.path.join(os.path.dirname(self._rules_dir().rstrip("/")), SETTINGS_FILE)
         if not os.path.isfile(path):
             return {}
-        with open(path, 'r', encoding='utf-8') as handle:
+        with open(path, "r", encoding="utf-8") as handle:
             return yaml.safe_load(handle) or {}
 
     def reload(self) -> bool:
         """
         Tell Prometheus to re-read what we wrote.
         """
-        command = self._config().get('reload_command', DEFAULT_CONFIG['reload_command'])
+        command = self._config().get("reload_command", DEFAULT_CONFIG["reload_command"])
         result = shell.run(command.split(), timeout=30)
         if not result.ok:
-            LOGGER.error('reload failed: %s', result.err or result.out)
+            LOGGER.error("reload failed: %s", result.err or result.out)
         return result.ok
 
 
@@ -287,8 +289,8 @@ def _provision_address(node: dict) -> str:
     """
     The address on the interface the node provisions over.
     """
-    wanted = node.get('provision_interface')
-    for interface in node.get('interfaces') or []:
-        if interface.get('interface') == wanted:
-            return interface.get('ipaddress') or ''
-    return ''
+    wanted = node.get("provision_interface")
+    for interface in node.get("interfaces") or []:
+        if interface.get("interface") == wanted:
+            return interface.get("ipaddress") or ""
+    return ""

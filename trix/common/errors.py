@@ -34,57 +34,75 @@ from fastapi.responses import JSONResponse
 
 
 class TrixError(Exception):
-    """Base class for every error the daemon raises deliberately."""
+    """
+    Base class for every error the daemon raises deliberately.
+    """
 
     status_code: int = 500
 
-    def __init__(self, message: str = '') -> None:
+    def __init__(self, message: str = "") -> None:
         super().__init__(message)
         self.message = message or self.__class__.__name__
 
 
 class BadRequest(TrixError):
-    """The request cannot be acted on as written."""
+    """
+    The request cannot be acted on as written.
+    """
 
     status_code = 400
 
 
 class Unauthenticated(TrixError):
-    """No token, an expired one, or one from an issuer this daemon does not trust."""
+    """
+    No token, an expired one, or one from an issuer this daemon does not trust.
+    """
 
     status_code = 401
 
 
 class Forbidden(TrixError):
-    """The principal is known and lacks the capability the endpoint declared."""
+    """
+    The principal is known and lacks the capability the endpoint declared.
+    """
 
     status_code = 403
 
 
 class NotFound(TrixError):
-    """No such object."""
+    """
+    No such object.
+    """
 
     status_code = 404
 
 
 class Conflict(TrixError):
-    """The request cannot be applied to the current state, and nothing changed."""
+    """
+    The request cannot be applied to the current state, and nothing changed.
+    """
 
     status_code = 409
 
 
 class PluginRefused(Conflict):
-    """A plugin failed validation, so the previously loaded state was kept."""
+    """
+    A plugin failed validation, so the previously loaded state was kept.
+    """
 
 
 class BackendFailure(TrixError):
-    """The thing behind the plugin failed: obol, systemctl, a render, Luna."""
+    """
+    The thing behind the plugin failed: obol, systemctl, a render, Luna.
+    """
 
     status_code = 502
 
 
 class ServiceUnavailable(TrixError):
-    """A dependency the daemon needs is not answering."""
+    """
+    A dependency the daemon needs is not answering.
+    """
 
     status_code = 503
 
@@ -96,4 +114,4 @@ def register(app: FastAPI) -> None:
 
     @app.exception_handler(TrixError)
     async def _handler(request: Request, exc: TrixError) -> JSONResponse:
-        return JSONResponse(status_code=exc.status_code, content={'message': exc.message})
+        return JSONResponse(status_code=exc.status_code, content={"message": exc.message})

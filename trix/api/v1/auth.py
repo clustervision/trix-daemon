@@ -42,45 +42,51 @@ from trix.core.security import principals, tokens
 from trix.core.security.gate import Caller, guard
 from trix.db.engine import scoped
 
-LOGGER = trixlog.get('auth')
+LOGGER = trixlog.get("auth")
 
-router = APIRouter(prefix=f'{API_PREFIX}/auth', tags=['auth'])
+router = APIRouter(prefix=f"{API_PREFIX}/auth", tags=["auth"])
 
 
 class Credentials(BaseModel):
-    """What a person or a service presents to log in."""
+    """
+    What a person or a service presents to log in.
+    """
 
     username: str
     password: str
 
 
 class NodeProof(BaseModel):
-    """What a node presents after boot."""
+    """
+    What a node presents after boot.
+    """
 
-    tpm_sha256: str = ''
+    tpm_sha256: str = ""
 
 
 class Token(BaseModel):
-    """A minted token."""
+    """
+    A minted token.
+    """
 
     token: str
 
 
-@router.post('/token', response_model=Token, status_code=201,
-             summary='Exchange credentials for a token')
+@router.post("/token", response_model=Token, status_code=201,
+             summary="Exchange credentials for a token")
 def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
     """
     Resolve the caller through the chain, then sign a token naming them.
     """
     who = principals.authenticate(handle, body.username, body.password)
     if who is None:
-        LOGGER.warning('failed login for %s', body.username)
-        raise Unauthenticated('username or password is incorrect')
+        LOGGER.warning("failed login for %s", body.username)
+        raise Unauthenticated("username or password is incorrect")
     return Token(token=tokens.mint(who.name, expiry=settings().api.expiry, source=who.source))
 
 
-@router.post('/node/{node}', response_model=Token,
-             summary='Exchange a node measurement for a node-scoped token')
+@router.post("/node/{node}", response_model=Token,
+             summary="Exchange a node measurement for a node-scoped token")
 def issue_node(node: str, body: NodeProof) -> Token:
     """
     Verify the measurement against Luna's record of that node.
@@ -91,27 +97,27 @@ def issue_node(node: str, body: NodeProof) -> Token:
     """
     record = luna().node(node)
     if not record:
-        raise Unauthenticated(f'{node} is not a node Luna knows')
-    expected = record.get('tpm_sha256') or ''
+        raise Unauthenticated(f"{node} is not a node Luna knows")
+    expected = record.get("tpm_sha256") or ""
     if not expected:
         # Luna is not enforcing cluster security for this node, so neither do we.
-        LOGGER.info('node %s has no measurement recorded; issuing on Luna terms', node)
+        LOGGER.info("node %s has no measurement recorded; issuing on Luna terms", node)
     elif body.tpm_sha256 != expected:
-        LOGGER.warning('node %s presented a measurement that does not match', node)
-        raise Unauthenticated('the measurement does not match')
+        LOGGER.warning("node %s presented a measurement that does not match", node)
+        raise Unauthenticated("the measurement does not match")
     return Token(token=tokens.mint(node, kind=TOKEN_KIND_NODE,
                                    expiry=settings().api.expiry, node=node))
 
 
-@router.get('/whoami', summary='What this token says about its bearer')
+@router.get("/whoami", summary="What this token says about its bearer")
 def whoami(caller: Caller = Depends(guard())) -> dict:
     """
     Useful when a client wants to know what it is holding.
     """
     return {
-        'principal': caller.name,
-        'kind': caller.kind,
-        'usergroups': caller.usergroups,
-        'capabilities': sorted(caller.capabilities),
-        'issuer': caller.claims.issuer,
+        "principal": caller.name,
+        "kind": caller.kind,
+        "usergroups": caller.usergroups,
+        "capabilities": sorted(caller.capabilities),
+        "issuer": caller.claims.issuer,
     }

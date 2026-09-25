@@ -37,13 +37,15 @@ from trix.common.errors import Forbidden, Unauthenticated
 from trix.core.security import principals, tokens
 from trix.db import engine
 
-LOGGER = trixlog.get('gate')
+LOGGER = trixlog.get("gate")
 
-NODE_PATH_PARAMS: tuple = ('node', 'name', 'hostname')
+NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 
 
 class Caller:
-    """Who is making this request, and what they may do."""
+    """
+    Who is making this request, and what they may do.
+    """
 
     def __init__(self, claims: tokens.Claims, who: principals.Resolved, held: set) -> None:
         self.claims = claims
@@ -53,18 +55,18 @@ class Caller:
         self.capabilities = held
 
     def __repr__(self) -> str:
-        return f'<Caller {self.name} kind={self.kind}>'
+        return f"<Caller {self.name} kind={self.kind}>"
 
 
 def _present(x_access_tokens: str, authorization: str) -> str:
     if x_access_tokens:
         return x_access_tokens
-    if authorization and authorization.lower().startswith('bearer '):
+    if authorization and authorization.lower().startswith("bearer "):
         return authorization[7:].strip()
-    return ''
+    return ""
 
 
-def guard(capability: str = '', token_kind: str = TOKEN_KIND_USER):
+def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER):
     """
     Build the dependency for one endpoint.
     """
@@ -76,31 +78,31 @@ def guard(capability: str = '', token_kind: str = TOKEN_KIND_USER):
 
         if token_kind == TOKEN_KIND_NODE:
             if claims.kind != TOKEN_KIND_NODE:
-                raise Forbidden('this endpoint accepts a node token only')
-            target = ''
+                raise Forbidden("this endpoint accepts a node token only")
+            target = ""
             for key in NODE_PATH_PARAMS:
                 if key in request.path_params:
                     target = str(request.path_params[key])
                     break
-            if target and claims.node.split('.')[0] != target.split('.')[0]:
-                LOGGER.warning('node token for %s used on %s', claims.node, target)
-                raise Forbidden('token is not valid for this node')
+            if target and claims.node.split(".")[0] != target.split(".")[0]:
+                LOGGER.warning("node token for %s used on %s", claims.node, target)
+                raise Forbidden("token is not valid for this node")
             return Caller(claims, None, {capability})
 
         if claims.kind == TOKEN_KIND_NODE:
-            raise Forbidden('a node token is not permitted on this endpoint')
+            raise Forbidden("a node token is not permitted on this endpoint")
 
         handle = engine.session()
         try:
             who = principals.resolve(handle, claims.subject)
             if who is None and claims.kind != TOKEN_KIND_SERVICE:
-                raise Unauthenticated(f'{claims.subject} cannot be resolved here')
+                raise Unauthenticated(f"{claims.subject} cannot be resolved here")
             held = principals.capabilities(handle, who) if who else {capability}
         finally:
             handle.close()
 
         if capability and not principals.permits(held, capability):
-            raise Forbidden(f'{capability} is required')
+            raise Forbidden(f"{capability} is required")
         return Caller(claims, who, held)
 
     return dependency

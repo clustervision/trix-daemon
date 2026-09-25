@@ -42,7 +42,7 @@ from trix.core.replication import tables
 from trix.core.security import tokens
 from trix.db import engine as database
 
-LOGGER = trixlog.get('sweep')
+LOGGER = trixlog.get("sweep")
 
 urllib3.disable_warnings()
 
@@ -50,7 +50,8 @@ TIMEOUT: int = 30
 
 
 class Sweep:
-    """One thread, one pass per interval, one comparison per table.
+    """
+    One thread, one pass per interval, one comparison per table.
 
     There is no order to keep between documents, so there is no gap to stop on and
     nothing to replay. A peer that is away simply misses a pass.
@@ -62,11 +63,11 @@ class Sweep:
         self.last: dict = {}
 
     def _get(self, peer: str, path: str):
-        url = f'https://{peer}{API_PREFIX}/system/replication/{path}'
+        url = f"https://{peer}{API_PREFIX}/system/replication/{path}"
         headers = {TOKEN_HEADER: tokens.service_token()}
         answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=False)
         if answer.status_code >= 400:
-            raise RuntimeError(f'{peer} answered {answer.status_code}')
+            raise RuntimeError(f"{peer} answered {answer.status_code}")
         return answer.json()
 
     def pass_over(self, peer: str) -> dict:
@@ -75,19 +76,19 @@ class Sweep:
         """
         handle = database.session()
         try:
-            theirs = (self._get(peer, 'hashes') or {}).get('hashes') or {}
+            theirs = (self._get(peer, "hashes") or {}).get("hashes") or {}
             ours = tables.hashes(handle)
             differing = [table for table in tables.ORDER
                          if theirs.get(table) and theirs[table] != ours.get(table)]
             if not differing:
-                return {'peer': peer, 'tables': [], 'changes': {}}
+                return {"peer": peer, "tables": [], "changes": {}}
 
             changes = {}
             for table in differing:
-                documents = (self._get(peer, f'table/{table}') or {}).get('documents') or []
+                documents = (self._get(peer, f"table/{table}") or {}).get("documents") or []
                 changes[table] = tables.merge_table(handle, table, documents)
-            LOGGER.info('reconciled %s with %s: %s', ', '.join(differing), peer, changes)
-            return {'peer': peer, 'tables': differing, 'changes': changes}
+            LOGGER.info("reconciled %s with %s: %s", ", ".join(differing), peer, changes)
+            return {"peer": peer, "tables": differing, "changes": changes}
         finally:
             handle.close()
 
@@ -101,9 +102,9 @@ class Sweep:
                 results.append(self.pass_over(peer))
             except Exception as error:
                 # A peer being away is ordinary. The next pass picks it up.
-                LOGGER.warning('peer %s not reconciled this pass: %s', peer, error)
-                results.append({'peer': peer, 'error': str(error)})
-        self.last = {'at': time.time(), 'results': results}
+                LOGGER.warning("peer %s not reconciled this pass: %s", peer, error)
+                results.append({"peer": peer, "error": str(error)})
+        self.last = {"at": time.time(), "results": results}
         return results
 
     def _loop(self) -> None:
@@ -117,12 +118,12 @@ class Sweep:
         """
         config = settings().replication
         if not config.enabled or not config.peers:
-            LOGGER.info('no replication peers configured, so no sweep is running')
+            LOGGER.info("no replication peers configured, so no sweep is running")
             return False
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name='trix-sweep', daemon=True)
+        self.thread = threading.Thread(target=self._loop, name="trix-sweep", daemon=True)
         self.thread.start()
-        LOGGER.info('reconciling with %s every %ss', ', '.join(config.peers), config.interval)
+        LOGGER.info("reconciling with %s every %ss", ", ".join(config.peers), config.interval)
         return True
 
     def shutdown(self) -> None:

@@ -37,11 +37,12 @@ from trix.common.settings import current as settings
 from trix.core.luna.client import current as luna
 from trix.core.render.engine import current as renders
 
-LOGGER = trixlog.get('triggers')
+LOGGER = trixlog.get("triggers")
 
 
 class LunaHashes:
-    """One request and one comparison per pass.
+    """
+    One request and one comparison per pass.
 
     This is what makes the hook allowed to be lossy: a notification that never
     arrives is picked up here instead.
@@ -62,7 +63,7 @@ class LunaHashes:
         try:
             current = luna().table_hashes()
         except Exception as error:
-            LOGGER.warning('could not read Luna table hashes: %s', error)
+            LOGGER.warning("could not read Luna table hashes: %s", error)
             return []
 
         if not current:
@@ -70,8 +71,8 @@ class LunaHashes:
             # normal on a single controller and must not be read as "nothing
             # changed". Said once, then left alone.
             if not self.quiet:
-                LOGGER.warning('Luna returned no table hashes, so this fallback is inert '
-                               'here; Luna answers that route on the HA master only')
+                LOGGER.warning("Luna returned no table hashes, so this fallback is inert "
+                               "here; Luna answers that route on the HA master only")
                 self.quiet = True
             return []
         self.quiet = False
@@ -81,15 +82,15 @@ class LunaHashes:
         first = not self.seen
         self.seen = dict(current)
         if first:
-            LOGGER.info('baseline taken for %d Luna tables', len(current))
+            LOGGER.info("baseline taken for %d Luna tables", len(current))
             return []
 
         woken = []
         for table in changed:
-            woken.extend(renders().notify(f'luna.{table}'))
+            woken.extend(renders().notify(f"luna.{table}"))
         if changed:
-            LOGGER.info('Luna tables changed: %s; woke %s',
-                        ', '.join(changed), ', '.join(woken) or 'nothing')
+            LOGGER.info("Luna tables changed: %s; woke %s",
+                        ", ".join(changed), ", ".join(woken) or "nothing")
         return woken
 
     def _loop(self) -> None:
@@ -100,22 +101,22 @@ class LunaHashes:
     def start(self) -> bool:
         interval = settings().triggers.luna_hashes
         if interval <= 0:
-            LOGGER.info('the Luna hash fallback is switched off')
+            LOGGER.info("the Luna hash fallback is switched off")
             return False
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name='trix-hashes', daemon=True)
+        self.thread = threading.Thread(target=self._loop, name="trix-hashes", daemon=True)
         self.thread.start()
-        LOGGER.info('comparing Luna table hashes every %ss', interval)
+        LOGGER.info("comparing Luna table hashes every %ss", interval)
         return True
 
     def shutdown(self) -> None:
         self.stop.set()
 
     def state(self) -> dict:
-        return {'interval': settings().triggers.luna_hashes,
-                'last_pass': self.last_pass,
-                'tables_seen': len(self.seen),
-                'answering': not self.quiet and bool(self.seen)}
+        return {"interval": settings().triggers.luna_hashes,
+                "last_pass": self.last_pass,
+                "tables_seen": len(self.seen),
+                "answering": not self.quiet and bool(self.seen)}
 
 
 _hashes: LunaHashes = LunaHashes()

@@ -40,22 +40,24 @@ from trix.common.settings import seconds
 from trix.db import engine as database
 from trix.db import models
 
-LOGGER = trixlog.get('render')
+LOGGER = trixlog.get("render")
 
 
 class Render:
-    """One declared output and the backend method that produces it."""
+    """
+    One declared output and the backend method that produces it.
+    """
 
     def __init__(self, plugin: str, path: str, spec, producer) -> None:
         self.plugin = plugin
         self.path = path
         self.spec = spec
         self.producer = producer
-        self.key = f'{plugin}/{path}'
+        self.key = f"{plugin}/{path}"
         self.coalesce = seconds(spec.coalesce, 2)
         self.document = None
         self.rendered_at: float = 0.0
-        self.last_error: str = ''
+        self.last_error: str = ""
 
     def wants(self, changed: str) -> bool:
         """
@@ -63,12 +65,14 @@ class Render:
         """
         if not changed:
             return True
-        return any(str(item) == changed or str(item).startswith(f'{changed}.')
-                   or changed.startswith(f'{item}.') for item in self.spec.inputs)
+        return any(str(item) == changed or str(item).startswith(f"{changed}.")
+                   or changed.startswith(f"{item}.") for item in self.spec.inputs)
 
 
 class Engine:
-    """Every render this process knows about."""
+    """
+    Every render this process knows about.
+    """
 
     def __init__(self) -> None:
         self.renders: dict = {}
@@ -77,14 +81,14 @@ class Engine:
 
     def forget(self, plugin: str) -> None:
         with self.lock:
-            for key in [item for item in self.renders if item.startswith(f'{plugin}/')]:
+            for key in [item for item in self.renders if item.startswith(f"{plugin}/")]:
                 self.renders.pop(key, None)
 
     def register(self, plugin: str, path: str, spec, producer) -> Render:
         with self.lock:
             item = Render(plugin, path, spec, producer)
             self.renders[item.key] = item
-            LOGGER.debug('render %s declared, inputs %s', item.key, spec.inputs)
+            LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
             return item
 
     def reader(self, plugin: str, path: str):
@@ -93,13 +97,13 @@ class Engine:
         """
 
         def read(caller=None):
-            item = self.renders.get(f'{plugin}/{path}')
+            item = self.renders.get(f"{plugin}/{path}")
             if item is None:
-                raise NotFound(f'no render named {plugin}/{path}')
+                raise NotFound(f"no render named {plugin}/{path}")
             if item.document is None:
                 self.run(item)
             if item.document is None:
-                raise NotFound(f'{plugin}/{path} has not rendered yet: {item.last_error}')
+                raise NotFound(f"{plugin}/{path} has not rendered yet: {item.last_error}")
             return item.document
 
         return read
@@ -113,14 +117,14 @@ class Engine:
                 produced = item.producer()
             except Exception as error:
                 item.last_error = str(error)
-                LOGGER.error('render %s failed, keeping the previous output: %s',
+                LOGGER.error("render %s failed, keeping the previous output: %s",
                              item.key, error)
                 self._record(item)
                 return False
             item.document = produced
             item.rendered_at = time.time()
-            item.last_error = ''
-            LOGGER.info('rendered %s', item.key)
+            item.last_error = ""
+            LOGGER.info("rendered %s", item.key)
             self._record(item)
             return True
 
@@ -134,7 +138,7 @@ class Engine:
                 done += 1
         return done
 
-    def notify(self, changed: str = '') -> list:
+    def notify(self, changed: str = "") -> list:
         """
         A change landed. Coalesce, then render whatever declared it as an input.
         """
@@ -152,10 +156,10 @@ class Engine:
         return woken
 
     def listing(self) -> list:
-        return [{'render': item.key,
-                 'inputs': item.spec.inputs,
-                 'rendered_at': item.rendered_at,
-                 'error': item.last_error} for item in sorted(
+        return [{"render": item.key,
+                 "inputs": item.spec.inputs,
+                 "rendered_at": item.rendered_at,
+                 "error": item.last_error} for item in sorted(
                      self.renders.values(), key=lambda entry: entry.key)]
 
     def _record(self, item: Render) -> None:
@@ -177,7 +181,7 @@ class Engine:
             handle.commit()
         except Exception as error:
             handle.rollback()
-            LOGGER.warning('could not record render state for %s: %s', item.key, error)
+            LOGGER.warning("could not record render state for %s: %s", item.key, error)
         finally:
             handle.close()
 

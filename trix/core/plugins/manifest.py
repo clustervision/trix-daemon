@@ -40,46 +40,50 @@ from pydantic import BaseModel, ConfigDict, Field, create_model
 from trix.common.constants import HTTP_VERBS, TOKEN_KIND_NODE, TOKEN_KIND_USER
 from trix.common.errors import PluginRefused
 
-PATH_VARIABLE = re.compile(r'<([a-zA-Z_][a-zA-Z0-9_]*)>')
+PATH_VARIABLE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
 
 TYPES: dict = {
-    'string': str,
-    'integer': int,
-    'number': float,
-    'boolean': bool,
-    'date': date,
-    'object': dict,
-    'array': list,
+    "string": str,
+    "integer": int,
+    "number": float,
+    "boolean": bool,
+    "date": date,
+    "object": dict,
+    "array": list,
 }
 
 
 class Render(BaseModel):
-    """A derived output: what it reads, what wakes it, and where it goes."""
+    """
+    A derived output: what it reads, what wakes it, and where it goes.
+    """
 
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
     inputs: list = Field(default_factory=list)
     triggers: list = Field(default_factory=list)
-    coalesce: str = '2s'
-    serve: str = ''
-    files: str = ''
-    blocks: str = ''
+    coalesce: str = "2s"
+    serve: str = ""
+    files: str = ""
+    blocks: str = ""
     after: list = Field(default_factory=list)
 
 
 class Endpoint(BaseModel):
-    """One path a plugin asks the daemon to serve."""
+    """
+    One path a plugin asks the daemon to serve.
+    """
 
-    model_config = ConfigDict(extra='forbid', populate_by_name=True)
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
     path: str
-    methods: list = Field(default_factory=lambda: ['GET'])
-    capability: str = ''
-    handler: str = ''
-    body_schema: str = Field(default='', alias='schema')
+    methods: list = Field(default_factory=lambda: ["GET"])
+    capability: str = ""
+    handler: str = ""
+    body_schema: str = Field(default="", alias="schema")
     token: str = TOKEN_KIND_USER
     render: Optional[Render] = None
-    summary: str = ''
+    summary: str = ""
     # No token at all. Only for a consumer that cannot present one, which today
     # means Prometheus service discovery. Every use has to be argued for.
     public: bool = False
@@ -93,24 +97,26 @@ class Endpoint(BaseModel):
         """
         The manifest writes <name>; Starlette wants {name}.
         """
-        return PATH_VARIABLE.sub(r'{\1}', self.path).strip('/')
+        return PATH_VARIABLE.sub(r"{\1}", self.path).strip("/")
 
 
 class Manifest(BaseModel):
-    """Everything a plugin declares about itself."""
+    """
+    Everything a plugin declares about itself.
+    """
 
-    model_config = ConfigDict(extra='forbid')
+    model_config = ConfigDict(extra="forbid")
 
     plugin: str
-    backend: str = 'backend'
-    description: str = ''
+    backend: str = "backend"
+    description: str = ""
     schemas: dict = Field(default_factory=dict)
     endpoints: list = Field(default_factory=list)
 
     @property
     def digest(self) -> str:
         return hashlib.sha256(
-            json.dumps(self.model_dump(mode='json'), sort_keys=True).encode()).hexdigest()
+            json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
 
 
 def parse(document: dict) -> Manifest:
@@ -122,10 +128,10 @@ def parse(document: dict) -> Manifest:
         manifest.endpoints = [item if isinstance(item, Endpoint) else Endpoint(**item)
                               for item in manifest.endpoints]
     except Exception as error:
-        raise PluginRefused(f'manifest does not parse: {error}') from None
+        raise PluginRefused(f"manifest does not parse: {error}") from None
 
     if not manifest.plugin:
-        raise PluginRefused('manifest names no plugin')
+        raise PluginRefused("manifest names no plugin")
     for endpoint in manifest.endpoints:
         bad = [verb for verb in endpoint.methods if verb.upper() not in HTTP_VERBS]
         if bad:
@@ -139,7 +145,7 @@ def parse(document: dict) -> Manifest:
                 raise PluginRefused(f'{endpoint.path or "/"} names no handler')
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
-                f'{endpoint.path} wants schema {endpoint.body_schema}, which is not declared')
+                f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
     return manifest
 
 
@@ -152,21 +158,21 @@ def build_models(manifest: Manifest) -> dict:
         spec = {}
         for field, rule in (fields or {}).items():
             rule = rule or {}
-            kind = TYPES.get(str(rule.get('type', 'string')), str)
+            kind = TYPES.get(str(rule.get("type", "string")), str)
             if kind is list:
-                item = TYPES.get(str(rule.get('items', 'string')), str)
+                item = TYPES.get(str(rule.get("items", "string")), str)
                 kind = list[item]
             constraints = {}
-            if rule.get('pattern'):
-                constraints['pattern'] = rule['pattern']
-            if rule.get('optional'):
+            if rule.get("pattern"):
+                constraints["pattern"] = rule["pattern"]
+            if rule.get("optional"):
                 spec[field] = (Optional[kind], Field(default=None, **constraints))
             else:
                 spec[field] = (kind, Field(**constraints))
         try:
-            models[name] = create_model(f'{manifest.plugin.title()}{name.title()}', **spec)
+            models[name] = create_model(f"{manifest.plugin.title()}{name.title()}", **spec)
         except Exception as error:
-            raise PluginRefused(f'schema {name} does not build: {error}') from None
+            raise PluginRefused(f"schema {name} does not build: {error}") from None
     return models
 
 
@@ -175,9 +181,9 @@ def read_yaml(path: str) -> dict:
     Read a manifest.yaml from disk.
     """
     import yaml
-    with open(path, 'r', encoding='utf-8') as handle:
+    with open(path, "r", encoding="utf-8") as handle:
         document = yaml.safe_load(handle)
     if not isinstance(document, dict):
-        raise PluginRefused(f'{path} is not a manifest document')
+        raise PluginRefused(f"{path} is not a manifest document")
     return document
 

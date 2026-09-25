@@ -34,7 +34,7 @@ from fastapi import APIRouter, FastAPI
 from trix.common import logging as trixlog
 from trix.core.plugins.registry import current as registry
 
-LOGGER = trixlog.get('swap')
+LOGGER = trixlog.get("swap")
 
 
 def exchange(app: FastAPI, name: str, router: APIRouter = None) -> list:
@@ -53,6 +53,6 @@ def exchange(app: FastAPI, name: str, router: APIRouter = None) -> list:
 
     app.router.routes = keep + added
     app.openapi_schema = None
-    LOGGER.info('route table is now %d routes; %s contributes %d',
+    LOGGER.info("route table is now %d routes; %s contributes %d",
                 len(app.router.routes), name, len(added))
     return added

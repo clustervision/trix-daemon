@@ -33,19 +33,19 @@ import logging
 import os
 import sys
 
-LOGGER_NAME: str = 'trix'
-FORMAT: str = '%(asctime)s %(levelname)-8s %(name)s: %(message)s'
+LOGGER_NAME: str = "trix"
+FORMAT: str = "%(asctime)s %(levelname)-8s %(name)s: %(message)s"
 
 LEVELS: dict = {
-    'debug': logging.DEBUG,
-    'info': logging.INFO,
-    'warning': logging.WARNING,
-    'error': logging.ERROR,
-    'critical': logging.CRITICAL,
+    "debug": logging.DEBUG,
+    "info": logging.INFO,
+    "warning": logging.WARNING,
+    "error": logging.ERROR,
+    "critical": logging.CRITICAL,
 }
 
 
-def setup(level: str = 'info', logfile: str = '') -> logging.Logger:
+def setup(level: str = "info", logfile: str = "") -> logging.Logger:
     """
     Configure the daemon logger. Safe to call more than once.
     """
@@ -61,18 +61,18 @@ def setup(level: str = 'info', logfile: str = '') -> logging.Logger:
     if logfile:
         try:
             os.makedirs(os.path.dirname(logfile), exist_ok=True)
-            handler = logging.FileHandler(logfile, encoding='utf-8')
+            handler = logging.FileHandler(logfile, encoding="utf-8")
             handler.setFormatter(logging.Formatter(FORMAT))
             logger.addHandler(handler)
         except OSError as error:
             # The journal handler is already attached, so say why the file is
             # missing rather than failing a start over a log path.
-            logger.warning('cannot write %s: %s', logfile, error)
+            logger.warning("cannot write %s: %s", logfile, error)
     return logger
 
 
-def get(name: str = '') -> logging.Logger:
+def get(name: str = "") -> logging.Logger:
     """
     The daemon logger, or a named child of it.
     """
-    return logging.getLogger(f'{LOGGER_NAME}.{name}' if name else LOGGER_NAME)
+    return logging.getLogger(f"{LOGGER_NAME}.{name}" if name else LOGGER_NAME)

@@ -37,17 +37,17 @@ from trix.common import logging as trixlog
 from trix.db import engine as database
 from trix.db import models
 
-LOGGER = trixlog.get('declarations')
+LOGGER = trixlog.get("declarations")
 
 
 def _origin() -> str:
     """
     Which controller wrote this. The anti-entropy merge compares it.
     """
-    return socket.gethostname().split('.')[0]
+    return socket.gethostname().split(".")[0]
 
 
-def read(plugin: str, kind: str, name: str = '', fallback=None):
+def read(plugin: str, kind: str, name: str = "", fallback=None):
     """
     The stored document, or the fallback when nothing has been written yet.
     """
@@ -83,8 +83,8 @@ def write(plugin: str, kind: str, name: str, body: dict) -> dict:
             row.version = (row.version or 0) + 1
             row.origin = _origin()
         handle.commit()
-        LOGGER.info('declaration %s/%s/%s written at version %s',
-                    plugin, kind, name or '-', row.version)
+        LOGGER.info("declaration %s/%s/%s written at version %s",
+                    plugin, kind, name or "-", row.version)
         return dict(row.body)
     except Exception:
         handle.rollback()
@@ -102,7 +102,7 @@ def merge(plugin: str, kind: str, name: str, body: dict, defaults: dict) -> dict
     return write(plugin, kind, name, held)
 
 
-def listing(plugin: str, kind: str = '') -> list:
+def listing(plugin: str, kind: str = "") -> list:
     """
     Every document a plugin owns, optionally of one kind.
     """
@@ -111,7 +111,7 @@ def listing(plugin: str, kind: str = '') -> list:
         query = select(models.Declaration).where(models.Declaration.plugin == plugin)
         if kind:
             query = query.where(models.Declaration.kind == kind)
-        return [{'kind': row.kind, 'name': row.name, 'version': row.version,
-                 'body': dict(row.body)} for row in handle.scalars(query).all()]
+        return [{"kind": row.kind, "name": row.name, "version": row.version,
+                 "body": dict(row.body)} for row in handle.scalars(query).all()]
     finally:
         handle.close()

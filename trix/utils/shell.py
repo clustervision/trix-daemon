@@ -35,13 +35,15 @@ import subprocess
 from trix.common import logging as trixlog
 from trix.common.errors import BackendFailure
 
-LOGGER = trixlog.get('shell')
+LOGGER = trixlog.get("shell")
 
 DEFAULT_TIMEOUT: int = 60
 
 
 class Result:
-    """What a command did."""
+    """
+    What a command did.
+    """
 
     def __init__(self, code: int, out: str, err: str) -> None:
         self.code = code
@@ -58,21 +60,21 @@ def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False) -> Resu
     Run a command as an argument list. Never a shell string, always a timeout.
     """
     if not argv or not isinstance(argv, (list, tuple)):
-        raise BackendFailure('a command must be given as an argument list')
-    LOGGER.debug('running %s', ' '.join(str(item) for item in argv))
+        raise BackendFailure("a command must be given as an argument list")
+    LOGGER.debug("running %s", " ".join(str(item) for item in argv))
     try:
         done = subprocess.run([str(item) for item in argv], capture_output=True,
                               timeout=timeout, check=False)
     except FileNotFoundError:
-        raise BackendFailure(f'{argv[0]} is not installed') from None
+        raise BackendFailure(f"{argv[0]} is not installed") from None
     except subprocess.TimeoutExpired:
-        raise BackendFailure(f'{argv[0]} did not finish within {timeout}s') from None
+        raise BackendFailure(f"{argv[0]} did not finish within {timeout}s") from None
 
     result = Result(done.returncode,
-                    done.stdout.decode('utf-8', 'replace').strip(),
-                    done.stderr.decode('utf-8', 'replace').strip())
+                    done.stdout.decode("utf-8", "replace").strip(),
+                    done.stderr.decode("utf-8", "replace").strip())
     if check and not result.ok:
-        raise BackendFailure(f'{argv[0]} failed: {result.err or result.out}')
+        raise BackendFailure(f"{argv[0]} failed: {result.err or result.out}")
     return result
 
 
@@ -86,4 +88,4 @@ def run_json(argv: list, timeout: int = DEFAULT_TIMEOUT):
     try:
         return json.loads(result.out)
     except ValueError as error:
-        raise BackendFailure(f'{argv[0]} did not return JSON: {error}') from None
+        raise BackendFailure(f"{argv[0]} did not return JSON: {error}") from None

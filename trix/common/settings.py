@@ -35,60 +35,60 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-DEFAULT_CONFIG: str = '/trinity/local/trix/daemon/config/trix.ini'
+DEFAULT_CONFIG: str = "/trinity/local/trix/daemon/config/trix.ini"
 
-_DURATION = re.compile(r'^\s*(\d+)\s*([smhd]?)\s*$', re.IGNORECASE)
-_FACTOR = {'s': 1, 'm': 60, 'h': 3600, 'd': 86400, '': 3600}
+_DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
+_FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 3600}
 
 
 def seconds(value: str, fallback: int = 3600) -> int:
     """
     Turn 30s, 5m, 1h or a bare number into seconds.
     """
-    found = _DURATION.match(str(value or ''))
+    found = _DURATION.match(str(value or ""))
     if not found:
         return fallback
     return int(found.group(1)) * _FACTOR[found.group(2).lower()]
 
 
 class LoggerSettings(BaseModel):
-    level: str = 'info'
-    logfile: str = '/var/log/trix/trix-daemon.log'
+    level: str = "info"
+    logfile: str = "/var/log/trix/trix-daemon.log"
 
 
 class ApiSettings(BaseModel):
-    bind: str = '0.0.0.0:8051'
-    insecure_bind: str = '127.0.0.1:8050'
-    certfile: str = ''
-    keyfile: str = ''
+    bind: str = "0.0.0.0:8051"
+    insecure_bind: str = "127.0.0.1:8050"
+    certfile: str = ""
+    keyfile: str = ""
     expiry: int = 3600
-    username: str = ''
-    password: str = ''
+    username: str = ""
+    password: str = ""
 
 
 class TokenSettings(BaseModel):
-    private_key: str = '/trinity/local/etc/ssl/trix.ed25519'
-    key_id: str = 'trix-1'
-    trust: str = '/trinity/local/etc/ssl/trust.d'
-    issuer: str = 'trix-daemon'
+    private_key: str = "/trinity/local/etc/ssl/trix.ed25519"
+    key_id: str = "trix-1"
+    trust: str = "/trinity/local/etc/ssl/trust.d"
+    issuer: str = "trix-daemon"
 
 
 class LunaSettings(BaseModel):
-    endpoint: str = 'controller.cluster:7050'
-    protocol: str = 'http'
+    endpoint: str = "controller.cluster:7050"
+    protocol: str = "http"
     verify_certificate: bool = False
-    username: str = ''
-    password: str = ''
+    username: str = ""
+    password: str = ""
     timeout: int = 20
 
 
 class DatabaseSettings(BaseModel):
-    url: str = 'sqlite:////trinity/local/trix/daemon/common/trix.db'
+    url: str = "sqlite:////trinity/local/trix/daemon/common/trix.db"
 
 
 class ResolveSettings(BaseModel):
-    users: list = Field(default_factory=lambda: ['local'])
-    groups: list = Field(default_factory=lambda: ['local'])
+    users: list = Field(default_factory=lambda: ["local"])
+    groups: list = Field(default_factory=lambda: ["local"])
     cache: int = 60
 
 
@@ -103,12 +103,14 @@ class TriggerSettings(BaseModel):
 
 
 class PluginSettings(BaseModel):
-    directory: str = '/trinity/local/trix/daemon/plugins'
+    directory: str = "/trinity/local/trix/daemon/plugins"
     enabled: list = Field(default_factory=list)
 
 
 class Settings(BaseModel):
-    """Everything the daemon reads from its configuration file."""
+    """
+    Everything the daemon reads from its configuration file.
+    """
 
     config_file: str = DEFAULT_CONFIG
     logger: LoggerSettings = Field(default_factory=LoggerSettings)
@@ -123,64 +125,64 @@ class Settings(BaseModel):
 
 
 def _csv(value: str) -> list:
-    return [item.strip() for item in str(value or '').split(',') if item.strip()]
+    return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
 def _bool(value: str) -> bool:
-    return str(value or '').strip().lower() in ('1', 'yes', 'true', 'on')
+    return str(value or "").strip().lower() in ("1", "yes", "true", "on")
 
 
-def load(path: str = '') -> Settings:
+def load(path: str = "") -> Settings:
     """
     Read the ini into a Settings object, falling back to the defaults above.
     """
-    path = path or os.environ.get('TRIX_CONFIG') or DEFAULT_CONFIG
+    path = path or os.environ.get("TRIX_CONFIG") or DEFAULT_CONFIG
     parser = RawConfigParser()
     parser.read(path)
 
-    def get(section: str, option: str, fallback: str = '') -> str:
+    def get(section: str, option: str, fallback: str = "") -> str:
         if parser.has_section(section) and parser.has_option(section, option):
             return parser.get(section, option)
         return fallback
 
     data = Settings(config_file=path)
     data.logger = LoggerSettings(
-        level=get('LOGGER', 'LEVEL', data.logger.level),
-        logfile=get('LOGGER', 'LOGFILE', data.logger.logfile))
+        level=get("LOGGER", "LEVEL", data.logger.level),
+        logfile=get("LOGGER", "LOGFILE", data.logger.logfile))
     data.api = ApiSettings(
-        bind=get('API', 'BIND', data.api.bind),
-        insecure_bind=get('API', 'INSECURE_BIND', data.api.insecure_bind),
-        certfile=get('API', 'CERTFILE', ''),
-        keyfile=get('API', 'KEYFILE', ''),
-        expiry=seconds(get('API', 'EXPIRY', '1h')),
-        username=get('API', 'USERNAME', ''),
-        password=get('API', 'PASSWORD', ''))
+        bind=get("API", "BIND", data.api.bind),
+        insecure_bind=get("API", "INSECURE_BIND", data.api.insecure_bind),
+        certfile=get("API", "CERTFILE", ""),
+        keyfile=get("API", "KEYFILE", ""),
+        expiry=seconds(get("API", "EXPIRY", "1h")),
+        username=get("API", "USERNAME", ""),
+        password=get("API", "PASSWORD", ""))
     data.tokens = TokenSettings(
-        private_key=get('TOKENS', 'PRIVATE_KEY', data.tokens.private_key),
-        key_id=get('TOKENS', 'KEY_ID', data.tokens.key_id),
-        trust=get('TOKENS', 'TRUST', data.tokens.trust),
-        issuer=get('TOKENS', 'ISSUER', data.tokens.issuer))
+        private_key=get("TOKENS", "PRIVATE_KEY", data.tokens.private_key),
+        key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
+        trust=get("TOKENS", "TRUST", data.tokens.trust),
+        issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
     data.luna = LunaSettings(
-        endpoint=get('LUNA', 'ENDPOINT', data.luna.endpoint),
-        protocol=get('LUNA', 'PROTOCOL', data.luna.protocol),
-        verify_certificate=_bool(get('LUNA', 'VERIFY_CERTIFICATE', 'no')),
-        username=get('LUNA', 'USERNAME', ''),
-        password=get('LUNA', 'PASSWORD', ''),
-        timeout=seconds(get('LUNA', 'TIMEOUT', '20s'), 20))
-    data.database = DatabaseSettings(url=get('DATABASE', 'URL', data.database.url))
+        endpoint=get("LUNA", "ENDPOINT", data.luna.endpoint),
+        protocol=get("LUNA", "PROTOCOL", data.luna.protocol),
+        verify_certificate=_bool(get("LUNA", "VERIFY_CERTIFICATE", "no")),
+        username=get("LUNA", "USERNAME", ""),
+        password=get("LUNA", "PASSWORD", ""),
+        timeout=seconds(get("LUNA", "TIMEOUT", "20s"), 20))
+    data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.resolve = ResolveSettings(
-        users=_csv(get('RESOLVE', 'USERS', 'local')),
-        groups=_csv(get('RESOLVE', 'GROUPS', 'local')),
-        cache=seconds(get('RESOLVE', 'CACHE', '60s'), 60))
+        users=_csv(get("RESOLVE", "USERS", "local")),
+        groups=_csv(get("RESOLVE", "GROUPS", "local")),
+        cache=seconds(get("RESOLVE", "CACHE", "60s"), 60))
     data.replication = ReplicationSettings(
-        peers=_csv(get('REPLICATION', 'PEERS', '')),
-        interval=seconds(get('REPLICATION', 'INTERVAL', '300s'), 300),
-        enabled=_bool(get('REPLICATION', 'ENABLED', 'yes')))
+        peers=_csv(get("REPLICATION", "PEERS", "")),
+        interval=seconds(get("REPLICATION", "INTERVAL", "300s"), 300),
+        enabled=_bool(get("REPLICATION", "ENABLED", "yes")))
     data.triggers = TriggerSettings(
-        luna_hashes=seconds(get('TRIGGERS', 'LUNA_HASHES', '60s'), 60))
+        luna_hashes=seconds(get("TRIGGERS", "LUNA_HASHES", "60s"), 60))
     data.plugins = PluginSettings(
-        directory=get('PLUGINS', 'DIRECTORY', data.plugins.directory),
-        enabled=_csv(get('PLUGINS', 'ENABLED', '')))
+        directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
+        enabled=_csv(get("PLUGINS", "ENABLED", "")))
     return data
 
 

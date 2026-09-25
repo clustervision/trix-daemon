@@ -45,7 +45,7 @@ from trix.core.security import keys, principals
 from trix.db import engine as database
 from trix.db import models
 
-LOGGER = trixlog.get('lifespan')
+LOGGER = trixlog.get("lifespan")
 
 
 def seed(handle) -> None:
@@ -61,7 +61,7 @@ def seed(handle) -> None:
         handle.add(level)
         handle.flush()
         handle.add(models.LevelCapability(level_id=level.id, capability=WILDCARD_CAPABILITY))
-        LOGGER.info('seeded the %s level', DEFAULT_LEVEL)
+        LOGGER.info("seeded the %s level", DEFAULT_LEVEL)
 
     config = settings().api
     if config.username:
@@ -69,9 +69,9 @@ def seed(handle) -> None:
                             .where(models.Principal.name == config.username))
         if row is None:
             handle.add(models.Principal(
-                name=config.username, kind='user', source='local',
+                name=config.username, kind="user", source="local",
                 password_digest=principals.hash_password(config.password)))
-            LOGGER.info('seeded the local principal %s', config.username)
+            LOGGER.info("seeded the local principal %s", config.username)
     handle.commit()
 
 
@@ -92,10 +92,10 @@ def start(app: FastAPI) -> None:
                      .load(config.tokens.private_key, config.tokens.trust))
 
     states = loader.load_all(app)
-    LOGGER.info('plugins: %s', ', '.join(f'{k}={v}' for k, v in states.items()) or 'none')
+    LOGGER.info("plugins: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")
 
     done = renders().run_all()
-    LOGGER.info('reconciled %d render(s) before opening the listeners', done)
+    LOGGER.info("reconciled %d render(s) before opening the listeners", done)
 
     # Both are background timers, so they start after the reconcile: the first
     # answer a caller gets should come from a render, not from an empty cache.
@@ -109,7 +109,7 @@ def stop(app: FastAPI) -> None:
     """
     luna_hashes().shutdown()
     sweep().shutdown()
-    LOGGER.info('shutting down')
+    LOGGER.info("shutting down")
 
 
 @asynccontextmanager

@@ -34,13 +34,13 @@ from trix.common.errors import BackendFailure
 from trix.plugins.slurm.backend import node_set
 from trix.utils import declarations
 
-LOGGER = trixlog.get('genders')
+LOGGER = trixlog.get("genders")
 
-PLUGIN: str = 'genders'
+PLUGIN: str = "genders"
 
 DEFAULT_CONFIG: dict = {
-    'genders_file': '/etc/genders',
-    'manager': 'TrinityX',
+    "genders_file": "/etc/genders",
+    "manager": "TrinityX",
 }
 
 
@@ -52,20 +52,22 @@ def _generator():
         from trinityx_config_genders import Generate
     except ImportError as error:
         raise BackendFailure(
-            f'trinityx_config_genders is not installed on this controller: {error}') from None
+            f"trinityx_config_genders is not installed on this controller: {error}") from None
     return Generate()
 
 
 class Backend:
-    """A thin shell around the package."""
+    """
+    A thin shell around the package.
+    """
 
     def config(self, body: dict = None) -> dict:
         """
         Where this plugin writes.
         """
         if body:
-            return declarations.merge(PLUGIN, 'config', '', body, DEFAULT_CONFIG)
-        return declarations.read(PLUGIN, 'config', '', DEFAULT_CONFIG)
+            return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
+        return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def render_genders(self) -> dict:
         """
@@ -73,9 +75,9 @@ class Backend:
         """
         fullset = node_set()
         if not fullset:
-            LOGGER.info('no nodes yet, so nothing to write')
-            return {'nodes': 0, 'file': self.config()['genders_file']}
+            LOGGER.info("no nodes yet, so nothing to write")
+            return {"nodes": 0, "file": self.config()["genders_file"]}
         if not _generator().Genders(fullset):
-            raise BackendFailure('the genders generator reported a failure')
-        LOGGER.info('wrote the genders file for %d node(s)', len(fullset))
-        return {'nodes': len(fullset), 'file': self.config()['genders_file']}
+            raise BackendFailure("the genders generator reported a failure")
+        LOGGER.info("wrote the genders file for %d node(s)", len(fullset))
+        return {"nodes": len(fullset), "file": self.config()["genders_file"]}

@@ -39,14 +39,14 @@ from trix.common.constants import API_PREFIX, RESERVED_PLUGIN
 from trix.common.errors import ServiceUnavailable
 from trix.common.settings import current as settings
 
-LOGGER = trixlog.get('proxy')
+LOGGER = trixlog.get("proxy")
 
 urllib3.disable_warnings()
 
-router = APIRouter(prefix=f'{API_PREFIX}/{RESERVED_PLUGIN}', tags=[RESERVED_PLUGIN])
+router = APIRouter(prefix=f"{API_PREFIX}/{RESERVED_PLUGIN}", tags=[RESERVED_PLUGIN])
 
-HOP_BY_HOP: tuple = ('connection', 'keep-alive', 'transfer-encoding', 'upgrade',
-                     'content-length', 'content-encoding', 'host')
+HOP_BY_HOP: tuple = ("connection", "keep-alive", "transfer-encoding", "upgrade",
+                     "content-length", "content-encoding", "host")
 
 
 def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
@@ -55,7 +55,7 @@ def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
         return requests.request(method, url, headers=headers, params=params, data=body or None,
                                 timeout=config.timeout, verify=config.verify_certificate)
     except requests.RequestException as error:
-        raise ServiceUnavailable(f'Luna is not answering: {error}') from None
+        raise ServiceUnavailable(f"Luna is not answering: {error}") from None
 
 
 async def forward(path: str, request: Request) -> Response:
@@ -67,7 +67,7 @@ async def forward(path: str, request: Request) -> Response:
     blocking, so it runs in the worker pool rather than on the event loop.
     """
     config = settings().luna
-    url = f'{config.protocol}://{config.endpoint}/{path}'
+    url = f"{config.protocol}://{config.endpoint}/{path}"
     headers = {key: value for key, value in request.headers.items()
                if key.lower() not in HOP_BY_HOP}
     body = await request.body()
@@ -78,15 +78,15 @@ async def forward(path: str, request: Request) -> Response:
     passed = {key: value for key, value in answer.headers.items()
               if key.lower() not in HOP_BY_HOP}
     return Response(content=answer.content, status_code=answer.status_code,
-                    headers=passed, media_type=answer.headers.get('content-type'))
+                    headers=passed, media_type=answer.headers.get("content-type"))
 
 
 # One route per verb, each with its own operation identifier. A single route
 # carrying four methods gives every one of them the same generated id, which
 # makes the published document ambiguous for anything that reads it.
-for _verb in ('GET', 'POST', 'PATCH', 'DELETE'):
+for _verb in ("GET", "POST", "PATCH", "DELETE"):
     router.add_api_route(
-        '/{path:path}', forward, methods=[_verb],
-        name=f'luna_forward_{_verb.lower()}',
-        operation_id=f'luna_forward_{_verb.lower()}',
-        summary=f'Forward {_verb} to Luna, unchanged')
+        "/{path:path}", forward, methods=[_verb],
+        name=f"luna_forward_{_verb.lower()}",
+        operation_id=f"luna_forward_{_verb.lower()}",
+        summary=f"Forward {_verb} to Luna, unchanged")

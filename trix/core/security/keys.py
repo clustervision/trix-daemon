@@ -37,29 +37,31 @@ from cryptography.hazmat.primitives.asymmetric import ed25519
 from trix.common import logging as trixlog
 from trix.common.errors import TrixError
 
-LOGGER = trixlog.get('keys')
+LOGGER = trixlog.get("keys")
 
-PUBLIC_SUFFIX: str = '.pub'
+PUBLIC_SUFFIX: str = ".pub"
 
 
 class KeyRing:
-    """One private key to sign with, and a public key per trusted key identifier."""
+    """
+    One private key to sign with, and a public key per trusted key identifier.
+    """
 
-    def __init__(self, key_id: str = '', issuer: str = '') -> None:
+    def __init__(self, key_id: str = "", issuer: str = "") -> None:
         self.key_id = key_id
         self.issuer = issuer
         self.private = None
         self.trusted: dict = {}
 
-    def load(self, private_path: str, trust_dir: str) -> 'KeyRing':
+    def load(self, private_path: str, trust_dir: str) -> "KeyRing":
         """
         Read the private key and every public key in the trust directory.
         """
         self.private = read_private(private_path)
         self.trusted = read_trust(trust_dir)
         self.trusted[self.key_id] = self.private.public_key()
-        LOGGER.info('signing as %s with key %s, trusting %s',
-                    self.issuer, self.key_id, ', '.join(sorted(self.trusted)) or 'nothing else')
+        LOGGER.info("signing as %s with key %s, trusting %s",
+                    self.issuer, self.key_id, ", ".join(sorted(self.trusted)) or "nothing else")
         return self
 
     def public_key(self, key_id: str):
@@ -69,7 +71,7 @@ class KeyRing:
         return self.trusted.get(key_id)
 
 
-def generate(private_path: str, public_path: str = '') -> str:
+def generate(private_path: str, public_path: str = "") -> str:
     """
     Write a new keypair. Called at bootstrap, never by the running daemon.
     """
@@ -79,12 +81,12 @@ def generate(private_path: str, public_path: str = '') -> str:
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption())
-    with open(private_path, 'wb') as handle:
+    with open(private_path, "wb") as handle:
         handle.write(blob)
     os.chmod(private_path, 0o600)
 
     public_path = public_path or private_path + PUBLIC_SUFFIX
-    with open(public_path, 'wb') as handle:
+    with open(public_path, "wb") as handle:
         handle.write(private.public_key().public_bytes(
             encoding=serialization.Encoding.PEM,
             format=serialization.PublicFormat.SubjectPublicKeyInfo))
@@ -97,11 +99,11 @@ def read_private(path: str):
     Load the private key, or say plainly that the daemon cannot mint anything.
     """
     if not os.path.isfile(path):
-        raise TrixError(f'no signing key at {path}; the installer generates it at bootstrap')
-    with open(path, 'rb') as handle:
+        raise TrixError(f"no signing key at {path}; the installer generates it at bootstrap")
+    with open(path, "rb") as handle:
         key = serialization.load_pem_private_key(handle.read(), password=None)
     if not isinstance(key, ed25519.Ed25519PrivateKey):
-        raise TrixError(f'{path} is not an Ed25519 private key')
+        raise TrixError(f"{path} is not an Ed25519 private key")
     return key
 
 
@@ -111,20 +113,20 @@ def read_trust(directory: str) -> dict:
     """
     trusted = {}
     if not os.path.isdir(directory):
-        LOGGER.warning('no trust directory at %s: only our own tokens will verify', directory)
+        LOGGER.warning("no trust directory at %s: only our own tokens will verify", directory)
         return trusted
     for name in sorted(os.listdir(directory)):
         if not name.endswith(PUBLIC_SUFFIX):
             continue
         path = os.path.join(directory, name)
         try:
-            with open(path, 'rb') as handle:
+            with open(path, "rb") as handle:
                 key = serialization.load_pem_public_key(handle.read())
         except (OSError, ValueError) as error:
-            LOGGER.error('ignoring %s: %s', path, error)
+            LOGGER.error("ignoring %s: %s", path, error)
             continue
         if not isinstance(key, ed25519.Ed25519PublicKey):
-            LOGGER.error('ignoring %s: not an Ed25519 public key', path)
+            LOGGER.error("ignoring %s: not an Ed25519 public key", path)
             continue
         trusted[name[:-len(PUBLIC_SUFFIX)]] = key
     return trusted

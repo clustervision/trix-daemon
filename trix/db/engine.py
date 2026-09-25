@@ -37,7 +37,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from trix.common import logging as trixlog
 
-LOGGER = trixlog.get('db')
+LOGGER = trixlog.get("db")
 
 BUSY_TIMEOUT_MS: int = 10000
 
@@ -46,27 +46,27 @@ _factory: sessionmaker = None
 
 
 def _sqlite_path(url: str) -> str:
-    if url.startswith('sqlite:////'):
-        return '/' + url[len('sqlite:////'):]
-    if url.startswith('sqlite:///'):
-        return url[len('sqlite:///'):]
-    return ''
+    if url.startswith("sqlite:////"):
+        return "/" + url[len("sqlite:////"):]
+    if url.startswith("sqlite:///"):
+        return url[len("sqlite:///"):]
+    return ""
 
 
-@event.listens_for(Engine, 'connect')
+@event.listens_for(Engine, "connect")
 def _pragmas(dbapi_connection, record) -> None:
     """
     Write-ahead logging and a busy timeout: several threads share one file.
     """
-    if dbapi_connection.__class__.__module__.startswith('sqlite3'):
+    if dbapi_connection.__class__.__module__.startswith("sqlite3"):
         cursor = dbapi_connection.cursor()
-        cursor.execute('PRAGMA journal_mode=WAL')
-        cursor.execute(f'PRAGMA busy_timeout={BUSY_TIMEOUT_MS}')
-        cursor.execute('PRAGMA foreign_keys=ON')
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
+        cursor.execute("PRAGMA foreign_keys=ON")
         cursor.close()
 
 
-MIGRATIONS: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'migrations')
+MIGRATIONS: str = os.path.join(os.path.dirname(os.path.abspath(__file__)), "migrations")
 
 
 def migrate(url: str) -> str:
@@ -80,9 +80,9 @@ def migrate(url: str) -> str:
     from alembic.config import Config
 
     config = Config()
-    config.set_main_option('script_location', MIGRATIONS)
-    config.set_main_option('sqlalchemy.url', url)
-    command.upgrade(config, 'head')
+    config.set_main_option("script_location", MIGRATIONS)
+    config.set_main_option("sqlalchemy.url", url)
+    command.upgrade(config, "head")
     return MIGRATIONS
 
 
@@ -95,10 +95,10 @@ def start(url: str) -> Engine:
     if path:
         os.makedirs(os.path.dirname(path), exist_ok=True)
     migrate(url)
-    _engine = create_engine(url, future=True, connect_args={'check_same_thread': False}
-                            if url.startswith('sqlite') else {})
+    _engine = create_engine(url, future=True, connect_args={"check_same_thread": False}
+                            if url.startswith("sqlite") else {})
     _factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
-    LOGGER.info('database ready at %s', path or url)
+    LOGGER.info("database ready at %s", path or url)
     return _engine
 
 

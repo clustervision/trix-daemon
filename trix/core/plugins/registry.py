@@ -34,14 +34,16 @@ from trix.common.constants import (PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
 
 
 class LoadedPlugin:
-    """One plugin the daemon knows about, loaded or not."""
+    """
+    One plugin the daemon knows about, loaded or not.
+    """
 
     def __init__(self, name: str, state: str = PLUGIN_STATE_LOADED) -> None:
         self.name = name
         self.state = state
-        self.reason: str = ''
-        self.digest: str = ''
-        self.origin: str = ''
+        self.reason: str = ""
+        self.digest: str = ""
+        self.origin: str = ""
         self.manifest = None
         self.backend = None
         self.models: dict = {}
@@ -52,20 +54,22 @@ class LoadedPlugin:
         What the control endpoint reports.
         """
         return {
-            'name': self.name,
-            'state': self.state,
-            'reason': self.reason,
-            'digest': self.digest[:16],
-            'origin': self.origin,
-            'routes': len(self.routes),
-            'capabilities': sorted({item.capability for item in
+            "name": self.name,
+            "state": self.state,
+            "reason": self.reason,
+            "digest": self.digest[:16],
+            "origin": self.origin,
+            "routes": len(self.routes),
+            "capabilities": sorted({item.capability for item in
                                     (self.manifest.endpoints if self.manifest else [])
                                     if item.capability}),
         }
 
 
 class Registry:
-    """The plugins this process is serving."""
+    """
+    The plugins this process is serving.
+    """
 
     def __init__(self) -> None:
         self.plugins: dict = {}
@@ -77,7 +81,7 @@ class Registry:
     def get(self, name: str) -> LoadedPlugin:
         return self.plugins.get(name)
 
-    def refuse(self, name: str, reason: str, origin: str = '') -> LoadedPlugin:
+    def refuse(self, name: str, reason: str, origin: str = "") -> LoadedPlugin:
         """
         Record a refusal without disturbing whatever is already serving.
         """
@@ -105,9 +109,9 @@ class Registry:
         for name, entry in self.plugins.items():
             if any(route is item for item in entry.routes):
                 return name
-        return ''
+        return ""
 
-    def paths(self, skip: str = '') -> dict:
+    def paths(self, skip: str = "") -> dict:
         """
         Every path a loaded plugin serves, so a collision can be named.
         """
@@ -116,7 +120,7 @@ class Registry:
             if name == skip or entry.state != PLUGIN_STATE_LOADED:
                 continue
             for route in entry.routes:
-                taken[getattr(route, 'path', '')] = name
+                taken[getattr(route, "path", "")] = name
         return taken
 
     def listing(self) -> list:

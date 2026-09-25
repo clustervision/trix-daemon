@@ -37,27 +37,27 @@ import yaml
 from trix.common import logging as trixlog
 from trix.common.errors import BackendFailure
 
-LOGGER = trixlog.get('files')
+LOGGER = trixlog.get("files")
 
-BLOCK_START: str = '# --- {manager} managed block, do not edit by hand ---'
-BLOCK_END: str = '# --- end {manager} managed block ---'
+BLOCK_START: str = "# --- {manager} managed block, do not edit by hand ---"
+BLOCK_END: str = "# --- end {manager} managed block ---"
 
 
 def write(path: str, content: str, mode: int = 0o644) -> str:
     """
     Write through a temporary file and rename, so a reader never sees a partial one.
     """
-    directory = os.path.dirname(path) or '.'
+    directory = os.path.dirname(path) or "."
     try:
         os.makedirs(directory, exist_ok=True)
-        handle, temporary = tempfile.mkstemp(dir=directory, prefix='.trix-', suffix='.tmp')
-        with os.fdopen(handle, 'w', encoding='utf-8') as target:
+        handle, temporary = tempfile.mkstemp(dir=directory, prefix=".trix-", suffix=".tmp")
+        with os.fdopen(handle, "w", encoding="utf-8") as target:
             target.write(content)
         os.chmod(temporary, mode)
         os.replace(temporary, path)
     except OSError as error:
-        raise BackendFailure(f'cannot write {path}: {error}') from None
-    LOGGER.debug('wrote %s', path)
+        raise BackendFailure(f"cannot write {path}: {error}") from None
+    LOGGER.debug("wrote %s", path)
     return path
 
 
@@ -69,13 +69,13 @@ def write_yaml(path: str, document, mode: int = 0o644) -> str:
                                       explicit_start=True), mode)
 
 
-def read_text(path: str, fallback: str = '') -> str:
+def read_text(path: str, fallback: str = "") -> str:
     """
     The file, or the fallback when it is not there.
     """
     if not os.path.isfile(path):
         return fallback
-    with open(path, 'r', encoding='utf-8') as handle:
+    with open(path, "r", encoding="utf-8") as handle:
         return handle.read()
 
 
@@ -89,15 +89,15 @@ def set_managed_block(path: str, manager: str, content: str, mode: int = 0o644) 
     start = BLOCK_START.format(manager=manager)
     end = BLOCK_END.format(manager=manager)
     existing = read_text(path)
-    block = f'{start}\n{content.rstrip()}\n{end}\n'
+    block = f"{start}\n{content.rstrip()}\n{end}\n"
 
     if start in existing and end in existing:
         head = existing.split(start)[0]
-        tail = existing.split(end, 1)[1].lstrip('\n')
-        updated = f'{head}{block}{tail}'
+        tail = existing.split(end, 1)[1].lstrip("\n")
+        updated = f"{head}{block}{tail}"
     else:
-        separator = '' if not existing or existing.endswith('\n') else '\n'
-        updated = f'{existing}{separator}{block}'
+        separator = "" if not existing or existing.endswith("\n") else "\n"
+        updated = f"{existing}{separator}{block}"
     return write(path, updated, mode)
 
 
@@ -109,5 +109,5 @@ def get_managed_block(path: str, manager: str) -> str:
     end = BLOCK_END.format(manager=manager)
     existing = read_text(path)
     if start not in existing or end not in existing:
-        return ''
-    return existing.split(start, 1)[1].split(end, 1)[0].strip('\n')
+        return ""
+    return existing.split(start, 1)[1].split(end, 1)[0].strip("\n")
