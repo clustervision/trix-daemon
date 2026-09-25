@@ -31,10 +31,13 @@ USERNAME = {{ trixd_username }}
 PASSWORD = {{ trixd_password }}
 
 [TOKENS]
+ALGORITHM = {{ trixd_token_algorithm }}
+SECRET_KEY =
+SECRET_FILE = {{ trixd_secret_file }}
+ISSUER = trix-daemon
 PRIVATE_KEY = {{ trixd_key }}
 KEY_ID = {{ trixd_key_id }}
 TRUST = {{ trixd_trust_dir }}
-ISSUER = trix-daemon
 
 [LUNA]
 ENDPOINT = {{ ansible_hostname }}:7050

@@ -29,11 +29,14 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+from datetime import datetime, timedelta, timezone
+
 import jwt
 import pytest
 
+from tests.conftest import SHARED_SECRET
 from trix.common.constants import API_PREFIX, RESERVED_PLUGIN
-from trix.common.errors import PluginRefused
+from trix.common.errors import PluginRefused, Unauthenticated
 from trix.core.plugins import loader
 from trix.core.plugins.manifest import parse
 from trix.core.security import tokens
@@ -55,16 +58,76 @@ def test_health_needs_no_token(client):
     assert answer.json()["status"] == "ok"
 
 
-def test_token_is_a_jwt_signed_with_our_key(token):
+def test_token_is_a_jwt_signed_the_way_luna_signs(token):
     """
-    Same format as Luna, asymmetric algorithm, key identifier in the header.
+    HS256 by default, and no key identifier, because Luna emits neither.
     """
     header = jwt.get_unverified_header(token)
-    assert header["alg"] == "EdDSA"
-    assert header["kid"] == "trix-test"
+    assert header["alg"] == "HS256"
+    assert "kid" not in header
     claims = tokens.verify(token)
     assert claims.subject == "tester"
     assert claims.kind == "user"
+
+
+def test_luna_verifies_a_token_this_daemon_minted(token):
+    """
+    The shared secret is the whole point: Luna decodes this without our help.
+    """
+    claims = jwt.decode(token, SHARED_SECRET, algorithms=["HS256"])
+    # Luna turns a token away only when it carries a provision scope, so a user
+    # token minted here is an administrator there, exactly as its own token is.
+    assert claims.get("scope") is None
+    assert claims["sub"] == "tester"
+
+
+def test_a_node_token_carries_lunas_provision_scope(rig):
+    """
+    Luna confines a provision token to the node it names, so we say which node.
+    """
+    minted = tokens.mint("node001", kind="node", node="node001")
+    claims = jwt.decode(minted, SHARED_SECRET, algorithms=["HS256"])
+    assert claims["scope"] == "provision"
+    assert claims["node"] == "node001"
+
+
+def test_a_token_luna_minted_is_accepted_here(rig):
+    """
+    Luna names an id and no subject. Id 0 is the administrator its ini names.
+    """
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=300)
+    admin = jwt.encode({"id": 0, "exp": expiry}, SHARED_SECRET, "HS256")
+    claims = tokens.verify(admin)
+    assert claims.kind == "user"
+    assert claims.subject == "tester"
+    assert claims.source == "luna"
+
+    node = jwt.encode({"node": "node001", "scope": "provision", "exp": expiry},
+                      SHARED_SECRET, "HS256")
+    claims = tokens.verify(node)
+    assert claims.kind == "node"
+    assert claims.node == "node001"
+
+
+def test_a_token_signed_with_another_secret_is_refused(rig):
+    """
+    Sharing a secret with Luna is not sharing it with everybody.
+    """
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=300)
+    forged = jwt.encode({"id": 0, "exp": expiry}, "a0000000000000000000000000000000", "HS256")
+    with pytest.raises(Unauthenticated):
+        tokens.verify(forged)
+
+
+def test_the_keypair_algorithm_still_works(keypair_rig):
+    """
+    EdDSA stays selectable, with the key identifier back in the header.
+    """
+    minted = tokens.mint("tester")
+    header = jwt.get_unverified_header(minted)
+    assert header["alg"] == "EdDSA"
+    assert header["kid"] == "trix-test"
+    assert tokens.verify(minted).subject == "tester"
 
 
 def test_a_token_carries_no_permissions(token):

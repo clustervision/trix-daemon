@@ -15,10 +15,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 ---
-# Paste into site/controller.yml, in the roles list, directly after the
-# trinity/luna2 entry. trix-daemon reads Luna objects by name when it reconciles
-# its renders at startup, so Luna is installed and running first. Luna never
-# needs trix-daemon, so the dependency points one way only.
+# Paste into the site/controller.yml roles list, directly after trinity/luna2:
+# renders reconcile against Luna at startup, and Luna never needs us back.
 
 - role: trinity/trix-daemon
   when: trixd_enabled | default(True)

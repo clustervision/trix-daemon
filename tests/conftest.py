@@ -44,22 +44,30 @@ PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
                              "trix", "plugins")
 
 
-@pytest.fixture()
-def rig(tmp_path):
+# What the installer writes into the shared vault file: 32 hexadecimal characters.
+SHARED_SECRET: str = "004f2af45d3a4e161a7dd2d17fdae47f"
+
+
+def build(tmp_path, algorithm: str = "HS256"):
     """
-    A configured daemon: its own database, its own keypair, its own plugins.
+    Write a configuration and bring a daemon up against it.
     """
     plugins = tmp_path / "plugins"
-    shutil.copytree(PLUGIN_SOURCE, plugins)
+    if not plugins.exists():
+        shutil.copytree(PLUGIN_SOURCE, plugins)
     trust = tmp_path / "trust.d"
-    trust.mkdir()
+    trust.mkdir(exist_ok=True)
+    secret = tmp_path / "secret.key"
+    secret.write_text(SHARED_SECRET, encoding="utf-8")
 
     ini = tmp_path / "trix.ini"
     ini.write_text(
         "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
         "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
         "USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n"
-        f'[TOKENS]\nPRIVATE_KEY = {tmp_path / "trix.ed25519"}\nKEY_ID = trix-test\n'
+        f"[TOKENS]\nALGORITHM = {algorithm}\nSECRET_KEY =\n"
+        f"SECRET_FILE = {secret}\n"
+        f'PRIVATE_KEY = {tmp_path / "trix.ed25519"}\nKEY_ID = trix-test\n'
         f"TRUST = {trust}\nISSUER = trix-daemon\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trix.db"}\n'
         "[RESOLVE]\nUSERS = local\nGROUPS = local\nCACHE = 0s\n"
@@ -67,11 +75,28 @@ def rig(tmp_path):
         encoding="utf-8")
 
     config = configuration.set_current(configuration.load(str(ini)))
-    keys.generate(config.tokens.private_key)
+    if not config.tokens.shared and not os.path.isfile(config.tokens.private_key):
+        keys.generate(config.tokens.private_key)
 
     application = create_app(with_lifespan=False)
     start(application)
     return application
+
+
+@pytest.fixture()
+def rig(tmp_path):
+    """
+    A configured daemon: its own database, the shared secret, its own plugins.
+    """
+    return build(tmp_path)
+
+
+@pytest.fixture()
+def keypair_rig(tmp_path):
+    """
+    The same daemon with the optional keypair algorithm selected instead.
+    """
+    return build(tmp_path, algorithm="EdDSA")
 
 
 @pytest.fixture()

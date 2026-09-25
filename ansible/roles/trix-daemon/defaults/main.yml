@@ -36,6 +36,12 @@ trixd_plain_port: 8050
 # readable by anything on it, and that interface is in the trusted zone.
 trixd_plain_bind: 127.0.0.1
 
+# The secret Luna already holds, written once by trinity/init and templated into
+# luna.ini from the same file, so either daemon accepts the other's tokens.
+trixd_token_algorithm: HS256
+trixd_secret_file: '{{ trix_ssl }}/secret.key'
+
+# Read only when trixd_token_algorithm is EdDSA, which needs Luna to speak it too.
 trixd_key: '{{ trix_ssl }}/trix.ed25519'
 trixd_key_id: trix-1
 trixd_trust_dir: '{{ trix_ssl }}/trust.d'

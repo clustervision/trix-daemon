@@ -67,9 +67,8 @@ class LunaHashes:
             return []
 
         if not current:
-            # Luna answers this route only on the HA master, so an empty answer is
-            # normal on a single controller and must not be read as "nothing
-            # changed". Said once, then left alone.
+            # Luna answers this only on the HA master, so empty is normal here and
+            # is not "nothing changed". Said once, then left alone.
             if not self.quiet:
                 LOGGER.warning("Luna returned no table hashes, so this fallback is inert "
                                "here; Luna answers that route on the HA master only")

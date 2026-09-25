@@ -88,8 +88,7 @@ def start(app: FastAPI) -> None:
     finally:
         handle.close()
 
-    keys.set_current(keys.KeyRing(config.tokens.key_id, config.tokens.issuer)
-                     .load(config.tokens.private_key, config.tokens.trust))
+    keys.set_current(keys.KeyRing(config.tokens).load())
 
     states = loader.load_all(app)
     LOGGER.info("plugins: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")

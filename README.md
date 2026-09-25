@@ -64,13 +64,16 @@ not exposed by default.
 ## Running it
 
 ```
-/trinity/local/python/bin/python3 -m trix.server keygen --config <path>/trix.ini
-/trinity/local/python/bin/python3 -m trix.server        --config <path>/trix.ini
+/trinity/local/python/bin/python3 -m trix.server --config <path>/trix.ini
 ```
 
-The keypair is written once, at bootstrap. The daemon never mints its own key: a
-key that has to exist before the first token can be signed cannot be signed by
-the thing that needs it.
+Tokens are HS256 over the secret at `/trinity/local/etc/ssl/secret.key`, the same
+secret and the same algorithm `luna2-daemon` uses, so a token minted by either
+daemon is accepted by the other. The installer writes that secret at bootstrap.
+
+Setting `[TOKENS] ALGORITHM = EdDSA` switches to a keypair, so a daemon that can
+verify a token cannot mint one. It needs Luna to speak EdDSA too, and today Luna
+does not. Generate the keypair with `-m trix.server keygen --config <path>`.
 
 ## Writing a plugin
 

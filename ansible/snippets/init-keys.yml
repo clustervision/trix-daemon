@@ -15,14 +15,16 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 ---
-# Append to site/roles/trinity/init/tasks/keys.yml, beside the blocks that already
-# create luna's secret.key and the omapi key. Same create-once idiom: generate if
-# absent, import if present, so a re-run never replaces a key that tokens were
-# signed with.
-#
-# The keypair has to exist before either daemon starts. A key that must exist
-# before the first token can be signed cannot be signed by the thing that needs
-# it, which is why this is here and not in the trix-daemon role.
+# NOT NEEDED BY DEFAULT: HS256 uses {{ trix_ssl }}/secret.key, which the block
+# above already creates for luna.ini and an HA pair already shares.
+
+# Apply this only for trixd_token_algorithm = EdDSA, which Luna cannot yet speak.
+
+# Append to site/roles/trinity/init/tasks/keys.yml, beside luna's secret.key. Same
+# create-once idiom, so a re-run never replaces a key that tokens were signed with.
+
+# The keypair must exist before either daemon starts, which is why it lives here
+# and not in the trix-daemon role.
 
 - block:
   - name: Verify if the trix signing key exists
@@ -50,9 +52,8 @@
         mode: '0600'
     when: not stat_trix_key.stat.exists
 
-  # An HA pair must hold the same key, or a token minted on one controller is
-  # refused by the other. Push it through the sync directory exactly as the
-  # ds389 and ssl-cert roles do with theirs.
+  # An HA pair needs the same key, or one controller refuses the other's tokens.
+  # Sync it exactly as the ds389 and ssl-cert roles sync theirs.
   - block:
     - name: Ensure the trix sync directory exists
       file:

@@ -30,18 +30,18 @@ Paths below are relative to the root of `trinityx-combined`.
 |---|---|---|
 | The role | `site/roles/trinity/trix-daemon/` | `roles/trix-daemon/` |
 | The role invocation | `site/controller.yml`, after `trinity/luna2` | `snippets/controller-role.yml` |
-| Key generation | `site/roles/trinity/init/tasks/keys.yml` | `snippets/init-keys.yml` |
+| Key generation (EdDSA only) | `site/roles/trinity/init/tasks/keys.yml` | `snippets/init-keys.yml` |
 | Prometheus discovery | `site/controller.yml`, the prometheus-server block | `snippets/prometheus-sd.yml` |
 | The node hook | `site/roles/trinity/alertx/templates/alertx-hook.sh.j2` | `snippets/alertx-hook.md` |
 | Luna's config hook | `luna2-daemon`, `daemon/plugins/hooks/config/node.py` | `snippets/luna-hook.md` |
 
 ## Order matters in two places
 
-**The keypair must exist before the daemon starts.** A key that has to exist
-before the first token can be signed cannot be signed by the thing that needs it,
-so the installer writes it. That task belongs in `trinity/init`, which already
-generates Luna's signing secret with the same create-once idiom, and it runs long
-before any daemon.
+**The shared secret must exist before the daemon starts.** By default the daemon
+signs with HS256 and the secret at `{{ trix_ssl }}/secret.key`, which `trinity/init`
+already writes for `luna.ini` and an HA pair already syncs. Nothing to add: the
+role only checks it is there. `snippets/init-keys.yml` applies solely when
+`trixd_token_algorithm` is set to `EdDSA`, which Luna cannot yet speak.
 
 **The role runs after `trinity/luna2`.** trix-daemon reads Luna objects by name
 at startup to reconcile its renders. Luna does not need trix-daemon at all, so the
@@ -54,6 +54,7 @@ trixd_enabled: true
 trixd_tls_port: 8051
 trixd_plain_port: 8050
 trixd_plain_bind: 127.0.0.1        # the loopback, unless you mean to expose it
+trixd_token_algorithm: HS256       # what luna2-daemon signs with; EdDSA is the other
 trixd_pip: trix_daemon-1.0-py3-none-any.whl
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 ```

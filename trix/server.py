@@ -91,6 +91,10 @@ def keygen(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
+    if config.tokens.shared:
+        print(f"[TOKENS] ALGORITHM is {config.tokens.algorithm}, which signs with the "
+              f"shared secret and needs no keypair")
+        return 1
     if os.path.isfile(config.tokens.private_key):
         print(f"{config.tokens.private_key} already exists; refusing to replace it")
         return 1

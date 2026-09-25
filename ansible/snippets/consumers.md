@@ -98,11 +98,11 @@ URL, so the seam is a second endpoint in the ini plus a base selector in
 `get_raw` and `post_raw`. `luna service` and `luna monitor` go through that pair
 and nothing else, so moving only those two families needs only the selector.
 
-Both clients currently verify tokens locally by decoding them with the shared
-secret. Under asymmetric signing that is a code change, not a configuration
-change. The simplest fix is to stop verifying client-side: carry the token, and
-fetch a new one when a call answers 401. A client has nothing to gain from
-checking a signature it did not issue.
+Both clients verify tokens locally by decoding them with the shared secret, and
+trix-daemon signs with that same secret, so neither needs changing. Were the
+daemon ever switched to EdDSA this would become a code change: the fix then is to
+stop verifying client-side and fetch a new token on a 401, since a client has
+nothing to gain from checking a signature it did not issue.
 
 ## The compatibility window
 

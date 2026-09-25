@@ -17,19 +17,12 @@
 ---
 # Replace the luna_nodes job in site/controller.yml, inside the
 # prometheus_server_additional_sd list on the trinity/prometheus-server role.
-#
-# Before, pointing at Luna:
-#   - job_name: luna_nodes
-#     http_sd_configs:
-#     - url: "{{ luna_protocol }}://localhost:7050/export/prometheus"
-#
-# After, pointing at trix-daemon. The document is served from the render rather
-# than rebuilt per poll, so the cost of a poll that changes nothing is one hash
-# comparison instead of a pass over every node.
-#
-# The plain listener is on the loopback, which is where Prometheus runs, so this
-# needs no certificate and no token. The endpoint declares itself public for
-# exactly this reason, because service discovery presents no credentials.
+
+# It pointed at Luna's /export/prometheus on 7050, which rebuilt the document per
+# poll. This is served from the render, so an unchanged poll costs one hash.
+
+# Prometheus runs on the loopback, where the plain listener is, so no certificate
+# and no token: the endpoint is declared public because service discovery has none.
 
 - job_name: luna_nodes
   http_sd_configs:

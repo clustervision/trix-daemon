@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Minting and verifying JSON web tokens. Same format as Luna, asymmetric algorithm.
+Minting and verifying JSON web tokens, in the shape and algorithm Luna uses.
 """
 
 __author__      = "Sumit Sharma"
@@ -34,9 +34,12 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from trix.common import logging as trixlog
-from trix.common.constants import (TOKEN_ALGORITHM, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE,
-                                   TOKEN_KIND_USER, TOKEN_KINDS)
+from trix.common.constants import (LUNA_CLAIM_ID, LUNA_CLAIM_NODE, LUNA_CLAIM_SCOPE,
+                                   LUNA_SCOPE_PROVISION, LUNA_SUPERUSER_ID,
+                                   TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER,
+                                   TOKEN_KINDS)
 from trix.common.errors import Unauthenticated
+from trix.common.settings import current as settings
 from trix.core.security import keys
 
 LOGGER = trixlog.get("tokens")
@@ -44,16 +47,30 @@ LOGGER = trixlog.get("tokens")
 
 class Claims:
     """
-    What a verified token said.
+    What a verified token said, whichever of the two daemons minted it.
     """
 
     def __init__(self, payload: dict) -> None:
         self.raw = payload
         self.subject: str = payload.get("sub", "")
-        self.kind: str = payload.get("kind", TOKEN_KIND_USER)
+        self.kind: str = payload.get("kind", "")
         self.source: str = payload.get("src", "")
         self.issuer: str = payload.get("iss", "")
-        self.node: str = payload.get("node", "")
+        self.node: str = payload.get(LUNA_CLAIM_NODE, "")
+        self.scope: str = payload.get(LUNA_CLAIM_SCOPE, "")
+        self.luna_id = payload.get(LUNA_CLAIM_ID)
+        if not self.kind:
+            # Luna names no kind. A provision scope is its node token and anything
+            # else is its administrator, which is the reading Luna itself applies.
+            self.kind = (TOKEN_KIND_NODE if self.scope == LUNA_SCOPE_PROVISION
+                         else TOKEN_KIND_USER)
+            self.source = self.source or "luna"
+        if not self.subject and self.kind == TOKEN_KIND_NODE:
+            self.subject = self.node
+        if not self.subject and self.luna_id == LUNA_SUPERUSER_ID:
+            # Luna's id 0 is the administrator its ini names, which is the account
+            # seeded from ours. Any other id has no counterpart here, so it fails.
+            self.subject = settings().api.username
 
     def __repr__(self) -> str:
         return f"<Claims {self.subject} kind={self.kind} iss={self.issuer}>"
@@ -67,8 +84,9 @@ def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
     if kind not in TOKEN_KINDS:
         raise Unauthenticated(f"unknown token kind {kind}")
     ring = keys.current()
-    if ring.private is None:
-        raise Unauthenticated("this daemon holds no signing key")
+    signing = ring.signing_key()
+    if signing is None:
+        raise Unauthenticated("this daemon holds nothing to sign with")
     issued = datetime.now(timezone.utc)
     payload = {
         "iss": ring.issuer,
@@ -79,30 +97,39 @@ def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
         "exp": issued + timedelta(seconds=expiry),
     }
     if kind == TOKEN_KIND_NODE:
-        payload["node"] = node or subject
-    return jwt.encode(payload, ring.private, algorithm=TOKEN_ALGORITHM,
-                      headers={"kid": ring.key_id})
+        payload[LUNA_CLAIM_NODE] = node or subject
+        # Luna confines a provision-scoped token to the node it names. Saying so
+        # narrows the token: without it Luna would read this as an administrator.
+        payload[LUNA_CLAIM_SCOPE] = LUNA_SCOPE_PROVISION
+
+    # One secret means no identifier to choose between keys, so no kid header goes
+    # out. That is what Luna's own tokens carry, or rather what they do not.
+    headers = None if ring.shared else {"kid": ring.key_id}
+    return jwt.encode(payload, signing, algorithm=ring.algorithm, headers=headers)
 
 
 def verify(token: str) -> Claims:
     """
-    Check a token against the issuers this daemon is configured to trust.
+    Check a token against whatever this daemon is configured to accept.
     """
     if not token:
         raise Unauthenticated("a valid token is missing")
-    try:
-        header = jwt.get_unverified_header(token)
-    except jwt.PyJWTError:
-        raise Unauthenticated("token is invalid") from None
+    ring = keys.current()
 
-    key_id = header.get("kid", "")
-    public = keys.current().public_key(key_id)
-    if public is None:
-        LOGGER.warning("token presented with untrusted key id %r", key_id)
+    key_id = ""
+    if not ring.shared:
+        try:
+            key_id = jwt.get_unverified_header(token).get("kid", "")
+        except jwt.PyJWTError:
+            raise Unauthenticated("token is invalid") from None
+
+    verifying = ring.verifying_key(key_id)
+    if verifying is None:
+        LOGGER.warning("nothing here verifies a token with key id %r", key_id)
         raise Unauthenticated("token was signed by an issuer this daemon does not trust")
 
     try:
-        payload = jwt.decode(token, public, algorithms=[TOKEN_ALGORITHM])
+        payload = jwt.decode(token, verifying, algorithms=[ring.algorithm])
     except jwt.ExpiredSignatureError:
         raise Unauthenticated("token has expired") from None
     except jwt.PyJWTError:

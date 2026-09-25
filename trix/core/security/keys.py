@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-The signing key this daemon holds, and the public keys it is configured to trust.
+What this daemon signs tokens with: a shared secret, or a keypair it alone holds.
 """
 
 __author__      = "Sumit Sharma"
@@ -35,7 +35,9 @@ from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
 
 from trix.common import logging as trixlog
+from trix.common.constants import MINIMUM_SECRET_LENGTH, TOKEN_ALGORITHM_SHARED
 from trix.common.errors import TrixError
+from trix.common.settings import TokenSettings
 
 LOGGER = trixlog.get("keys")
 
@@ -44,30 +46,74 @@ PUBLIC_SUFFIX: str = ".pub"
 
 class KeyRing:
     """
-    One private key to sign with, and a public key per trusted key identifier.
+    The material one algorithm needs, whichever of the two is configured.
     """
 
-    def __init__(self, key_id: str = "", issuer: str = "") -> None:
-        self.key_id = key_id
-        self.issuer = issuer
+    def __init__(self, config: TokenSettings = None) -> None:
+        self.config = config or TokenSettings()
+        self.algorithm: str = self.config.algorithm
+        self.key_id: str = self.config.key_id
+        self.issuer: str = self.config.issuer
+        self.secret: str = ""
         self.private = None
         self.trusted: dict = {}
 
-    def load(self, private_path: str, trust_dir: str) -> "KeyRing":
+    @property
+    def shared(self) -> bool:
+        """
+        Whether one secret both signs and verifies, which is what Luna does.
+        """
+        return self.algorithm == TOKEN_ALGORITHM_SHARED
+
+    def load(self) -> "KeyRing":
+        """
+        Read whatever the configured algorithm signs with.
+        """
+        return self._load_secret() if self.shared else self._load_keypair()
+
+    def _load_secret(self) -> "KeyRing":
+        """
+        Take the secret both daemons hold, so either one can verify the other.
+        """
+        self.secret = self.config.secret_key
+        if not self.secret:
+            raise TrixError(
+                f"{self.algorithm} signs with a shared secret and none was found: set "
+                f"[TOKENS] SECRET_KEY in trix.ini, or put it in {self.config.secret_file}")
+        if len(self.secret) < MINIMUM_SECRET_LENGTH:
+            LOGGER.warning("the shared secret is %d characters long; the installer "
+                           "writes %d", len(self.secret), MINIMUM_SECRET_LENGTH)
+        LOGGER.info("signing as %s with %s and the secret shared with Luna",
+                    self.issuer, self.algorithm)
+        return self
+
+    def _load_keypair(self) -> "KeyRing":
         """
         Read the private key and every public key in the trust directory.
         """
-        self.private = read_private(private_path)
-        self.trusted = read_trust(trust_dir)
+        self.private = read_private(self.config.private_key)
+        self.trusted = read_trust(self.config.trust)
         self.trusted[self.key_id] = self.private.public_key()
-        LOGGER.info("signing as %s with key %s, trusting %s",
-                    self.issuer, self.key_id, ", ".join(sorted(self.trusted)) or "nothing else")
+        LOGGER.info("signing as %s with %s key %s, trusting %s", self.issuer,
+                    self.algorithm, self.key_id,
+                    ", ".join(sorted(self.trusted)) or "nothing else")
         return self
 
-    def public_key(self, key_id: str):
+    def signing_key(self):
         """
-        The public key for a key identifier, or None when it is not trusted.
+        What this daemon mints with, or None when it holds nothing to mint with.
         """
+        return (self.secret or None) if self.shared else self.private
+
+    def verifying_key(self, key_id: str = ""):
+        """
+        What a presented token is checked against, or None when nothing trusts it.
+
+        Under a shared secret there is one answer and no key identifier to look up,
+        which is also why a token Luna minted carries no kid header for us to read.
+        """
+        if self.shared:
+            return self.secret or None
         return self.trusted.get(key_id)
 
 

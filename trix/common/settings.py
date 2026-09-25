@@ -35,6 +35,9 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
+from trix.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHARED,
+                                   TOKEN_ALGORITHMS)
+
 DEFAULT_CONFIG: str = "/trinity/local/trix/daemon/config/trix.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
@@ -67,10 +70,20 @@ class ApiSettings(BaseModel):
 
 
 class TokenSettings(BaseModel):
+    algorithm: str = DEFAULT_TOKEN_ALGORITHM
+    secret_key: str = ""
+    secret_file: str = "/trinity/local/etc/ssl/secret.key"
     private_key: str = "/trinity/local/etc/ssl/trix.ed25519"
     key_id: str = "trix-1"
     trust: str = "/trinity/local/etc/ssl/trust.d"
     issuer: str = "trix-daemon"
+
+    @property
+    def shared(self) -> bool:
+        """
+        Whether tokens are signed with a secret both daemons hold.
+        """
+        return self.algorithm == TOKEN_ALGORITHM_SHARED
 
 
 class LunaSettings(BaseModel):
@@ -128,6 +141,32 @@ def _csv(value: str) -> list:
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
+def _algorithm(value: str) -> str:
+    """
+    Canonicalise the configured algorithm, refusing one this daemon cannot sign with.
+    """
+    wanted = str(value or "").strip()
+    if not wanted:
+        return DEFAULT_TOKEN_ALGORITHM
+    for known in TOKEN_ALGORITHMS:
+        if wanted.lower() == known.lower():
+            return known
+    raise ValueError(f"[TOKENS] ALGORITHM is {wanted}, which is not one of "
+                     f"{', '.join(TOKEN_ALGORITHMS)}")
+
+
+def _secret(inline: str, path: str) -> str:
+    """
+    The shared secret: what the ini states, else the vault file luna.ini is built from.
+    """
+    if inline:
+        return inline.strip()
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    return ""
+
+
 def _bool(value: str) -> bool:
     return str(value or "").strip().lower() in ("1", "yes", "true", "on")
 
@@ -157,7 +196,11 @@ def load(path: str = "") -> Settings:
         expiry=seconds(get("API", "EXPIRY", "1h")),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""))
+    secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
+        algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
+        secret_key=_secret(get("TOKENS", "SECRET_KEY", ""), secret_file),
+        secret_file=secret_file,
         private_key=get("TOKENS", "PRIVATE_KEY", data.tokens.private_key),
         key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
         trust=get("TOKENS", "TRUST", data.tokens.trust),

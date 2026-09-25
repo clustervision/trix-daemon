@@ -204,9 +204,8 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
             raise PluginRefused(
                 f"{clash[0]} is already served by {taken[clash[0]]}")
     except Exception as error:
-        # Whatever is already serving keeps serving. The caller is told why, and
-        # decides whether that is fatal: at startup it is not, at the control
-        # endpoint it is.
+        # Whatever is already serving keeps serving. The caller decides whether
+        # that is fatal: at startup it is not, at the control endpoint it is.
         reason = error.message if isinstance(error, PluginRefused) else str(error)
         LOGGER.error("plugin %s refused: %s", name, reason)
         renders().forget(name)

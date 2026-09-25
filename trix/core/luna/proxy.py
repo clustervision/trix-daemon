@@ -81,9 +81,8 @@ async def forward(path: str, request: Request) -> Response:
                     headers=passed, media_type=answer.headers.get("content-type"))
 
 
-# One route per verb, each with its own operation identifier. A single route
-# carrying four methods gives every one of them the same generated id, which
-# makes the published document ambiguous for anything that reads it.
+# One route per verb, each with its own operation id. One route carrying four
+# methods gives them all the same generated id, which the document cannot express.
 for _verb in ("GET", "POST", "PATCH", "DELETE"):
     router.add_api_route(
         "/{path:path}", forward, methods=[_verb],

@@ -39,7 +39,24 @@ API_PREFIX: str = f"/api/{API_VERSION}"
 RESERVED_PLUGIN: str = "luna"
 
 TOKEN_HEADER: str = "x-access-tokens"
-TOKEN_ALGORITHM: str = "EdDSA"
+
+# HS256 and the shared secret are what luna2-daemon uses, so either daemon accepts
+# the other's tokens. EdDSA is selectable, but only once Luna speaks it too.
+TOKEN_ALGORITHM_SHARED: str = "HS256"
+TOKEN_ALGORITHM_KEYPAIR: str = "EdDSA"
+TOKEN_ALGORITHMS: tuple = (TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHM_KEYPAIR)
+DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
+
+# Shorter than this and we complain. The installer writes 32 hexadecimal characters.
+MINIMUM_SECRET_LENGTH: int = 32
+
+# What Luna writes into its tokens. It reads back only scope and node, never id,
+# and id 0 is the administrator luna.ini names rather than a row in its user table.
+LUNA_CLAIM_ID: str = "id"
+LUNA_CLAIM_NODE: str = "node"
+LUNA_CLAIM_SCOPE: str = "scope"
+LUNA_SCOPE_PROVISION: str = "provision"
+LUNA_SUPERUSER_ID: int = 0
 
 TOKEN_KIND_USER: str = "user"
 TOKEN_KIND_NODE: str = "node"
