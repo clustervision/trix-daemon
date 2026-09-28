@@ -35,7 +35,6 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from trix.common import logging as trixlog
-from trix.common.constants import DEFAULT_LEVEL, WILDCARD_CAPABILITY
 from trix.common.settings import current as settings
 from trix.core.plugins import loader
 from trix.core.render.engine import current as renders
@@ -50,17 +49,9 @@ LOGGER = trixlog.get("lifespan")
 
 def seed(handle) -> None:
     """
-    One level carrying every capability, and the administrator from the ini. No
-    grant is made, and until one exists the gate permits everything, as today.
+    The administrator the ini names. Until somebody is put in a usergroup the gate
+    permits everything, which is what a cluster does today.
     """
-    level = handle.scalar(select(models.Level).where(models.Level.name == DEFAULT_LEVEL))
-    if level is None:
-        level = models.Level(name=DEFAULT_LEVEL)
-        handle.add(level)
-        handle.flush()
-        handle.add(models.LevelCapability(level_id=level.id, capability=WILDCARD_CAPABILITY))
-        LOGGER.info("seeded the %s level", DEFAULT_LEVEL)
-
     config = settings().api
     if config.username:
         row = handle.scalar(select(models.Principal)

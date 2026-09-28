@@ -79,11 +79,6 @@ DEFAULT_MODE: str = "770"
 # is open: the columns are on every declaration, so it needs no schema change.
 ACL_KIND: str = "acl"
 
-# The shipped level. Until a grant exists it carries every capability, which is
-# how an upgraded cluster keeps behaving as it did.
-DEFAULT_LEVEL: str = "administrator"
-WILDCARD_CAPABILITY: str = "*"
-
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")
 
 PLUGIN_STATE_LOADED: str = "loaded"

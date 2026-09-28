@@ -38,7 +38,6 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import WILDCARD_CAPABILITY
 from trix.common.settings import current as settings
 from trix.db import models
 from trix.core.security import chain
@@ -178,42 +177,3 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
     found = Resolved(name, row.kind, source, groups, bool(row.admin))
     CACHE.put(f"user:{name}", found)
     return found
-
-
-def capabilities(handle: Session, who: Resolved) -> set:
-    """
-    Every capability this principal holds, through its grants and usergroups.
-    """
-    if who is None:
-        return set()
-    if handle.scalar(select(models.Grant.id).limit(1)) is None:
-        # Nothing has been granted yet, so everything is permitted. That is what a
-        # cluster does today, and it is what keeps an upgrade a non-event.
-        return {WILDCARD_CAPABILITY}
-
-    principal = handle.scalar(select(models.Principal).where(models.Principal.name == who.name))
-    level_ids = set()
-    if principal is not None:
-        level_ids.update(handle.scalars(
-            select(models.Grant.level_id).where(models.Grant.principal_id == principal.id)).all())
-    if who.usergroups:
-        level_ids.update(handle.scalars(
-            select(models.Grant.level_id)
-            .join(models.Usergroup, models.Usergroup.id == models.Grant.usergroup_id)
-            .where(models.Usergroup.name.in_(who.usergroups))).all())
-    if not level_ids:
-        return set()
-    return set(handle.scalars(
-        select(models.LevelCapability.capability)
-        .where(models.LevelCapability.level_id.in_(level_ids))).all())
-
-
-def permits(held: set, wanted: str) -> bool:
-    """
-    Whether a held capability set covers the one an endpoint declared.
-    """
-    if not wanted or WILDCARD_CAPABILITY in held or wanted in held:
-        return True
-    # monitoring.* covers monitoring.read without listing every verb.
-    family = wanted.split(".", 1)[0]
-    return f"{family}.{WILDCARD_CAPABILITY}" in held

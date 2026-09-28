@@ -143,44 +143,6 @@ class UsergroupMap(Base, Replicated):
     role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
 
 
-class Level(Base, Replicated):
-    """
-    A named bundle of capabilities.
-    """
-
-    __tablename__ = "level"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(128), unique=True, nullable=False)
-
-
-class LevelCapability(Base, Replicated):
-    """
-    One capability string inside a level.
-    """
-
-    __tablename__ = "level_capability"
-    __table_args__ = (UniqueConstraint("level_id", "capability", name="uq_level_capability"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    level_id: Mapped[int] = mapped_column(ForeignKey("level.id"), nullable=False)
-    capability: Mapped[str] = mapped_column(String(128), nullable=False)
-
-
-class Grant(Base, Replicated):
-    """
-    A level given to a principal or a usergroup, optionally at a scope.
-    """
-
-    __tablename__ = "grant"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    principal_id: Mapped[int] = mapped_column(ForeignKey("principal.id"), nullable=True)
-    usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=True)
-    level_id: Mapped[int] = mapped_column(ForeignKey("level.id"), nullable=False)
-    scope: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-
-
 class Audit(Base):
     """
     What happened here. Local: it is a statement about this controller.
@@ -227,5 +189,5 @@ class PluginState(Base):
 
 
 REPLICATED: tuple = ("declaration", "principal", "usergroup", "membership",
-                     "usergroupmap", "level", "level_capability", "grant")
+                     "usergroupmap")
 LOCAL: tuple = ("audit", "render_state", "plugin_state")

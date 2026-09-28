@@ -44,16 +44,13 @@ LOGGER = trixlog.get("replication")
 
 # Autoincrement is local: the peer inserts its own row and gets its own number, so
 # a document is addressed by the columns the request was made with and never by id.
-ORDER: tuple = ("principal", "usergroup", "level", "membership",
-                "usergroupmap", "level_capability", "grant", "declaration")
+ORDER: tuple = ("principal", "usergroup", "membership", "usergroupmap",
+                "declaration")
 
 MODELS: dict = {
     "principal": models.Principal,
     "usergroup": models.Usergroup,
-    "level": models.Level,
     "membership": models.Membership,
-    "level_capability": models.LevelCapability,
-    "grant": models.Grant,
     "usergroupmap": models.UsergroupMap,
     "declaration": models.Declaration,
 }
@@ -93,19 +90,11 @@ def to_document(handle: Session, table: str, row) -> dict:
     if table == "principal":
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
                     password_digest=row.password_digest, enabled=bool(row.enabled))
-    elif table in ("usergroup", "level"):
+    elif table == "usergroup":
         body.update(key=[row.name], name=row.name)
     elif table == "membership":
         body.update(key=[_name_of(handle, models.Principal, row.principal_id),
                          _name_of(handle, models.Usergroup, row.usergroup_id)])
-    elif table == "level_capability":
-        body.update(key=[_name_of(handle, models.Level, row.level_id), row.capability],
-                    capability=row.capability)
-    elif table == "grant":
-        body.update(key=[_name_of(handle, models.Principal, row.principal_id),
-                         _name_of(handle, models.Usergroup, row.usergroup_id),
-                         _name_of(handle, models.Level, row.level_id), row.scope or ""],
-                    scope=row.scope or "")
     elif table == "usergroupmap":
         body.update(key=[row.source, row.external_group], source=row.source,
                     external_group=row.external_group, role=row.role,
@@ -143,7 +132,7 @@ def hashes(handle: Session) -> dict:
 
 def _find(handle: Session, table: str, key: list):
     model = MODELS[table]
-    if table in ("principal", "usergroup", "level"):
+    if table in ("principal", "usergroup"):
         return handle.scalar(select(model).where(model.name == key[0]))
     if table == "membership":
         principal = _id_of(handle, models.Principal, key[0])
@@ -152,18 +141,6 @@ def _find(handle: Session, table: str, key: list):
             return None
         return handle.scalar(select(model).where(model.principal_id == principal,
                                                  model.usergroup_id == usergroup))
-    if table == "level_capability":
-        level = _id_of(handle, models.Level, key[0])
-        if not level:
-            return None
-        return handle.scalar(select(model).where(model.level_id == level,
-                                                 model.capability == key[1]))
-    if table == "grant":
-        return handle.scalar(select(model).where(
-            model.principal_id == _id_of(handle, models.Principal, key[0]),
-            model.usergroup_id == _id_of(handle, models.Usergroup, key[1]),
-            model.level_id == _id_of(handle, models.Level, key[2]),
-            model.scope == (key[3] or "")))
     if table == "permission":
         return handle.scalar(select(model).where(model.object_kind == key[0],
                                                  model.object_name == key[1]))
@@ -185,7 +162,7 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
                 "enabled": bool(document.get("enabled", True)),
                 "admin": bool(document.get("admin", False)),
                 "delegate": bool(document.get("delegate", False))}
-    if table in ("usergroup", "level"):
+    if table == "usergroup":
         return {"name": key[0]}
     if table == "membership":
         principal = _id_of(handle, models.Principal, key[0])
@@ -195,18 +172,6 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         return {"principal_id": principal, "usergroup_id": usergroup,
                 "role": document.get("role", DEFAULT_ROLE),
                 "source": document.get("source", "local")}
-    if table == "level_capability":
-        level = _id_of(handle, models.Level, key[0])
-        if not level:
-            return None
-        return {"level_id": level, "capability": key[1]}
-    if table == "grant":
-        level = _id_of(handle, models.Level, key[2])
-        if not level:
-            return None
-        return {"principal_id": _id_of(handle, models.Principal, key[0]),
-                "usergroup_id": _id_of(handle, models.Usergroup, key[1]),
-                "level_id": level, "scope": key[3] or ""}
     if table == "usergroupmap":
         usergroup = _id_of(handle, models.Usergroup, document.get("usergroup", ""))
         if not usergroup:
