@@ -34,7 +34,7 @@ from fastapi import Header, Request
 from trix.common import logging as trixlog
 from trix.common.constants import TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER
 from trix.common.errors import Forbidden, Unauthenticated
-from trix.core.security import principals, tokens
+from trix.core.security import audit, principals, tokens
 from trix.db import engine
 
 LOGGER = trixlog.get("gate")
@@ -66,6 +66,13 @@ def _present(x_access_tokens: str, authorization: str) -> str:
     return ""
 
 
+def _target(request: Request) -> str:
+    """
+    What the request names, for the audit row: the path is the object here.
+    """
+    return str(getattr(request, "url", "") and request.url.path or "")
+
+
 def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER):
     """
     Build the dependency for one endpoint.
@@ -86,23 +93,33 @@ def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER):
                     break
             if target and claims.node.split(".")[0] != target.split(".")[0]:
                 LOGGER.warning("node token for %s used on %s", claims.node, target)
+                audit.refused(claims.subject, capability, target,
+                              f"node token for {claims.node}")
                 raise Forbidden("token is not valid for this node")
             return Caller(claims, None, {capability})
 
         if claims.kind == TOKEN_KIND_NODE:
+            audit.refused(claims.subject, capability, _target(request),
+                          "a node token on a user endpoint")
             raise Forbidden("a node token is not permitted on this endpoint")
 
         handle = engine.session()
         try:
             who = principals.resolve(handle, claims.subject)
             if who is None and claims.kind != TOKEN_KIND_SERVICE:
+                audit.refused(claims.subject, capability, _target(request),
+                              "the subject cannot be resolved here")
                 raise Unauthenticated(f"{claims.subject} cannot be resolved here")
             held = principals.capabilities(handle, who) if who else {capability}
         finally:
             handle.close()
 
         if capability and not principals.permits(held, capability):
+            audit.refused(claims.subject, capability, _target(request),
+                          f"holds {', '.join(sorted(held)) or 'nothing'}")
             raise Forbidden(f"{capability} is required")
+        if capability:
+            audit.granted(claims.subject, capability, _target(request))
         return Caller(claims, who, held)
 
     return dependency

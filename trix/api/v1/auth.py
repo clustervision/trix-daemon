@@ -38,7 +38,7 @@ from trix.common.constants import API_PREFIX, TOKEN_KIND_NODE
 from trix.common.errors import Unauthenticated
 from trix.common.settings import current as settings
 from trix.core.luna.client import current as luna
-from trix.core.security import principals, tokens
+from trix.core.security import audit, principals, tokens
 from trix.core.security.gate import Caller, guard
 from trix.db.engine import scoped
 
@@ -83,7 +83,9 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
     who = principals.authenticate(handle, body.username, body.password)
     if who is None:
         LOGGER.warning("failed login for %s", body.username)
+        audit.refused(body.username, "auth.token", detail="username or password")
         raise Unauthenticated("username or password is incorrect")
+    audit.granted(who.name, "auth.token", detail=f"through {who.source}")
     return Token(token=tokens.mint(who.name, expiry=settings().api.expiry, source=who.source))
 
 
@@ -105,7 +107,9 @@ def issue_node(node: str, body: NodeProof) -> Token:
             raise Unauthenticated(f"{node} has no measurement recorded")
         if body.tpm_sha256 != expected:
             LOGGER.warning("node %s presented a measurement that does not match", node)
+            audit.refused(node, "auth.node", node, "the measurement does not match")
             raise Unauthenticated("the measurement does not match")
+        audit.granted(node, "auth.node", node, "on a matching measurement")
         return _node_token(node)
 
     # Luna answers this on a username and password when security is off. The token it
@@ -117,7 +121,9 @@ def issue_node(node: str, body: NodeProof) -> Token:
         handle.close()
     if who is None:
         LOGGER.warning("node token for %s refused: no measurement and no credential", node)
+        audit.refused(body.username, "auth.node", node, "no measurement, no credential")
         raise Unauthenticated("a measurement or a valid credential is required")
+    audit.granted(who.name, "auth.node", node, "on a credential")
     return _node_token(node)
 
 

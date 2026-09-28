@@ -433,3 +433,46 @@ def test_the_service_command_comes_from_the_ini(rig, monkeypatch):
     assert seen, "nothing ran"
     assert all(argv[0] == "/opt/pods/unitctl" for argv in seen), seen
     assert ["/opt/pods/unitctl", "restart", "slurmctld"] in seen
+
+
+def test_the_audit_trail_records_a_login_and_a_refusal(rig, client):
+    """
+    The table was created and never written. Both outcomes belong in it.
+    """
+    from trix.db import engine as database
+    from trix.db import models
+
+    client.post(f"{API_PREFIX}/auth/token",
+                json={"username": "tester", "password": "secret"})
+    client.post(f"{API_PREFIX}/auth/token",
+                json={"username": "tester", "password": "wrong"})
+
+    handle = database.session()
+    try:
+        rows = handle.query(models.Audit).order_by(models.Audit.id).all()
+        outcomes = [(r.principal, r.action, r.outcome) for r in rows]
+    finally:
+        handle.close()
+
+    assert ("tester", "auth.token", "granted") in outcomes, outcomes
+    assert ("tester", "auth.token", "refused") in outcomes, outcomes
+
+
+def test_a_refused_request_is_audited(rig, client, token):
+    """
+    A refusal that leaves no trace answers the wrong question later.
+    """
+    from trix.db import engine as database
+    from trix.db import models
+
+    node_token = tokens.mint("node001", kind="node", node="node001")
+    client.get(f"{API_PREFIX}/directory/users", headers={"x-access-tokens": node_token})
+
+    handle = database.session()
+    try:
+        refusals = handle.query(models.Audit).filter(
+            models.Audit.outcome == "refused").all()
+        details = [r.detail for r in refusals]
+    finally:
+        handle.close()
+    assert any("node token" in d for d in details), details
