@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import inspect
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -818,3 +819,16 @@ def test_a_disabled_principal_cannot_log_in_again(rig, client, headers):
     answer = client.post(f"{API_PREFIX}/auth/token",
                          json={"username": "barred", "password": "pw"})
     assert answer.status_code == 401
+
+
+def test_a_requeued_task_finds_its_handler(rig):
+    """
+    Starting the worker before the plugins register fails the work it recovers.
+    """
+    from trix.core import lifespan
+    from trix.core.plugins import loader
+    from trix.core import tasks
+
+    source = inspect.getsource(lifespan.start)
+    assert source.index("loader.load_all") < source.index("tasks.start()"), \
+        "the worker must start after the plugins, or a requeued task has no handler"

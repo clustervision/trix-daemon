@@ -80,10 +80,12 @@ def start(app: FastAPI) -> None:
 
     keys.set_current(keys.KeyRing(config.tokens).load())
 
-    tasks.start()
-
     states = loader.load_all(app)
     LOGGER.info("plugins: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")
+
+    # After the plugins, never before: the worker requeues what a restart left
+    # behind, and a handler that has not registered yet fails that work at once.
+    tasks.start()
 
     done = renders().run_all()
     LOGGER.info("reconciled %d render(s) before opening the listeners", done)
