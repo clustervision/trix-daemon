@@ -1,0 +1,20 @@
+End to end
+==========
+
+These run against a deployed daemon, not against the package. The unit tests stub
+obol, systemd and Luna; these do not, which is the point.
+
+    bash tests/e2e/on-the-controller.sh
+
+On the controller itself. Needs a shell there: it reads the store, restarts the
+unit and checks the rule files on disk as well as the API.
+
+    python3 tests/e2e/over-http.py <controller>
+
+From anywhere that can reach the two ports. Covers the API, the pass-through, the
+hot swap, the queue, the bits and the replication documents, and nothing that
+needs a shell.
+
+Both leave the store as they found it. Neither is run by pytest: they need a
+daemon and a Luna, and a test that quietly passes when there is no daemon is
+worse than no test.
