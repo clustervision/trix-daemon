@@ -63,6 +63,14 @@ TOKEN_KIND_NODE: str = "node"
 TOKEN_KIND_SERVICE: str = "service"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
 
+# What a person may do inside a usergroup, capped by the role on their membership.
+# The labels are stored, the bits they map to are fixed here, as luna2-daemon does.
+ROLE_CAPS: dict = {"admin": "rwx", "manager": "rwx", "operator": "r-x", "reader": "r--"}
+DEFAULT_ROLE: str = "reader"
+
+# Read, change and operate. POSIX, and the same three letters luna2-daemon uses.
+BITS: dict = {"r": 4, "w": 2, "x": 1}
+
 # The shipped level. Until a grant exists it carries every capability, which is
 # how an upgraded cluster keeps behaving as it did.
 DEFAULT_LEVEL: str = "administrator"

@@ -35,6 +35,8 @@ from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
                         Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+from trix.common.constants import DEFAULT_ROLE
+
 
 def now() -> datetime:
     """
@@ -87,7 +89,12 @@ class Principal(Base, Replicated):
     kind: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
     source: Mapped[str] = mapped_column(String(32), default="local", nullable=False)
     password_digest: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    external_id: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # The cluster-wide bypass, named in the audit trail, and the flag that lets a
+    # portal service ask for a token on behalf of the person it has authenticated.
+    admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
+    delegate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 
 
 class Usergroup(Base, Replicated):
@@ -112,6 +119,23 @@ class Membership(Base, Replicated):
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     principal_id: Mapped[int] = mapped_column(ForeignKey("principal.id"), nullable=False)
     usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
+    source: Mapped[str] = mapped_column(String(32), default="local", nullable=False)
+
+
+class UsergroupMap(Base, Replicated):
+    """
+    One external group, from one source, onto a usergroup and a role in it.
+    """
+
+    __tablename__ = "usergroupmap"
+    __table_args__ = (UniqueConstraint("source", "external_group", name="uq_usergroupmap"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    source: Mapped[str] = mapped_column(String(32), nullable=False)
+    external_group: Mapped[str] = mapped_column(String(255), nullable=False)
+    usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=False)
+    role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
 
 
 class Permission(Base, Replicated):
@@ -127,7 +151,7 @@ class Permission(Base, Replicated):
     object_name: Mapped[str] = mapped_column(String(255), nullable=False)
     owner_id: Mapped[int] = mapped_column(ForeignKey("principal.id"), nullable=True)
     usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=True)
-    owner_bits: Mapped[str] = mapped_column(String(3), default="rwu", nullable=False)
+    owner_bits: Mapped[str] = mapped_column(String(3), default="rwx", nullable=False)
     group_bits: Mapped[str] = mapped_column(String(3), default="r", nullable=False)
     other_bits: Mapped[str] = mapped_column(String(3), default="", nullable=False)
 
@@ -216,5 +240,6 @@ class PluginState(Base):
 
 
 REPLICATED: tuple = ("declaration", "principal", "usergroup", "membership",
-                     "permission", "level", "level_capability", "grant")
+                     "usergroupmap", "permission", "level", "level_capability",
+                     "grant")
 LOCAL: tuple = ("audit", "render_state", "plugin_state")

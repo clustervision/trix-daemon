@@ -207,3 +207,46 @@ def test_a_single_controller_runs_no_sweep(rig):
     """
     from trix.core.replication.sweep import current as sweep
     assert sweep().start() is False
+
+
+def test_the_roles_are_the_four_the_design_names():
+    """
+    The labels are stored, the bits they map to are fixed, and they are POSIX.
+    """
+    from trix.common.constants import BITS, DEFAULT_ROLE, ROLE_CAPS
+
+    assert ROLE_CAPS == {"admin": "rwx", "manager": "rwx",
+                         "operator": "r-x", "reader": "r--"}
+    assert DEFAULT_ROLE == "reader"
+    assert BITS == {"r": 4, "w": 2, "x": 1}
+    assert "u" not in "".join(ROLE_CAPS.values()), "the third bit is x, not u"
+
+
+def test_the_identity_tables_carry_what_the_design_asks(rig):
+    """
+    A role on the membership, the two flags on the principal, and the group map.
+    """
+    from trix.db import engine as database
+    from trix.db import models
+
+    handle = database.session()
+    try:
+        columns = {c.name for c in models.Membership.__table__.columns}
+        assert {"role", "source"} <= columns, columns
+        columns = {c.name for c in models.Principal.__table__.columns}
+        assert {"admin", "delegate", "external_id"} <= columns, columns
+        assert handle.query(models.UsergroupMap).count() == 0
+    finally:
+        handle.close()
+
+
+def test_no_permission_bit_is_written_as_u(rig):
+    """
+    The default the model ships must be the POSIX triplet, not rwu.
+    """
+    from trix.db import models
+
+    defaults = {c.name: c.default.arg for c in models.Permission.__table__.columns
+                if c.name.endswith("_bits") and c.default is not None}
+    assert defaults["owner_bits"] == "rwx", defaults
+    assert all("u" not in value for value in defaults.values()), defaults
