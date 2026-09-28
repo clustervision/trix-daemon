@@ -30,8 +30,9 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 from trix.common import logging as trixlog
-from trix.common.errors import BadRequest, NotFound
+from trix.common.errors import BackendFailure, BadRequest, NotFound
 from trix.common.settings import current as settings
+from trix.core import tasks
 from trix.utils import declarations, shell
 
 LOGGER = trixlog.get("services")
@@ -43,6 +44,16 @@ DEFAULT_COMMAND: str = "/usr/bin/systemctl"
 TIMEOUT: int = 60
 
 ACTIONS: tuple = ("start", "stop", "restart", "reload", "status")
+
+
+def run_task(action: str, unit: str) -> str:
+    """
+    What the worker runs for a queued service action.
+    """
+    result = shell.run([_command(), action, unit], timeout=TIMEOUT)
+    if not result.ok:
+        raise BackendFailure(result.err or result.out or f"{action} {unit} failed")
+    return result.out or f"{action} {unit} accepted"
 
 
 def _command() -> str:
@@ -62,6 +73,9 @@ DEFAULT_CATALOGUE: dict = {
         "dirsrv": "dirsrv@local",
     },
 }
+
+
+tasks.register(PLUGIN, run_task)
 
 
 class Backend:
@@ -104,7 +118,7 @@ class Backend:
 
     def act(self, name: str, action: str, caller=None) -> dict:
         """
-        Start, stop, restart or reload one service.
+        Queue one action and answer at once: a slow unit must not hold a worker.
         """
         action = str(action).lower()
         if action not in ACTIONS:
@@ -113,17 +127,20 @@ class Backend:
         if action == "status":
             return self.status(name)
 
-        result = shell.run([_command(), action, unit], timeout=TIMEOUT)
         who = getattr(caller, "name", "unknown")
-        LOGGER.info("%s asked for %s %s, systemd answered %s", who, action, unit, result.code)
-        return {
-            "service": name,
-            "unit": unit,
-            "action": action,
-            "ok": result.ok,
-            "message": result.err or result.out or f"{action} accepted",
-            **self._state(unit),
-        }
+        identifier = tasks.submit(PLUGIN, action, unit, who)
+        LOGGER.info("%s asked for %s %s, queued as %s", who, action, unit, identifier)
+        return {"service": name, "unit": unit, "action": action,
+                "request_id": identifier, "state": tasks.QUEUED}
+
+    def request(self, request_id: str) -> dict:
+        """
+        Where one queued action got to. This is Luna's /service/status route.
+        """
+        found = tasks.status(request_id)
+        if found is None:
+            raise NotFound(f"no request named {request_id}")
+        return found
 
     def _state(self, unit: str) -> dict:
         """

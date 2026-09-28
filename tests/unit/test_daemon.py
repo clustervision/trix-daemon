@@ -428,7 +428,8 @@ def test_the_service_command_comes_from_the_ini(rig, monkeypatch):
 
     monkeypatch.setattr(services.shell, "run", fake_run)
     monkeypatch.setattr(configuration.current().services, "command", "/opt/pods/unitctl")
-    services.Backend().act("slurmctld", "restart")
+    services.run_task("restart", "slurmctld")
+    services.Backend().status("slurmctld")
 
     assert seen, "nothing ran"
     assert all(argv[0] == "/opt/pods/unitctl" for argv in seen), seen
@@ -715,3 +716,57 @@ def test_an_action_post_needs_operate_not_change(rig, client, headers):
     assert access.bit_for("PATCH", "/api/v1/services/catalogue") == "w"
     assert access.bit_for("POST", "/api/v1/services/dhcp/actions/restart") == "x"
     assert access.bit_for("GET", "/api/v1/prometheus/rules", declared="w") == "w"
+
+
+def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch):
+    """
+    The thirteenth route: Luna answers an action with an id and you poll it.
+    """
+    from trix.core import tasks
+    from trix.plugins.services import backend as services
+
+    monkeypatch.setattr(services, "run_task", lambda action, unit: f"{action} {unit} ok")
+    tasks.register("services", services.run_task)
+
+    answer = client.post(f"{API_PREFIX}/services/slurmctld/actions/restart",
+                         headers=headers)
+    assert answer.status_code == 200, answer.text
+    body = answer.json()
+    assert body["state"] == tasks.QUEUED
+    identifier = body["request_id"]
+
+    tasks.drain()
+    polled = client.get(f"{API_PREFIX}/services/status/{identifier}", headers=headers)
+    assert polled.status_code == 200, polled.text
+    assert polled.json()["state"] == tasks.DONE
+    assert "restart slurmctld ok" in polled.json()["message"]
+
+
+def test_an_unknown_request_id_is_not_found(rig, client, headers):
+    """
+    Polling something nobody queued is a 404, not an empty success.
+    """
+    answer = client.get(f"{API_PREFIX}/services/status/nosuchrequest", headers=headers)
+    assert answer.status_code == 404
+
+
+def test_a_failing_action_is_recorded_as_failed(rig, client, headers, monkeypatch):
+    """
+    The worker must write down a failure, or a caller polls forever.
+    """
+    from trix.common.errors import BackendFailure
+    from trix.core import tasks
+
+    def boom(action, unit):
+        """
+        A unit that will not start.
+        """
+        raise BackendFailure(f"{unit} refused to {action}")
+
+    tasks.register("services", boom)
+    identifier = tasks.submit("services", "start", "brokend", "tester")
+    tasks.drain()
+
+    found = tasks.status(identifier)
+    assert found["state"] == tasks.FAILED
+    assert "refused to start" in found["message"]

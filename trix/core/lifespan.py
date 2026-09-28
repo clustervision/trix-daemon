@@ -36,6 +36,7 @@ from sqlalchemy import select
 
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
+from trix.core import tasks
 from trix.core.plugins import loader
 from trix.core.render.engine import current as renders
 from trix.core.render.triggers import current as luna_hashes
@@ -78,6 +79,8 @@ def start(app: FastAPI) -> None:
         handle.close()
 
     keys.set_current(keys.KeyRing(config.tokens).load())
+
+    tasks.start()
 
     states = loader.load_all(app)
     LOGGER.info("plugins: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")

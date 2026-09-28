@@ -159,6 +159,25 @@ class Audit(Base):
     detail: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
+class Task(Base):
+    """
+    One queued action and where it got to. Local: it ran on this controller.
+    """
+
+    __tablename__ = "task"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(64), unique=True, nullable=False)
+    created: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    principal: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    subsystem: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    task: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    param: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="queued", nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    finished: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+
 class RenderState(Base):
     """
     When a render last ran here, and whether it worked. Local.
@@ -190,4 +209,4 @@ class PluginState(Base):
 
 REPLICATED: tuple = ("declaration", "principal", "usergroup", "membership",
                      "usergroupmap")
-LOCAL: tuple = ("audit", "render_state", "plugin_state")
+LOCAL: tuple = ("audit", "render_state", "plugin_state", "task")

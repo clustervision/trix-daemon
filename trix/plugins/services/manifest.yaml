@@ -50,3 +50,8 @@ endpoints:
     capability: services.write
     handler: act
     summary: Start, stop, restart or reload one service
+  - path: status/<request_id>
+    methods: [GET]
+    capability: services.read
+    handler: request
+    summary: Where one queued action got to
