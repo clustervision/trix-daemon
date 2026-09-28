@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import pytest
 
+from trix.common.constants import API_PREFIX
 from trix.common.errors import BadRequest, NotFound
 
 
@@ -192,3 +193,46 @@ def test_the_slurm_partitions_round_trip(rig):
     backend = slurm.Backend()
     backend.partitions(body={"partitions": {"defq": {"nodes": "node[001-004]"}}})
     assert backend.partitions()["partitions"]["defq"]["nodes"] == "node[001-004]"
+
+
+def test_the_scaffold_writes_a_plugin_that_loads(rig, tmp_path, client, headers):
+    """
+    The guide says start from something that works, so it has to actually work.
+    """
+    from trix.common.settings import current as settings
+    from trix.core.plugins import loader, scaffold
+
+    written = scaffold.new("hello", settings().plugins.directory)
+    assert any(path.endswith("manifest.yaml") for path in written)
+
+    entry = loader.load(rig, "hello")
+    assert entry.state == "loaded"
+    assert entry.routes, "it declared endpoints and served none"
+
+    answer = client.get(f"{API_PREFIX}/hello", headers=headers)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["plugin"] == "hello"
+
+    changed = client.patch(f"{API_PREFIX}/hello/setting",
+                           json={"value": "set"}, headers=headers)
+    assert changed.status_code == 200, changed.text
+    assert client.get(f"{API_PREFIX}/hello/setting",
+                      headers=headers).json()["value"] == "set"
+
+
+def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
+    """
+    luna is the pass-through, and a name that is not a path segment is not a name.
+    """
+    from trix.common.errors import Conflict
+    from trix.common.settings import current as settings
+    from trix.core.plugins import scaffold
+
+    with pytest.raises(BadRequest):
+        scaffold.new("luna", settings().plugins.directory)
+    with pytest.raises(BadRequest):
+        scaffold.new("Not A Name", settings().plugins.directory)
+
+    scaffold.new("once", settings().plugins.directory)
+    with pytest.raises(Conflict):
+        scaffold.new("once", settings().plugins.directory)

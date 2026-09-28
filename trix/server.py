@@ -141,6 +141,25 @@ def keygen(config_file: str = "") -> int:
     return 0
 
 
+def plugin_new(name: str, config_file: str = "") -> int:
+    """
+    Write a plugin that loads, into the directory the ini names.
+    """
+    from trix.core.plugins import scaffold
+
+    config = configuration.set_current(configuration.load(config_file))
+    trixlog.setup(config.logger.level, "")
+    try:
+        written = scaffold.new(name, config.plugins.directory)
+    except Exception as error:
+        print(getattr(error, "message", str(error)))
+        return 1
+    for path in written:
+        print(f"wrote {path}")
+    print(f"reload it with: POST /api/v1/system/plugins/{name}/reload")
+    return 0
+
+
 def main(argv: list = None) -> int:
     """
     Command line for the unit and for the installer.
@@ -149,12 +168,20 @@ def main(argv: list = None) -> int:
     parser.add_argument("--config", default="", help="path to trix.ini")
     parser.add_argument("--version", action="version", version=DAEMON_VERSION)
     parser.add_argument("command", nargs="?", default="serve",
-                        choices=("serve", "keygen"),
-                        help="serve the API, or write the signing keypair")
+                        choices=("serve", "keygen", "plugin"),
+                        help="serve the API, write the keypair, or scaffold a plugin")
+    parser.add_argument("subcommand", nargs="?", default="",
+                        help="for plugin: new")
+    parser.add_argument("name", nargs="?", default="", help="the plugin name")
     args = parser.parse_args(argv)
 
     if args.command == "keygen":
         return keygen(args.config)
+    if args.command == "plugin":
+        if args.subcommand != "new" or not args.name:
+            print(f"usage: {DAEMON_NAME} plugin new <name>")
+            return 1
+        return plugin_new(args.name, args.config)
     return serve(args.config)
 
 
