@@ -21,8 +21,10 @@ trixd_packages:
   - luna2-python
 
 trixd_root: '{{ trix_local }}/trix'
-trixd_config_dir: '{{ trixd_root }}/daemon/config'
-trixd_db_dir: '{{ trixd_root }}/daemon/common'
+# Outside daemon, which is a symlink into site-packages: anything under it is
+# replaced by a pip upgrade, and a directory there stops the symlink being made.
+trixd_config_dir: '{{ trixd_root }}/etc'
+trixd_db_dir: '{{ trixd_root }}/var'
 trixd_log_dir: /var/log/trix
 
 # Pin the wheel, or leave it undefined to take the newest the index offers. The
@@ -57,5 +59,8 @@ trixd_plugins:
   - genders
 
 trixd_auth_chain: local, pam
+
+# Point this at a facade where there is no systemd, as in a container.
+trixd_service_command: /usr/bin/systemctl
 trixd_replication_interval: 300s
 trixd_luna_hash_interval: 60s

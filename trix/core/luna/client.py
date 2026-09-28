@@ -136,6 +136,19 @@ class LunaClient:
         found = (answer.get("config") or {}).get("node") or {}
         return found.get(name)
 
+    def cluster(self) -> dict:
+        """
+        The cluster row, which carries the security flag the node token turns on.
+        """
+        answer = self.get("config/cluster") or {}
+        return (answer.get("config") or {}).get("cluster") or {}
+
+    def enforcing_security(self) -> bool:
+        """
+        Whether Luna is enforcing cluster security, and so whether we must too.
+        """
+        return bool(self.cluster().get("security"))
+
     def groups(self) -> dict:
         answer = self.get("config/group") or {}
         return (answer.get("config") or {}).get("group") or {}

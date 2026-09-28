@@ -58,10 +58,12 @@ class Credentials(BaseModel):
 
 class NodeProof(BaseModel):
     """
-    What a node presents after boot.
+    What a node presents after boot: a measurement, or a credential when there is none.
     """
 
     tpm_sha256: str = ""
+    username: str = ""
+    password: str = ""
 
 
 class Token(BaseModel):
@@ -85,23 +87,44 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
     return Token(token=tokens.mint(who.name, expiry=settings().api.expiry, source=who.source))
 
 
-@router.post("/node/{node}", response_model=Token,
+@router.post("/node/{node}", response_model=Token, status_code=201,
              summary="Exchange a node measurement for a node-scoped token")
 def issue_node(node: str, body: NodeProof) -> Token:
     """
-    Verify the measurement against Luna's record of that node: Luna is asked what
-    it holds and the answer is compared, so no signing secret is involved.
+    A node token, on the same terms Luna issues one: the measurement when the cluster
+    enforces security, a credential when it does not. Never on the node name alone.
     """
     record = luna().node(node)
     if not record:
         raise Unauthenticated(f"{node} is not a node Luna knows")
-    expected = record.get("tpm_sha256") or ""
-    if not expected:
-        # Luna is not enforcing cluster security for this node, so neither do we.
-        LOGGER.info("node %s has no measurement recorded; issuing on Luna terms", node)
-    elif body.tpm_sha256 != expected:
-        LOGGER.warning("node %s presented a measurement that does not match", node)
-        raise Unauthenticated("the measurement does not match")
+
+    if luna().enforcing_security():
+        expected = record.get("tpm_sha256") or ""
+        if not expected:
+            LOGGER.warning("node %s has no measurement and the cluster enforces one", node)
+            raise Unauthenticated(f"{node} has no measurement recorded")
+        if body.tpm_sha256 != expected:
+            LOGGER.warning("node %s presented a measurement that does not match", node)
+            raise Unauthenticated("the measurement does not match")
+        return _node_token(node)
+
+    # Luna answers this on a username and password when security is off. The token it
+    # mints is one Luna accepts too, so the node name alone can never be enough.
+    handle = next(scoped())
+    try:
+        who = principals.authenticate(handle, body.username, body.password)
+    finally:
+        handle.close()
+    if who is None:
+        LOGGER.warning("node token for %s refused: no measurement and no credential", node)
+        raise Unauthenticated("a measurement or a valid credential is required")
+    return _node_token(node)
+
+
+def _node_token(node: str) -> Token:
+    """
+    A token scoped to one node, which Luna confines to that node's own endpoints.
+    """
     return Token(token=tokens.mint(node, kind=TOKEN_KIND_NODE,
                                    expiry=settings().api.expiry, node=node))
 

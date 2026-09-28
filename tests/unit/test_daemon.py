@@ -353,3 +353,83 @@ def test_an_unknown_source_name_is_skipped(rig, monkeypatch):
         handle.close()
     assert identity is None
     assert source == ""
+
+
+def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypatch):
+    """
+    Luna never issues one anonymously, and the token it mints works on Luna too.
+    """
+    from trix.api.v1 import auth as auth_routes
+
+    class Stub:
+        """
+        A Luna that knows the node, records no measurement and enforces nothing.
+        """
+
+        def node(self, name):
+            return {"name": name, "tpm_sha256": ""}
+
+        def enforcing_security(self):
+            return False
+
+    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    answer = client.post(f"{API_PREFIX}/auth/node/node001", json={"tpm_sha256": ""})
+    assert answer.status_code == 401
+
+    answer = client.post(f"{API_PREFIX}/auth/node/node001",
+                         json={"username": "tester", "password": "wrong"})
+    assert answer.status_code == 401
+
+    answer = client.post(f"{API_PREFIX}/auth/node/node001",
+                         json={"username": "tester", "password": "secret"})
+    assert answer.status_code == 201
+
+
+def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, client, monkeypatch):
+    """
+    With the cluster flag set, only the recorded measurement opens the door.
+    """
+    from trix.api.v1 import auth as auth_routes
+
+    class Stub:
+        """
+        A Luna enforcing security, holding one measurement for the node.
+        """
+
+        def node(self, name):
+            return {"name": name, "tpm_sha256": "abc123"}
+
+        def enforcing_security(self):
+            return True
+
+    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    assert client.post(f"{API_PREFIX}/auth/node/node001",
+                       json={"tpm_sha256": "wrong"}).status_code == 401
+    assert client.post(f"{API_PREFIX}/auth/node/node001",
+                       json={"username": "tester", "password": "secret"}).status_code == 401
+    assert client.post(f"{API_PREFIX}/auth/node/node001",
+                       json={"tpm_sha256": "abc123"}).status_code == 201
+
+
+def test_the_service_command_comes_from_the_ini(rig, monkeypatch):
+    """
+    A container has no systemd, so the binary must be a setting, not a constant.
+    """
+    from trix.plugins.services import backend as services
+
+    seen = []
+
+    def fake_run(argv, timeout=None):
+        """
+        Record the argv instead of running anything.
+        """
+        seen.append(argv)
+        return type("R", (), {"ok": True, "out": "active", "err": "", "code": 0})()
+
+    monkeypatch.setattr(services.shell, "run", fake_run)
+    monkeypatch.setattr(configuration.current().services, "command", "/opt/pods/unitctl")
+    services.Backend().act("slurmctld", "restart")
+
+    assert seen, "nothing ran"
+    assert all(argv[0] == "/opt/pods/unitctl" for argv in seen), seen
+    assert ["/opt/pods/unitctl", "restart", "slurmctld"] in seen

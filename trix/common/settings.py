@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from trix.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHARED,
                                    TOKEN_ALGORITHMS)
 
-DEFAULT_CONFIG: str = "/trinity/local/trix/daemon/config/trix.ini"
+DEFAULT_CONFIG: str = "/trinity/local/trix/etc/trix.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
 _FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 3600}
@@ -96,7 +96,7 @@ class LunaSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
-    url: str = "sqlite:////trinity/local/trix/daemon/common/trix.db"
+    url: str = "sqlite:////trinity/local/trix/var/trix.db"
 
 
 class AuthSettings(BaseModel):
@@ -110,6 +110,10 @@ class AuthSettings(BaseModel):
     ldap_user_attribute: str = "uid"
     ldap_id_attribute: str = "entryUUID"
     ldap_group_attribute: str = "memberOf"
+
+
+class ServicesSettings(BaseModel):
+    command: str = "/usr/bin/systemctl"
 
 
 class ReplicationSettings(BaseModel):
@@ -139,6 +143,7 @@ class Settings(BaseModel):
     luna: LunaSettings = Field(default_factory=LunaSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
     triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
@@ -231,6 +236,8 @@ def load(path: str = "") -> Settings:
         ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"),
         ldap_id_attribute=get("AUTH_LDAP", "ID_ATTRIBUTE", "entryUUID"),
         ldap_group_attribute=get("AUTH_LDAP", "GROUP_ATTRIBUTE", "memberOf"))
+    data.services = ServicesSettings(
+        command=get("SERVICES", "COMMAND", data.services.command))
     data.replication = ReplicationSettings(
         peers=_csv(get("REPLICATION", "PEERS", "")),
         interval=seconds(get("REPLICATION", "INTERVAL", "300s"), 300),

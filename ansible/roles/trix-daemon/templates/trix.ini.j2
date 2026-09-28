@@ -71,6 +71,9 @@ ENABLED = {{ 'yes' if ha | default(False) else 'no' }}
 [TRIGGERS]
 LUNA_HASHES = {{ trixd_luna_hash_interval }}
 
+[SERVICES]
+COMMAND = {{ trixd_service_command }}
+
 [PLUGINS]
 DIRECTORY = {{ trixd_root }}/daemon/plugins
 ENABLED = {{ trixd_plugins | join(', ') }}

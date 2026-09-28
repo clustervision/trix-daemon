@@ -32,11 +32,14 @@ __status__      = "Production"
 import argparse
 import asyncio
 import os
+import signal
 import sys
 
 from trix.common import logging as trixlog
 from trix.common import settings as configuration
 from trix.common.constants import DAEMON_NAME, DAEMON_VERSION
+
+LOGGER = trixlog.get("server")
 
 
 def build_config(config):
@@ -79,8 +82,41 @@ def serve(config_file: str = "") -> int:
 
     from trix.app import create_app
     application = create_app()
-    asyncio.run(hypercorn_serve(application, build_config(config)))
+    asyncio.run(_run(hypercorn_serve, application, build_config(config)))
     return 0
+
+
+async def _run(hypercorn_serve, application, hypercorn_config) -> None:
+    """
+    Serve, with SIGHUP wired to a plugin reload so ExecReload does what it says.
+    """
+    _on_hangup(application)
+    await hypercorn_serve(application, hypercorn_config)
+
+
+def _on_hangup(application) -> None:
+    """
+    Reload every plugin from disk on SIGHUP, which is what systemctl reload sends.
+    The ini and the listeners are not re-read: a bind change is still a restart.
+    """
+    if not hasattr(signal, "SIGHUP"):
+        return
+
+    def reload_plugins() -> None:
+        """
+        Discover and swap, logging what each plugin did.
+        """
+        from trix.core.plugins import loader
+
+        LOGGER.info("SIGHUP: reloading plugins from disk")
+        try:
+            states = loader.load_all(application)
+        except Exception as error:
+            LOGGER.error("SIGHUP reload failed, the running plugins are untouched: %s", error)
+            return
+        LOGGER.info("SIGHUP: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")
+
+    asyncio.get_running_loop().add_signal_handler(signal.SIGHUP, reload_plugins)
 
 
 def keygen(config_file: str = "") -> int:

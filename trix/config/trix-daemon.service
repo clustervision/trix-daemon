@@ -22,7 +22,7 @@ Wants = network-online.target
 [Service]
 Type = simple
 WorkingDirectory = /trinity/local/trix
-ExecStart = /trinity/local/python/bin/python3 -m trix.server --config /trinity/local/trix/daemon/config/trix.ini
+ExecStart = /trinity/local/python/bin/python3 -m trix.server --config /trinity/local/trix/etc/trix.ini
 ExecReload = /bin/kill -s HUP $MAINPID
 Restart = on-failure
 RestartSec = 5
