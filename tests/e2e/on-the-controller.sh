@@ -4,7 +4,10 @@
 
 PLAIN=${PLAIN:-http://localhost:8051}
 TLS=${TLS:-https://localhost:8050}
-PY=${PY:-/root/trixtest/venv/bin/python}
+# The interpreter the unit actually runs, so this works wherever it is installed.
+PY=${PY:-$(systemctl show trix-daemon -p ExecStart --value 2>/dev/null |
+           grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}
+PY=${PY:-$(command -v python3)}
 FAIL=0
 
 say() { printf "  %-6s %s\n" "$1" "$2"; [ "$1" = "FAIL" ] && FAIL=$((FAIL+1)); return 0; }
