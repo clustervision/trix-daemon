@@ -64,10 +64,8 @@ def test_the_directory_renames_the_389ds_member_attribute(rig, monkeypatch):
 
 def test_the_directory_shape_the_ood_application_will_meet(rig, monkeypatch):
     """
-    Pinned deliberately: the envelope differs from Luna's and the app is repointed.
-
-    Luna answers {"config": {"osuser": {name: {...}}}}; this answers the record
-    itself. Whoever repoints trinityx-ood/users/luna_requests.py unwraps one level.
+    Pinned deliberately. Luna wraps a record in config and keys it by name; this
+    answers the record, so repointing the app takes two unwraps out of it.
     """
     from trix.plugins.directory import backend as directory
 
