@@ -34,12 +34,15 @@ from fastapi import Header, Request
 from trix.common import logging as trixlog
 from trix.common.constants import TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER
 from trix.common.errors import Forbidden, Unauthenticated
-from trix.core.security import audit, principals, tokens
+from trix.core.security import access, audit, principals, tokens
 from trix.db import engine
 
 LOGGER = trixlog.get("gate")
 
 NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
+
+# What the daemon's own endpoints are governed as, when no plugin owns them.
+CORE: str = "trix"
 
 
 class Caller:
@@ -49,10 +52,12 @@ class Caller:
 
     def __init__(self, claims: tokens.Claims, who: principals.Resolved, held: set) -> None:
         self.claims = claims
+        self.who = who
         self.name = claims.subject
         self.kind = claims.kind
         self.usergroups = who.usergroups if who else []
-        self.capabilities = held
+        # The three characters held on the object this request named.
+        self.bits = "".join(sorted(held)) if held else ""
 
     def __repr__(self) -> str:
         return f"<Caller {self.name} kind={self.kind}>"
@@ -73,7 +78,8 @@ def _target(request: Request) -> str:
     return str(getattr(request, "url", "") and request.url.path or "")
 
 
-def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER):
+def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER,
+          plugin: str = "", bit: str = "") -> callable:
     """
     Build the dependency for one endpoint.
     """
@@ -110,16 +116,18 @@ def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER):
                 audit.refused(claims.subject, capability, _target(request),
                               "the subject cannot be resolved here")
                 raise Unauthenticated(f"{claims.subject} cannot be resolved here")
-            held = principals.capabilities(handle, who) if who else {capability}
+            wanted = access.bit_for(request.method, _target(request), bit)
+            allowed, bits = access.permits(handle, who, plugin or CORE, wanted)
+            handle.commit()
         finally:
             handle.close()
 
-        if capability and not principals.permits(held, capability):
+        if capability and not allowed:
             audit.refused(claims.subject, capability, _target(request),
-                          f"holds {', '.join(sorted(held)) or 'nothing'}")
-            raise Forbidden(f"{capability} is required")
+                          f"needs {wanted}, holds {bits}")
+            raise Forbidden(f"{plugin or CORE} requires {wanted}; you hold {bits}")
         if capability:
             audit.granted(claims.subject, capability, _target(request))
-        return Caller(claims, who, held)
+        return Caller(claims, who, set(bits))
 
     return dependency

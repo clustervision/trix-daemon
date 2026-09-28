@@ -35,7 +35,7 @@ from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
                         Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from trix.common.constants import DEFAULT_ROLE
+from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE
 
 
 def now() -> datetime:
@@ -75,6 +75,11 @@ class Declaration(Base, Replicated):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     body: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # Who owns it, which organisations it is listed for, and the mode. Empty owners
+    # means the ini account, exactly as an empty list does in luna2-daemon.
+    owners: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    usergroups: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    access: Mapped[str] = mapped_column(String(4), default=DEFAULT_MODE, nullable=False)
 
 
 class Principal(Base, Replicated):
@@ -136,24 +141,6 @@ class UsergroupMap(Base, Replicated):
     external_group: Mapped[str] = mapped_column(String(255), nullable=False)
     usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=False)
     role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
-
-
-class Permission(Base, Replicated):
-    """
-    Owner, usergroup and other bits on one object a plugin owns.
-    """
-
-    __tablename__ = "permission"
-    __table_args__ = (UniqueConstraint("object_kind", "object_name", name="uq_permission"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    object_kind: Mapped[str] = mapped_column(String(64), nullable=False)
-    object_name: Mapped[str] = mapped_column(String(255), nullable=False)
-    owner_id: Mapped[int] = mapped_column(ForeignKey("principal.id"), nullable=True)
-    usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=True)
-    owner_bits: Mapped[str] = mapped_column(String(3), default="rwx", nullable=False)
-    group_bits: Mapped[str] = mapped_column(String(3), default="r", nullable=False)
-    other_bits: Mapped[str] = mapped_column(String(3), default="", nullable=False)
 
 
 class Level(Base, Replicated):
@@ -240,6 +227,5 @@ class PluginState(Base):
 
 
 REPLICATED: tuple = ("declaration", "principal", "usergroup", "membership",
-                     "usergroupmap", "permission", "level", "level_capability",
-                     "grant")
+                     "usergroupmap", "level", "level_capability", "grant")
 LOCAL: tuple = ("audit", "render_state", "plugin_state")

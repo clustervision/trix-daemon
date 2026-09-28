@@ -80,11 +80,12 @@ class Resolved:
     """
 
     def __init__(self, name: str, kind: str = "user", source: str = "",
-                 usergroups: list = None) -> None:
+                 usergroups: list = None, admin: bool = False) -> None:
         self.name = name
         self.kind = kind
         self.source = source
         self.usergroups = usergroups or []
+        self.admin = admin
 
     def __repr__(self) -> str:
         return f"<Resolved {self.name} kind={self.kind} src={self.source}>"
@@ -122,7 +123,7 @@ def _from_local(handle: Session, name: str) -> Resolved:
         select(models.Usergroup.name)
         .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
         .where(models.Membership.principal_id == row.id)).all()
-    return Resolved(row.name, row.kind, "local", list(groups))
+    return Resolved(row.name, row.kind, "local", list(groups), row.admin)
 
 
 def resolve(handle: Session, name: str) -> Resolved:
@@ -135,8 +136,10 @@ def resolve(handle: Session, name: str) -> Resolved:
     identity, source = chain.resolve(handle, name)
     if identity is None:
         return None
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
     found = Resolved(identity.get("name") or name, "user", source,
-                     list(identity.get("groups") or []))
+                     list(identity.get("groups") or []),
+                     bool(row.admin) if row is not None else False)
     CACHE.put(f"user:{name}", found)
     return found
 
@@ -172,8 +175,9 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
     local = _from_local(handle, name)
     if local is not None:
         groups = sorted(set(groups) | set(local.usergroups))
-    CACHE.put(f"user:{name}", Resolved(name, row.kind, source, groups))
-    return Resolved(name, row.kind, source, groups)
+    found = Resolved(name, row.kind, source, groups, bool(row.admin))
+    CACHE.put(f"user:{name}", found)
+    return found
 
 
 def capabilities(handle: Session, who: Resolved) -> set:

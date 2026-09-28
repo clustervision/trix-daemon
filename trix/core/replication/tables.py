@@ -37,14 +37,15 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
+from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE
 from trix.db import models
 
 LOGGER = trixlog.get("replication")
 
 # Autoincrement is local: the peer inserts its own row and gets its own number, so
 # a document is addressed by the columns the request was made with and never by id.
-ORDER: tuple = ("principal", "usergroup", "level", "membership", "level_capability",
-                "grant", "permission", "declaration")
+ORDER: tuple = ("principal", "usergroup", "level", "membership",
+                "usergroupmap", "level_capability", "grant", "declaration")
 
 MODELS: dict = {
     "principal": models.Principal,
@@ -53,7 +54,7 @@ MODELS: dict = {
     "membership": models.Membership,
     "level_capability": models.LevelCapability,
     "grant": models.Grant,
-    "permission": models.Permission,
+    "usergroupmap": models.UsergroupMap,
     "declaration": models.Declaration,
 }
 
@@ -105,16 +106,14 @@ def to_document(handle: Session, table: str, row) -> dict:
                          _name_of(handle, models.Usergroup, row.usergroup_id),
                          _name_of(handle, models.Level, row.level_id), row.scope or ""],
                     scope=row.scope or "")
-    elif table == "permission":
-        body.update(key=[row.object_kind, row.object_name],
-                    object_kind=row.object_kind, object_name=row.object_name,
-                    owner=_name_of(handle, models.Principal, row.owner_id),
-                    usergroup=_name_of(handle, models.Usergroup, row.usergroup_id),
-                    owner_bits=row.owner_bits, group_bits=row.group_bits,
-                    other_bits=row.other_bits)
+    elif table == "usergroupmap":
+        body.update(key=[row.source, row.external_group], source=row.source,
+                    external_group=row.external_group, role=row.role,
+                    usergroup=_name_of(handle, models.Usergroup, row.usergroup_id))
     elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
-                    kind=row.kind, name=row.name, body=dict(row.body or {}))
+                    kind=row.kind, name=row.name, body=dict(row.body or {}),
+                    owners=row.owners, usergroups=row.usergroups, access=row.access)
     return body
 
 
@@ -182,7 +181,10 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         return {"name": key[0], "kind": document.get("kind", "user"),
                 "source": document.get("source", "local"),
                 "password_digest": document.get("password_digest", ""),
-                "enabled": bool(document.get("enabled", True))}
+                "external_id": document.get("external_id", ""),
+                "enabled": bool(document.get("enabled", True)),
+                "admin": bool(document.get("admin", False)),
+                "delegate": bool(document.get("delegate", False))}
     if table in ("usergroup", "level"):
         return {"name": key[0]}
     if table == "membership":
@@ -190,7 +192,9 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         usergroup = _id_of(handle, models.Usergroup, key[1])
         if not principal or not usergroup:
             return None
-        return {"principal_id": principal, "usergroup_id": usergroup}
+        return {"principal_id": principal, "usergroup_id": usergroup,
+                "role": document.get("role", DEFAULT_ROLE),
+                "source": document.get("source", "local")}
     if table == "level_capability":
         level = _id_of(handle, models.Level, key[0])
         if not level:
@@ -203,15 +207,17 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         return {"principal_id": _id_of(handle, models.Principal, key[0]),
                 "usergroup_id": _id_of(handle, models.Usergroup, key[1]),
                 "level_id": level, "scope": key[3] or ""}
-    if table == "permission":
-        return {"object_kind": key[0], "object_name": key[1],
-                "owner_id": _id_of(handle, models.Principal, document.get("owner", "")),
-                "usergroup_id": _id_of(handle, models.Usergroup, document.get("usergroup", "")),
-                "owner_bits": document.get("owner_bits", "rwu"),
-                "group_bits": document.get("group_bits", "r"),
-                "other_bits": document.get("other_bits", "")}
+    if table == "usergroupmap":
+        usergroup = _id_of(handle, models.Usergroup, document.get("usergroup", ""))
+        if not usergroup:
+            return None
+        return {"source": key[0], "external_group": key[1], "usergroup_id": usergroup,
+                "role": document.get("role", DEFAULT_ROLE)}
     return {"plugin": key[0], "kind": key[1], "name": key[2],
-            "body": dict(document.get("body") or {})}
+            "body": dict(document.get("body") or {}),
+            "owners": document.get("owners", ""),
+            "usergroups": document.get("usergroups", ""),
+            "access": document.get("access", DEFAULT_MODE)}
 
 
 def _newer(incoming: dict, row) -> bool:

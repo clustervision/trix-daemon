@@ -581,3 +581,137 @@ def test_an_identity_write_leaves_its_audit_row(rig, client, headers):
     finally:
         handle.close()
     assert ("identity.write", "granted", "created") in outcomes, outcomes
+
+
+def _as(client, username, password):
+    """
+    A header set for one person, so a test can act as somebody other than rootus.
+    """
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": username, "password": password})
+    assert answer.status_code == 201, answer.text
+    return {"x-access-tokens": answer.json()["token"]}
+
+
+def test_a_reader_may_look_and_not_change(rig, client, headers):
+    """
+    The role caps the class bits, which is the whole point of having a role.
+    """
+    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "obs"},
+                headers=headers)
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "rita", "password": "pw"}, headers=headers)
+    client.post(f"{API_PREFIX}/identity/usergroups/obs/members",
+                json={"principal": "rita", "role": "reader"}, headers=headers)
+    # List the usergroup against the plugin, or rita is merely other.
+    client.patch(f"{API_PREFIX}/system/acl/services",
+                 json={"usergroups": "obs"}, headers=headers)
+
+    rita = _as(client, "rita", "pw")
+    assert client.get(f"{API_PREFIX}/services/catalogue", headers=rita).status_code == 200
+    refused = client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=rita)
+    assert refused.status_code == 403, refused.text
+    assert "w" in refused.text
+
+
+def test_a_manager_may_change_what_a_reader_may_not(rig, client, headers):
+    """
+    Same object, same bits, different role: that is the axis the design turns on.
+    """
+    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "eng"},
+                headers=headers)
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "mo", "password": "pw"}, headers=headers)
+    client.post(f"{API_PREFIX}/identity/usergroups/eng/members",
+                json={"principal": "mo", "role": "manager"}, headers=headers)
+    client.patch(f"{API_PREFIX}/system/acl/services",
+                 json={"usergroups": "eng"}, headers=headers)
+
+    mo = _as(client, "mo", "pw")
+    assert client.get(f"{API_PREFIX}/services/catalogue", headers=mo).status_code == 200
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
+                        headers=mo).status_code in (200, 422)
+
+
+def test_someone_outside_every_usergroup_is_other(rig, client, headers):
+    """
+    The default mode gives other nothing, so an outsider sees nothing.
+    """
+    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "inside"},
+                headers=headers)
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "olive", "password": "pw"}, headers=headers)
+
+    olive = _as(client, "olive", "pw")
+    assert client.get(f"{API_PREFIX}/services/catalogue", headers=olive).status_code == 403
+
+
+def test_the_admin_flag_is_checked_against_nothing(rig, client, headers):
+    """
+    A day-to-day superuser, named in the audit trail rather than sharing rootus.
+    """
+    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "any"},
+                headers=headers)
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "sam", "password": "pw", "admin": True}, headers=headers)
+
+    sam = _as(client, "sam", "pw")
+    assert client.get(f"{API_PREFIX}/services/catalogue", headers=sam).status_code == 200
+
+
+def test_nothing_is_enforced_until_somebody_is_organised(rig, client, headers):
+    """
+    An upgraded cluster with no usergroups behaves exactly as it did before.
+    """
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "pat", "password": "pw"}, headers=headers)
+    pat = _as(client, "pat", "pw")
+    assert client.get(f"{API_PREFIX}/services/catalogue", headers=pat).status_code == 200
+
+
+def test_whoami_reports_the_role_in_each_usergroup(rig, client, headers):
+    """
+    A role is what a person can be told; a bit list is not.
+    """
+    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "team"},
+                headers=headers)
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "wendy", "password": "pw"}, headers=headers)
+    client.post(f"{API_PREFIX}/identity/usergroups/team/members",
+                json={"principal": "wendy", "role": "manager"}, headers=headers)
+
+    said = client.get(f"{API_PREFIX}/auth/whoami",
+                      headers=_as(client, "wendy", "pw")).json()
+    assert said["principal"] == "wendy"
+    assert said["usergroups"] == {"team": "manager"}
+    assert said["admin"] is False
+    assert said["source"] == "local"
+
+
+def test_a_mode_is_accepted_as_octal_or_as_letters(rig, client, headers):
+    """
+    The API takes rwxrwx--- as chmod does, and stores the octal the tree uses.
+    """
+    answer = client.patch(f"{API_PREFIX}/system/acl/services",
+                          json={"access": "rwxr-x---"}, headers=headers)
+    assert answer.status_code == 200, answer.text
+    assert answer.json()["access"] == "750"
+    assert answer.json()["mode"] == "rwxr-x---"
+
+    answer = client.patch(f"{API_PREFIX}/system/acl/services",
+                          json={"access": "770"}, headers=headers)
+    assert answer.json()["mode"] == "rwxrwx---"
+    assert client.patch(f"{API_PREFIX}/system/acl/services",
+                        json={"access": "nonsense"}, headers=headers).status_code == 400
+
+
+def test_an_action_post_needs_operate_not_change(rig, client, headers):
+    """
+    Restarting a service is operating it, which is x, not w.
+    """
+    from trix.core.security import access
+
+    assert access.bit_for("GET", "/api/v1/services/catalogue") == "r"
+    assert access.bit_for("PATCH", "/api/v1/services/catalogue") == "w"
+    assert access.bit_for("POST", "/api/v1/services/dhcp/actions/restart") == "x"
+    assert access.bit_for("GET", "/api/v1/prometheus/rules", declared="w") == "w"

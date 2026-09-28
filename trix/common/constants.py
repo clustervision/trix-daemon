@@ -71,6 +71,14 @@ DEFAULT_ROLE: str = "reader"
 # Read, change and operate. POSIX, and the same three letters luna2-daemon uses.
 BITS: dict = {"r": 4, "w": 2, "x": 1}
 
+# Owner rwx, the listed usergroups rwx, everyone else nothing. The same
+# default luna2-daemon gives a node or a group.
+DEFAULT_MODE: str = "770"
+
+# The row on a plugin that carries its permissions. Per-document granularity
+# is open: the columns are on every declaration, so it needs no schema change.
+ACL_KIND: str = "acl"
+
 # The shipped level. Until a grant exists it carries every capability, which is
 # how an upgraded cluster keeps behaving as it did.
 DEFAULT_LEVEL: str = "administrator"

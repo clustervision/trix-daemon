@@ -67,7 +67,7 @@ def seed(handle) -> None:
                             .where(models.Principal.name == config.username))
         if row is None:
             handle.add(models.Principal(
-                name=config.username, kind="user", source="local",
+                name=config.username, kind="user", source="local", admin=True,
                 password_digest=principals.hash_password(config.password)))
             LOGGER.info("seeded the local principal %s", config.username)
     handle.commit()

@@ -30,20 +30,25 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 from fastapi import APIRouter, Depends, Request
+from typing import Optional
+
 from pydantic import BaseModel
+from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
 from trix.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    PLUGIN_STATE_LOADED)
-from trix.common.errors import NotFound, PluginRefused
+from trix.common.errors import BadRequest, NotFound, PluginRefused
 from trix.core.plugins import loader
 from trix.core.plugins.registry import current as registry
 from trix.core.replication import tables
 from trix.core.replication.sweep import current as sweep
 from trix.core.render.engine import current as renders
 from trix.core.render.triggers import current as luna_hashes
+from trix.core.security import access, audit
 from trix.core.security.gate import Caller, guard
 from trix.db import engine as database
+from trix.db.engine import scoped
 
 LOGGER = trixlog.get("system")
 
@@ -57,6 +62,59 @@ class Change(BaseModel):
 
     object: str = ""
     name: str = ""
+
+
+class Acl(BaseModel):
+    """
+    Who owns a plugin, which organisations it is listed for, and its mode.
+    """
+
+    owners: Optional[str] = None
+    usergroups: Optional[str] = None
+    access: Optional[str] = None
+
+
+@router.get("/acl/{plugin}", summary="A plugin's owners, usergroups and mode")
+def get_acl(plugin: str, handle: Session = Depends(scoped),
+            caller: Caller = Depends(guard("system.read"))) -> dict:
+    """
+    What the permission row on this plugin says, in the form ls would print.
+    """
+    row = access.acl_row(handle, plugin)
+    return {"plugin": plugin, "owners": row.owners, "usergroups": row.usergroups,
+            "access": row.access, "mode": access.mode_text(row.access)}
+
+
+@router.patch("/acl/{plugin}", summary="chown, chgrp and chmod a plugin")
+def set_acl(plugin: str, body: Acl, handle: Session = Depends(scoped),
+            caller: Caller = Depends(guard("system.write"))) -> dict:
+    """
+    Only what the body names is changed, so chgrp does not silently chmod.
+    """
+    row = access.acl_row(handle, plugin)
+    if body.owners is not None:
+        row.owners = body.owners
+    if body.usergroups is not None:
+        row.usergroups = body.usergroups
+    if body.access is not None:
+        row.access = _mode(body.access)
+    row.version += 1
+    audit.granted(caller.name, "system.write", f"acl/{plugin}",
+                  f"{row.owners}:{row.usergroups} {row.access}", handle=handle)
+    return {"plugin": plugin, "owners": row.owners, "usergroups": row.usergroups,
+            "access": row.access, "mode": access.mode_text(row.access)}
+
+
+def _mode(value: str) -> str:
+    """
+    Accept 770 or rwxrwx---, and store the octal the way the tree already does.
+    """
+    text = str(value or "").strip()
+    if text.isdigit() and len(text) == 3:
+        return text
+    if len(text) == 9:
+        return "".join(str(access.mask(text[at:at + 3])) for at in (0, 3, 6))
+    raise BadRequest(f"{value} is not a mode; use 770 or rwxrwx---")
 
 
 @router.get("/health", summary="Whether this daemon is serving")

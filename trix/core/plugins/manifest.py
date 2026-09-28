@@ -82,6 +82,9 @@ class Endpoint(BaseModel):
     handler: str = ""
     body_schema: str = Field(default="", alias="schema")
     token: str = TOKEN_KIND_USER
+    # Override the bit the method implies, for a read that needs write:
+    # a rule document carries thresholds, so seeing it is not a plain read.
+    bit: str = ""
     render: Optional[Render] = None
     summary: str = ""
     # No token at all. Only for a consumer that cannot present one, which today

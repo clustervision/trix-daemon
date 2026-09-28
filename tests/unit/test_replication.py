@@ -240,13 +240,14 @@ def test_the_identity_tables_carry_what_the_design_asks(rig):
         handle.close()
 
 
-def test_no_permission_bit_is_written_as_u(rig):
+def test_the_declaration_carries_its_own_permissions(rig):
     """
-    The default the model ships must be the POSIX triplet, not rwu.
+    On the object, as the design says, so deleting it takes them with it.
     """
+    from trix.common.constants import DEFAULT_MODE
     from trix.db import models
 
-    defaults = {c.name: c.default.arg for c in models.Permission.__table__.columns
-                if c.name.endswith("_bits") and c.default is not None}
-    assert defaults["owner_bits"] == "rwx", defaults
-    assert all("u" not in value for value in defaults.values()), defaults
+    columns = {c.name for c in models.Declaration.__table__.columns}
+    assert {"owners", "usergroups", "access"} <= columns, columns
+    assert not hasattr(models, "Permission"), "the side table should be gone"
+    assert models.Declaration.__table__.columns["access"].default.arg == DEFAULT_MODE
