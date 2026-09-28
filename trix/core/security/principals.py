@@ -157,6 +157,11 @@ def resolve(handle: Session, name: str) -> Resolved:
     if identity is None:
         return None
     row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    if row is not None and not row.enabled:
+        # Read here rather than in a source, because pam and ldap know nothing of
+        # this flag: disabling somebody has to cut them whatever vouched for them.
+        LOGGER.warning("%s is disabled here, so the token is refused", name)
+        return None
     found = Resolved(identity.get("name") or name, "user", source,
                      list(identity.get("groups") or []),
                      bool(row.admin) if row is not None else False)

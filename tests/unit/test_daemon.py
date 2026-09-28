@@ -788,3 +788,33 @@ def test_a_failing_action_is_recorded_as_failed(rig, client, headers, monkeypatc
     found = tasks.status(identifier)
     assert found["state"] == tasks.FAILED
     assert "refused to start" in found["message"]
+
+
+def test_disabling_a_principal_cuts_them_at_once(rig, client, headers):
+    """
+    The token stays valid; the flag is read per request, so it stops working.
+    """
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "cut", "password": "pw"}, headers=headers)
+    theirs = _as(client, "cut", "pw")
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 200
+
+    client.patch(f"{API_PREFIX}/identity/principals/cut",
+                 json={"enabled": False}, headers=headers)
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 401
+
+    client.patch(f"{API_PREFIX}/identity/principals/cut",
+                 json={"enabled": True}, headers=headers)
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 200
+
+
+def test_a_disabled_principal_cannot_log_in_again(rig, client, headers):
+    """
+    And the source refuses the password too, not only the resolve.
+    """
+    client.post(f"{API_PREFIX}/identity/principals",
+                json={"name": "barred", "password": "pw", "enabled": False},
+                headers=headers)
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "barred", "password": "pw"})
+    assert answer.status_code == 401
