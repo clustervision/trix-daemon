@@ -266,3 +266,75 @@ def test_the_declaration_carries_its_own_permissions(rig):
     assert {"owners", "usergroups", "access"} <= columns, columns
     assert not hasattr(models, "Permission"), "the side table should be gone"
     assert models.Declaration.__table__.columns["access"].default.arg == DEFAULT_MODE
+
+
+def test_every_replicated_column_reaches_the_document(rig):
+    """
+    A column the export leaves out never crosses to the peer, silently.
+    """
+    from trix.core.replication import tables
+    from trix.db import engine as database
+    from trix.db import models
+
+    handle = database.session()
+    try:
+        # Something in every table, so each one has a row to export.
+        group = models.Usergroup(name="peers")
+        who = models.Principal(name="peered", admin=True, delegate=True,
+                               external_id="1234")
+        handle.add_all([group, who])
+        handle.flush()
+        handle.add_all([
+            models.Membership(principal_id=who.id, usergroup_id=group.id,
+                              role="manager", source="ldap"),
+            models.UsergroupMap(source="ldap", external_group="cn=peers",
+                                usergroup_id=group.id, role="admin"),
+            models.Declaration(plugin="peer", kind="acl", name="", body={},
+                               owners="peered", usergroups="peers", access="750"),
+        ])
+        handle.commit()
+
+        for table in models.REPLICATED:
+            model = tables.MODELS[table]
+            columns = {c.name for c in model.__table__.columns}
+            # id is local and a foreign key becomes a name in the key.
+            expected = {c for c in columns
+                        if c != "id" and not c.endswith("_id")}
+            documents = tables.export_table(handle, table)
+            assert documents, f"{table} exported nothing to check"
+            carried = set(documents[0])
+            missing = expected - carried
+            assert not missing, f"{table} does not carry {sorted(missing)}"
+    finally:
+        handle.close()
+
+
+def test_a_role_survives_the_round_trip(rig):
+    """
+    The role is the whole of RBAC, and it crosses as a document or not at all.
+    """
+    from trix.core.replication import tables
+    from trix.db import engine as database
+    from trix.db import models
+
+    handle = database.session()
+    try:
+        group = models.Usergroup(name="crossing")
+        who = models.Principal(name="traveller", admin=True)
+        handle.add_all([group, who])
+        handle.flush()
+        handle.add(models.Membership(principal_id=who.id, usergroup_id=group.id,
+                                     role="operator", source="ldap"))
+        handle.commit()
+
+        documents = tables.export_table(handle, "membership")
+        crossing = [d for d in documents if d["key"] == ["traveller", "crossing"]]
+        assert crossing, documents
+        assert crossing[0]["role"] == "operator"
+        assert crossing[0]["source"] == "ldap"
+
+        people = [d for d in tables.export_table(handle, "principal")
+                  if d["key"] == ["traveller"]]
+        assert people[0]["admin"] is True
+    finally:
+        handle.close()

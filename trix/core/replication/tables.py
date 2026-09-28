@@ -101,12 +101,15 @@ def to_document(handle: Session, table: str, row) -> dict:
     body = dict(_common(row))
     if table == "principal":
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
-                    password_digest=row.password_digest, enabled=bool(row.enabled))
+                    password_digest=row.password_digest, external_id=row.external_id,
+                    enabled=bool(row.enabled), admin=bool(row.admin),
+                    delegate=bool(row.delegate))
     elif table == "usergroup":
         body.update(key=[row.name], name=row.name)
     elif table == "membership":
         body.update(key=[_name_of(handle, models.Principal, row.principal_id),
-                         _name_of(handle, models.Usergroup, row.usergroup_id)])
+                         _name_of(handle, models.Usergroup, row.usergroup_id)],
+                    role=row.role, source=row.source)
     elif table == "usergroupmap":
         body.update(key=[row.source, row.external_group], source=row.source,
                     external_group=row.external_group, role=row.role,
