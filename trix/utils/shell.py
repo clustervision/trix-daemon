@@ -46,12 +46,18 @@ class Result:
     """
 
     def __init__(self, code: int, out: str, err: str) -> None:
+        """
+        The exit code and both streams of a finished command.
+        """
         self.code = code
         self.out = out
         self.err = err
 
     @property
     def ok(self) -> bool:
+        """
+        Whether the command finished with a zero exit code.
+        """
         return self.code == 0
 
 

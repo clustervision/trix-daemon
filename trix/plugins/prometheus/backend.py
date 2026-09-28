@@ -87,9 +87,15 @@ class Backend:
         return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def _config(self) -> dict:
+        """
+        The stored configuration, with the shipped defaults under it.
+        """
         return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
     def _rules_dir(self) -> str:
+        """
+        Where the rule files are written on this controller.
+        """
         return self._config().get("rules_directory", DEFAULT_CONFIG["rules_directory"])
 
     # ---------------------------------------------------------------- rules
@@ -262,11 +268,17 @@ class Backend:
         return written
 
     def _write_settings(self, stored: dict) -> str:
+        """
+        Put the settings document on disk for Prometheus to read.
+        """
         path = os.path.join(os.path.dirname(self._rules_dir().rstrip("/")), SETTINGS_FILE)
         files.write_yaml(path, (stored or {}).get("settings") or {})
         return path
 
     def _read_settings_file(self) -> dict:
+        """
+        What is on disk now, so a render can tell whether it changed.
+        """
         path = os.path.join(os.path.dirname(self._rules_dir().rstrip("/")), SETTINGS_FILE)
         if not os.path.isfile(path):
             return {}

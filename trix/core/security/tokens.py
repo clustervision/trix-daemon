@@ -51,6 +51,9 @@ class Claims:
     """
 
     def __init__(self, payload: dict) -> None:
+        """
+        Read the claims, filling in what Luna leaves out.
+        """
         self.raw = payload
         self.subject: str = payload.get("sub", "")
         self.kind: str = payload.get("kind", "")
@@ -73,6 +76,9 @@ class Claims:
             self.subject = settings().api.username
 
     def __repr__(self) -> str:
+        """
+        Enough to identify the token in a log.
+        """
         return f"<Claims {self.subject} kind={self.kind} iss={self.issuer}>"
 
 

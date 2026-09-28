@@ -57,6 +57,9 @@ MODELS: dict = {
 
 
 def _stamp(value) -> str:
+    """
+    The version and time a row was last written.
+    """
     if isinstance(value, datetime):
         if value.tzinfo is None:
             value = value.replace(tzinfo=timezone.utc)
@@ -65,6 +68,9 @@ def _stamp(value) -> str:
 
 
 def _name_of(handle: Session, model, row_id):
+    """
+    The name behind a local identifier, for a document.
+    """
     if not row_id:
         return ""
     row = handle.get(model, row_id)
@@ -72,12 +78,18 @@ def _name_of(handle: Session, model, row_id):
 
 
 def _id_of(handle: Session, model, name: str):
+    """
+    The local identifier behind a name, or None.
+    """
     if not name:
         return None
     return handle.scalar(select(model.id).where(model.name == name))
 
 
 def _common(row) -> dict:
+    """
+    The columns every replicated document carries.
+    """
     return {"version": row.version or 1, "origin": row.origin or "",
             "updated_at": _stamp(row.updated_at)}
 
@@ -131,6 +143,9 @@ def hashes(handle: Session) -> dict:
 
 
 def _find(handle: Session, table: str, key: list):
+    """
+    The local row a document addresses, or None.
+    """
     model = MODELS[table]
     if table in ("principal", "usergroup"):
         return handle.scalar(select(model).where(model.name == key[0]))

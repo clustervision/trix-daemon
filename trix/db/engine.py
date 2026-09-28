@@ -46,6 +46,9 @@ _factory: sessionmaker = None
 
 
 def _sqlite_path(url: str) -> str:
+    """
+    The file behind a SQLite url, so its directory can be made.
+    """
     if url.startswith("sqlite:////"):
         return "/" + url[len("sqlite:////"):]
     if url.startswith("sqlite:///"):

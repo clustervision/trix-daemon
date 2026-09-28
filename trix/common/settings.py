@@ -55,11 +55,17 @@ def seconds(value: str, fallback: int = 3600) -> int:
 
 
 class LoggerSettings(BaseModel):
+    """
+    Where the daemon logs, and how loudly.
+    """
     level: str = "info"
     logfile: str = "/var/log/trix/trix-daemon.log"
 
 
 class ApiSettings(BaseModel):
+    """
+    The two listeners, the certificate and the ini account.
+    """
     bind: str = "0.0.0.0:8050"
     insecure_bind: str = "127.0.0.1:8051"
     certfile: str = ""
@@ -70,6 +76,9 @@ class ApiSettings(BaseModel):
 
 
 class TokenSettings(BaseModel):
+    """
+    What tokens are signed with, and by which algorithm.
+    """
     algorithm: str = DEFAULT_TOKEN_ALGORITHM
     secret_key: str = ""
     secret_file: str = "/trinity/local/etc/ssl/secret.key"
@@ -87,6 +96,9 @@ class TokenSettings(BaseModel):
 
 
 class LunaSettings(BaseModel):
+    """
+    How to reach Luna, and as whom.
+    """
     endpoint: str = "controller.cluster:7050"
     protocol: str = "http"
     verify_certificate: bool = False
@@ -96,10 +108,16 @@ class LunaSettings(BaseModel):
 
 
 class DatabaseSettings(BaseModel):
+    """
+    Where the store lives.
+    """
     url: str = "sqlite:////trinity/local/trix/var/trix.db"
 
 
 class AuthSettings(BaseModel):
+    """
+    The chain of sources, and what each one needs.
+    """
     chain: list = Field(default_factory=lambda: ["local", "pam"])
     cache: int = 60
     pam_service: str = "login"
@@ -113,20 +131,32 @@ class AuthSettings(BaseModel):
 
 
 class ServicesSettings(BaseModel):
+    """
+    What runs a unit action on this controller.
+    """
     command: str = "/usr/bin/systemctl"
 
 
 class ReplicationSettings(BaseModel):
+    """
+    The peers to reconcile with, and how often.
+    """
     peers: list = Field(default_factory=list)
     interval: int = 300
     enabled: bool = True
 
 
 class TriggerSettings(BaseModel):
+    """
+    How often the fallback asks Luna what changed.
+    """
     luna_hashes: int = 60
 
 
 class PluginSettings(BaseModel):
+    """
+    Where plugins live, and which of them to load.
+    """
     directory: str = "/trinity/local/trix/daemon/plugins"
     enabled: list = Field(default_factory=list)
 
@@ -150,6 +180,9 @@ class Settings(BaseModel):
 
 
 def _csv(value: str) -> list:
+    """
+    A comma separated setting as a list, without the blanks.
+    """
     return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
@@ -180,6 +213,9 @@ def _secret(inline: str, path: str) -> str:
 
 
 def _bool(value: str) -> bool:
+    """
+    Accept yes, true, on and 1 as true, anything else as false.
+    """
     return str(value or "").strip().lower() in ("1", "yes", "true", "on")
 
 
@@ -192,6 +228,9 @@ def load(path: str = "") -> Settings:
     parser.read(path)
 
     def get(section: str, option: str, fallback: str = "") -> str:
+        """
+        One value from the ini, or the fallback when it says nothing.
+        """
         if parser.has_section(section) and parser.has_option(section, option):
             return parser.get(section, option)
         return fallback

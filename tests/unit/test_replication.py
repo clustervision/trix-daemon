@@ -61,6 +61,9 @@ def test_the_schema_comes_from_a_migration(rig):
 
 
 def test_every_replicated_table_has_a_hash(rig):
+    """
+    A table with no hash would never be compared, and so never reconciled.
+    """
     handle = database.session()
     try:
         digests = tables.hashes(handle)
@@ -71,6 +74,9 @@ def test_every_replicated_table_has_a_hash(rig):
 
 
 def test_a_write_changes_exactly_one_table_hash(rig):
+    """
+    A write that moved every hash would make the sweep copy the whole store.
+    """
     handle = database.session()
     try:
         before = tables.hashes(handle)
@@ -133,6 +139,9 @@ def test_the_merge_carries_rows_across_and_resolves_the_names(rig, tmp_path):
 
 
 def test_the_newer_version_wins_and_the_older_is_ignored(rig, tmp_path):
+    """
+    Last writer wins by version, then by timestamp.
+    """
     peer = _peer(tmp_path, "peer2.db")
     handle = database.session()
     try:
@@ -183,6 +192,9 @@ def test_a_row_whose_dependency_is_missing_is_deferred(rig, tmp_path):
 
 
 def test_the_replication_endpoints_answer(client, headers):
+    """
+    The peer reads these, so they must answer on a controller with no peer.
+    """
     answer = client.get(f"{API_PREFIX}/system/replication/hashes", headers=headers)
     assert answer.status_code == 200
     assert set(answer.json()["hashes"]) == set(tables.ORDER)
@@ -196,6 +208,9 @@ def test_the_replication_endpoints_answer(client, headers):
 
 
 def test_the_trigger_state_is_reported(client, headers):
+    """
+    Whether the fallback poller is doing anything, which on one controller it is not.
+    """
     answer = client.get(f"{API_PREFIX}/system/triggers", headers=headers)
     assert answer.status_code == 200
     assert "luna_hashes" in answer.json()

@@ -50,6 +50,9 @@ class KeyRing:
     """
 
     def __init__(self, config: TokenSettings = None) -> None:
+        """
+        Hold the settings; nothing is read until load runs.
+        """
         self.config = config or TokenSettings()
         self.algorithm: str = self.config.algorithm
         self.key_id: str = self.config.key_id

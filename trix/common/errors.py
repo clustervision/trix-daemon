@@ -41,6 +41,9 @@ class TrixError(Exception):
     status_code: int = 500
 
     def __init__(self, message: str = "") -> None:
+        """
+        Carry the message and the status this error means.
+        """
         super().__init__(message)
         self.message = message or self.__class__.__name__
 
@@ -114,4 +117,7 @@ def register(app: FastAPI) -> None:
 
     @app.exception_handler(TrixError)
     async def _handler(request: Request, exc: TrixError) -> JSONResponse:
+        """
+        Turn one typed error into its response.
+        """
         return JSONResponse(status_code=exc.status_code, content={"message": exc.message})

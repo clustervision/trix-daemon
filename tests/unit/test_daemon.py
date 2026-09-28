@@ -143,6 +143,9 @@ def test_a_token_carries_no_permissions(token):
 
 
 def test_an_endpoint_refuses_without_a_token(client):
+    """
+    No token at all is a 401, before any handler runs.
+    """
     answer = client.get(f"{API_PREFIX}/directory/users")
     assert answer.status_code == 401
 
@@ -181,6 +184,9 @@ def test_luna_is_reserved(rig):
 
 
 def test_a_manifest_without_a_capability_is_refused():
+    """
+    An endpoint that names no capability would be an open door.
+    """
     with pytest.raises(Exception) as raised:
         parse({"plugin": "x", "endpoints": [{"path": "a", "methods": ["GET"],
                                              "handler": "a"}]})
@@ -367,9 +373,15 @@ def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypa
         """
 
         def node(self, name):
+            """
+            The node as this stubbed Luna holds it.
+            """
             return {"name": name, "tpm_sha256": ""}
 
         def enforcing_security(self):
+            """
+            Whether this stubbed Luna enforces a measurement.
+            """
             return False
 
     monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
@@ -397,9 +409,15 @@ def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, clie
         """
 
         def node(self, name):
+            """
+            The node as this stubbed Luna holds it.
+            """
             return {"name": name, "tpm_sha256": "abc123"}
 
         def enforcing_security(self):
+            """
+            Whether this stubbed Luna enforces a measurement.
+            """
             return True
 
     monkeypatch.setattr(auth_routes, "luna", lambda: Stub())

@@ -46,6 +46,9 @@ class Source:
     def __init__(self, handle=None) -> None:
         # python-pam sits on libpam, and pwd and grp are Unix only. All three are
         # imported here so this source fails loudly and the rest of the chain works.
+        """
+        Hold what this object needs.
+        """
         import grp
         import pam
         import pwd

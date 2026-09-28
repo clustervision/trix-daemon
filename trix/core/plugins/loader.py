@@ -265,6 +265,9 @@ def load_all(app: FastAPI) -> dict:
 
 
 def _disabled_names() -> set:
+    """
+    Plugins recorded as unplugged here, so a restart agrees.
+    """
     handle = database.session()
     try:
         return set(handle.scalars(

@@ -51,6 +51,9 @@ class Caller:
     """
 
     def __init__(self, claims: tokens.Claims, who: principals.Resolved, held: set) -> None:
+        """
+        Who is asking, and what they hold on what they asked for.
+        """
         self.claims = claims
         self.who = who
         self.name = claims.subject
@@ -60,10 +63,16 @@ class Caller:
         self.bits = "".join(sorted(held)) if held else ""
 
     def __repr__(self) -> str:
+        """
+        Enough to identify the caller in a log.
+        """
         return f"<Caller {self.name} kind={self.kind}>"
 
 
 def _present(x_access_tokens: str, authorization: str) -> str:
+    """
+    The token, from either header a client may use.
+    """
     if x_access_tokens:
         return x_access_tokens
     if authorization and authorization.lower().startswith("bearer "):
@@ -87,6 +96,9 @@ def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER,
     def dependency(request: Request,
                    x_access_tokens: str = Header(default=None),
                    authorization: str = Header(default=None)) -> Caller:
+        """
+        The check FastAPI runs before the handler.
+        """
         claims = tokens.verify(_present(x_access_tokens, authorization))
 
         if token_kind == TOKEN_KIND_NODE:

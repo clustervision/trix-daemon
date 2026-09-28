@@ -42,6 +42,9 @@ class Source:
     """
 
     def __init__(self, handle=None) -> None:
+        """
+        Take the session this source reads the table on.
+        """
         self.handle = handle
 
     def authenticate(self, name: str = "", password: str = "") -> tuple:
@@ -69,12 +72,18 @@ class Source:
         return True, self._identity(row)
 
     def _row(self, name: str):
+        """
+        The principal row for this name, or None.
+        """
         if self.handle is None:
             return None
         return self.handle.scalar(
             select(models.Principal).where(models.Principal.name == name))
 
     def _identity(self, row) -> dict:
+        """
+        The name, the row id and the usergroups it is in.
+        """
         groups = self.handle.scalars(
             select(models.Usergroup.name)
             .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)

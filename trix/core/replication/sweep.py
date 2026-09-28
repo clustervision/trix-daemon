@@ -56,11 +56,17 @@ class Sweep:
     """
 
     def __init__(self) -> None:
+        """
+        The sweep, not yet running.
+        """
         self.stop = threading.Event()
         self.thread = None
         self.last: dict = {}
 
     def _get(self, peer: str, path: str):
+        """
+        One read from a peer, or None when it is away.
+        """
         url = f"https://{peer}{API_PREFIX}/system/replication/{path}"
         headers = {TOKEN_HEADER: tokens.service_token()}
         answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=False)
@@ -106,6 +112,9 @@ class Sweep:
         return results
 
     def _loop(self) -> None:
+        """
+        One pass per interval until the daemon stops.
+        """
         interval = settings().replication.interval
         while not self.stop.wait(interval):
             self.once()
@@ -125,6 +134,9 @@ class Sweep:
         return True
 
     def shutdown(self) -> None:
+        """
+        Ask the sweep to stop and wait briefly for it.
+        """
         self.stop.set()
 
 

@@ -50,12 +50,18 @@ class LunaClient:
     """
 
     def __init__(self) -> None:
+        """
+        No connection yet: the token is fetched on first use.
+        """
         self.session = requests.Session()
         self.lock = threading.Lock()
         self.token: str = ""
 
     @property
     def base(self) -> str:
+        """
+        The address Luna answers on, with its protocol.
+        """
         config = settings().luna
         return f"{config.protocol}://{config.endpoint}"
 
@@ -80,6 +86,9 @@ class LunaClient:
         return token
 
     def _headers(self) -> dict:
+        """
+        The token header Luna expects, fetched if we hold none.
+        """
         with self.lock:
             if not self.token:
                 self.token = self._authenticate()
@@ -116,9 +125,15 @@ class LunaClient:
         return None
 
     def get(self, uri: str, params: dict = None):
+        """
+        A GET against Luna, decoded.
+        """
         return self.request("GET", uri, params=params)
 
     def post(self, uri: str, payload=None):
+        """
+        A POST against Luna, decoded.
+        """
         return self.request("POST", uri, payload=payload)
 
     def nodes(self) -> dict:
@@ -150,10 +165,16 @@ class LunaClient:
         return bool(self.cluster().get("security"))
 
     def groups(self) -> dict:
+        """
+        Every group Luna holds.
+        """
         answer = self.get("config/group") or {}
         return (answer.get("config") or {}).get("group") or {}
 
     def networks(self) -> dict:
+        """
+        Every network Luna holds.
+        """
         answer = self.get("config/network") or {}
         return (answer.get("config") or {}).get("network") or {}
 

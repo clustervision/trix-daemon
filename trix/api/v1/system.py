@@ -129,11 +129,17 @@ def health() -> dict:
 
 @router.get("/version", summary="What is running here")
 def version() -> dict:
+    """
+    What is running here, for a client that has to ask.
+    """
     return {"version": {"trix": DAEMON_VERSION, "api": 1}}
 
 
 @router.get("/plugins", summary="Every plugin, its state and why")
 def plugins(caller: Caller = Depends(guard("system.read"))) -> dict:
+    """
+    Every plugin, its state, its digest and why it was refused.
+    """
     return {"plugins": registry().listing()}
 
 
@@ -161,6 +167,9 @@ def disable_plugin(name: str, request: Request,
 
 @router.get("/renders", summary="Every declared render and when it last ran")
 def render_listing(caller: Caller = Depends(guard("system.read"))) -> dict:
+    """
+    Every declared render and when it last ran.
+    """
     return {"renders": renders().listing()}
 
 

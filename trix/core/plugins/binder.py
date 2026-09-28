@@ -61,6 +61,9 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
     """
 
     def operation(**kwargs):
+        """
+        The path operation FastAPI calls, which hands the backend its arguments.
+        """
         caller = kwargs.pop("caller", None)
         body = kwargs.pop("body", None)
         supplied = dict(kwargs)

@@ -50,6 +50,9 @@ HOP_BY_HOP: tuple = ("connection", "keep-alive", "transfer-encoding", "upgrade",
 
 
 def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
+    """
+    The blocking call itself, run in the worker pool.
+    """
     config = settings().luna
     try:
         return requests.request(method, url, headers=headers, params=params, data=body or None,

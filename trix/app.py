@@ -59,6 +59,9 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:
+        """
+        Point a browser at the document rather than at nothing.
+        """
         return {"daemon": DAEMON_NAME, "version": DAEMON_VERSION, "api": API_PREFIX}
 
     return app

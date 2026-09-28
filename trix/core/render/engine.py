@@ -49,6 +49,9 @@ class Render:
     """
 
     def __init__(self, plugin: str, path: str, spec, producer) -> None:
+        """
+        One render, its declaration and what produces it.
+        """
         self.plugin = plugin
         self.path = path
         self.spec = spec
@@ -75,16 +78,25 @@ class Engine:
     """
 
     def __init__(self) -> None:
+        """
+        One render, its declaration and what produces it.
+        """
         self.renders: dict = {}
         self.lock = threading.RLock()
         self.pending: dict = {}
 
     def forget(self, plugin: str) -> None:
+        """
+        Drop every render a plugin declared, before it is reloaded.
+        """
         with self.lock:
             for key in [item for item in self.renders if item.startswith(f"{plugin}/")]:
                 self.renders.pop(key, None)
 
     def register(self, plugin: str, path: str, spec, producer) -> Render:
+        """
+        Take a render and the backend method that produces it.
+        """
         with self.lock:
             item = Render(plugin, path, spec, producer)
             self.renders[item.key] = item
@@ -97,6 +109,9 @@ class Engine:
         """
 
         def read(caller=None):
+            """
+            Serve what was rendered, rather than rendering again.
+            """
             item = self.renders.get(f"{plugin}/{path}")
             if item is None:
                 raise NotFound(f"no render named {plugin}/{path}")
@@ -156,6 +171,9 @@ class Engine:
         return woken
 
     def listing(self) -> list:
+        """
+        Every render and when it last ran.
+        """
         return [{"render": item.key,
                  "inputs": item.spec.inputs,
                  "rendered_at": item.rendered_at,

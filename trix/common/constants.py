@@ -34,24 +34,19 @@ DAEMON_VERSION: str = "1.0"
 API_VERSION: str = "v1"
 API_PREFIX: str = f"/api/{API_VERSION}"
 
-# No plugin may claim this name: it is the one-API route to Luna and the daemon
-# forwards the whole subtree under it byte for byte.
+# No plugin may claim this name: it is the one-API route to Luna.
 RESERVED_PLUGIN: str = "luna"
 
 TOKEN_HEADER: str = "x-access-tokens"
 
-# HS256 and the shared secret are what luna2-daemon uses, so either daemon accepts
-# the other's tokens. EdDSA is selectable, but only once Luna speaks it too.
+# HS256 is what luna2-daemon signs with, so either daemon accepts the other's tokens.
 TOKEN_ALGORITHM_SHARED: str = "HS256"
 TOKEN_ALGORITHM_KEYPAIR: str = "EdDSA"
 TOKEN_ALGORITHMS: tuple = (TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHM_KEYPAIR)
 DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
-
-# Shorter than this and we complain. The installer writes 32 hexadecimal characters.
 MINIMUM_SECRET_LENGTH: int = 32
 
-# What Luna writes into its tokens. It reads back only scope and node, never id,
-# and id 0 is the administrator luna.ini names rather than a row in its user table.
+# Luna reads back only scope and node; id 0 is the administrator its ini names.
 LUNA_CLAIM_ID: str = "id"
 LUNA_CLAIM_NODE: str = "node"
 LUNA_CLAIM_SCOPE: str = "scope"
@@ -63,20 +58,14 @@ TOKEN_KIND_NODE: str = "node"
 TOKEN_KIND_SERVICE: str = "service"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
 
-# What a person may do inside a usergroup, capped by the role on their membership.
-# The labels are stored, the bits they map to are fixed here, as luna2-daemon does.
+# The labels are stored; the bits they cap to are fixed here, as luna2-daemon does.
 ROLE_CAPS: dict = {"admin": "rwx", "manager": "rwx", "operator": "r-x", "reader": "r--"}
 DEFAULT_ROLE: str = "reader"
 
-# Read, change and operate. POSIX, and the same three letters luna2-daemon uses.
 BITS: dict = {"r": 4, "w": 2, "x": 1}
-
-# Owner rwx, the listed usergroups rwx, everyone else nothing. The same
-# default luna2-daemon gives a node or a group.
 DEFAULT_MODE: str = "770"
 
-# The row on a plugin that carries its permissions. Per-document granularity
-# is open: the columns are on every declaration, so it needs no schema change.
+# The row on a plugin that carries its permissions.
 ACL_KIND: str = "acl"
 
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")

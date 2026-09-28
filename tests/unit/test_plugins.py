@@ -41,6 +41,9 @@ class Ran:
     """
 
     def __init__(self, out: str = "", code: int = 0, err: str = "") -> None:
+        """
+        Hold what the stubbed command answered.
+        """
         self.out = out
         self.err = err
         self.code = code
@@ -164,13 +167,22 @@ def test_the_prometheus_targets_render_is_service_discovery(rig, monkeypatch):
         """
 
         def nodes(self):
+            """
+            Every node this stubbed Luna knows.
+            """
             return {"node001": {"hostname": "node001.cluster", "group": "compute"},
                     "node002": {"hostname": "node002.cluster", "group": "compute"}}
 
         def node(self, name):
+            """
+            One node by name, or None.
+            """
             return self.nodes().get(name)
 
         def networks(self):
+            """
+            No networks, which is enough for a target.
+            """
             return {}
 
     monkeypatch.setattr(prometheus, "luna", lambda: Luna())

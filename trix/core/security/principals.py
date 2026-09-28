@@ -80,6 +80,9 @@ class Resolved:
 
     def __init__(self, name: str, kind: str = "user", source: str = "",
                  usergroups: list = None, admin: bool = False) -> None:
+        """
+        A principal and what is known about it.
+        """
         self.name = name
         self.kind = kind
         self.source = source
@@ -87,6 +90,9 @@ class Resolved:
         self.admin = admin
 
     def __repr__(self) -> str:
+        """
+        Enough to identify the principal in a log.
+        """
         return f"<Resolved {self.name} kind={self.kind} src={self.source}>"
 
 
@@ -96,18 +102,30 @@ class _Cache:
     """
 
     def __init__(self) -> None:
+        """
+        A principal and what is known about it.
+        """
         self.entries: dict = {}
 
     def get(self, key: str, ttl: int):
+        """
+        A cached answer, if it is still young enough.
+        """
         found = self.entries.get(key)
         if found and (time.monotonic() - found[0]) < ttl:
             return found[1]
         return None
 
     def put(self, key: str, value) -> None:
+        """
+        Remember an answer against the clock.
+        """
         self.entries[key] = (time.monotonic(), value)
 
     def clear(self) -> None:
+        """
+        Forget everything, which a write to the store must do.
+        """
         self.entries.clear()
 
 
@@ -115,6 +133,9 @@ CACHE = _Cache()
 
 
 def _from_local(handle: Session, name: str) -> Resolved:
+    """
+    The principal row and the usergroups it belongs to.
+    """
     row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
     if row is None or not row.enabled:
         return None

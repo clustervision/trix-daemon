@@ -93,6 +93,9 @@ class Endpoint(BaseModel):
 
     @property
     def variables(self) -> list:
+        """
+        Every path variable this endpoint declares.
+        """
         return PATH_VARIABLE.findall(self.path)
 
     @property
@@ -118,6 +121,9 @@ class Manifest(BaseModel):
 
     @property
     def digest(self) -> str:
+        """
+        A stable hash of the declaration, so a reload can say what changed.
+        """
         return hashlib.sha256(
             json.dumps(self.model_dump(mode="json"), sort_keys=True).encode()).hexdigest()
 

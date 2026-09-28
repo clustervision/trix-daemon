@@ -39,6 +39,9 @@ class LoadedPlugin:
     """
 
     def __init__(self, name: str, state: str = PLUGIN_STATE_LOADED) -> None:
+        """
+        One plugin and the state it is in.
+        """
         self.name = name
         self.state = state
         self.reason: str = ""
@@ -72,13 +75,22 @@ class Registry:
     """
 
     def __init__(self) -> None:
+        """
+        One plugin and the state it is in.
+        """
         self.plugins: dict = {}
 
     def put(self, entry: LoadedPlugin) -> LoadedPlugin:
+        """
+        Record a plugin as loaded.
+        """
         self.plugins[entry.name] = entry
         return entry
 
     def get(self, name: str) -> LoadedPlugin:
+        """
+        One plugin by name, or None.
+        """
         return self.plugins.get(name)
 
     def refuse(self, name: str, reason: str, origin: str = "") -> LoadedPlugin:
@@ -95,6 +107,9 @@ class Registry:
         return self.put(entry)
 
     def disable(self, name: str) -> LoadedPlugin:
+        """
+        Mark a plugin unplugged and keep the entry.
+        """
         entry = self.plugins.get(name) or LoadedPlugin(name)
         entry.state = PLUGIN_STATE_DISABLED
         entry.routes = []
@@ -102,10 +117,16 @@ class Registry:
         return self.put(entry)
 
     def owned_routes(self, name: str) -> set:
+        """
+        The identity of every route this plugin contributed.
+        """
         entry = self.plugins.get(name)
         return {id(route) for route in entry.routes} if entry else set()
 
     def owner(self, route) -> str:
+        """
+        Which plugin a route belongs to, or an empty string.
+        """
         for name, entry in self.plugins.items():
             if any(route is item for item in entry.routes):
                 return name
@@ -124,6 +145,9 @@ class Registry:
         return taken
 
     def listing(self) -> list:
+        """
+        Every plugin as the control endpoint shows it.
+        """
         return [entry.summary() for entry in
                 sorted(self.plugins.values(), key=lambda item: item.name)]
 

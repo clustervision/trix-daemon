@@ -43,6 +43,9 @@ class Source:
     def __init__(self, handle=None) -> None:
         # ldap3 is pure Python; imported here so a controller without it fails this
         # source loudly and leaves the rest of the chain working.
+        """
+        Hold what this object needs.
+        """
         import ldap3
 
         self.ldap3 = ldap3

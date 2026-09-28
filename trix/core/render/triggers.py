@@ -47,6 +47,9 @@ class LunaHashes:
     """
 
     def __init__(self) -> None:
+        """
+        The poller, not yet running.
+        """
         self.stop = threading.Event()
         self.thread = None
         self.seen: dict = {}
@@ -91,11 +94,17 @@ class LunaHashes:
         return woken
 
     def _loop(self) -> None:
+        """
+        One pass per interval until the daemon stops.
+        """
         interval = settings().triggers.luna_hashes
         while not self.stop.wait(interval):
             self.once()
 
     def start(self) -> bool:
+        """
+        Begin polling, unless the interval says not to.
+        """
         interval = settings().triggers.luna_hashes
         if interval <= 0:
             LOGGER.info("the Luna hash fallback is switched off")
@@ -107,9 +116,15 @@ class LunaHashes:
         return True
 
     def shutdown(self) -> None:
+        """
+        Ask the poller to stop and wait briefly for it.
+        """
         self.stop.set()
 
     def state(self) -> dict:
+        """
+        What the poller is doing, for the control endpoint.
+        """
         return {"interval": settings().triggers.luna_hashes,
                 "last_pass": self.last_pass,
                 "tables_seen": len(self.seen),

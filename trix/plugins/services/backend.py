@@ -92,9 +92,15 @@ class Backend:
         return declarations.read(PLUGIN, "catalogue", "", dict(DEFAULT_CATALOGUE))
 
     def _units(self) -> dict:
+        """
+        Every name this daemon may control, and its unit.
+        """
         return (self.catalogue() or {}).get("services") or {}
 
     def _unit(self, name: str) -> str:
+        """
+        The unit behind a name, or 404 if it is not in the catalogue.
+        """
         unit = self._units().get(name)
         if not unit:
             raise NotFound(f"{name} is not a service this daemon controls")

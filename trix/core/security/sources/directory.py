@@ -41,6 +41,9 @@ class Source:
     """
 
     def __init__(self, handle=None) -> None:
+        """
+        Nothing to set up: obol is a command, not a connection.
+        """
         self.handle = handle
 
     def authenticate(self, name: str = "", password: str = "") -> tuple:
