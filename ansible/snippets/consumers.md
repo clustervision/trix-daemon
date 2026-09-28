@@ -82,10 +82,19 @@ route change means editing every copy.
 | alertx | `alertx/rest.py` | six URLs on `/export/…` and `/import/…` | `/api/v1/prometheus/rules`, `.../settings`, `.../hw-rules` |
 | slurm | `slurm/app.py` | writes `/etc/slurm` itself through the generator | `PATCH /api/v1/slurm/partitions`, and the render writes the files |
 
-Two shapes the users application depends on and that have to survive the move:
-the list endpoint answers a list while the single-user endpoint answers an object
-keyed by name, and the 389ds membership attribute is renamed to `member`. The
-directory plugin keeps both.
+Two shapes the users application depends on. The directory plugin keeps one of
+them and deliberately does not keep the other, so this is what changes when
+`users/luna_requests.py` is repointed.
+
+The 389ds membership attribute is still renamed to `member`, server side, so the
+application's own `normalise_group` becomes a no-op rather than a requirement.
+
+The envelope is gone. Luna answers `{"config": {"osuser": {name: {...}}}}` and the
+application unwraps it at two points: `resp.json()['config'][f"os{target[:-1]}"]`
+when listing, and the same indexed by name when getting one. trix-daemon answers
+the list and the record themselves, because the route already names the object.
+Both unwraps come out when the URLs change. A test pins this shape so it cannot
+drift back by accident.
 
 The slurm application is the one that is bigger than it looks. It is roughly a
 thousand lines and manages three separate managed blocks, one of which it has to

@@ -1,0 +1,194 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+"""
+The five plugin backends. Every test here stubs obol, systemctl and Luna.
+"""
+
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
+
+import pytest
+
+from trix.common.errors import BadRequest, NotFound
+
+
+class Ran:
+    """
+    What a stubbed command answered, in the shape shell.Result has.
+    """
+
+    def __init__(self, out: str = "", code: int = 0, err: str = "") -> None:
+        self.out = out
+        self.err = err
+        self.code = code
+        self.ok = code == 0
+
+
+def test_the_directory_renames_the_389ds_member_attribute(rig, monkeypatch):
+    """
+    The users application reads member; 389ds calls it uniqueMember.
+    """
+    from trix.plugins.directory import backend as directory
+
+    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
+    monkeypatch.setattr(directory.shell, "run_json",
+                        lambda *a, **k: {"cn": "hpc", "uniqueMember": ["uid=carol"]})
+
+    shown = directory.Backend().get_group("hpc")
+    assert shown["member"] == ["uid=carol"]
+    assert "uniqueMember" not in shown
+
+
+def test_the_directory_shape_the_ood_application_will_meet(rig, monkeypatch):
+    """
+    Pinned deliberately: the envelope differs from Luna's and the app is repointed.
+
+    Luna answers {"config": {"osuser": {name: {...}}}}; this answers the record
+    itself. Whoever repoints trinityx-ood/users/luna_requests.py unwraps one level.
+    """
+    from trix.plugins.directory import backend as directory
+
+    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
+    monkeypatch.setattr(directory.shell, "run_json",
+                        lambda *a, **k: {"uid": "carol", "uidNumber": "1051"})
+
+    shown = directory.Backend().get_user("carol")
+    assert shown["uid"] == "carol"
+    assert "config" not in shown, "no Luna envelope here"
+    assert "carol" not in shown, "not keyed by name either"
+
+
+def test_a_missing_directory_user_is_a_404(rig, monkeypatch):
+    """
+    obol answering non-zero is a missing user, not an empty one.
+    """
+    from trix.plugins.directory import backend as directory
+
+    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("", 1, "no such"))
+    with pytest.raises(NotFound):
+        directory.Backend().get_user("nobody")
+
+
+def test_obol_is_never_given_a_shell_string(rig, monkeypatch):
+    """
+    Every call is an argument list, so a name with a space cannot become a command.
+    """
+    from trix.plugins.directory import backend as directory
+
+    seen = []
+    monkeypatch.setattr(directory.shell, "run",
+                        lambda argv, *a, **k: (seen.append(argv), Ran("{}"))[1])
+    monkeypatch.setattr(directory.shell, "run_json",
+                        lambda argv, *a, **k: (seen.append(argv), {})[1])
+    directory.Backend().get_user("carol; rm -rf /")
+
+    assert seen, "nothing ran"
+    for argv in seen:
+        assert isinstance(argv, list), argv
+        assert argv[0] == "obol"
+        assert "carol; rm -rf /" in argv, "the name is one argument, not parsed"
+
+
+def test_a_service_outside_the_catalogue_is_refused(rig):
+    """
+    An endpoint that took any unit name would restart anything on the controller.
+    """
+    from trix.plugins.services import backend as services
+
+    with pytest.raises(NotFound):
+        services.Backend().status("sshd")
+
+
+def test_an_unknown_service_action_is_refused(rig):
+    """
+    The verb list is closed, so a typo cannot reach the command line.
+    """
+    from trix.plugins.services import backend as services
+
+    with pytest.raises(BadRequest):
+        services.Backend().act("slurmctld", "obliterate")
+
+
+def test_the_service_catalogue_round_trips(rig):
+    """
+    What is written is what comes back, through the declaration store.
+    """
+    from trix.plugins.services import backend as services
+
+    backend = services.Backend()
+    backend.catalogue(body={"services": {"demo": "demo.service"}})
+    assert backend.catalogue()["services"]["demo"] == "demo.service"
+
+
+def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch):
+    """
+    One line per node, from Luna's list, with no call per node.
+    """
+    from trix.plugins.genders import backend as genders
+
+    monkeypatch.setattr(genders, "_generator", lambda: None)
+    document = genders.Backend().config()
+    assert isinstance(document, dict)
+
+
+def test_the_prometheus_targets_render_is_service_discovery(rig, monkeypatch):
+    """
+    http_sd reads this, so it must be a list of target and label objects.
+    """
+    from trix.plugins.prometheus import backend as prometheus
+
+    class Luna:
+        """
+        Two nodes, as Luna would answer them.
+        """
+
+        def nodes(self):
+            return {"node001": {"hostname": "node001.cluster", "group": "compute"},
+                    "node002": {"hostname": "node002.cluster", "group": "compute"}}
+
+        def node(self, name):
+            return self.nodes().get(name)
+
+        def networks(self):
+            return {}
+
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    document = prometheus.Backend().render_targets()
+
+    assert isinstance(document, list)
+    for entry in document:
+        assert "targets" in entry and isinstance(entry["targets"], list)
+        assert "labels" in entry and isinstance(entry["labels"], dict)
+
+
+def test_the_slurm_partitions_round_trip(rig):
+    """
+    The On Demand application edits partitions through this, so it must persist.
+    """
+    from trix.plugins.slurm import backend as slurm
+
+    backend = slurm.Backend()
+    backend.partitions(body={"partitions": {"defq": {"nodes": "node[001-004]"}}})
+    assert backend.partitions()["partitions"]["defq"]["nodes"] == "node[001-004]"
