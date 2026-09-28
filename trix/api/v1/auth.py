@@ -85,7 +85,8 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
         LOGGER.warning("failed login for %s", body.username)
         audit.refused(body.username, "auth.token", detail="username or password")
         raise Unauthenticated("username or password is incorrect")
-    audit.granted(who.name, "auth.token", detail=f"through {who.source}")
+    audit.granted(who.name, "auth.token", detail=f"through {who.source}",
+                  handle=handle)
     return Token(token=tokens.mint(who.name, expiry=settings().api.expiry, source=who.source))
 
 

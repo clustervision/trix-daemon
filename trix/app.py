@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from fastapi import FastAPI
 
-from trix.api.v1 import auth, system
+from trix.api.v1 import auth, identity, system
 from trix.common import errors
 from trix.common.constants import API_PREFIX, DAEMON_NAME, DAEMON_VERSION
 from trix.core.lifespan import lifespan
@@ -53,6 +53,7 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     )
     errors.register(app)
     app.include_router(auth.router)
+    app.include_router(identity.router)
     app.include_router(system.router)
     app.include_router(proxy.router)
 

@@ -42,34 +42,41 @@ DETAIL_LIMIT: int = 1024
 
 
 def record(principal: str, action: str, object_name: str = "",
-           outcome: str = GRANTED, detail: str = "") -> None:
+           outcome: str = GRANTED, detail: str = "", handle=None) -> None:
     """
-    One row on its own session, so a failed request still leaves its trace and a
-    write here is never the reason an otherwise good request fails.
+    One row. Pass the request's own session where it holds one, or SQLite blocks
+    on its own write lock until the busy timeout and the row is lost.
     """
-    handle = database.session()
+    row = models.Audit(principal=principal or "anonymous", action=action,
+                       object=object_name or "", outcome=outcome,
+                       detail=(detail or "")[:DETAIL_LIMIT])
+    if handle is not None:
+        handle.add(row)
+        return
+    own = database.session()
     try:
-        handle.add(models.Audit(principal=principal or "anonymous", action=action,
-                                object=object_name or "", outcome=outcome,
-                                detail=(detail or "")[:DETAIL_LIMIT]))
-        handle.commit()
+        own.add(row)
+        own.commit()
     except Exception as error:
-        handle.rollback()
+        own.rollback()
         LOGGER.error("could not record %s %s by %s: %s", action, object_name,
                      principal, error)
     finally:
-        handle.close()
+        own.close()
 
 
-def granted(principal: str, action: str, object_name: str = "", detail: str = "") -> None:
+def granted(principal: str, action: str, object_name: str = "", detail: str = "",
+            handle=None) -> None:
     """
     Something a caller was allowed to do.
     """
-    record(principal, action, object_name, GRANTED, detail)
+    record(principal, action, object_name, GRANTED, detail, handle)
 
 
-def refused(principal: str, action: str, object_name: str = "", detail: str = "") -> None:
+def refused(principal: str, action: str, object_name: str = "", detail: str = "",
+            handle=None) -> None:
     """
-    Something a caller was not allowed to do, which is the half worth having.
+    A refusal always gets its own session: the request it belongs to is about to
+    roll back, and a row on that session would roll back with it.
     """
     record(principal, action, object_name, REFUSED, detail)
