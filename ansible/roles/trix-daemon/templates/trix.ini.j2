@@ -51,10 +51,12 @@ TIMEOUT = 20s
 [DATABASE]
 URL = sqlite:///{{ trixd_db_dir }}/trix.db
 
-[RESOLVE]
-USERS = {{ trixd_resolve_users }}
-GROUPS = {{ trixd_resolve_users }}
+[AUTH]
+CHAIN = {{ trixd_auth_chain }}
 CACHE = 60s
+
+[AUTH_PAM]
+SERVICE = login
 
 [REPLICATION]
 {% if ha | default(False) %}

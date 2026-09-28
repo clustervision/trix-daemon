@@ -34,7 +34,10 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
+import trix
+
 from tests.conftest import SHARED_SECRET
+from trix.common import settings as configuration
 from trix.common.constants import API_PREFIX, RESERVED_PLUGIN
 from trix.common.errors import PluginRefused, Unauthenticated
 from trix.core.plugins import loader
@@ -261,3 +264,92 @@ def test_a_node_token_is_refused_on_a_user_endpoint(rig, client):
     answer = client.get(f"{API_PREFIX}/directory/users",
                         headers={"x-access-tokens": node_token})
     assert answer.status_code == 403
+
+
+def test_a_wrong_password_is_refused(rig, client):
+    """
+    The source checks the credential, so a wrong password never mints a token.
+    """
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "tester", "password": "not-the-password"})
+    assert answer.status_code == 401
+
+
+def test_a_right_password_is_accepted(rig, client):
+    """
+    And the shipped administrator still gets in.
+    """
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "tester", "password": "secret"})
+    assert answer.status_code == 201
+    assert answer.json()["token"]
+
+
+def test_no_source_authenticates_without_checking_the_password(rig):
+    """
+    Every source must refuse or decline; none may answer True on the name alone.
+    """
+    import pathlib
+
+    root = pathlib.Path(trix.__file__).parent / "core" / "security" / "sources"
+    for name in ("local", "pam", "ldap", "directory"):
+        body = (root / f"{name}.py").read_text(encoding="utf-8")
+        block = body.split("def authenticate")[1].split("\n    def ")[0]
+        # Drop the signature and the docstring: both name the password without using
+        # it, and a check that counts them passes on a source that ignores it.
+        code = block.split('"""')[2] if block.count('"""') >= 2 else block
+        if "return True" not in code:
+            continue
+        before = code.split("return True")[0]
+        assert "password" in before, f"{name} answers True without using the password"
+
+
+def test_a_source_that_cannot_work_is_skipped(rig, monkeypatch):
+    """
+    A missing library must not stop a local principal from logging in.
+    """
+    from trix.core.security import chain
+    from trix.db import engine as database
+
+    monkeypatch.setattr(configuration.current().auth, "chain", ["ldap", "local"])
+    handle = database.session()
+    try:
+        identity, source = chain.authenticate(handle, "tester", "secret")
+    finally:
+        handle.close()
+    assert source == "local"
+    assert identity["name"] == "tester"
+
+
+def test_a_refusal_stops_the_chain(rig, monkeypatch):
+    """
+    A source that knows the name and refuses it is the end of the walk.
+    """
+    from trix.core.security import chain
+    from trix.db import engine as database
+
+    monkeypatch.setattr(configuration.current().auth, "chain", ["local", "pam"])
+    handle = database.session()
+    try:
+        identity, source = chain.authenticate(handle, "tester", "wrong")
+    finally:
+        handle.close()
+    assert identity is None
+    assert source == "local"
+
+
+def test_an_unknown_source_name_is_skipped(rig, monkeypatch):
+    """
+    A typo in the chain is logged, not a crash and not an open door.
+    """
+    from trix.core.security import chain
+    from trix.db import engine as database
+
+    monkeypatch.setattr(configuration.current().auth, "chain", ["nosuchsource"])
+    handle = database.session()
+    try:
+        identity, source = chain.authenticate(handle, "tester", "secret")
+    finally:
+        handle.close()
+    assert identity is None
+    assert source == ""

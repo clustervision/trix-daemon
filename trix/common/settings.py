@@ -99,10 +99,17 @@ class DatabaseSettings(BaseModel):
     url: str = "sqlite:////trinity/local/trix/daemon/common/trix.db"
 
 
-class ResolveSettings(BaseModel):
-    users: list = Field(default_factory=lambda: ["local"])
-    groups: list = Field(default_factory=lambda: ["local"])
+class AuthSettings(BaseModel):
+    chain: list = Field(default_factory=lambda: ["local", "pam"])
     cache: int = 60
+    pam_service: str = "login"
+    ldap_uri: str = ""
+    ldap_base: str = ""
+    ldap_bind_dn: str = ""
+    ldap_bind_password: str = ""
+    ldap_user_attribute: str = "uid"
+    ldap_id_attribute: str = "entryUUID"
+    ldap_group_attribute: str = "memberOf"
 
 
 class ReplicationSettings(BaseModel):
@@ -131,7 +138,7 @@ class Settings(BaseModel):
     tokens: TokenSettings = Field(default_factory=TokenSettings)
     luna: LunaSettings = Field(default_factory=LunaSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
-    resolve: ResolveSettings = Field(default_factory=ResolveSettings)
+    auth: AuthSettings = Field(default_factory=AuthSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
     triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
@@ -213,10 +220,17 @@ def load(path: str = "") -> Settings:
         password=get("LUNA", "PASSWORD", ""),
         timeout=seconds(get("LUNA", "TIMEOUT", "20s"), 20))
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
-    data.resolve = ResolveSettings(
-        users=_csv(get("RESOLVE", "USERS", "local")),
-        groups=_csv(get("RESOLVE", "GROUPS", "local")),
-        cache=seconds(get("RESOLVE", "CACHE", "60s"), 60))
+    data.auth = AuthSettings(
+        chain=_csv(get("AUTH", "CHAIN", "local, pam")),
+        cache=seconds(get("AUTH", "CACHE", "60s"), 60),
+        pam_service=get("AUTH_PAM", "SERVICE", "login"),
+        ldap_uri=get("AUTH_LDAP", "URI", ""),
+        ldap_base=get("AUTH_LDAP", "BASE", ""),
+        ldap_bind_dn=get("AUTH_LDAP", "BIND_DN", ""),
+        ldap_bind_password=get("AUTH_LDAP", "BIND_PASSWORD", ""),
+        ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"),
+        ldap_id_attribute=get("AUTH_LDAP", "ID_ATTRIBUTE", "entryUUID"),
+        ldap_group_attribute=get("AUTH_LDAP", "GROUP_ATTRIBUTE", "memberOf"))
     data.replication = ReplicationSettings(
         peers=_csv(get("REPLICATION", "PEERS", "")),
         interval=seconds(get("REPLICATION", "INTERVAL", "300s"), 300),

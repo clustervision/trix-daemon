@@ -70,7 +70,7 @@ def build(tmp_path, algorithm: str = "HS256"):
         f'PRIVATE_KEY = {tmp_path / "trix.ed25519"}\nKEY_ID = trix-test\n'
         f"TRUST = {trust}\nISSUER = trix-daemon\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trix.db"}\n'
-        "[RESOLVE]\nUSERS = local\nGROUPS = local\nCACHE = 0s\n"
+        "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
         f"[PLUGINS]\nDIRECTORY = {plugins}\nENABLED = directory, services\n",
         encoding="utf-8")
 

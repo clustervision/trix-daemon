@@ -56,6 +56,6 @@ trixd_plugins:
   - slurm
   - genders
 
-trixd_resolve_users: local, directory
+trixd_auth_chain: local, pam
 trixd_replication_interval: 300s
 trixd_luna_hash_interval: 60s

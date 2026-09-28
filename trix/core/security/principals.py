@@ -41,6 +41,7 @@ from trix.common import logging as trixlog
 from trix.common.constants import WILDCARD_CAPABILITY
 from trix.common.settings import current as settings
 from trix.db import models
+from trix.core.security import chain
 from trix.utils import shell
 
 LOGGER = trixlog.get("principals")
@@ -124,68 +125,55 @@ def _from_local(handle: Session, name: str) -> Resolved:
     return Resolved(row.name, row.kind, "local", list(groups))
 
 
-def _from_directory(handle: Session, name: str) -> Resolved:
-    """
-    389ds through obol, which is where the cluster users are.
-    """
-    try:
-        record = shell.run_json(["obol", "-J", "user", "show", name], timeout=20)
-    except Exception as error:
-        LOGGER.warning("directory source skipped for %s: %s", name, error)
-        return None
-    if not record:
-        return None
-    groups = record.get("memberOf") or record.get("groups") or []
-    if isinstance(groups, str):
-        groups = [groups]
-    return Resolved(name, "user", "directory", [str(item).split(",")[0].replace("cn=", "")
-                                                for item in groups])
-
-
-SOURCES: dict = {
-    "local": _from_local,
-    "directory": _from_directory,
-}
-
-
 def resolve(handle: Session, name: str) -> Resolved:
     """
-    Walk the configured chain. First answer wins, a failing source is skipped.
+    Walk the chain with no credential. First answer wins, a failing source is skipped.
     """
-    config = settings().resolve
-    cached = CACHE.get(f"user:{name}", config.cache)
+    cached = CACHE.get(f"user:{name}", settings().auth.cache)
     if cached is not None:
         return cached
-    for source in config.users:
-        reader = SOURCES.get(source)
-        if reader is None:
-            LOGGER.warning("no resolver named %s; check RESOLVE in trix.ini", source)
-            continue
-        try:
-            found = reader(handle, name)
-        except Exception as error:
-            LOGGER.error("resolver %s failed for %s: %s", source, name, error)
-            continue
-        if found is not None:
-            CACHE.put(f"user:{name}", found)
-            return found
-    return None
+    identity, source = chain.resolve(handle, name)
+    if identity is None:
+        return None
+    found = Resolved(identity.get("name") or name, "user", source,
+                     list(identity.get("groups") or []))
+    CACHE.put(f"user:{name}", found)
+    return found
 
 
 def authenticate(handle: Session, name: str, password: str) -> Resolved:
     """
-    Check a password against the local table, then the directory.
+    Walk the chain. The first source that knows the name decides, and it checks the
+    password itself: this function never sees a credential verified anywhere else.
     """
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
-    if row is not None and row.enabled and row.password_digest:
-        if verify_password(password, row.password_digest):
-            return resolve(handle, name)
+    identity, source = chain.authenticate(handle, name, password)
+    if identity is None:
         return None
-    if "directory" in settings().resolve.users:
-        result = shell.run(["obol", "user", "auth", name], timeout=20)
-        if result.ok:
-            return resolve(handle, name)
-    return None
+    return _adopt(handle, identity, source)
+
+
+def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
+    """
+    Turn a verified identity into a principal, creating the row on first login.
+    It carries no digest: the source holds the credential and we must not.
+    """
+    name = identity.get("name") or ""
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    if row is None:
+        row = models.Principal(name=name, kind="user", source=source, password_digest="")
+        handle.add(row)
+        handle.commit()
+        LOGGER.info("first login of %s through %s; principal created", name, source)
+    elif not row.enabled:
+        LOGGER.warning("%s is disabled here, whatever %s says", name, source)
+        return None
+
+    groups = list(identity.get("groups") or [])
+    local = _from_local(handle, name)
+    if local is not None:
+        groups = sorted(set(groups) | set(local.usergroups))
+    CACHE.put(f"user:{name}", Resolved(name, row.kind, source, groups))
+    return Resolved(name, row.kind, source, groups)
 
 
 def capabilities(handle: Session, who: Resolved) -> set:
