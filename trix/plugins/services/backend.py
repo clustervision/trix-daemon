@@ -31,15 +31,25 @@ __status__      = "Production"
 
 from trix.common import logging as trixlog
 from trix.common.errors import BadRequest, NotFound
+from trix.common.settings import current as settings
 from trix.utils import declarations, shell
 
 LOGGER = trixlog.get("services")
 
 PLUGIN: str = "services"
-SYSTEMCTL: str = "/usr/bin/systemctl"
+# The control command, so a container that has no systemd can point this at a
+# facade. Same setting and same argument order as luna.ini [SERVICES] COMMAND.
+DEFAULT_COMMAND: str = "/usr/bin/systemctl"
 TIMEOUT: int = 60
 
 ACTIONS: tuple = ("start", "stop", "restart", "reload", "status")
+
+
+def _command() -> str:
+    """
+    What runs a unit action here: systemctl, or whatever the ini names instead.
+    """
+    return settings().services.command or DEFAULT_COMMAND
 
 # A name only reaches systemd if it is in this catalogue. An endpoint that took
 # an arbitrary unit name would be a way to restart anything on the controller.
@@ -103,7 +113,7 @@ class Backend:
         if action == "status":
             return self.status(name)
 
-        result = shell.run([SYSTEMCTL, action, unit], timeout=TIMEOUT)
+        result = shell.run([_command(), action, unit], timeout=TIMEOUT)
         who = getattr(caller, "name", "unknown")
         LOGGER.info("%s asked for %s %s, systemd answered %s", who, action, unit, result.code)
         return {
@@ -119,6 +129,6 @@ class Backend:
         """
         What systemd says about a unit right now.
         """
-        active = shell.run([SYSTEMCTL, "is-active", unit], timeout=TIMEOUT)
-        enabled = shell.run([SYSTEMCTL, "is-enabled", unit], timeout=TIMEOUT)
+        active = shell.run([_command(), "is-active", unit], timeout=TIMEOUT)
+        enabled = shell.run([_command(), "is-enabled", unit], timeout=TIMEOUT)
         return {"active": active.out or "unknown", "enabled": enabled.out or "unknown"}
