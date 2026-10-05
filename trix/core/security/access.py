@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
-from trix.common.constants import ROLES, ROLE_NONE
+from trix.common.constants import MINIMUMS, ROLE_NONE
 
 LOGGER = trixlog.get("access")
 
@@ -48,7 +48,7 @@ def rank(role: str) -> int:
     """
     Where a role sits on the ladder; anything unknown sits at the bottom.
     """
-    return ROLES.index(role) if role in ROLES else 0
+    return MINIMUMS.index(role) if role in MINIMUMS else 0
 
 
 def permits(who, minimum: str) -> tuple:

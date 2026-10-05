@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import API_PREFIX, ROLE_MANAGER, ROLE_NONE, ROLES
+from trix.common.constants import API_PREFIX, ROLE_NONE, ROLE_ROOTUS, ROLES
 from trix.common.errors import BadRequest, Conflict, NotFound
 from trix.core.security import audit, principals
 from trix.core.security.gate import Caller, guard
@@ -100,7 +100,7 @@ def _shown(row: models.Principal) -> dict:
 
 @router.get("/principals", summary="Every principal this daemon knows")
 def list_principals(handle: Session = Depends(scoped),
-                    caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
+                    caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     All of them, with their usergroups and roles.
     """
@@ -110,7 +110,7 @@ def list_principals(handle: Session = Depends(scoped),
 
 @router.get("/principals/{name}", summary="One principal")
 def get_principal(name: str, handle: Session = Depends(scoped),
-                  caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
+                  caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     One, by name.
     """
@@ -119,7 +119,7 @@ def get_principal(name: str, handle: Session = Depends(scoped),
 
 @router.post("/principals", status_code=201, summary="Create a principal")
 def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     A row with a password digest is a login here; one without authenticates elsewhere.
     """
@@ -144,7 +144,7 @@ def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
 
 @router.patch("/principals/{name}", summary="Change a principal")
 def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Only what the body names is changed; an absent field is left alone.
     """
@@ -169,7 +169,7 @@ def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(sco
 
 @router.delete("/principals/{name}", summary="Delete a principal")
 def delete_principal(name: str, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     The cache goes with it, so a token for the name is refused on its next request.
     """

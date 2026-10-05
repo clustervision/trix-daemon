@@ -37,7 +37,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trix.common.constants import HTTP_VERBS, ROLES, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trix.common.constants import HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
 from trix.common.errors import PluginRefused
 
 PATH_VARIABLE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
@@ -149,10 +149,10 @@ def parse(document: dict) -> Manifest:
         if endpoint.render is None and not endpoint.handler:
             raise PluginRefused(f'{endpoint.path or "/"} names no handler')
         if (not endpoint.public and endpoint.token == TOKEN_KIND_USER
-                and endpoint.minimum not in ROLES):
+                and endpoint.minimum not in MINIMUMS):
             raise PluginRefused(
                 f'{endpoint.path or "/"} must declare a minimum role from '
-                f'{", ".join(ROLES)}, not {endpoint.minimum or "nothing"}')
+                f'{", ".join(MINIMUMS)}, not {endpoint.minimum or "nothing"}')
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")

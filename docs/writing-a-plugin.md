@@ -47,7 +47,7 @@ Each endpoint:
 |---|---|---|
 | `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
 | `methods` | `GET`, `POST`, `PATCH`, `DELETE` | yes |
-| `minimum` | the lowest role admitted: `none`, `operator` or `manager` | yes, unless `public` or `token: node` |
+| `minimum` | the lowest role admitted: `none`, `operator`, `manager`, or `rootus` for the ini account only | yes, unless `public` or `token: node` |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`, validated before the handler runs | for POST and PATCH |
 | `token` | `user`, or `node` to accept only that node's own token | no |
@@ -119,7 +119,9 @@ endpoints:
 
 As a rule, a read admits `none`, a `POST` under `.../actions/...` admits
 `operator`, and a change of configuration needs `manager`. The account the ini
-names is rootus and is checked against nothing. Everyone else is what the
+names is rootus and is checked against nothing; a route that declares
+`minimum: rootus` admits that account alone, which is how luna2-daemon treats
+its user, directory, table and journal families. Everyone else is what the
 `principal` table says, and a principal with no row or no role is `none`.
 
 ```

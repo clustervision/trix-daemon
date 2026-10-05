@@ -35,8 +35,7 @@ from pydantic import BaseModel
 
 from trix.common import logging as trixlog
 from trix.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   PLUGIN_STATE_LOADED, ROLE_MANAGER, ROLE_NONE,
-                                   ROLE_OPERATOR)
+                                   PLUGIN_STATE_LOADED, ROLE_NONE, ROLE_ROOTUS)
 from trix.common.errors import NotFound, PluginRefused
 from trix.core.plugins import loader
 from trix.core.plugins.registry import current as registry
@@ -89,7 +88,7 @@ def plugins(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
 
 @router.post("/plugins/{name}/reload", summary="Plug a plugin in, or reload it in place")
 def reload_plugin(name: str, request: Request,
-                  caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+                  caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Discover, validate and swap. Nothing changes if the plugin is refused.
     """
@@ -101,7 +100,7 @@ def reload_plugin(name: str, request: Request,
 
 @router.post("/plugins/{name}/disable", summary="Unplug a plugin")
 def disable_plugin(name: str, request: Request,
-                   caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+                   caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Its paths stop resolving from the next request, and a restart agrees.
     """
@@ -118,7 +117,7 @@ def render_listing(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
 
 
 @router.post("/notify", summary="A Luna object changed")
-def notify(body: Change, caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
+def notify(body: Change, caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Luna's hook posts here and does not wait. Losing one is acceptable: the hash
     comparison on the slow timer catches up.
@@ -129,7 +128,7 @@ def notify(body: Change, caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict
 
 
 @router.get("/replication/hashes", summary="One hash per replicated table")
-def replication_hashes(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
+def replication_hashes(caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     What a peer compares against before copying anything.
     """
@@ -141,7 +140,7 @@ def replication_hashes(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
 
 
 @router.get("/replication/table/{name}", summary="One replicated table as documents")
-def replication_table(name: str, caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
+def replication_table(name: str, caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Addressed by name rather than by identifier, because identifiers are local.
     """
@@ -155,7 +154,7 @@ def replication_table(name: str, caller: Caller = Depends(guard(ROLE_NONE))) -> 
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now")
-def replication_sweep(caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
+def replication_sweep(caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     The same pass the timer makes, run on demand.
     """

@@ -39,7 +39,7 @@ import trix
 
 from tests.conftest import SHARED_SECRET
 from trix.common import settings as configuration
-from trix.common.constants import API_PREFIX, RESERVED_PLUGIN, ROLES
+from trix.common.constants import API_PREFIX, MINIMUMS, RESERVED_PLUGIN
 from trix.common.errors import PluginRefused, Unauthenticated
 from trix.core.plugins import loader
 from trix.core.plugins.manifest import parse
@@ -162,7 +162,7 @@ def test_every_user_endpoint_declares_a_minimum_role(rig):
         for endpoint in entry.manifest.endpoints:
             if endpoint.public or endpoint.token == "node":
                 continue
-            assert endpoint.minimum in ROLES, f"{entry.name}/{endpoint.path} declares none"
+            assert endpoint.minimum in MINIMUMS, f"{entry.name}/{endpoint.path} declares none"
 
 
 def test_the_published_document_matches_the_route_table(rig):
@@ -648,6 +648,26 @@ def test_a_role_is_set_and_changed_over_the_api(rig, client, headers):
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=carol).json()["role"] == "manager"
 
 
+def test_a_rootus_minimum_admits_the_ini_account_only(rig, client, headers):
+    """
+    The top of the ladder is not a role: a manager is refused where Luna wants rootus.
+    """
+    mo = _principal(client, headers, "mo", "manager")
+    refused = client.get(f"{API_PREFIX}/identity/principals", headers=mo)
+    assert refused.status_code == 403 and "rootus" in refused.text, refused.text
+    assert client.get(f"{API_PREFIX}/system/replication/hashes", headers=mo).status_code == 403
+    assert client.get(f"{API_PREFIX}/identity/principals", headers=headers).status_code == 200
+
+
+def test_rootus_cannot_be_given_as_a_role(rig, client, headers):
+    """
+    It is the ini account by name, never a row, so the API refuses to store it.
+    """
+    answer = client.post(f"{API_PREFIX}/identity/principals",
+                         json={"name": "pretender", "role": "rootus"}, headers=headers)
+    assert answer.status_code == 400
+
+
 def test_a_deleted_principal_is_refused_at_once(rig, client, headers):
     """
     The token stays valid; the row is gone, so the next request cannot resolve it.
@@ -666,9 +686,11 @@ def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):
     from trix.core.security import access
 
     assert access.rank("none") < access.rank("operator") < access.rank("manager")
+    assert access.rank("manager") < access.rank("rootus")
     assert access.rank("king") == access.rank("none")
     assert access.permits(None, "none") == (True, "none")
     assert access.permits(None, "operator") == (False, "none")
+    assert access.permits(None, "rootus") == (False, "none")
 
 
 def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch):

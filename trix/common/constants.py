@@ -64,17 +64,10 @@ ROLE_OPERATOR: str = "operator"
 ROLE_MANAGER: str = "manager"
 ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
 
-# The ladder, lowest first. A principal with no role holds a token and nothing more.
-ROLE_NONE: str = "none"
-ROLE_OPERATOR: str = "operator"
-ROLE_MANAGER: str = "manager"
-ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
-
-# The ladder, lowest first. A principal with no role holds a token and nothing more.
-ROLE_NONE: str = "none"
-ROLE_OPERATOR: str = "operator"
-ROLE_MANAGER: str = "manager"
-ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
+# What only the account the ini names may do, as luna2-daemon reserves its rootus
+# families. A route may declare it; a principal can never be given it.
+ROLE_ROOTUS: str = "rootus"
+MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
 
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")
 
