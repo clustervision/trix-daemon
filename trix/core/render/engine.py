@@ -84,6 +84,7 @@ class Engine:
         self.renders: dict = {}
         self.lock = threading.RLock()
         self.pending: dict = {}
+        self.trailing: dict = {}
 
     def forget(self, plugin: str) -> None:
         """
@@ -92,6 +93,9 @@ class Engine:
         with self.lock:
             for key in [item for item in self.renders if item.startswith(f"{plugin}/")]:
                 self.renders.pop(key, None)
+                timer = self.trailing.pop(key, None)
+                if timer is not None:
+                    timer.cancel()
 
     def register(self, plugin: str, path: str, spec, producer) -> Render:
         """
@@ -155,7 +159,7 @@ class Engine:
 
     def notify(self, changed: str = "") -> list:
         """
-        A change landed. Coalesce, then render whatever declared it as an input.
+        A change landed. Render what declared it as an input, now or when its window closes.
         """
         woken = []
         now = time.monotonic()
@@ -164,11 +168,37 @@ class Engine:
                 continue
             last = self.pending.get(item.key, 0.0)
             if now - last < item.coalesce:
+                # Inside the window: once more when it closes, so a burst's last change is drawn.
+                self._trail(item.key, item.coalesce - (now - last))
                 continue
             self.pending[item.key] = now
             woken.append(item.key)
             self.run(item)
         return woken
+
+    def _trail(self, key: str, delay: float) -> None:
+        """
+        One deferred render per render, however many changes land inside the window.
+        """
+        with self.lock:
+            if key in self.trailing:
+                return
+            timer = threading.Timer(delay, self._fire, args=(key,))
+            timer.daemon = True
+            self.trailing[key] = timer
+            timer.start()
+
+    def _fire(self, key: str) -> None:
+        """
+        The window has closed: render what the burst left behind.
+        """
+        with self.lock:
+            self.trailing.pop(key, None)
+            item = self.renders.get(key)
+            if item is None:
+                return
+            self.pending[key] = time.monotonic()
+        self.run(item)
 
     def listing(self) -> list:
         """

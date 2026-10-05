@@ -927,3 +927,29 @@ def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
     hooks.after("POST", "config/node/node001", body, 204)
     tasks.drain()
     assert calls == ["hook", "render"], calls
+
+
+def test_the_last_change_of_a_burst_is_rendered(rig):
+    """
+    A change inside the coalescing window is rendered when the window closes, never dropped.
+    """
+    import time as clock
+    from trix.core.plugins.manifest import Render
+    from trix.core.render.engine import current as renders
+
+    seen, state = [], {"value": 1}
+
+    def produce():
+        """
+        Remember what the render saw.
+        """
+        seen.append(state["value"])
+        return {}
+
+    renders().register("burst", "renders/burst", Render(inputs=["luna.burst"], coalesce="1s"),
+                       produce)
+    renders().notify("luna.burst")
+    state["value"] = 2
+    renders().notify("luna.burst")
+    clock.sleep(1.6)
+    assert seen == [1, 2], seen
