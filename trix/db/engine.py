@@ -119,7 +119,8 @@ def session() -> Session:
 
 def scoped():
     """
-    Session dependency for a path operation.
+    Session dependency for a path operation. Its commit runs after the answer has left,
+    so a change the next request must see is committed by the handler itself.
     """
     handle = _factory()
     try:

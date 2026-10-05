@@ -139,6 +139,7 @@ def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
     handle.add(row)
     handle.flush()
     audit.granted(caller.name, WRITE, f"principal/{body.name}", "created", handle=handle)
+    handle.commit()
     return _shown(row)
 
 
@@ -162,8 +163,10 @@ def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(sco
     if body.role is not None:
         row.role = _ladder(body.role)
     row.version += 1
-    principals.CACHE.clear()
     audit.granted(caller.name, WRITE, f"principal/{name}", "changed", handle=handle)
+    # Committed, then forgotten: cleared first, a request in between caches the old row.
+    handle.commit()
+    principals.CACHE.clear()
     return _shown(row)
 
 
@@ -175,6 +178,7 @@ def delete_principal(name: str, handle: Session = Depends(scoped),
     """
     row = _principal(handle, name)
     handle.delete(row)
-    principals.CACHE.clear()
     audit.granted(caller.name, WRITE, f"principal/{name}", "deleted", handle=handle)
+    handle.commit()
+    principals.CACHE.clear()
     return {"deleted": name}

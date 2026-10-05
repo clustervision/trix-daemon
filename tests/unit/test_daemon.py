@@ -984,3 +984,36 @@ def test_a_source_missing_its_library_says_so(rig, monkeypatch):
     assert source == "local"
     assert "authentication source pam cannot load: pam is not installed" in said, said
     assert "no authentication source named nosuch; check [AUTH] CHAIN" in said, said
+
+
+def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers, monkeypatch):
+    """
+    Cleared before the commit, a request in between caches the old row for a minute.
+    """
+    from trix.core.security import principals
+    from trix.db import engine as database
+    from trix.db import models
+
+    client.post(f"{API_PREFIX}/identity/principals", json={"name": "sealed", "password": "pw"},
+                headers=headers)
+    seen = []
+    real = principals.CACHE.clear
+
+    def clear():
+        """
+        Read the row from another session at the moment the cache is cleared.
+        """
+        other = database.session()
+        try:
+            row = other.query(models.Principal).filter(
+                models.Principal.name == "sealed").one_or_none()
+            seen.append(None if row is None else bool(row.enabled))
+        finally:
+            other.close()
+        real()
+
+    monkeypatch.setattr(principals.CACHE, "clear", clear)
+    client.patch(f"{API_PREFIX}/identity/principals/sealed", json={"enabled": False},
+                 headers=headers)
+    client.delete(f"{API_PREFIX}/identity/principals/sealed", headers=headers)
+    assert seen == [False, None], seen
