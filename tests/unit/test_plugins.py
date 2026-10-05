@@ -434,3 +434,38 @@ def test_a_deleted_node_has_its_rules_retired(rig, tmp_path, monkeypatch):
     assert outcome["retired"] == ["trix.hw.node009.cluster.rules"]
     assert not (tmp_path / "trix.hw.node009.cluster.rules").exists()
     assert list((tmp_path / "backup").glob("trix.hw.node009.cluster.rules.*"))
+
+
+def test_the_rule_file_render_reconciles_against_luna(rig, tmp_path, monkeypatch):
+    """
+    Drift is rewritten, a file for a node Luna no longer has is retired, a correct one is untouched.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"},
+                               "node002": {"hostname": "node002.cluster", "group": "compute"}})
+    _hw_file(tmp_path, "node001.cluster", "compute")
+    right = _hw_file(tmp_path, "node002.cluster", "compute")
+    before = right.read_text(encoding="utf-8")
+    _hw_file(tmp_path, "node009.cluster", "compute")
+
+    outcome = backend.render_rule_files()
+
+    assert outcome["repaired"] == ["trix.hw.node001.cluster.rules"]
+    assert outcome["retired"] == ["trix.hw.node009.cluster.rules"]
+    assert 'luna_group="gpu"' in (tmp_path / "trix.hw.node001.cluster.rules").read_text(encoding="utf-8")
+    assert right.read_text(encoding="utf-8") == before
+    assert not (tmp_path / "trix.hw.node009.cluster.rules").exists()
+
+
+def test_the_reconcile_removes_nothing_when_luna_lists_no_nodes(rig, tmp_path, monkeypatch):
+    """
+    An empty answer is not a cluster with no nodes; the files stay exactly as they are.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    kept = _hw_file(tmp_path, "node001.cluster", "compute")
+    before = kept.read_text(encoding="utf-8")
+
+    outcome = backend.render_rule_files()
+
+    assert outcome["repaired"] == [] and outcome["retired"] == []
+    assert kept.read_text(encoding="utf-8") == before

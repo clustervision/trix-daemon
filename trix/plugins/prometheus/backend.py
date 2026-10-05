@@ -319,15 +319,47 @@ class Backend:
 
     def render_rule_files(self) -> dict:
         """
-        Write the generic and service rule documents, then reload.
+        Write the generic and service documents, then make the hardware files agree with Luna.
         """
         stored = declarations.read(PLUGIN, "rules", "", None)
-        if stored is None:
-            return {"written": []}
-        written = self._write_rule_documents(stored)
-        if written:
+        written = self._write_rule_documents(stored) if stored is not None else []
+        reconciled = self._reconcile_hw_rules(luna().nodes())
+        if written or reconciled["repaired"] or reconciled["retired"]:
             self.reload()
-        return {"written": written}
+        return {"written": written, **reconciled}
+
+    def _reconcile_hw_rules(self, nodes: dict) -> dict:
+        """
+        Every hardware file names a node Luna has, under its current host and group, or it
+        is retired. An empty node list is left alone, so nothing goes on Luna saying nothing.
+        """
+        repaired, retired = [], []
+        if not nodes:
+            return {"repaired": repaired, "retired": retired}
+        by_host = {}
+        for name, record in nodes.items():
+            by_host.setdefault(name.split(".")[0], name)
+            by_host[record.get("hostname") or name] = name
+        for path in sorted(glob.glob(os.path.join(self._rules_dir(), HW_RULES.format(host="*")))):
+            host = _hw_host(path)
+            name = by_host.get(host) or by_host.get(host.split(".")[0])
+            if name is None:
+                retired.append(self._retire(path))
+                continue
+            record = nodes[name]
+            want = {"hostname": record.get("hostname") or name, "luna_group": record.get("group") or ""}
+            target = os.path.join(self._rules_dir(), HW_RULES.format(host=want["hostname"]))
+            document = _read_yaml(path)
+            changed = _relabel_document(document, want)
+            if not changed and path == target:
+                continue
+            files.write_yaml(target, document)
+            if path != target:
+                os.remove(path)
+            repaired.append(os.path.basename(target))
+        if repaired or retired:
+            LOGGER.info("hardware rules reconciled: repaired %s, retired %s", repaired, retired)
+        return {"repaired": repaired, "retired": retired}
 
     def _write_rule_documents(self, stored: dict) -> list:
         """
