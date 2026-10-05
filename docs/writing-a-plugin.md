@@ -144,7 +144,9 @@ luna_hooks:
 
 The handler runs on the task queue, after the caller has its answer, with the
 payload as keyword arguments: `node_updated(name, newnodename="", group="")`
-and `node_deleted(name)`. It must be idempotent: Luna's own hooks may already
+and `node_deleted(name)`. Once every handler has run, the renders that read the
+object are woken, so a reconcile never races a handler that is still moving a
+file. A handler must be idempotent: Luna's own hooks may already
 have done part of the work, and a render that reconciles against Luna's node
 list may have done the rest. Only calls made through the pass-through are seen;
 a change made at Luna directly reaches a plugin through its renders instead.

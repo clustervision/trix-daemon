@@ -894,3 +894,36 @@ def test_a_hook_for_an_unknown_change_is_refused():
         parse({"plugin": "x", "luna_hooks": {"node.paint": "paint"}, "endpoints": [
             {"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]})
     assert "node.paint" in str(raised.value)
+
+
+def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
+    """
+    A reconcile woken beside the hook could retire a file the hook was about to move.
+    """
+    from trix.core import tasks
+    from trix.core.luna import hooks
+    from trix.core.plugins.registry import current as registry
+
+    plugin = tmp_path / "plugins" / "orderly"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: orderly\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "  - path: renders/seen\n    methods: [GET]\n    minimum: none\n"
+        "    handler: render_seen\n    render:\n      inputs: [luna.node]\n      serve: json\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'class Backend:\n    """Remembers the order things happened in."""\n'
+        "    calls = []\n\n"
+        '    def moved(self, name, newnodename="", group=""):\n        """A hook."""\n'
+        "        self.calls.append('hook')\n        return 'moved'\n\n"
+        '    def render_seen(self):\n        """A render."""\n'
+        "        self.calls.append('render')\n        return {}\n",
+        encoding="utf-8")
+    loader.load(rig, "orderly")
+    calls = registry().get("orderly").backend.calls
+    calls.clear()
+
+    body = b'{"config": {"node": {"node001": {"newnodename": "node002"}}}}'
+    hooks.after("POST", "config/node/node001", body, 204)
+    tasks.drain()
+    assert calls == ["hook", "render"], calls

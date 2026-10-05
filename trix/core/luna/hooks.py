@@ -91,7 +91,7 @@ def changed_object(method: str, path: str, status: int) -> str:
 
 def after(method: str, path: str, body: bytes, status: int) -> None:
     """
-    Queue the hooks a change calls for and wake the renders that read the object. Never raises.
+    Queue the hooks a change calls for, or else wake the renders that read it. Never raises.
     """
     try:
         found = notice(method, path, body, status)
@@ -100,6 +100,7 @@ def after(method: str, path: str, body: bytes, status: int) -> None:
                                       json.dumps(found["payload"]), "pass-through")
             LOGGER.info("%s at Luna for %s, queued as %s", found["event"],
                         found["payload"]["name"], identifier)
+            return
         touched = changed_object(method, path, status)
         if touched:
             renders().notify(f"luna.{touched}")
@@ -109,7 +110,7 @@ def after(method: str, path: str, body: bytes, status: int) -> None:
 
 def run(task: str, param: str = "") -> str:
     """
-    The task behind a queued change: every plugin that declared the event gets the payload.
+    The task behind a queued change: every plugin that declared it acts, then the renders wake.
     """
     payload = json.loads(param or "{}")
     outcomes = []
@@ -119,6 +120,10 @@ def run(task: str, param: str = "") -> str:
         except Exception as error:
             LOGGER.error("%s could not act on %s: %s", plugin, task, error)
             outcomes.append(f"{plugin}: failed: {error}")
+    # Only now: a reconcile woken beside a hook could retire a file the hook is moving.
+    woken = renders().notify(f"luna.{task.split('.')[0]}")
+    if woken:
+        outcomes.append(f"woke {', '.join(woken)}")
     return "; ".join(outcomes) or f"nothing declared {task}"
 
 
