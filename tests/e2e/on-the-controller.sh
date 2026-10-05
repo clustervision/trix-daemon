@@ -124,8 +124,9 @@ check "a node token is not a user one" "$(code $PLAIN/api/v1/identity/users -H "
 echo "=== 12. replication endpoints ==="
 check "table hashes answer"            "$(code $PLAIN/api/v1/system/replication/hashes -H "$H")" 200
 check "one table exports"              "$(code $PLAIN/api/v1/system/replication/table/principal -H "$H")" 200
-check "triggers report"                "$(code $PLAIN/api/v1/system/triggers -H "$H")" 200
-check "renders list"                   "$(code $PLAIN/api/v1/system/renders -H "$H")" 200
+HEALTH=$(curl -sk $PLAIN/api/v1/system/health)
+check "health reports the renders"     "$(echo "$HEALTH" | jq_ "len(d['renders']) > 0")" True
+check "health reports the triggers"    "$(echo "$HEALTH" | jq_ "'luna_hashes' in d['triggers']")" True
 
 echo "=== 13. tidy up ==="
 curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2eop -H "$H"

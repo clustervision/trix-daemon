@@ -185,13 +185,13 @@ def test_a_peer_daemon_reaches_the_replication_endpoints(client):
         assert answer.status_code == 200, answer.text
 
 
-def test_the_trigger_state_is_reported(client, headers):
+def test_the_trigger_state_is_reported(client):
     """
     Whether the fallback poller is doing anything, which on one controller it is not.
     """
-    answer = client.get(f"{API_PREFIX}/system/triggers", headers=headers)
+    answer = client.get(f"{API_PREFIX}/system/health")
     assert answer.status_code == 200
-    assert "luna_hashes" in answer.json()
+    assert "answering" in answer.json()["triggers"]["luna_hashes"]
 
 
 def test_a_single_controller_runs_no_sweep(rig):

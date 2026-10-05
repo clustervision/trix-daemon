@@ -60,14 +60,21 @@ class Change(BaseModel):
     name: str = ""
 
 
-@router.get("/health", summary="Whether this daemon is serving")
+@router.get("/health", summary="Whether this daemon is serving, its renders and triggers")
 def health() -> dict:
     """
     Unauthenticated on purpose: a health check that needs a token is not one.
+    So it carries states and times, never an error text: that stays in the log.
     """
     loaded = [entry for entry in registry().plugins.values()
               if entry.state == PLUGIN_STATE_LOADED]
-    return {"status": "ok", "daemon": DAEMON_NAME, "plugins": len(loaded)}
+    hashes = luna_hashes().state()
+    return {"status": "ok", "daemon": DAEMON_NAME, "plugins": len(loaded),
+            "renders": [{"render": item["render"], "rendered_at": item["rendered_at"],
+                         "ok": not item["error"]} for item in renders().listing()],
+            "triggers": {"luna_hashes": {"answering": hashes["answering"],
+                                         "last_pass": hashes["last_pass"]},
+                         "replication": {"at": (sweep().last or {}).get("at", 0)}}}
 
 
 @router.get("/version", summary="What is running here")
@@ -106,14 +113,6 @@ def disable_plugin(name: str, request: Request,
     """
     entry = loader.unload(request.app, name)
     return {"plugin": entry.summary()}
-
-
-@router.get("/renders", summary="Every declared render and when it last ran")
-def render_listing(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
-    """
-    Every declared render and when it last ran.
-    """
-    return {"renders": renders().listing()}
 
 
 @router.post("/notify", summary="A Luna object changed")
@@ -159,12 +158,3 @@ def replication_sweep(caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     The same pass the timer makes, run on demand.
     """
     return {"results": sweep().once()}
-
-
-@router.get("/triggers", summary="The state of the fallback trigger")
-def trigger_state(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
-    """
-    Whether Luna's table hashes are actually answering here.
-    """
-    return {"luna_hashes": luna_hashes().state(),
-            "replication": sweep().last or {"at": 0, "results": []}}

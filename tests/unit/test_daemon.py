@@ -55,11 +55,14 @@ def _serves(app, path: str) -> bool:
 
 def test_health_needs_no_token(client):
     """
-    A health check that needs a token is not a health check.
+    A health check that needs a token is not one; so it carries states, never error text.
     """
     answer = client.get(f"{API_PREFIX}/system/health")
     assert answer.status_code == 200
-    assert answer.json()["status"] == "ok"
+    body = answer.json()
+    assert body["status"] == "ok"
+    assert "luna_hashes" in body["triggers"] and "replication" in body["triggers"]
+    assert all(set(item) == {"render", "rendered_at", "ok"} for item in body["renders"])
 
 
 def test_token_is_a_jwt_signed_the_way_luna_signs(token):
