@@ -3,7 +3,7 @@
 A plugin declares the endpoints it wants. The daemon serves exactly those, and
 builds the permission check, the request validation and the published schema from
 the same declaration. A plugin cannot expose an endpoint its manifest does not
-name, and no endpoint can exist without naming the capability it requires.
+name, and no user endpoint can exist without naming the lowest role it admits.
 
 Everything in this page is what the loader checks. If it disagrees with the code,
 the code is right and this page is a bug.
@@ -47,11 +47,10 @@ Each endpoint:
 |---|---|---|
 | `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
 | `methods` | `GET`, `POST`, `PATCH`, `DELETE` | yes |
-| `capability` | what the caller needs; an endpoint without one does not load | yes |
+| `minimum` | the lowest role admitted: `none`, `operator` or `manager` | yes, unless `public` or `token: node` |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`, validated before the handler runs | for POST and PATCH |
 | `token` | `user`, or `node` to accept only that node's own token | no |
-| `bit` | override the bit the method implies | no |
 | `public` | no token at all | no |
 | `render` | a derived output: its inputs, triggers and outputs | no |
 
@@ -92,7 +91,7 @@ with the reason.
 |---|---|
 | the plugin is named `luna` | refused; that name is the pass-through to Luna |
 | the manifest calls itself something other than its directory | refused |
-| an endpoint declares no capability | refused |
+| a user endpoint declares no minimum role, or one not on the ladder | refused |
 | an endpoint names a handler the backend does not have | refused |
 | a schema does not parse, or a verb is not one of the four | refused |
 | a render names no producer on the backend | refused |
@@ -101,21 +100,32 @@ with the reason.
 
 ## Permissions
 
-The capability names the intent. The **bit** comes from the method: `GET` needs
-`r`, a `POST` under `.../actions/...` needs `x`, and everything else needs `w`.
-Set `bit` on an endpoint where that is wrong, for instance a read of a document
-that carries thresholds.
+Every principal holds one role on a ladder, `none < operator < manager`, and
+every user endpoint declares the lowest role it admits. The gate compares the two
+and nothing else. A path that is read at one level and changed at another is two
+endpoints:
 
-Who holds which bit is decided against the plugin's own permission row: the owner
-class, else any usergroup of the caller's that the plugin is listed for capped by
-their role there, else other. The ini account and anyone with the admin flag are
-checked against nothing. Until somebody is put in a usergroup, everything is
-permitted.
+```yaml
+  - path: config
+    methods: [GET]
+    minimum: none
+    handler: config
+  - path: config
+    methods: [PATCH]
+    minimum: manager
+    handler: config
+    schema: config
+```
+
+As a rule, a read admits `none`, a `POST` under `.../actions/...` admits
+`operator`, and a change of configuration needs `manager`. The account the ini
+names is rootus and is checked against nothing. Everyone else is what the
+`principal` table says, and a principal with no row or no role is `none`.
 
 ```
-curl -X PATCH http://<controller>:8051/api/v1/system/acl/hello \
+curl -X PATCH http://<controller>:8051/api/v1/identity/principals/harry \
      -H "x-access-tokens: $TOKEN" \
-     -d '{"usergroups": "intel", "access": "rwxr-x---"}'
+     -d '{"role": "operator"}'
 ```
 
 ## Shelling out
@@ -135,7 +145,7 @@ if not result.ok:
 ## Storing something
 
 A plugin document goes in the declaration store, keyed by plugin, kind and name.
-It replicates between controllers and carries the plugin's permissions.
+It replicates between controllers.
 
 ```python
 from trix.utils import declarations
@@ -153,7 +163,7 @@ it rendered.
 ```yaml
   - path: renders/targets
     methods: [GET]
-    capability: monitoring.read
+    minimum: none
     render:
       inputs:   [luna.node, luna.network]
       triggers: [luna.hook, luna.hashes]
@@ -184,7 +194,7 @@ The caller polls whatever route you declare for it; the services plugin uses
 ## Before you call it done
 
 - It loads, and unplugs and plugs back with the daemon running.
-- Every endpoint declares a capability, and a test asserts that for every plugin.
+- Every user endpoint declares a minimum role, and a test asserts that for every plugin.
 - No path collides with another plugin's.
 - The backend has a test that does not need a controller: stub `shell` and Luna.
 - Nothing has a mutable default.

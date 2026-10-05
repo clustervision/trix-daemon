@@ -41,7 +41,7 @@ reaches it only through a notification. Neither imports the other.
 | `trix/app.py` | Builds the application. Reads no configuration. |
 | `trix/server.py` | The entry point: read the ini, serve TLS and plain together. |
 | `trix/common/` | Settings, constants, typed errors, logging. |
-| `trix/core/security/` | Keys, tokens, the resolver chain, the capability gate. |
+| `trix/core/security/` | Keys, tokens, the resolver chain, the role gate. |
 | `trix/core/plugins/` | Manifest, loader, registry, router binder, route swap. |
 | `trix/core/render/` | The render engine. |
 | `trix/core/luna/` | The Luna client and the reserved pass-through. |
@@ -85,7 +85,7 @@ does not. Generate the keypair with `-m trix.server keygen --config <path>`.
 A plugin declares the endpoints it wants in a manifest. The daemon serves exactly
 those, and builds the permission gate, the request validation and the published
 schema from the same declaration. A plugin cannot expose an endpoint the manifest
-does not name, and no endpoint can exist without naming the capability it needs.
+does not name, and no user endpoint can exist without naming the lowest role it admits.
 
 ```yaml
 plugin: hello
@@ -93,7 +93,7 @@ backend: backend
 endpoints:
   - path: greet/<who>
     methods: [GET]
-    capability: hello.read
+    minimum: none
     handler: greet
 ```
 
