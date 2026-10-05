@@ -648,6 +648,17 @@ def test_a_role_is_set_and_changed_over_the_api(rig, client, headers):
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=carol).json()["role"] == "manager"
 
 
+def test_the_oidc_source_lets_the_chain_continue(rig):
+    """
+    Named before it is built: it must never claim a name, or nobody could log in.
+    """
+    from trix.core.security.sources import oidc
+
+    source = oidc.Source()
+    assert source.authenticate("tester", "secret")[0] is None
+    assert source.resolve("tester")[0] is False
+
+
 def test_a_rootus_minimum_admits_the_ini_account_only(rig, client, headers):
     """
     The top of the ladder is not a role: a manager is refused where Luna wants rootus.

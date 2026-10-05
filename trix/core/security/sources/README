@@ -43,3 +43,5 @@ pam         the controller's operating system, through python-pam. On a TrinityX
 ldap        a directory bind through ldap3, settings in [AUTH_LDAP]
 directory   389ds through obol, resolve only. obol has no verb that checks a password,
             so this source never authenticates and always lets the chain continue
+oidc        OpenID Connect, named in the design and not built: it answers not-known
+            and the chain continues, so an ini may name it before a provider exists
