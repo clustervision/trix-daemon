@@ -953,3 +953,34 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
     renders().notify("luna.burst")
     clock.sleep(1.6)
     assert seen == [1, 2], seen
+
+
+def test_a_source_missing_its_library_says_so(rig, monkeypatch):
+    """
+    A library a real source needs is not a source the ini made up, and the log tells them apart.
+    """
+    from trix.core.security import chain
+    from trix.db import engine as database
+
+    real = chain._source
+
+    def without_pam(name, handle):
+        """
+        The pam source, on a controller where python-pam is not installed.
+        """
+        if name == "pam":
+            raise ModuleNotFoundError("No module named 'pam'", name="pam")
+        return real(name, handle)
+
+    said = []
+    monkeypatch.setattr(chain, "_source", without_pam)
+    monkeypatch.setattr(chain.LOGGER, "error", lambda message, *args: said.append(message % args))
+    monkeypatch.setattr(configuration.current().auth, "chain", ["pam", "nosuch", "local"])
+    handle = database.session()
+    try:
+        identity, source = chain.authenticate(handle, "tester", "secret")
+    finally:
+        handle.close()
+    assert source == "local"
+    assert "authentication source pam cannot load: pam is not installed" in said, said
+    assert "no authentication source named nosuch; check [AUTH] CHAIN" in said, said

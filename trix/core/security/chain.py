@@ -54,6 +54,17 @@ def _source(name: str, handle):
     return module.Source(handle)
 
 
+def _missing(source: str, error: ModuleNotFoundError) -> None:
+    """
+    Name the real cause: a source the ini made up, or a library a real source needs.
+    """
+    if error.name == f"{PACKAGE}.{source}":
+        LOGGER.error("no authentication source named %s; check [AUTH] CHAIN", source)
+    else:
+        LOGGER.error("authentication source %s cannot load: %s is not installed",
+                     source, error.name)
+
+
 def authenticate(handle, name: str, password: str) -> tuple:
     """
     The first source that knows the name decides, and a refusal stops the walk.
@@ -62,8 +73,8 @@ def authenticate(handle, name: str, password: str) -> tuple:
     for source in named():
         try:
             answer, result = _source(source, handle).authenticate(name, password)
-        except ModuleNotFoundError:
-            LOGGER.error("no authentication source named %s; check [AUTH] CHAIN", source)
+        except ModuleNotFoundError as error:
+            _missing(source, error)
             continue
         except Exception as error:
             LOGGER.error("authentication source %s is unavailable: %s", source, error)
@@ -85,8 +96,8 @@ def resolve(handle, name: str) -> tuple:
     for source in named():
         try:
             answer, result = _source(source, handle).resolve(name)
-        except ModuleNotFoundError:
-            LOGGER.error("no authentication source named %s; check [AUTH] CHAIN", source)
+        except ModuleNotFoundError as error:
+            _missing(source, error)
             continue
         except Exception as error:
             LOGGER.error("authentication source %s is unavailable: %s", source, error)
