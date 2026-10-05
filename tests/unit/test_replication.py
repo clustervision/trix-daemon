@@ -96,43 +96,33 @@ def test_a_document_is_keyed_by_name_not_by_identifier(rig):
     """
     handle = database.session()
     try:
-        handle.add(models.Usergroup(name="operators", origin="here"))
+        handle.add(models.Principal(name="keyed", origin="here"))
         handle.commit()
-        document = tables.export_table(handle, "usergroup")[0]
+        documents = tables.export_table(handle, "principal")
     finally:
         handle.close()
-    assert document["key"] == ["operators"]
+    document = [d for d in documents if d["key"] == ["keyed"]][0]
     assert "id" not in document
 
 
-def test_the_merge_carries_rows_across_and_resolves_the_names(rig, tmp_path):
+def test_the_merge_carries_a_principal_across_by_name(rig, tmp_path):
     """
-    A membership references two rows whose identifiers differ on each side.
+    The peer's row arrives under a local identifier of its own, with its role intact.
     """
     peer = _peer(tmp_path)
-    peer.add(models.Principal(name="alice", kind="user", source="local", origin="peer"))
-    peer.add(models.Usergroup(name="operators", origin="peer"))
+    peer.add(models.Principal(name="alice", kind="user", source="local", role="manager",
+                              origin="peer"))
     peer.commit()
-    principal = peer.scalar(select(models.Principal).where(models.Principal.name == "alice"))
-    group = peer.scalar(select(models.Usergroup).where(models.Usergroup.name == "operators"))
-    peer.add(models.Membership(principal_id=principal.id, usergroup_id=group.id,
-                               origin="peer"))
-    peer.commit()
+    theirs = peer.scalar(select(models.Principal).where(models.Principal.name == "alice"))
 
     handle = database.session()
     try:
-        # Something already sits in the local principal table, so the identifiers
-        # on the two sides cannot line up by accident.
-        for table in tables.ORDER:
-            tables.merge_table(handle, table, tables.export_table(peer, table))
-        local_principal = handle.scalar(
-            select(models.Principal).where(models.Principal.name == "alice"))
-        local_group = handle.scalar(
-            select(models.Usergroup).where(models.Usergroup.name == "operators"))
-        link = handle.scalar(select(models.Membership))
-        assert local_principal is not None and local_group is not None
-        assert link.principal_id == local_principal.id
-        assert link.usergroup_id == local_group.id
+        # The seeded administrator already holds the first local identifier, so the
+        # two sides cannot line up by accident.
+        tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        ours = handle.scalar(select(models.Principal).where(models.Principal.name == "alice"))
+        assert ours is not None and ours.role == "manager"
+        assert ours.id != theirs.id
     finally:
         handle.close()
         peer.close()
@@ -162,30 +152,6 @@ def test_the_newer_version_wins_and_the_older_is_ignored(rig, tmp_path):
         tables.merge_table(handle, "declaration", older)
         row = handle.scalar(select(models.Declaration))
         assert row.body == {"from": "peer"}, "an older version overwrote a newer one"
-    finally:
-        handle.close()
-        peer.close()
-
-
-def test_a_row_whose_dependency_is_missing_is_deferred(rig, tmp_path):
-    """
-    It is picked up on a later pass rather than inserted against nothing.
-    """
-    peer = _peer(tmp_path, "peer3.db")
-    peer.add(models.Principal(name="bob", kind="user", source="local", origin="peer"))
-    peer.add(models.Usergroup(name="admins", origin="peer"))
-    peer.commit()
-    principal = peer.scalar(select(models.Principal).where(models.Principal.name == "bob"))
-    group = peer.scalar(select(models.Usergroup).where(models.Usergroup.name == "admins"))
-    peer.add(models.Membership(principal_id=principal.id, usergroup_id=group.id,
-                               origin="peer"))
-    peer.commit()
-
-    handle = database.session()
-    try:
-        result = tables.merge_table(handle, "membership",
-                                    tables.export_table(peer, "membership"))
-        assert result["deferred"] == 1 and result["added"] == 0
     finally:
         handle.close()
         peer.close()
@@ -224,48 +190,27 @@ def test_a_single_controller_runs_no_sweep(rig):
     assert sweep().start() is False
 
 
-def test_the_roles_are_the_four_the_design_names():
+def test_one_table_carries_the_whole_of_rbac(rig):
     """
-    The labels are stored, the bits they map to are fixed, and they are POSIX.
+    A role on the principal and nothing else: no groups, no flags, no object modes.
     """
-    from trix.common.constants import BITS, DEFAULT_ROLE, ROLE_CAPS
-
-    assert ROLE_CAPS == {"admin": "rwx", "manager": "rwx",
-                         "operator": "r-x", "reader": "r--"}
-    assert DEFAULT_ROLE == "reader"
-    assert BITS == {"r": 4, "w": 2, "x": 1}
-    assert "u" not in "".join(ROLE_CAPS.values()), "the third bit is x, not u"
-
-
-def test_the_identity_tables_carry_what_the_design_asks(rig):
-    """
-    A role on the membership, the two flags on the principal, and the group map.
-    """
-    from trix.db import engine as database
     from trix.db import models
 
-    handle = database.session()
-    try:
-        columns = {c.name for c in models.Membership.__table__.columns}
-        assert {"role", "source"} <= columns, columns
-        columns = {c.name for c in models.Principal.__table__.columns}
-        assert {"admin", "delegate", "external_id"} <= columns, columns
-        assert handle.query(models.UsergroupMap).count() == 0
-    finally:
-        handle.close()
+    columns = {c.name for c in models.Principal.__table__.columns}
+    assert "role" in columns and not {"admin", "delegate"} & columns, columns
+    for gone in ("Usergroup", "Membership", "UsergroupMap", "Permission"):
+        assert not hasattr(models, gone), gone
+    assert models.REPLICATED == ("declaration", "principal")
 
 
-def test_the_declaration_carries_its_own_permissions(rig):
+def test_the_declaration_carries_no_permissions(rig):
     """
-    On the object, as the design says, so deleting it takes them with it.
+    What a caller may do is decided per route, never per document.
     """
-    from trix.common.constants import DEFAULT_MODE
     from trix.db import models
 
     columns = {c.name for c in models.Declaration.__table__.columns}
-    assert {"owners", "usergroups", "access"} <= columns, columns
-    assert not hasattr(models, "Permission"), "the side table should be gone"
-    assert models.Declaration.__table__.columns["access"].default.arg == DEFAULT_MODE
+    assert not {"owners", "usergroups", "access"} & columns, columns
 
 
 def test_every_replicated_column_reaches_the_document(rig):
@@ -279,18 +224,9 @@ def test_every_replicated_column_reaches_the_document(rig):
     handle = database.session()
     try:
         # Something in every table, so each one has a row to export.
-        group = models.Usergroup(name="peers")
-        who = models.Principal(name="peered", admin=True, delegate=True,
-                               external_id="1234")
-        handle.add_all([group, who])
-        handle.flush()
         handle.add_all([
-            models.Membership(principal_id=who.id, usergroup_id=group.id,
-                              role="manager", source="ldap"),
-            models.UsergroupMap(source="ldap", external_group="cn=peers",
-                                usergroup_id=group.id, role="admin"),
-            models.Declaration(plugin="peer", kind="acl", name="", body={},
-                               owners="peered", usergroups="peers", access="750"),
+            models.Principal(name="peered", external_id="1234", role="manager"),
+            models.Declaration(plugin="peer", kind="config", name="", body={}),
         ])
         handle.commit()
 
@@ -319,22 +255,11 @@ def test_a_role_survives_the_round_trip(rig):
 
     handle = database.session()
     try:
-        group = models.Usergroup(name="crossing")
-        who = models.Principal(name="traveller", admin=True)
-        handle.add_all([group, who])
-        handle.flush()
-        handle.add(models.Membership(principal_id=who.id, usergroup_id=group.id,
-                                     role="operator", source="ldap"))
+        handle.add(models.Principal(name="traveller", role="operator"))
         handle.commit()
-
-        documents = tables.export_table(handle, "membership")
-        crossing = [d for d in documents if d["key"] == ["traveller", "crossing"]]
-        assert crossing, documents
-        assert crossing[0]["role"] == "operator"
-        assert crossing[0]["source"] == "ldap"
-
-        people = [d for d in tables.export_table(handle, "principal")
-                  if d["key"] == ["traveller"]]
-        assert people[0]["admin"] is True
+        documents = tables.export_table(handle, "principal")
     finally:
         handle.close()
+    crossing = [d for d in documents if d["key"] == ["traveller"]]
+    assert crossing, documents
+    assert crossing[0]["role"] == "operator"

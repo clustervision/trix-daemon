@@ -58,13 +58,6 @@ TOKEN_KIND_NODE: str = "node"
 TOKEN_KIND_SERVICE: str = "service"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
 
-# The labels are stored; the bits they cap to are fixed here, as luna2-daemon does.
-ROLE_CAPS: dict = {"admin": "rwx", "manager": "rwx", "operator": "r-x", "reader": "r--"}
-DEFAULT_ROLE: str = "reader"
-
-BITS: dict = {"r": 4, "w": 2, "x": 1}
-DEFAULT_MODE: str = "770"
-
 # The ladder, lowest first. A principal with no role holds a token and nothing more.
 ROLE_NONE: str = "none"
 ROLE_OPERATOR: str = "operator"
@@ -82,9 +75,6 @@ ROLE_NONE: str = "none"
 ROLE_OPERATOR: str = "operator"
 ROLE_MANAGER: str = "manager"
 ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
-
-# The row on a plugin that carries its permissions.
-ACL_KIND: str = "acl"
 
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")
 

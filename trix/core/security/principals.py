@@ -133,20 +133,6 @@ class _Cache:
 CACHE = _Cache()
 
 
-def _from_local(handle: Session, name: str) -> Resolved:
-    """
-    The principal row and the usergroups it belongs to.
-    """
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
-    if row is None or not row.enabled:
-        return None
-    groups = handle.scalars(
-        select(models.Usergroup.name)
-        .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
-        .where(models.Membership.principal_id == row.id)).all()
-    return Resolved(row.name, row.kind, "local", list(groups), row.role)
-
-
 def resolve(handle: Session, name: str) -> Resolved:
     """
     Walk the chain with no credential. First answer wins, a failing source is skipped.
@@ -197,10 +183,6 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
         LOGGER.warning("%s is disabled here, whatever %s says", name, source)
         return None
 
-    groups = list(identity.get("groups") or [])
-    local = _from_local(handle, name)
-    if local is not None:
-        groups = sorted(set(groups) | set(local.groups))
-    found = Resolved(name, row.kind, source, groups, row.role)
+    found = Resolved(name, row.kind, source, list(identity.get("groups") or []), row.role)
     CACHE.put(f"user:{name}", found)
     return found

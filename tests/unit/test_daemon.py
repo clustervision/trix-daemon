@@ -510,90 +510,6 @@ def test_a_refused_request_is_audited(rig, client, token):
     assert any("node token" in d for d in details), details
 
 
-def test_the_rbac_store_can_be_filled_over_the_api(rig, client, headers):
-    """
-    The schema existed and nothing could populate it, so RBAC was unreachable.
-    """
-    assert client.post(f"{API_PREFIX}/identity/usergroups",
-                       json={"name": "intel"}, headers=headers).status_code == 201
-    assert client.post(f"{API_PREFIX}/identity/principals",
-                       json={"name": "carol", "password": "x"},
-                       headers=headers).status_code == 201
-    answer = client.post(f"{API_PREFIX}/identity/usergroups/intel/members",
-                         json={"principal": "carol", "role": "operator"},
-                         headers=headers)
-    assert answer.status_code == 201, answer.text
-    assert answer.json()["role"] == "operator"
-
-    shown = client.get(f"{API_PREFIX}/identity/principals/carol", headers=headers).json()
-    assert shown["usergroups"] == {"intel": "operator"}
-    assert shown["admin"] is False
-
-
-def test_a_role_outside_the_four_is_refused(rig, client, headers):
-    """
-    An unknown role would cap to nothing and look like a working membership.
-    """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "amd"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals", json={"name": "dave"}, headers=headers)
-    answer = client.post(f"{API_PREFIX}/identity/usergroups/amd/members",
-                         json={"principal": "dave", "role": "superuser"}, headers=headers)
-    assert answer.status_code == 400
-    assert "superuser" in answer.text
-
-
-def test_a_second_add_sets_the_role_rather_than_failing(rig, client, headers):
-    """
-    Adding twice is how a role is changed, so it must not collide on the unique key.
-    """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "ops"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals", json={"name": "erin"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/usergroups/ops/members",
-                json={"principal": "erin", "role": "reader"}, headers=headers)
-    answer = client.post(f"{API_PREFIX}/identity/usergroups/ops/members",
-                         json={"principal": "erin", "role": "admin"}, headers=headers)
-    assert answer.status_code == 201
-    shown = client.get(f"{API_PREFIX}/identity/principals/erin", headers=headers).json()
-    assert shown["usergroups"] == {"ops": "admin"}
-
-
-def test_deleting_a_principal_takes_its_memberships(rig, client, headers):
-    """
-    Nothing may be left pointing at a row that is gone.
-    """
-    from trix.db import engine as database
-    from trix.db import models
-
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "temp"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals", json={"name": "frank"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/usergroups/temp/members",
-                json={"principal": "frank", "role": "reader"}, headers=headers)
-    assert client.delete(f"{API_PREFIX}/identity/principals/frank",
-                         headers=headers).status_code == 200
-
-    handle = database.session()
-    try:
-        assert handle.query(models.Membership).count() == 0
-    finally:
-        handle.close()
-
-
-def test_an_external_group_maps_onto_a_usergroup_and_a_role(rig, client, headers):
-    """
-    Two directory groups may feed one usergroup with different roles.
-    """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "hpc"}, headers=headers)
-    for group, role in (("cn=hpc-admins", "admin"), ("cn=hpc-users", "reader")):
-        answer = client.post(f"{API_PREFIX}/identity/usergroupmap",
-                             json={"source": "ldap", "external_group": group,
-                                   "usergroup": "hpc", "role": role}, headers=headers)
-        assert answer.status_code == 201, answer.text
-
-    rows = client.get(f"{API_PREFIX}/identity/usergroupmap", headers=headers).json()
-    roles = {row["external_group"]: row["role"] for row in rows["usergroupmap"]}
-    assert roles == {"cn=hpc-admins": "admin", "cn=hpc-users": "reader"}
-
-
 def test_an_identity_write_leaves_its_audit_row(rig, client, headers):
     """
     A second session here blocks on the request's own write lock and the row is lost.
@@ -720,21 +636,27 @@ def test_a_refusal_is_in_the_audit_trail(rig, client, headers):
     assert expected in details, details
 
 
-def test_a_mode_is_accepted_as_octal_or_as_letters(rig, client, headers):
+def test_a_role_is_set_and_changed_over_the_api(rig, client, headers):
     """
-    The API takes rwxrwx--- as chmod does, and stores the octal the tree uses.
+    The one table RBAC has: a role is given on creation and changed in place.
     """
-    answer = client.patch(f"{API_PREFIX}/system/acl/services",
-                          json={"access": "rwxr-x---"}, headers=headers)
-    assert answer.status_code == 200, answer.text
-    assert answer.json()["access"] == "750"
-    assert answer.json()["mode"] == "rwxr-x---"
+    carol = _principal(client, headers, "carol", "operator")
+    shown = client.get(f"{API_PREFIX}/identity/principals/carol", headers=headers).json()
+    assert shown["role"] == "operator"
+    assert client.patch(f"{API_PREFIX}/identity/principals/carol", json={"role": "manager"},
+                        headers=headers).status_code == 200
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=carol).json()["role"] == "manager"
 
-    answer = client.patch(f"{API_PREFIX}/system/acl/services",
-                          json={"access": "770"}, headers=headers)
-    assert answer.json()["mode"] == "rwxrwx---"
-    assert client.patch(f"{API_PREFIX}/system/acl/services",
-                        json={"access": "nonsense"}, headers=headers).status_code == 400
+
+def test_a_deleted_principal_is_refused_at_once(rig, client, headers):
+    """
+    The token stays valid; the row is gone, so the next request cannot resolve it.
+    """
+    frank = _principal(client, headers, "frank")
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=frank).status_code == 200
+    assert client.delete(f"{API_PREFIX}/identity/principals/frank",
+                         headers=headers).status_code == 200
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=frank).status_code == 401
 
 
 def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):

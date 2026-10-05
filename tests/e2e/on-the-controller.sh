@@ -79,25 +79,28 @@ check "the queued action finished"     "$STATE" done
 check "an unknown request is 404"      "$(code $PLAIN/api/v1/services/status/nope -H "$H")" 404
 
 echo "=== 8. identity and RBAC ==="
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/usergroups -H "$H" -H 'Content-Type: application/json' -d '{"name":"e2e"}'
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/principals  -H "$H" -H 'Content-Type: application/json' -d '{"name":"e2ereader","password":"pw"}'
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/usergroups/e2e/members -H "$H" -H 'Content-Type: application/json' -d '{"principal":"e2ereader","role":"reader"}'
-curl -sk -o /dev/null -X PATCH $PLAIN/api/v1/system/acl/genders -H "$H" -H 'Content-Type: application/json' -d '{"usergroups":"e2e"}'
-RT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H 'Content-Type: application/json' -d '{"username":"e2ereader","password":"pw"}' | jq_ "d['token']")
-RH="x-access-tokens: $RT"
-[ -n "$RT" ] && say PASS "the reader can log in" || say FAIL "the reader cannot log in"
-check "a reader may look"              "$(code $PLAIN/api/v1/genders/config -H "$RH")" 200
-check "a reader may not change"        "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$RH" -H 'Content-Type: application/json' -d '{}')" 403
-check "an outsider sees nothing"       "$(code $PLAIN/api/v1/slurm/config -H "$RH")" 403
-check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$H" -H 'Content-Type: application/json' -d '{}')" 200
-KING='{"principal":"e2ereader","role":"king"}'
-check "a bad role is refused"          "$(code -X POST $PLAIN/api/v1/identity/usergroups/e2e/members -H "$H" -H 'Content-Type: application/json' -d "$KING")" 400
+J='Content-Type: application/json'
+curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2enone","password":"pw"}'
+curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2eop","password":"pw","role":"operator"}'
+NT0=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2enone","password":"pw"}' | jq_ "d['token']")
+OT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2eop","password":"pw"}' | jq_ "d['token']")
+NH="x-access-tokens: $NT0"; OH="x-access-tokens: $OT"
+[ -n "$NT0" ] && [ -n "$OT" ] && say PASS "both principals can log in" || say FAIL "a principal cannot log in"
+check "no role may look"               "$(code $PLAIN/api/v1/genders/config -H "$NH")" 200
+check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$NH" -H "$J" -d '{}')" 403
+check "no role may not operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$NH")" 403
+check "an operator may operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$OH")" 200
+check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 403
+check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$H" -H "$J" -d '{}')" 200
+check "a bad role is refused"          "$(code -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2eking","role":"king"}')" 400
+curl -sk -o /dev/null -X PATCH $PLAIN/api/v1/identity/principals/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
+check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 200
 
 echo "=== 9. whoami ==="
-WHO=$(curl -sk $PLAIN/api/v1/auth/whoami -H "$RH")
-check "whoami names the reader"        "$(echo "$WHO" | jq_ "d['principal']")" e2ereader
-check "whoami reports the role"        "$(echo "$WHO" | jq_ "d['usergroups']['e2e']")" reader
-check "whoami says not admin"          "$(echo "$WHO" | jq_ "d['admin']")" False
+WHO=$(curl -sk $PLAIN/api/v1/auth/whoami -H "$OH")
+check "whoami names the principal"     "$(echo "$WHO" | jq_ "d['principal']")" e2eop
+check "whoami reports the role"        "$(echo "$WHO" | jq_ "d['role']")" manager
+check "whoami says not rootus"         "$(echo "$WHO" | jq_ "d['rootus']")" False
 
 echo "=== 10. the audit trail ==="
 GRANTS=$($PY -c "
@@ -125,10 +128,9 @@ check "triggers report"                "$(code $PLAIN/api/v1/system/triggers -H 
 check "renders list"                   "$(code $PLAIN/api/v1/system/renders -H "$H")" 200
 
 echo "=== 13. tidy up ==="
-curl -sk -o /dev/null -X PATCH $PLAIN/api/v1/system/acl/genders -H "$H" -H 'Content-Type: application/json' -d '{"usergroups":""}'
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/principals/e2ereader -H "$H"
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/usergroups/e2e -H "$H"
-say PASS "removed the test organisation"
+curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/principals/e2eop -H "$H"
+curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/principals/e2enone -H "$H"
+say PASS "removed the test principals"
 
 echo
 echo "failures: $FAIL"

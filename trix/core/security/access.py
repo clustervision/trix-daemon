@@ -29,54 +29,11 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from sqlalchemy import select
-from sqlalchemy.orm import Session
-
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
-from trix.common.constants import ACL_KIND, BITS, DEFAULT_MODE, ROLES, ROLE_NONE
-from trix.db import models
+from trix.common.constants import ROLES, ROLE_NONE
 
 LOGGER = trixlog.get("access")
-
-
-def mask(text: str) -> int:
-    """
-    The numeric value of a triplet written as rwx, ignoring the dashes.
-    """
-    return sum(BITS[char] for char in str(text or "") if char in BITS)
-
-
-def text(triplet: int) -> str:
-    """
-    One octal digit written the way ls writes it.
-    """
-    return (("r" if triplet & 4 else "-") + ("w" if triplet & 2 else "-")
-            + ("x" if triplet & 1 else "-"))
-
-
-def mode_text(octal: str) -> str:
-    """
-    A whole mode, so a person reads rwxrwx--- rather than 770.
-    """
-    value = int(str(octal or DEFAULT_MODE), 8)
-    return "".join(text((value >> shift) & 7) for shift in (6, 3, 0))
-
-
-def acl_row(handle: Session, plugin: str) -> models.Declaration:
-    """
-    The row carrying a plugin's permissions, made on first use with the defaults.
-    """
-    row = handle.scalar(select(models.Declaration).where(
-        models.Declaration.plugin == plugin,
-        models.Declaration.kind == ACL_KIND,
-        models.Declaration.name == ""))
-    if row is None:
-        row = models.Declaration(plugin=plugin, kind=ACL_KIND, name="", body={},
-                                 owners="", usergroups="", access=DEFAULT_MODE)
-        handle.add(row)
-        handle.flush()
-    return row
 
 
 def is_rootus(name: str) -> bool:

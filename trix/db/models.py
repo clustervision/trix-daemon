@@ -31,11 +31,10 @@ __status__      = "Production"
 
 from datetime import datetime, timezone
 
-from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
-                        Text, UniqueConstraint)
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE, ROLE_NONE
+from trix.common.constants import ROLE_NONE
 
 
 def now() -> datetime:
@@ -75,11 +74,6 @@ class Declaration(Base, Replicated):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     body: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
-    # Who owns it, which organisations it is listed for, and the mode. Empty owners
-    # means the ini account, exactly as an empty list does in luna2-daemon.
-    owners: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    usergroups: Mapped[str] = mapped_column(Text, default="", nullable=False)
-    access: Mapped[str] = mapped_column(String(4), default=DEFAULT_MODE, nullable=False)
 
 
 class Principal(Base, Replicated):
@@ -98,51 +92,6 @@ class Principal(Base, Replicated):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Where this principal sits on the ladder. rootus is the ini name, not a role.
     role: Mapped[str] = mapped_column(String(16), default=ROLE_NONE, nullable=False)
-    # The cluster-wide bypass, named in the audit trail, and the flag that lets a
-    # portal service ask for a token on behalf of the person it has authenticated.
-    admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-    delegate: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
-
-
-class Usergroup(Base, Replicated):
-    """
-    A named set of principals.
-    """
-
-    __tablename__ = "usergroup"
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-
-
-class Membership(Base, Replicated):
-    """
-    Which principal is in which usergroup.
-    """
-
-    __tablename__ = "membership"
-    __table_args__ = (UniqueConstraint("principal_id", "usergroup_id", name="uq_membership"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    principal_id: Mapped[int] = mapped_column(ForeignKey("principal.id"), nullable=False)
-    usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=False)
-    role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
-    source: Mapped[str] = mapped_column(String(32), default="local", nullable=False)
-
-
-class UsergroupMap(Base, Replicated):
-    """
-    One external group, from one source, onto a usergroup and a role in it.
-    """
-
-    __tablename__ = "usergroupmap"
-    __table_args__ = (UniqueConstraint("source", "external_group", name="uq_usergroupmap"),)
-
-    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
-    source: Mapped[str] = mapped_column(String(32), nullable=False)
-    external_group: Mapped[str] = mapped_column(String(255), nullable=False)
-    usergroup_id: Mapped[int] = mapped_column(ForeignKey("usergroup.id"), nullable=False)
-    role: Mapped[str] = mapped_column(String(16), default=DEFAULT_ROLE, nullable=False)
 
 
 class Audit(Base):
@@ -209,6 +158,5 @@ class PluginState(Base):
     reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
-REPLICATED: tuple = ("declaration", "principal", "usergroup", "membership",
-                     "usergroupmap")
+REPLICATED: tuple = ("declaration", "principal")
 LOCAL: tuple = ("audit", "render_state", "plugin_state", "task")

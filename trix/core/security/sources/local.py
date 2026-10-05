@@ -82,10 +82,6 @@ class Source:
 
     def _identity(self, row) -> dict:
         """
-        The name, the row id and the usergroups it is in.
+        The name and the row id. This source holds no groups.
         """
-        groups = self.handle.scalars(
-            select(models.Usergroup.name)
-            .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
-            .where(models.Membership.principal_id == row.id)).all()
-        return {"name": row.name, "external_id": str(row.id), "groups": list(groups)}
+        return {"name": row.name, "external_id": str(row.id), "groups": []}

@@ -105,39 +105,39 @@ check("unknown request is 404",
       call("GET", f"{PLAIN}/services/status/nope", T)[0], 404)
 
 print("=== identity and RBAC ===")
-call("POST", f"{PLAIN}/identity/usergroups", T, {"name": "httpe2e"})
-call("POST", f"{PLAIN}/identity/principals", T,
-     {"name": "httpreader", "password": "pw"})
-check("a member is added with a role",
-      call("POST", f"{PLAIN}/identity/usergroups/httpe2e/members", T,
-           {"principal": "httpreader", "role": "reader"})[0], 201)
+call("POST", f"{PLAIN}/identity/principals", T, {"name": "httpnone", "password": "pw"})
+check("a principal is created with a role",
+      call("POST", f"{PLAIN}/identity/principals", T,
+           {"name": "httpop", "password": "pw", "role": "operator"})[0], 201)
 check("a bad role is refused",
-      call("POST", f"{PLAIN}/identity/usergroups/httpe2e/members", T,
-           {"principal": "httpreader", "role": "king"})[0], 400)
-call("PATCH", f"{PLAIN}/system/acl/genders", T, {"usergroups": "httpe2e"})
+      call("POST", f"{PLAIN}/identity/principals", T,
+           {"name": "httpking", "role": "king"})[0], 400)
+N = call("POST", f"{PLAIN}/auth/token", body={"username": "httpnone", "password": "pw"})[1].get("token", "")
 status, theirs = call("POST", f"{PLAIN}/auth/token",
-                      body={"username": "httpreader", "password": "pw"})
+                      body={"username": "httpop", "password": "pw"})
 R = theirs.get("token", "")
-check("the reader can log in", status, 201)
-check("a reader may look", call("GET", f"{PLAIN}/genders/config", R)[0], 200)
-check("a reader may not change",
-      call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 403)
-check("a reader may not operate",
-      call("POST", f"{PLAIN}/services/slurmctld/actions/restart", R)[0], 403)
-check("an outsider sees nothing", call("GET", f"{PLAIN}/slurm/config", R)[0], 403)
-check("rootus is never refused",
-      call("PATCH", f"{PLAIN}/genders/config", T, {})[0], 200)
+check("the operator can log in", status, 201)
+check("no role may look", call("GET", f"{PLAIN}/genders/config", N)[0], 200)
+check("no role may not change", call("PATCH", f"{PLAIN}/genders/config", N, {})[0], 403)
+check("no role may not operate",
+      call("POST", f"{PLAIN}/services/slurmctld/actions/status", N)[0], 403)
+check("an operator may operate",
+      call("POST", f"{PLAIN}/services/slurmctld/actions/status", R)[0], 200)
+check("an operator may not change", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 403)
+check("rootus is never refused", call("PATCH", f"{PLAIN}/genders/config", T, {})[0], 200)
+call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"role": "manager"})
+check("promoted, the same token changes", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 200)
 
 print("=== whoami ===")
 status, said = call("GET", f"{PLAIN}/auth/whoami", R)
-check("whoami names the reader", said.get("principal"), "httpreader")
-check("whoami reports the role", (said.get("usergroups") or {}).get("httpe2e"), "reader")
-check("whoami says not admin", said.get("admin"), False)
+check("whoami names the principal", said.get("principal"), "httpop")
+check("whoami reports the role", said.get("role"), "manager")
+check("whoami says not rootus", said.get("rootus"), False)
 
 print("=== disabling cuts at once ===")
-call("PATCH", f"{PLAIN}/identity/principals/httpreader", T, {"enabled": False})
+call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"enabled": False})
 check("the same token stops working", call("GET", f"{PLAIN}/auth/whoami", R)[0], 401)
-call("PATCH", f"{PLAIN}/identity/principals/httpreader", T, {"enabled": True})
+call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"enabled": True})
 check("and works again when re-enabled", call("GET", f"{PLAIN}/auth/whoami", R)[0], 200)
 
 print("=== node tokens ===")
@@ -148,23 +148,20 @@ check("node token on a credential",
            body={"username": ADMIN[0], "password": ADMIN[1]})[0], 201)
 
 print("=== replication endpoints ===")
-for name in ("principal", "usergroup", "membership", "usergroupmap", "declaration"):
+for name in ("principal", "declaration"):
     status, table = call("GET", f"{PLAIN}/system/replication/table/{name}", T)
     documents = table.get("documents") or []
     carried = sorted(documents[0]) if documents else []
     print(f"  {'PASS  ' if status == 200 else 'FAIL  '} {name} exports {len(documents)}")
     if status != 200:
         failures.append(name)
-    if name == "membership" and documents:
-        check("membership carries the role", "role" in carried, True)
     if name == "principal" and documents:
-        check("principal carries admin", "admin" in carried, True)
+        check("principal carries the role", "role" in carried, True)
 
 print("=== tidy up ===")
-call("PATCH", f"{PLAIN}/system/acl/genders", T, {"usergroups": ""})
-call("DELETE", f"{PLAIN}/identity/principals/httpreader", T)
-call("DELETE", f"{PLAIN}/identity/usergroups/httpe2e", T)
-print("  PASS   removed the test organisation")
+call("DELETE", f"{PLAIN}/identity/principals/httpop", T)
+call("DELETE", f"{PLAIN}/identity/principals/httpnone", T)
+print("  PASS   removed the test principals")
 
 print(f"\nfailures: {len(failures)}")
 for item in failures:

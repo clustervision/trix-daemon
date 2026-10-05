@@ -37,21 +37,17 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE, ROLE_NONE
+from trix.common.constants import ROLE_NONE
 from trix.db import models
 
 LOGGER = trixlog.get("replication")
 
 # Autoincrement is local: the peer inserts its own row and gets its own number, so
 # a document is addressed by the columns the request was made with and never by id.
-ORDER: tuple = ("principal", "usergroup", "membership", "usergroupmap",
-                "declaration")
+ORDER: tuple = ("principal", "declaration")
 
 MODELS: dict = {
     "principal": models.Principal,
-    "usergroup": models.Usergroup,
-    "membership": models.Membership,
-    "usergroupmap": models.UsergroupMap,
     "declaration": models.Declaration,
 }
 
@@ -65,25 +61,6 @@ def _stamp(value) -> str:
             value = value.replace(tzinfo=timezone.utc)
         return value.astimezone(timezone.utc).isoformat()
     return str(value or "")
-
-
-def _name_of(handle: Session, model, row_id):
-    """
-    The name behind a local identifier, for a document.
-    """
-    if not row_id:
-        return ""
-    row = handle.get(model, row_id)
-    return row.name if row is not None else ""
-
-
-def _id_of(handle: Session, model, name: str):
-    """
-    The local identifier behind a name, or None.
-    """
-    if not name:
-        return None
-    return handle.scalar(select(model.id).where(model.name == name))
 
 
 def _common(row) -> dict:
@@ -102,22 +79,10 @@ def to_document(handle: Session, table: str, row) -> dict:
     if table == "principal":
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
                     password_digest=row.password_digest, external_id=row.external_id,
-                    enabled=bool(row.enabled), role=row.role, admin=bool(row.admin),
-                    delegate=bool(row.delegate))
-    elif table == "usergroup":
-        body.update(key=[row.name], name=row.name)
-    elif table == "membership":
-        body.update(key=[_name_of(handle, models.Principal, row.principal_id),
-                         _name_of(handle, models.Usergroup, row.usergroup_id)],
-                    role=row.role, source=row.source)
-    elif table == "usergroupmap":
-        body.update(key=[row.source, row.external_group], source=row.source,
-                    external_group=row.external_group, role=row.role,
-                    usergroup=_name_of(handle, models.Usergroup, row.usergroup_id))
+                    enabled=bool(row.enabled), role=row.role)
     elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
-                    kind=row.kind, name=row.name, body=dict(row.body or {}),
-                    owners=row.owners, usergroups=row.usergroups, access=row.access)
+                    kind=row.kind, name=row.name, body=dict(row.body or {}))
     return body
 
 
@@ -150,26 +115,15 @@ def _find(handle: Session, table: str, key: list):
     The local row a document addresses, or None.
     """
     model = MODELS[table]
-    if table in ("principal", "usergroup"):
+    if table == "principal":
         return handle.scalar(select(model).where(model.name == key[0]))
-    if table == "membership":
-        principal = _id_of(handle, models.Principal, key[0])
-        usergroup = _id_of(handle, models.Usergroup, key[1])
-        if not principal or not usergroup:
-            return None
-        return handle.scalar(select(model).where(model.principal_id == principal,
-                                                 model.usergroup_id == usergroup))
-    if table == "permission":
-        return handle.scalar(select(model).where(model.object_kind == key[0],
-                                                 model.object_name == key[1]))
     return handle.scalar(select(model).where(model.plugin == key[0], model.kind == key[1],
                                              model.name == key[2]))
 
 
 def _columns(handle: Session, table: str, document: dict) -> dict:
     """
-    The column values for a document, every name resolved to a local identifier.
-    None means a row it depends on has not arrived, so the next pass retries it.
+    The column values for a document.
     """
     key = document["key"]
     if table == "principal":
@@ -178,30 +132,9 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
                 "password_digest": document.get("password_digest", ""),
                 "external_id": document.get("external_id", ""),
                 "enabled": bool(document.get("enabled", True)),
-                "role": document.get("role", ROLE_NONE),
-                "admin": bool(document.get("admin", False)),
-                "delegate": bool(document.get("delegate", False))}
-    if table == "usergroup":
-        return {"name": key[0]}
-    if table == "membership":
-        principal = _id_of(handle, models.Principal, key[0])
-        usergroup = _id_of(handle, models.Usergroup, key[1])
-        if not principal or not usergroup:
-            return None
-        return {"principal_id": principal, "usergroup_id": usergroup,
-                "role": document.get("role", DEFAULT_ROLE),
-                "source": document.get("source", "local")}
-    if table == "usergroupmap":
-        usergroup = _id_of(handle, models.Usergroup, document.get("usergroup", ""))
-        if not usergroup:
-            return None
-        return {"source": key[0], "external_group": key[1], "usergroup_id": usergroup,
-                "role": document.get("role", DEFAULT_ROLE)}
+                "role": document.get("role", ROLE_NONE)}
     return {"plugin": key[0], "kind": key[1], "name": key[2],
-            "body": dict(document.get("body") or {}),
-            "owners": document.get("owners", ""),
-            "usergroups": document.get("usergroups", ""),
-            "access": document.get("access", DEFAULT_MODE)}
+            "body": dict(document.get("body") or {})}
 
 
 def _newer(incoming: dict, row) -> bool:
@@ -221,12 +154,9 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
     timestamp with different content keeps the local row and is logged.
     """
     model = MODELS[table]
-    added = updated = conflicts = deferred = 0
+    added = updated = conflicts = 0
     for document in documents:
         columns = _columns(handle, table, document)
-        if columns is None:
-            deferred += 1
-            continue
         row = _find(handle, table, document["key"])
         if row is None:
             handle.add(model(version=int(document.get("version") or 1),
@@ -246,5 +176,4 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
             LOGGER.warning("conflict on %s %s: same version and time, different content; "
                            "keeping the local row", table, document["key"])
     handle.commit()
-    return {"added": added, "updated": updated, "conflicts": conflicts,
-            "deferred": deferred}
+    return {"added": added, "updated": updated, "conflicts": conflicts}
