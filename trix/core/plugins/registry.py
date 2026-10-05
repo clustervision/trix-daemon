@@ -51,6 +51,7 @@ class LoadedPlugin:
         self.backend = None
         self.models: dict = {}
         self.routes: list = []
+        self.hooks: dict = {}
 
     def summary(self) -> dict:
         """
@@ -83,6 +84,13 @@ class Registry:
         """
         self.plugins[entry.name] = entry
         return entry
+
+    def hooks_for(self, event: str) -> list:
+        """
+        Every loaded plugin's handler for one change at Luna, as plugin and callable.
+        """
+        return [(entry.name, entry.hooks[event]) for entry in self.plugins.values()
+                if entry.state == PLUGIN_STATE_LOADED and event in (entry.hooks or {})]
 
     def get(self, name: str) -> LoadedPlugin:
         """

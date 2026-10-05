@@ -228,6 +228,19 @@ class Backend:
             self.reload()
         return {"node": node, "retired": retired}
 
+    def node_updated(self, name: str, newnodename: str = "", group: str = "") -> str:
+        """
+        Luna accepted a rename or a move between groups: the rule files follow.
+        """
+        outcome = self.repair_hw_rules(newnodename or name, was=name if newnodename else "")
+        return f"{name}: moved {outcome.get('moved', [])}, rewritten {outcome.get('rewritten', [])}"
+
+    def node_deleted(self, name: str) -> str:
+        """
+        Luna removed the node: whatever still names it is retired.
+        """
+        return f"{name}: retired {self.remove_hw_rules(name)['retired']}"
+
     def _retire(self, path: str) -> str:
         """
         Move one rule file under backup/ with a timestamp, so nothing is lost and nothing loads.

@@ -130,6 +130,25 @@ curl -X PATCH http://<controller>:8051/api/v1/identity/principals/harry \
      -d '{"role": "operator"}'
 ```
 
+## Acting on a change at Luna
+
+A call made through `/api/v1/luna/...` is forwarded unchanged, and once Luna has
+answered 2xx the daemon looks at what was asked. A plugin that wants to act on a
+node being renamed, moved between groups or deleted declares it:
+
+```yaml
+luna_hooks:
+  node.update: node_updated
+  node.delete: node_deleted
+```
+
+The handler runs on the task queue, after the caller has its answer, with the
+payload as keyword arguments: `node_updated(name, newnodename="", group="")`
+and `node_deleted(name)`. It must be idempotent: Luna's own hooks may already
+have done part of the work, and a render that reconciles against Luna's node
+list may have done the rest. Only calls made through the pass-through are seen;
+a change made at Luna directly reaches a plugin through its renders instead.
+
 ## Shelling out
 
 Every subprocess goes through `trix.utils.shell`: an argument list, never a shell

@@ -131,6 +131,7 @@ def _from_script(name: str, path: str):
         "backend": "inline",
         "schemas": getattr(plugin_class, "schemas", {}) or {},
         "endpoints": endpoints,
+        "luna_hooks": getattr(plugin_class, "luna_hooks", {}) or {},
     }
     return manifests.parse(document), plugin_class()
 
@@ -170,6 +171,20 @@ def _register_renders(manifest, backend) -> None:
         engine.register(manifest.plugin, endpoint.path, endpoint.render, producer)
 
 
+def _bind_hooks(manifest, backend) -> dict:
+    """
+    The backend method behind each change at Luna the manifest declares.
+    """
+    hooks = {}
+    for event, handler in manifest.luna_hooks.items():
+        found = getattr(backend, handler, None)
+        if found is None or not callable(found):
+            raise PluginRefused(
+                f"{event} names handler {handler}, which {manifest.backend} does not have")
+        hooks[event] = found
+    return hooks
+
+
 def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     """
     Load or reload one plugin. On a refusal nothing already serving is disturbed.
@@ -196,6 +211,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
 
         models_for_plugin = manifests.build_models(manifest)
         _register_renders(manifest, backend)
+        hooks = _bind_hooks(manifest, backend)
         router = binder.build(manifest, backend, models_for_plugin, renders())
 
         taken = known.paths(skip=name)
@@ -216,6 +232,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.manifest = manifest
     entry.backend = backend
     entry.models = models_for_plugin
+    entry.hooks = hooks
     entry.digest = manifest.digest
     entry.origin = path
     entry.routes = exchange(app, name, router)

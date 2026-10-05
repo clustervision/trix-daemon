@@ -799,3 +799,95 @@ def test_a_requeued_task_finds_its_handler(rig):
     source = inspect.getsource(lifespan.start)
     assert source.index("loader.load_all") < source.index("tasks.start()"), \
         "the worker must start after the plugins, or a requeued task has no handler"
+
+
+def test_the_pass_through_recognises_a_node_rename(rig):
+    """
+    A POST to the node with newnodename or group, answered 2xx, is what a hook must see.
+    """
+    from trix.core.luna import hooks
+
+    body = b'{"config": {"node": {"node001": {"newnodename": "node002", "comment": "x"}}}}'
+    assert hooks.notice("POST", "config/node/node001", body, 204) == {
+        "event": "node.update", "payload": {"name": "node001", "newnodename": "node002"}}
+    moved = b'{"config": {"node": {"node001": {"group": "gpu"}}}}'
+    assert hooks.notice("POST", "config/node/node001", moved, 204) == {
+        "event": "node.update", "payload": {"name": "node001", "group": "gpu"}}
+    assert hooks.notice("GET", "config/node/node001/_delete", b"", 204) == {
+        "event": "node.delete", "payload": {"name": "node001"}}
+
+    plain = b'{"config": {"node": {"node001": {"comment": "x"}}}}'
+    assert hooks.notice("POST", "config/node/node001", plain, 204) is None
+    assert hooks.notice("POST", "config/node/node001/_clone", body, 201) is None
+    assert hooks.notice("POST", "config/node/node001", body, 400) is None
+    assert hooks.notice("POST", "config/node/node001", b"not json", 204) is None
+    assert hooks.notice("GET", "config/node/node001", b"", 200) is None
+    assert hooks.changed_object("POST", "config/node/node001", 204) == "node"
+    assert hooks.changed_object("GET", "config/group/g1/_delete", 204) == "group"
+    assert hooks.changed_object("GET", "config/node", 200) == ""
+
+
+def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, headers, monkeypatch):
+    """
+    Luna's 204 comes back untouched and the change is on the queue once the answer has left.
+    """
+    from types import SimpleNamespace
+    from trix.core.luna import proxy
+    from trix.db import engine as database
+    from trix.db import models
+
+    def luna_says(method, url, **kwargs):
+        """
+        Luna accepting the rename with an empty 204.
+        """
+        return SimpleNamespace(content=b"", status_code=204, headers={})
+
+    monkeypatch.setattr(proxy.requests, "request", luna_says)
+    answer = client.post(f"{API_PREFIX}/luna/config/node/node001",
+                         json={"config": {"node": {"node001": {"newnodename": "node002"}}}},
+                         headers=headers)
+    assert answer.status_code == 204
+
+    handle = database.session()
+    try:
+        row = handle.query(models.Task).filter(models.Task.subsystem == "luna").one()
+        assert row.task == "node.update" and '"newnodename": "node002"' in row.param
+    finally:
+        handle.close()
+
+
+def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers):
+    """
+    The manifest names the event and the handler; the dispatcher hands the payload to it.
+    """
+    from trix.core.luna import hooks
+
+    plugin = tmp_path / "plugins" / "watcher"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: watcher\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'class Backend:\n    """A plugin that remembers what Luna changed."""\n'
+        "    calls = []\n\n"
+        '    def moved(self, name, newnodename="", group=""):\n        """Remember."""\n'
+        "        self.calls.append((name, newnodename, group))\n        return 'noted'\n\n"
+        '    def seen(self):\n        """Show."""\n        return {"calls": self.calls}\n',
+        encoding="utf-8")
+    loader.load(rig, "watcher")
+
+    assert hooks.run("node.update", '{"name": "node001", "newnodename": "node002"}') == "watcher: noted"
+    shown = client.get(f"{API_PREFIX}/watcher/seen", headers=headers).json()
+    assert shown["calls"] == [["node001", "node002", ""]]
+    assert hooks.run("node.delete", '{"name": "node001"}') == "nothing declared node.delete"
+
+
+def test_a_hook_for_an_unknown_change_is_refused():
+    """
+    A plugin cannot subscribe to something the pass-through never notices.
+    """
+    with pytest.raises(Exception) as raised:
+        parse({"plugin": "x", "luna_hooks": {"node.paint": "paint"}, "endpoints": [
+            {"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]})
+    assert "node.paint" in str(raised.value)

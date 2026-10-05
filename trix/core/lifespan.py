@@ -37,6 +37,7 @@ from sqlalchemy import select
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
 from trix.core import tasks
+from trix.core.luna import hooks
 from trix.core.plugins import loader
 from trix.core.render.engine import current as renders
 from trix.core.render.triggers import current as luna_hashes
@@ -85,6 +86,7 @@ def start(app: FastAPI) -> None:
 
     # After the plugins, never before: the worker requeues what a restart left
     # behind, and a handler that has not registered yet fails that work at once.
+    hooks.install()
     tasks.start()
 
     done = renders().run_all()

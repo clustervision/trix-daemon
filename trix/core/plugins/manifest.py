@@ -37,7 +37,8 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trix.common.constants import HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trix.common.constants import (HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND_NODE,
+                                   TOKEN_KIND_USER)
 from trix.common.errors import PluginRefused
 
 PATH_VARIABLE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
@@ -117,6 +118,8 @@ class Manifest(BaseModel):
     description: str = ""
     schemas: dict = Field(default_factory=dict)
     endpoints: list = Field(default_factory=list)
+    # Which changes at Luna this plugin acts on, and the backend method for each.
+    luna_hooks: dict = Field(default_factory=dict)
 
     @property
     def digest(self) -> str:
@@ -156,6 +159,12 @@ def parse(document: dict) -> Manifest:
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+    for event, handler in manifest.luna_hooks.items():
+        if event not in LUNA_HOOKS:
+            raise PluginRefused(f"{event} is not a change at Luna the daemon notices; "
+                                f"one of {', '.join(LUNA_HOOKS)}")
+        if not handler or not isinstance(handler, str):
+            raise PluginRefused(f"{event} names no handler")
     return manifest
 
 

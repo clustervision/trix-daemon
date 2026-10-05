@@ -32,12 +32,14 @@ __status__      = "Production"
 import requests
 import urllib3
 from fastapi import APIRouter, Request, Response
+from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from trix.common import logging as trixlog
 from trix.common.constants import API_PREFIX, RESERVED_PLUGIN
 from trix.common.errors import ServiceUnavailable
 from trix.common.settings import current as settings
+from trix.core.luna import hooks
 
 LOGGER = trixlog.get("proxy")
 
@@ -77,8 +79,11 @@ async def forward(path: str, request: Request) -> Response:
 
     passed = {key: value for key, value in answer.headers.items()
               if key.lower() not in HOP_BY_HOP}
+    # What the daemon does about the change runs once the answer has left, unchanged.
     return Response(content=answer.content, status_code=answer.status_code,
-                    headers=passed, media_type=answer.headers.get("content-type"))
+                    headers=passed, media_type=answer.headers.get("content-type"),
+                    background=BackgroundTask(hooks.after, request.method, path, body,
+                                              answer.status_code))
 
 
 # One route per verb, each with its own operation id. One route carrying four

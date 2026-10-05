@@ -71,6 +71,10 @@ MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
 
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")
 
+# The changes at Luna a plugin may act on, as the pass-through recognises them.
+LUNA_HOOKS: tuple = ("node.update", "node.delete")
+LUNA_HOOK_SUBSYSTEM: str = "luna"
+
 PLUGIN_STATE_LOADED: str = "loaded"
 PLUGIN_STATE_REFUSED: str = "refused"
 PLUGIN_STATE_DISABLED: str = "disabled"

@@ -21,6 +21,9 @@ description: >
   generic and service rule files, the per-node hardware rules and the settings
   they are generated from. One plugin means one writer of the configuration.
 
+luna_hooks:
+  node.update: node_updated
+  node.delete: node_deleted
 schemas:
   rules:
     groups:   {type: array, items: object}
