@@ -827,7 +827,8 @@ def test_the_pass_through_recognises_a_node_rename(rig):
     assert hooks.changed_object("GET", "config/node", 200) == ""
 
 
-def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, headers, monkeypatch):
+def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, headers,
+                                                                    monkeypatch):
     """
     Luna's 204 comes back untouched and the change is on the queue once the answer has left.
     """
@@ -877,7 +878,8 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
         encoding="utf-8")
     loader.load(rig, "watcher")
 
-    assert hooks.run("node.update", '{"name": "node001", "newnodename": "node002"}') == "watcher: noted"
+    said = hooks.run("node.update", '{"name": "node001", "newnodename": "node002"}')
+    assert said == "watcher: noted"
     shown = client.get(f"{API_PREFIX}/watcher/seen", headers=headers).json()
     assert shown["calls"] == [["node001", "node002", ""]]
     assert hooks.run("node.delete", '{"name": "node001"}') == "nothing declared node.delete"

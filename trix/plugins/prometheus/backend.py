@@ -369,7 +369,8 @@ class Backend:
                     retired.append(gone)
                 continue
             record = nodes[name]
-            want = {"hostname": record.get("hostname") or name, "luna_group": record.get("group") or ""}
+            want = {"hostname": record.get("hostname") or name,
+                    "luna_group": record.get("group") or ""}
             target = os.path.join(self._rules_dir(), HW_RULES.format(host=want["hostname"]))
             try:
                 document = _read_yaml(path)
@@ -478,8 +479,9 @@ def _relabel_document(document: dict, values: dict) -> bool:
                 rule["expr"] = fixed
                 changed = True
             labels = rule.get("labels") or {}
-            if labels.get("hostname") and values.get("hostname") and labels["hostname"] != values["hostname"]:
-                labels["hostname"] = values["hostname"]
+            host = values.get("hostname")
+            if labels.get("hostname") and host and labels["hostname"] != host:
+                labels["hostname"] = host
                 changed = True
     return changed
 

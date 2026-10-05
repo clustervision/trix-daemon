@@ -313,7 +313,8 @@ def _hw_file(directory, host, group, parts=("memory", "disk")):
     rules = [{"alert": "MissingHardwareComponent",
               "expr": f'absent(lshw_device{{hostname="{host}",luna_group="{group}",class="{part}",'
                       f'description="{part} of {host}",serial="S-{part}"}})',
-              "labels": {"severity": "warning", "category": "hardware", "nhc": True, "disabled": False},
+              "labels": {"severity": "warning", "category": "hardware", "nhc": True,
+                         "disabled": False},
               "annotations": {"description": "Hardware component {{ $labels.class }} is missing."}}
              for part in parts]
     path = directory / f"trix.hw.{host}.rules"
@@ -371,7 +372,8 @@ def test_a_renamed_node_keeps_its_hardware_rules(rig, tmp_path, monkeypatch):
 
     assert outcome["moved"] == ["trix.hw.node001.cluster.rules"]
     assert not (tmp_path / "trix.hw.node001.cluster.rules").exists()
-    document = yaml.safe_load((tmp_path / "trix.hw.node002.cluster.rules").read_text(encoding="utf-8"))
+    moved = (tmp_path / "trix.hw.node002.cluster.rules").read_text(encoding="utf-8")
+    document = yaml.safe_load(moved)
     for rule in document["groups"][0]["rules"]:
         assert 'hostname="node002.cluster"' in rule["expr"]
         assert 'hostname="node001.cluster"' not in rule["expr"]
@@ -453,7 +455,8 @@ def test_the_rule_file_render_reconciles_against_luna(rig, tmp_path, monkeypatch
 
     assert outcome["repaired"] == ["trix.hw.node001.cluster.rules"]
     assert outcome["retired"] == ["trix.hw.node009.cluster.rules"]
-    assert 'luna_group="gpu"' in (tmp_path / "trix.hw.node001.cluster.rules").read_text(encoding="utf-8")
+    repaired = (tmp_path / "trix.hw.node001.cluster.rules").read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in repaired
     assert right.read_text(encoding="utf-8") == before
     assert not (tmp_path / "trix.hw.node009.cluster.rules").exists()
 
