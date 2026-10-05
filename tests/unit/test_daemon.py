@@ -304,6 +304,17 @@ def test_a_right_password_is_accepted(rig, client):
     assert answer.json()["token"]
 
 
+def test_the_sources_are_the_four_on_the_board(rig):
+    """
+    local, pam, ldap and oidc, as the whiteboard drew them; nothing else answers.
+    """
+    import pathlib
+
+    root = pathlib.Path(trix.__file__).parent / "core" / "security" / "sources"
+    found = {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
+    assert found == {"local", "pam", "ldap", "oidc"}, found
+
+
 def test_no_source_authenticates_without_checking_the_password(rig):
     """
     Every source must refuse or decline; none may answer True on the name alone.
@@ -311,7 +322,7 @@ def test_no_source_authenticates_without_checking_the_password(rig):
     import pathlib
 
     root = pathlib.Path(trix.__file__).parent / "core" / "security" / "sources"
-    for name in ("local", "pam", "ldap", "directory"):
+    for name in ("local", "pam", "ldap", "oidc"):
         body = (root / f"{name}.py").read_text(encoding="utf-8")
         block = body.split("def authenticate")[1].split("\n    def ")[0]
         # Drop the signature and the docstring: both name the password without using
