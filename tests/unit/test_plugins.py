@@ -301,3 +301,136 @@ def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
                               'class="memory",description="DIMM",product="P",vendor="V",serial="S1"})')
     assert "serial=" not in infiniband["expr"]
     assert (tmp_path / "trix.hw.node001.cluster.rules").is_file()
+
+
+def _hw_file(directory, host, group, parts=("memory", "disk")):
+    """
+    A hardware rule file in Luna's shape, one rule per part.
+    """
+    import yaml
+
+    rules = [{"alert": "MissingHardwareComponent",
+              "expr": f'absent(lshw_device{{hostname="{host}",luna_group="{group}",class="{part}",'
+                      f'description="{part} of {host}",serial="S-{part}"}})',
+              "labels": {"severity": "warning", "category": "hardware", "nhc": True, "disabled": False},
+              "annotations": {"description": "Hardware component {{ $labels.class }} is missing."}}
+             for part in parts]
+    path = directory / f"trix.hw.{host}.rules"
+    path.write_text(yaml.safe_dump({"groups": [{"name": "trinityx_hw", "rules": rules}]}),
+                    encoding="utf-8")
+    return path
+
+
+def _prometheus_rig(tmp_path, monkeypatch, nodes):
+    """
+    A prometheus backend writing to tmp_path, with Luna answering these nodes and no systemctl.
+    """
+    from types import SimpleNamespace
+    from trix.plugins.prometheus import backend as prometheus
+
+    class Luna:
+        """
+        Luna, answering the nodes the test gave it.
+        """
+
+        def nodes(self):
+            """
+            Every node.
+            """
+            return nodes
+
+        def node(self, name):
+            """
+            One node, or None.
+            """
+            return nodes.get(name)
+
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    monkeypatch.setattr(prometheus.shell, "run",
+                        lambda *args, **kwargs: SimpleNamespace(ok=True, out="", err=""))
+    backend = prometheus.Backend()
+    backend.config(body={"rules_directory": str(tmp_path)})
+    return backend
+
+
+def test_a_renamed_node_keeps_its_hardware_rules(rig, tmp_path, monkeypatch):
+    """
+    The file follows the name and every selector names the new host; a near-namesake is untouched.
+    """
+    import yaml
+
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node002": {"hostname": "node002.cluster", "group": "compute"},
+                               "node0010": {"hostname": "node0010.cluster", "group": "compute"}})
+    _hw_file(tmp_path, "node001.cluster", "compute")
+    decoy = _hw_file(tmp_path, "node0010.cluster", "compute")
+    before = decoy.read_text(encoding="utf-8")
+
+    outcome = backend.repair_hw_rules("node002", was="node001")
+
+    assert outcome["moved"] == ["trix.hw.node001.cluster.rules"]
+    assert not (tmp_path / "trix.hw.node001.cluster.rules").exists()
+    document = yaml.safe_load((tmp_path / "trix.hw.node002.cluster.rules").read_text(encoding="utf-8"))
+    for rule in document["groups"][0]["rules"]:
+        assert 'hostname="node002.cluster"' in rule["expr"]
+        assert 'hostname="node001.cluster"' not in rule["expr"]
+        assert "of node001.cluster" in rule["expr"], "a part label is not a node label"
+    assert decoy.read_text(encoding="utf-8") == before
+
+
+def test_a_rename_luna_already_did_is_finished(rig, tmp_path, monkeypatch):
+    """
+    Luna's hook renames the file and nothing inside it; the content is repaired in place.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node002": {"hostname": "node002.cluster", "group": "compute"}})
+    stale = _hw_file(tmp_path, "node001.cluster", "compute")
+    stale.rename(tmp_path / "trix.hw.node002.cluster.rules")
+
+    outcome = backend.repair_hw_rules("node002", was="node001")
+
+    assert outcome["moved"] == [] and outcome["rewritten"] == ["trix.hw.node002.cluster.rules"]
+    text = (tmp_path / "trix.hw.node002.cluster.rules").read_text(encoding="utf-8")
+    assert 'hostname="node002.cluster"' in text and 'hostname="node001.cluster"' not in text
+
+
+def test_a_group_change_rewrites_the_selector(rig, tmp_path, monkeypatch):
+    """
+    luna_group sits in the same selector, so a node moved between groups breaks the same way.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    _hw_file(tmp_path, "node001.cluster", "compute")
+
+    outcome = backend.repair_hw_rules("node001")
+
+    assert outcome["rewritten"] == ["trix.hw.node001.cluster.rules"]
+    text = (tmp_path / "trix.hw.node001.cluster.rules").read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text
+
+
+def test_relabel_touches_only_equality_matchers_on_node_labels():
+    """
+    A regex matcher, a negation and any other label keep their text to the character.
+    """
+    from trix.plugins.prometheus.backend import _relabel
+
+    expr = ('absent(lshw_device{hostname="node001.cluster",hostname!~"node001.*",'
+            'luna_group="a",description="hostname=\\"node001.cluster\\""})')
+    fixed = _relabel(expr, {"hostname": "node002.cluster", "luna_group": "b"})
+    assert fixed == ('absent(lshw_device{hostname="node002.cluster",hostname!~"node001.*",'
+                     'luna_group="b",description="hostname=\\"node001.cluster\\""})')
+
+
+def test_a_deleted_node_has_its_rules_retired(rig, tmp_path, monkeypatch):
+    """
+    Out of the glob Prometheus loads, kept under backup/ with a timestamp.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _hw_file(tmp_path, "node009.cluster", "compute")
+
+    outcome = backend.remove_hw_rules("node009")
+
+    assert outcome["retired"] == ["trix.hw.node009.cluster.rules"]
+    assert not (tmp_path / "trix.hw.node009.cluster.rules").exists()
+    assert list((tmp_path / "backup").glob("trix.hw.node009.cluster.rules.*"))

@@ -31,6 +31,8 @@ __status__      = "Production"
 
 import glob
 import os
+import time
+import re
 
 import requests
 import urllib3
@@ -80,6 +82,10 @@ COMPONENT_LABELS: tuple = ("hostname", "luna_group", "class", "description", "pr
                            "vendor", "serial")
 # InfiniBand reports no serial, so those rules select on one label fewer.
 INFINIBAND_LABELS: tuple = COMPONENT_LABELS[:-1]
+# Matchers on these labels say which node a rule is about; the others name the part.
+NODE_LABELS: tuple = ("hostname", "luna_group")
+# One label matcher inside a selector: name, operator, quoted value with escapes.
+MATCHER = re.compile(r'(\w+)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"')
 
 
 class Backend:
@@ -181,6 +187,57 @@ class Backend:
         LOGGER.info("hardware rules written for %s at %s", node, path)
         return {"hostname": _hw_host(path), "rules": sum(len(group.get("rules", []))
                                                          for group in document.get("groups", []))}
+
+    def repair_hw_rules(self, node: str, was: str = "") -> dict:
+        """
+        Make the files that name a node carry the host and group Luna holds for it now;
+        was is the name they were written under, when the node has just been renamed.
+        """
+        record = luna().node(node.split(".")[0])
+        if record is None:
+            return {"node": node, "skipped": "not in Luna"}
+        host = record.get("hostname") or node
+        want = {"hostname": host, "luna_group": record.get("group") or ""}
+        target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
+        paths = self._hw_paths(was) + self._hw_paths(node) if was else self._hw_paths(node)
+        moved, rewritten = [], []
+        for path in dict.fromkeys(paths):
+            if not os.path.isfile(path):
+                continue
+            document = _read_yaml(path)
+            changed = _relabel_document(document, want)
+            if path == target and not changed:
+                continue
+            files.write_yaml(target, document)
+            if path != target:
+                os.remove(path)
+                moved.append(os.path.basename(path))
+            if changed:
+                rewritten.append(os.path.basename(target))
+        if moved or rewritten:
+            self.reload()
+            LOGGER.info("hardware rules for %s: moved %s, rewritten %s", node, moved, rewritten)
+        return {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten}
+
+    def remove_hw_rules(self, node: str) -> dict:
+        """
+        Retire the files that name a node that is gone: out of the glob Prometheus loads.
+        """
+        retired = [self._retire(path) for path in self._hw_paths(node)]
+        if retired:
+            self.reload()
+        return {"node": node, "retired": retired}
+
+    def _retire(self, path: str) -> str:
+        """
+        Move one rule file under backup/ with a timestamp, so nothing is lost and nothing loads.
+        """
+        backup = os.path.join(self._rules_dir(), "backup")
+        os.makedirs(backup, exist_ok=True)
+        kept = os.path.join(backup, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
+        os.replace(path, kept)
+        LOGGER.info("retired %s to %s", path, kept)
+        return os.path.basename(path)
 
     def _host_of(self, node: str) -> str:
         """
@@ -334,6 +391,40 @@ def _names_node(host: str, node: str) -> bool:
     Whether a file's host is this node, by full hostname or by short name, never by prefix.
     """
     return bool(host) and (host == node or host.split(".")[0] == node.split(".")[0])
+
+
+def _relabel(expr: str, values: dict) -> str:
+    """
+    Rewrite the equality matchers on the node labels inside an expression, and nothing else.
+    """
+    def one(match):
+        """
+        One matcher: replaced when it names a node label with =, kept to the character otherwise.
+        """
+        key, operator = match.group(1), match.group(2)
+        if operator == "=" and key in NODE_LABELS and values.get(key):
+            return f'{key}="{values[key]}"'
+        return match.group(0)
+    return MATCHER.sub(one, expr)
+
+
+def _relabel_document(document: dict, values: dict) -> bool:
+    """
+    Apply the relabel to every rule in a document; True when anything changed.
+    """
+    changed = False
+    for group in document.get("groups") or []:
+        for rule in group.get("rules") or []:
+            expr = str(rule.get("expr") or "")
+            fixed = _relabel(expr, values)
+            if fixed != expr:
+                rule["expr"] = fixed
+                changed = True
+            labels = rule.get("labels") or {}
+            if labels.get("hostname") and values.get("hostname") and labels["hostname"] != values["hostname"]:
+                labels["hostname"] = values["hostname"]
+                changed = True
+    return changed
 
 
 def _read_yaml(path: str) -> dict:
