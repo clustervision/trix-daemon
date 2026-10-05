@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-The capability gate: one dependency per endpoint, built from what the manifest declared.
+The role gate: one dependency per endpoint, built from what the manifest declared.
 """
 
 __author__      = "Sumit Sharma"
@@ -32,7 +32,8 @@ __status__      = "Production"
 from fastapi import Header, Request
 
 from trix.common import logging as trixlog
-from trix.common.constants import TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER
+from trix.common.constants import (ROLE_NONE, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE,
+                                   TOKEN_KIND_USER)
 from trix.common.errors import Forbidden, Unauthenticated
 from trix.core.security import access, audit, principals, tokens
 from trix.db import engine
@@ -41,26 +42,22 @@ LOGGER = trixlog.get("gate")
 
 NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 
-# What the daemon's own endpoints are governed as, when no plugin owns them.
-CORE: str = "trix"
-
 
 class Caller:
     """
     Who is making this request, and what they may do.
     """
 
-    def __init__(self, claims: tokens.Claims, who: principals.Resolved, held: set) -> None:
+    def __init__(self, claims: tokens.Claims, who: principals.Resolved, role: str) -> None:
         """
-        Who is asking, and what they hold on what they asked for.
+        Who is asking, and where they sit on the ladder.
         """
         self.claims = claims
         self.who = who
         self.name = claims.subject
         self.kind = claims.kind
-        self.usergroups = who.usergroups if who else []
-        # The three characters held on the object this request named.
-        self.bits = "".join(sorted(held)) if held else ""
+        self.role = role
+        self.rootus = access.is_rootus(claims.subject)
 
     def __repr__(self) -> str:
         """
@@ -87,10 +84,9 @@ def _target(request: Request) -> str:
     return str(getattr(request, "url", "") and request.url.path or "")
 
 
-def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER,
-          plugin: str = "", bit: str = "") -> callable:
+def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callable:
     """
-    Build the dependency for one endpoint.
+    Build the dependency for one endpoint: the token it takes and the role it needs.
     """
 
     def dependency(request: Request,
@@ -111,13 +107,13 @@ def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER,
                     break
             if target and claims.node.split(".")[0] != target.split(".")[0]:
                 LOGGER.warning("node token for %s used on %s", claims.node, target)
-                audit.refused(claims.subject, capability, target,
+                audit.refused(claims.subject, request.method, target,
                               f"node token for {claims.node}")
                 raise Forbidden("token is not valid for this node")
-            return Caller(claims, None, {capability})
+            return Caller(claims, None, ROLE_NONE)
 
         if claims.kind == TOKEN_KIND_NODE:
-            audit.refused(claims.subject, capability, _target(request),
+            audit.refused(claims.subject, request.method, _target(request),
                           "a node token on a user endpoint")
             raise Forbidden("a node token is not permitted on this endpoint")
 
@@ -125,21 +121,18 @@ def guard(capability: str = "", token_kind: str = TOKEN_KIND_USER,
         try:
             who = principals.resolve(handle, claims.subject)
             if who is None and claims.kind != TOKEN_KIND_SERVICE:
-                audit.refused(claims.subject, capability, _target(request),
+                audit.refused(claims.subject, request.method, _target(request),
                               "the subject cannot be resolved here")
                 raise Unauthenticated(f"{claims.subject} cannot be resolved here")
-            wanted = access.bit_for(request.method, _target(request), bit)
-            allowed, bits = access.permits(handle, who, plugin or CORE, wanted)
-            handle.commit()
         finally:
             handle.close()
 
-        if capability and not allowed:
-            audit.refused(claims.subject, capability, _target(request),
-                          f"needs {wanted}, holds {bits}")
-            raise Forbidden(f"{plugin or CORE} requires {wanted}; you hold {bits}")
-        if capability:
-            audit.granted(claims.subject, capability, _target(request))
-        return Caller(claims, who, set(bits))
+        allowed, held = access.permits(who, minimum)
+        if not allowed:
+            audit.refused(claims.subject, request.method, _target(request),
+                          f"needs {minimum}, holds {held}")
+            raise Forbidden(f"this needs {minimum}; you hold {held}")
+        audit.granted(claims.subject, request.method, _target(request))
+        return Caller(claims, who, held)
 
     return dependency

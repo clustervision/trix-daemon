@@ -28,30 +28,36 @@ schemas:
 endpoints:
   - path: ""
     methods: [GET]
-    capability: services.read
+    minimum: none
     handler: list_services
     summary: Every service this daemon is allowed to control
 
   - path: catalogue
-    methods: [GET, PATCH]
-    capability: services.write
+    methods: [GET]
+    minimum: none
+    handler: catalogue
+    summary: Which names map to which systemd units
+
+  - path: catalogue
+    methods: [PATCH]
+    minimum: manager
     handler: catalogue
     schema: catalogue
     summary: Which names map to which systemd units
 
   - path: <name>
     methods: [GET]
-    capability: services.read
+    minimum: none
     handler: status
     summary: Whether one service is running
 
   - path: <name>/actions/<action>
     methods: [POST]
-    capability: services.write
+    minimum: operator
     handler: act
     summary: Start, stop, restart or reload one service
   - path: status/<request_id>
     methods: [GET]
-    capability: services.read
+    minimum: none
     handler: request
     summary: Where one queued action got to

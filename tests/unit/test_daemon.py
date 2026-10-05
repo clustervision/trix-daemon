@@ -39,7 +39,7 @@ import trix
 
 from tests.conftest import SHARED_SECRET
 from trix.common import settings as configuration
-from trix.common.constants import API_PREFIX, RESERVED_PLUGIN
+from trix.common.constants import API_PREFIX, RESERVED_PLUGIN, ROLES
 from trix.common.errors import PluginRefused, Unauthenticated
 from trix.core.plugins import loader
 from trix.core.plugins.manifest import parse
@@ -151,7 +151,7 @@ def test_an_endpoint_refuses_without_a_token(client):
     assert answer.status_code == 401
 
 
-def test_every_plugin_endpoint_declares_a_capability(rig):
+def test_every_user_endpoint_declares_a_minimum_role(rig):
     """
     Derived from the loaded manifests: it fails on the first one that forgets.
     """
@@ -160,7 +160,9 @@ def test_every_plugin_endpoint_declares_a_capability(rig):
         if entry.manifest is None:
             continue
         for endpoint in entry.manifest.endpoints:
-            assert endpoint.capability, f"{entry.name}{endpoint.path} declares none"
+            if endpoint.public or endpoint.token == "node":
+                continue
+            assert endpoint.minimum in ROLES, f"{entry.name}/{endpoint.path} declares none"
 
 
 def test_the_published_document_matches_the_route_table(rig):
@@ -184,14 +186,24 @@ def test_luna_is_reserved(rig):
     assert RESERVED_PLUGIN in str(raised.value)
 
 
-def test_a_manifest_without_a_capability_is_refused():
+def test_a_manifest_without_a_minimum_role_is_refused():
     """
-    An endpoint that names no capability would be an open door.
+    An endpoint that names no minimum would be an open door, or a locked one by accident.
     """
     with pytest.raises(Exception) as raised:
         parse({"plugin": "x", "endpoints": [{"path": "a", "methods": ["GET"],
                                              "handler": "a"}]})
-    assert "capability" in str(raised.value)
+    assert "minimum" in str(raised.value)
+
+
+def test_a_manifest_with_an_unknown_minimum_role_is_refused():
+    """
+    A role that is not on the ladder would rank at the bottom and look like none.
+    """
+    with pytest.raises(Exception) as raised:
+        parse({"plugin": "x", "endpoints": [{"path": "a", "methods": ["GET"],
+                                             "minimum": "king", "handler": "a"}]})
+    assert "king" in str(raised.value)
 
 
 def test_a_manifest_naming_a_missing_handler_is_refused(rig, tmp_path):
@@ -202,7 +214,7 @@ def test_a_manifest_naming_a_missing_handler_is_refused(rig, tmp_path):
     broken.mkdir()
     (broken / "manifest.yaml").write_text(
         "plugin: broken\nbackend: backend\nendpoints:\n"
-        "  - path: a\n    methods: [GET]\n    capability: broken.read\n"
+        "  - path: a\n    methods: [GET]\n    minimum: none\n"
         "    handler: does_not_exist\n", encoding="utf-8")
     (broken / "backend.py").write_text('class Backend:\n    """Empty."""\n', encoding="utf-8")
 
@@ -613,99 +625,99 @@ def _as(client, username, password):
     return {"x-access-tokens": answer.json()["token"]}
 
 
-def test_a_reader_may_look_and_not_change(rig, client, headers):
+def _principal(client, headers, name, role=None):
     """
-    The role caps the class bits, which is the whole point of having a role.
+    One login with a role on the ladder, or with none when no role is given.
     """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "obs"},
-                headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "rita", "password": "pw"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/usergroups/obs/members",
-                json={"principal": "rita", "role": "reader"}, headers=headers)
-    # List the usergroup against the plugin, or rita is merely other.
-    client.patch(f"{API_PREFIX}/system/acl/services",
-                 json={"usergroups": "obs"}, headers=headers)
+    body = {"name": name, "password": "pw"}
+    if role is not None:
+        body["role"] = role
+    answer = client.post(f"{API_PREFIX}/identity/principals", json=body, headers=headers)
+    assert answer.status_code == 201, answer.text
+    return _as(client, name, "pw")
 
-    rita = _as(client, "rita", "pw")
+
+def test_no_role_may_look_and_not_change(rig, client, headers):
+    """
+    The bottom of the ladder holds a token and reads, which is what an opened app needs.
+    """
+    rita = _principal(client, headers, "rita")
     assert client.get(f"{API_PREFIX}/services/catalogue", headers=rita).status_code == 200
     refused = client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=rita)
     assert refused.status_code == 403, refused.text
-    assert "w" in refused.text
+    assert "manager" in refused.text and "none" in refused.text
 
 
-def test_a_manager_may_change_what_a_reader_may_not(rig, client, headers):
+def test_an_operator_may_operate_and_not_configure(rig, client, headers):
     """
-    Same object, same bits, different role: that is the axis the design turns on.
+    Operating a service is the operator's step; changing what it maps to is not.
     """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "eng"},
-                headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "mo", "password": "pw"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/usergroups/eng/members",
-                json={"principal": "mo", "role": "manager"}, headers=headers)
-    client.patch(f"{API_PREFIX}/system/acl/services",
-                 json={"usergroups": "eng"}, headers=headers)
+    ollie = _principal(client, headers, "ollie", "operator")
+    acted = client.post(f"{API_PREFIX}/services/nothing/actions/restart", headers=ollie)
+    assert acted.status_code not in (401, 403), acted.text
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
+                        headers=ollie).status_code == 403
 
-    mo = _as(client, "mo", "pw")
-    assert client.get(f"{API_PREFIX}/services/catalogue", headers=mo).status_code == 200
+
+def test_a_manager_may_change_what_an_operator_may_not(rig, client, headers):
+    """
+    Same endpoint, one step up the ladder: that is the axis the design turns on.
+    """
+    mo = _principal(client, headers, "mo", "manager")
     assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
                         headers=mo).status_code in (200, 422)
 
 
-def test_someone_outside_every_usergroup_is_other(rig, client, headers):
+def test_rootus_is_checked_against_nothing(rig, client, headers):
     """
-    The default mode gives other nothing, so an outsider sees nothing.
+    The account the ini names holds no role and needs none.
     """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "inside"},
-                headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "olive", "password": "pw"}, headers=headers)
-
-    olive = _as(client, "olive", "pw")
-    assert client.get(f"{API_PREFIX}/services/catalogue", headers=olive).status_code == 403
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
+                        headers=headers).status_code in (200, 422)
+    said = client.get(f"{API_PREFIX}/auth/whoami", headers=headers).json()
+    assert said["rootus"] is True
+    assert said["role"] == "none"
 
 
-def test_the_admin_flag_is_checked_against_nothing(rig, client, headers):
+def test_a_role_outside_the_ladder_is_refused(rig, client, headers):
     """
-    A day-to-day superuser, named in the audit trail rather than sharing rootus.
+    An unknown role would rank at the bottom and look like a working account.
     """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "any"},
-                headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "sam", "password": "pw", "admin": True}, headers=headers)
-
-    sam = _as(client, "sam", "pw")
-    assert client.get(f"{API_PREFIX}/services/catalogue", headers=sam).status_code == 200
+    answer = client.post(f"{API_PREFIX}/identity/principals",
+                         json={"name": "king", "role": "king"}, headers=headers)
+    assert answer.status_code == 400
+    assert "king" in answer.text
 
 
-def test_nothing_is_enforced_until_somebody_is_organised(rig, client, headers):
-    """
-    An upgraded cluster with no usergroups behaves exactly as it did before.
-    """
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "pat", "password": "pw"}, headers=headers)
-    pat = _as(client, "pat", "pw")
-    assert client.get(f"{API_PREFIX}/services/catalogue", headers=pat).status_code == 200
-
-
-def test_whoami_reports_the_role_in_each_usergroup(rig, client, headers):
+def test_whoami_reports_the_role(rig, client, headers):
     """
     A role is what a person can be told; a bit list is not.
     """
-    client.post(f"{API_PREFIX}/identity/usergroups", json={"name": "team"},
-                headers=headers)
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "wendy", "password": "pw"}, headers=headers)
-    client.post(f"{API_PREFIX}/identity/usergroups/team/members",
-                json={"principal": "wendy", "role": "manager"}, headers=headers)
-
-    said = client.get(f"{API_PREFIX}/auth/whoami",
-                      headers=_as(client, "wendy", "pw")).json()
+    wendy = _principal(client, headers, "wendy", "manager")
+    said = client.get(f"{API_PREFIX}/auth/whoami", headers=wendy).json()
     assert said["principal"] == "wendy"
-    assert said["usergroups"] == {"team": "manager"}
-    assert said["admin"] is False
-    assert said["source"] == "local"
+    assert said["role"] == "manager"
+    assert said["rootus"] is False
+
+
+def test_a_refusal_is_in_the_audit_trail(rig, client, headers):
+    """
+    Who asked, what for, and what they held, or the trail is decoration.
+    """
+    from trix.db import engine as database
+    from trix.db import models
+
+    pat = _principal(client, headers, "pat")
+    client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=pat)
+    handle = database.session()
+    try:
+        rows = handle.query(models.Audit).filter(models.Audit.principal == "pat",
+                                                 models.Audit.outcome == "refused").all()
+        details = [(r.action, r.object, r.detail) for r in rows]
+    finally:
+        handle.close()
+    expected = ("PATCH", f"{API_PREFIX}/services/catalogue", "needs manager, holds none")
+    assert expected in details, details
 
 
 def test_a_mode_is_accepted_as_octal_or_as_letters(rig, client, headers):
@@ -725,16 +737,16 @@ def test_a_mode_is_accepted_as_octal_or_as_letters(rig, client, headers):
                         json={"access": "nonsense"}, headers=headers).status_code == 400
 
 
-def test_an_action_post_needs_operate_not_change(rig, client, headers):
+def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):
     """
-    Restarting a service is operating it, which is x, not w.
+    none, operator, manager, in that order; a role nobody declared ranks as none.
     """
     from trix.core.security import access
 
-    assert access.bit_for("GET", "/api/v1/services/catalogue") == "r"
-    assert access.bit_for("PATCH", "/api/v1/services/catalogue") == "w"
-    assert access.bit_for("POST", "/api/v1/services/dhcp/actions/restart") == "x"
-    assert access.bit_for("GET", "/api/v1/prometheus/rules", declared="w") == "w"
+    assert access.rank("none") < access.rank("operator") < access.rank("manager")
+    assert access.rank("king") == access.rank("none")
+    assert access.permits(None, "none") == (True, "none")
+    assert access.permits(None, "operator") == (False, "none")
 
 
 def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch):

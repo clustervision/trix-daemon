@@ -40,64 +40,64 @@ schemas:
 endpoints:
   - path: users
     methods: [GET]
-    capability: directory.read
+    minimum: none
     handler: list_users
     summary: Every user in the directory
 
   - path: users/<name>
     methods: [GET]
-    capability: directory.read
+    minimum: none
     handler: get_user
     summary: One user
 
   - path: users
     methods: [POST]
-    capability: directory.write
+    minimum: manager
     handler: create_user
     schema: user
     summary: Create a user
 
   - path: users/<name>
     methods: [PATCH]
-    capability: directory.write
+    minimum: manager
     handler: update_user
     schema: user
     summary: Update a user
 
   - path: users/<name>
     methods: [DELETE]
-    capability: directory.write
+    minimum: manager
     handler: delete_user
     summary: Delete a user
 
   - path: groups
     methods: [GET]
-    capability: directory.read
+    minimum: none
     handler: list_groups
     summary: Every group in the directory
 
   - path: groups/<name>
     methods: [GET]
-    capability: directory.read
+    minimum: none
     handler: get_group
     summary: One group
 
   - path: groups
     methods: [POST]
-    capability: directory.write
+    minimum: manager
     handler: create_group
     schema: group
     summary: Create a group
 
   - path: groups/<name>
     methods: [PATCH]
-    capability: directory.write
+    minimum: manager
     handler: update_group
     schema: group
     summary: Update a group
 
   - path: groups/<name>
     methods: [DELETE]
-    capability: directory.write
+    minimum: manager
     handler: delete_group
     summary: Delete a group

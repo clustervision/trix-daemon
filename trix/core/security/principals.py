@@ -38,6 +38,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
+from trix.common.constants import ROLE_NONE
 from trix.common.settings import current as settings
 from trix.db import models
 from trix.core.security import chain
@@ -75,19 +76,19 @@ def verify_password(password: str, stored: str) -> bool:
 
 class Resolved:
     """
-    A principal the daemon could name, and the usergroups it belongs to.
+    A principal the daemon could name, the groups its source reports, and its role here.
     """
 
     def __init__(self, name: str, kind: str = "user", source: str = "",
-                 usergroups: list = None, admin: bool = False) -> None:
+                 groups: list = None, role: str = ROLE_NONE) -> None:
         """
         A principal and what is known about it.
         """
         self.name = name
         self.kind = kind
         self.source = source
-        self.usergroups = usergroups or []
-        self.admin = admin
+        self.groups = groups or []
+        self.role = role
 
     def __repr__(self) -> str:
         """
@@ -143,7 +144,7 @@ def _from_local(handle: Session, name: str) -> Resolved:
         select(models.Usergroup.name)
         .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
         .where(models.Membership.principal_id == row.id)).all()
-    return Resolved(row.name, row.kind, "local", list(groups), row.admin)
+    return Resolved(row.name, row.kind, "local", list(groups), row.role)
 
 
 def resolve(handle: Session, name: str) -> Resolved:
@@ -164,7 +165,7 @@ def resolve(handle: Session, name: str) -> Resolved:
         return None
     found = Resolved(identity.get("name") or name, "user", source,
                      list(identity.get("groups") or []),
-                     bool(row.admin) if row is not None else False)
+                     row.role if row is not None else ROLE_NONE)
     CACHE.put(f"user:{name}", found)
     return found
 
@@ -199,7 +200,7 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
     groups = list(identity.get("groups") or [])
     local = _from_local(handle, name)
     if local is not None:
-        groups = sorted(set(groups) | set(local.usergroups))
-    found = Resolved(name, row.kind, source, groups, bool(row.admin))
+        groups = sorted(set(groups) | set(local.groups))
+    found = Resolved(name, row.kind, source, groups, row.role)
     CACHE.put(f"user:{name}", found)
     return found

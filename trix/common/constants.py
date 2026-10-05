@@ -65,6 +65,24 @@ DEFAULT_ROLE: str = "reader"
 BITS: dict = {"r": 4, "w": 2, "x": 1}
 DEFAULT_MODE: str = "770"
 
+# The ladder, lowest first. A principal with no role holds a token and nothing more.
+ROLE_NONE: str = "none"
+ROLE_OPERATOR: str = "operator"
+ROLE_MANAGER: str = "manager"
+ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
+
+# The ladder, lowest first. A principal with no role holds a token and nothing more.
+ROLE_NONE: str = "none"
+ROLE_OPERATOR: str = "operator"
+ROLE_MANAGER: str = "manager"
+ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
+
+# The ladder, lowest first. A principal with no role holds a token and nothing more.
+ROLE_NONE: str = "none"
+ROLE_OPERATOR: str = "operator"
+ROLE_MANAGER: str = "manager"
+ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
+
 # The row on a plugin that carries its permissions.
 ACL_KIND: str = "acl"
 

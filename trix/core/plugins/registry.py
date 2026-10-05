@@ -63,9 +63,6 @@ class LoadedPlugin:
             "digest": self.digest[:16],
             "origin": self.origin,
             "routes": len(self.routes),
-            "capabilities": sorted({item.capability for item in
-                                    (self.manifest.endpoints if self.manifest else [])
-                                    if item.capability}),
         }
 
 

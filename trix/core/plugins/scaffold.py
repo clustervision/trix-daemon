@@ -46,12 +46,12 @@ schemas:
 endpoints:
   - path: ""
     methods: [GET]
-    capability: {name}.read
+    minimum: none
     handler: show
     summary: What this plugin currently holds
   - path: setting
     methods: [GET, PATCH]
-    capability: {name}.write
+    minimum: manager
     handler: setting
     schema: setting
     summary: Read or change the one setting this example keeps

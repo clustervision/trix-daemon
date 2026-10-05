@@ -37,7 +37,8 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import API_PREFIX, DEFAULT_ROLE, ROLE_CAPS
+from trix.common.constants import (API_PREFIX, DEFAULT_ROLE, ROLE_CAPS, ROLE_MANAGER,
+                                   ROLE_NONE, ROLES)
 from trix.common.errors import BadRequest, Conflict, NotFound
 from trix.core.security import audit, principals
 from trix.core.security.gate import Caller, guard
@@ -48,7 +49,6 @@ LOGGER = trixlog.get("identity")
 
 router = APIRouter(prefix=f"{API_PREFIX}/identity", tags=["identity"])
 
-READ: str = "identity.read"
 WRITE: str = "identity.write"
 
 # A principal is not only a person: a service and a node are named here too, which
@@ -71,6 +71,7 @@ class PrincipalIn(BaseModel):
     enabled: Optional[bool] = None
     admin: Optional[bool] = None
     delegate: Optional[bool] = None
+    role: Optional[str] = None
 
 
 class UsergroupIn(BaseModel):
@@ -136,6 +137,15 @@ def _check_role(role: str) -> str:
     return role
 
 
+def _ladder(role: str) -> str:
+    """
+    A role must be on the ladder; anything else would sit at the bottom silently.
+    """
+    if role not in ROLES:
+        raise BadRequest(f"{role} is not one of {', '.join(ROLES)}")
+    return role
+
+
 def _shown(row: models.Principal, handle: Session) -> dict:
     """
     A principal as the API shows it, with its usergroups and the role in each.
@@ -145,14 +155,15 @@ def _shown(row: models.Principal, handle: Session) -> dict:
         .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
         .where(models.Membership.principal_id == row.id)).all()
     return {"name": row.name, "kind": row.kind, "source": row.source,
-            "enabled": row.enabled, "admin": row.admin, "delegate": row.delegate,
+            "enabled": row.enabled, "role": row.role,
+            "admin": row.admin, "delegate": row.delegate,
             "external_id": row.external_id,
             "usergroups": {name: role for name, role in rows}}
 
 
 @router.get("/principals", summary="Every principal this daemon knows")
 def list_principals(handle: Session = Depends(scoped),
-                    caller: Caller = Depends(guard(READ))) -> dict:
+                    caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     All of them, with their usergroups and roles.
     """
@@ -162,7 +173,7 @@ def list_principals(handle: Session = Depends(scoped),
 
 @router.get("/principals/{name}", summary="One principal")
 def get_principal(name: str, handle: Session = Depends(scoped),
-                  caller: Caller = Depends(guard(READ))) -> dict:
+                  caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     One, by name.
     """
@@ -171,7 +182,7 @@ def get_principal(name: str, handle: Session = Depends(scoped),
 
 @router.post("/principals", status_code=201, summary="Create a principal")
 def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(WRITE))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     A row with a password digest is a login here; one without authenticates elsewhere.
     """
@@ -187,6 +198,7 @@ def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
         external_id=body.external_id,
         password_digest=principals.hash_password(body.password) if body.password else "",
         enabled=True if body.enabled is None else body.enabled,
+        role=_ladder(body.role) if body.role else ROLE_NONE,
         admin=bool(body.admin), delegate=bool(body.delegate))
     handle.add(row)
     handle.flush()
@@ -196,7 +208,7 @@ def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
 
 @router.patch("/principals/{name}", summary="Change a principal")
 def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(WRITE))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Only what the body names is changed; an absent field is left alone.
     """
@@ -213,6 +225,8 @@ def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(sco
         value = getattr(body, field)
         if value is not None:
             setattr(row, field, value)
+    if body.role is not None:
+        row.role = _ladder(body.role)
     row.version += 1
     principals.CACHE.clear()
     audit.granted(caller.name, WRITE, f"principal/{name}", "changed", handle=handle)
@@ -221,7 +235,7 @@ def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(sco
 
 @router.delete("/principals/{name}", summary="Delete a principal")
 def delete_principal(name: str, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(WRITE))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Its memberships go with it, so nothing is left pointing at a row that is gone.
     """
@@ -236,7 +250,7 @@ def delete_principal(name: str, handle: Session = Depends(scoped),
 
 @router.get("/usergroups", summary="Every usergroup")
 def list_usergroups(handle: Session = Depends(scoped),
-                    caller: Caller = Depends(guard(READ))) -> dict:
+                    caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     All of them, with their members and the role each holds.
     """
@@ -253,7 +267,7 @@ def list_usergroups(handle: Session = Depends(scoped),
 
 @router.post("/usergroups", status_code=201, summary="Create a usergroup")
 def create_usergroup(body: UsergroupIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(WRITE))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     The organisation an object is listed against; the role lives on the membership.
     """
@@ -268,7 +282,7 @@ def create_usergroup(body: UsergroupIn, handle: Session = Depends(scoped),
 
 @router.delete("/usergroups/{name}", summary="Delete a usergroup")
 def delete_usergroup(name: str, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(WRITE))) -> dict:
+                     caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Its memberships and its group map rows go with it.
     """
@@ -285,7 +299,7 @@ def delete_usergroup(name: str, handle: Session = Depends(scoped),
 
 @router.post("/usergroups/{name}/members", status_code=201, summary="Add a member")
 def add_member(name: str, body: MemberIn, handle: Session = Depends(scoped),
-               caller: Caller = Depends(guard(WRITE))) -> dict:
+               caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     One person, one usergroup, one role. Adding twice sets the role instead.
     """
@@ -310,7 +324,7 @@ def add_member(name: str, body: MemberIn, handle: Session = Depends(scoped),
 
 @router.delete("/usergroups/{name}/members/{principal}", summary="Remove a member")
 def remove_member(name: str, principal: str, handle: Session = Depends(scoped),
-                  caller: Caller = Depends(guard(WRITE))) -> dict:
+                  caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Take one principal out of one usergroup.
     """
@@ -328,7 +342,7 @@ def remove_member(name: str, principal: str, handle: Session = Depends(scoped),
 
 @router.get("/usergroupmap", summary="How external groups map onto usergroups")
 def list_map(handle: Session = Depends(scoped),
-             caller: Caller = Depends(guard(READ))) -> dict:
+             caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     One row per external group: two may feed one usergroup with different roles.
     """
@@ -344,7 +358,7 @@ def list_map(handle: Session = Depends(scoped),
 
 @router.post("/usergroupmap", status_code=201, summary="Map an external group")
 def create_map(body: MapIn, handle: Session = Depends(scoped),
-               caller: Caller = Depends(guard(WRITE))) -> dict:
+               caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     An unmapped external group grants nothing, which is why this row is the link.
     """
@@ -373,7 +387,7 @@ def create_map(body: MapIn, handle: Session = Depends(scoped),
 
 @router.delete("/usergroupmap/{source}/{external_group:path}", summary="Unmap a group")
 def delete_map(source: str, external_group: str, handle: Session = Depends(scoped),
-               caller: Caller = Depends(guard(WRITE))) -> dict:
+               caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     From then on that external group grants nothing, and that is logged at login.
     """

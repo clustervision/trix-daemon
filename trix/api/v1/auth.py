@@ -38,7 +38,7 @@ from trix.common.constants import API_PREFIX, TOKEN_KIND_NODE
 from trix.common.errors import Unauthenticated
 from trix.common.settings import current as settings
 from trix.core.luna.client import current as luna
-from trix.core.security import access, audit, principals, tokens
+from trix.core.security import audit, principals, tokens
 from trix.core.security.gate import Caller, guard
 from trix.db.engine import scoped
 
@@ -137,16 +137,15 @@ def _node_token(node: str) -> Token:
 
 
 @router.get("/whoami", summary="What this token says about its bearer")
-def whoami(handle: Session = Depends(scoped),
-           caller: Caller = Depends(guard())) -> dict:
+def whoami(caller: Caller = Depends(guard())) -> dict:
     """
-    Who the token names, and the role held in each usergroup rather than a bit list.
+    Who the token names and where they sit on the ladder.
     """
     return {
         "principal": caller.name,
         "kind": caller.kind,
         "source": caller.claims.source,
-        "admin": bool(getattr(caller.who, "admin", False)) or access.is_rootus(caller.name),
-        "usergroups": access.roles_of(handle, caller.name),
+        "role": caller.role,
+        "rootus": caller.rootus,
         "issuer": caller.claims.issuer,
     }

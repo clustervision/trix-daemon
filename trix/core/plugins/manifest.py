@@ -37,7 +37,7 @@ from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trix.common.constants import HTTP_VERBS, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trix.common.constants import HTTP_VERBS, ROLES, TOKEN_KIND_NODE, TOKEN_KIND_USER
 from trix.common.errors import PluginRefused
 
 PATH_VARIABLE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
@@ -78,13 +78,12 @@ class Endpoint(BaseModel):
 
     path: str
     methods: list = Field(default_factory=lambda: ["GET"])
-    capability: str = ""
+    # The lowest role on the ladder this endpoint admits. A path that is read at
+    # one level and changed at another is two endpoints.
+    minimum: str = ""
     handler: str = ""
     body_schema: str = Field(default="", alias="schema")
     token: str = TOKEN_KIND_USER
-    # Override the bit the method implies, for a read that needs write:
-    # a rule document carries thresholds, so seeing it is not a plain read.
-    bit: str = ""
     render: Optional[Render] = None
     summary: str = ""
     # No token at all. Only for a consumer that cannot present one, which today
@@ -147,11 +146,13 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(f'{endpoint.path or "/"} declares unsupported verbs: {", ".join(bad)}')
         if endpoint.token not in (TOKEN_KIND_USER, TOKEN_KIND_NODE):
             raise PluginRefused(f'{endpoint.path or "/"} declares an unknown token kind')
-        if endpoint.render is None:
-            if not endpoint.capability:
-                raise PluginRefused(f'{endpoint.path or "/"} declares no capability')
-            if not endpoint.handler:
-                raise PluginRefused(f'{endpoint.path or "/"} names no handler')
+        if endpoint.render is None and not endpoint.handler:
+            raise PluginRefused(f'{endpoint.path or "/"} names no handler')
+        if (not endpoint.public and endpoint.token == TOKEN_KIND_USER
+                and endpoint.minimum not in ROLES):
+            raise PluginRefused(
+                f'{endpoint.path or "/"} must declare a minimum role from '
+                f'{", ".join(ROLES)}, not {endpoint.minimum or "nothing"}')
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")

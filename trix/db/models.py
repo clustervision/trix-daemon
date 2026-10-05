@@ -35,7 +35,7 @@ from sqlalchemy import (JSON, Boolean, DateTime, ForeignKey, Integer, String,
                         Text, UniqueConstraint)
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
-from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE
+from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE, ROLE_NONE
 
 
 def now() -> datetime:
@@ -96,6 +96,8 @@ class Principal(Base, Replicated):
     password_digest: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     external_id: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
+    # Where this principal sits on the ladder. rootus is the ini name, not a role.
+    role: Mapped[str] = mapped_column(String(16), default=ROLE_NONE, nullable=False)
     # The cluster-wide bypass, named in the audit trail, and the flag that lets a
     # portal service ask for a token on behalf of the person it has authenticated.
     admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)

@@ -27,15 +27,21 @@ schemas:
 
 endpoints:
   - path: config
-    methods: [GET, PATCH]
-    capability: genders.write
+    methods: [GET]
+    minimum: none
+    handler: config
+    summary: Where this plugin writes
+
+  - path: config
+    methods: [PATCH]
+    minimum: manager
     handler: config
     schema: config
     summary: Where this plugin writes
 
   - path: renders/genders
     methods: [GET]
-    capability: genders.read
+    minimum: none
     handler: render_genders
     render:
       inputs: [luna.node, luna.group]

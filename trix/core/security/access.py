@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-What a caller may do to an object: the class triplet, capped by their role.
+What a caller may do: their role on the ladder against the minimum a route declares.
 """
 
 __author__      = "Sumit Sharma"
@@ -34,19 +34,10 @@ from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
-from trix.common.constants import (ACL_KIND, BITS, DEFAULT_MODE, DEFAULT_ROLE,
-                                   ROLE_CAPS)
+from trix.common.constants import ACL_KIND, BITS, DEFAULT_MODE, ROLES, ROLE_NONE
 from trix.db import models
 
 LOGGER = trixlog.get("access")
-
-READING: tuple = ("GET", "HEAD", "OPTIONS")
-
-# A POST under this segment operates the thing rather than changing it, which is
-# what x means: power, console, restart.
-ACTION_SEGMENT: str = "/actions/"
-
-ACTION: dict = {"r": "reading", "w": "changing", "x": "operating"}
 
 
 def mask(text: str) -> int:
@@ -70,24 +61,6 @@ def mode_text(octal: str) -> str:
     """
     value = int(str(octal or DEFAULT_MODE), 8)
     return "".join(text((value >> shift) & 7) for shift in (6, 3, 0))
-
-
-def bit_for(method: str = "GET", path: str = "", declared: str = "") -> str:
-    """
-    The bit a request needs: the method says it, unless the manifest overrides.
-    """
-    if declared:
-        return declared
-    if str(method).upper() in READING:
-        return "r"
-    return "x" if ACTION_SEGMENT in str(path or "") else "w"
-
-
-def names(value: str) -> list:
-    """
-    A comma separated column as a list, which is the shape the tree already uses.
-    """
-    return [item.strip() for item in str(value or "").split(",") if item.strip()]
 
 
 def acl_row(handle: Session, plugin: str) -> models.Declaration:
@@ -114,52 +87,18 @@ def is_rootus(name: str) -> bool:
     return bool(name) and name == settings().api.username
 
 
-def organised(handle: Session) -> bool:
+def rank(role: str) -> int:
     """
-    Whether anyone is in a usergroup yet. Until somebody is, everything is
-    permitted, which is what a cluster does today and keeps an upgrade quiet.
+    Where a role sits on the ladder; anything unknown sits at the bottom.
     """
-    return handle.scalar(select(models.Usergroup.id).limit(1)) is not None
+    return ROLES.index(role) if role in ROLES else 0
 
 
-def held(handle: Session, who, row: models.Declaration, roles: dict) -> str:
+def permits(who, minimum: str) -> tuple:
     """
-    The three characters this caller effectively holds on this object.
+    Whether the caller reaches the minimum, and the role they hold. rootus always does.
     """
-    value = int(str(row.access or DEFAULT_MODE), 8)
-    if who is not None and who.name in names(row.owners):
-        return text((value >> 6) & 7)
-
-    shared = [name for name in names(row.usergroups) if name in roles]
-    if shared:
-        cap = max(mask(ROLE_CAPS.get(roles[name], DEFAULT_ROLE)) for name in shared)
-        return text(((value >> 3) & 7) & cap)
-    return text(value & 7)
-
-
-def roles_of(handle: Session, name: str) -> dict:
-    """
-    Every usergroup this principal is in, and the role it holds in each.
-    """
-    rows = handle.execute(
-        select(models.Usergroup.name, models.Membership.role)
-        .join(models.Membership, models.Membership.usergroup_id == models.Usergroup.id)
-        .join(models.Principal, models.Principal.id == models.Membership.principal_id)
-        .where(models.Principal.name == name)).all()
-    return {group: role for group, role in rows}
-
-
-def permits(handle: Session, who, plugin: str, want: str) -> tuple:
-    """
-    Whether the caller holds this bit on this plugin, and what they do hold.
-    """
+    held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):
-        return True, "rwx"
-    if who is not None and getattr(who, "admin", False):
-        return True, "rwx"
-    if not organised(handle):
-        return True, "rwx"
-
-    roles = roles_of(handle, who.name) if who is not None else {}
-    bits = held(handle, who, acl_row(handle, plugin), roles)
-    return want in bits, bits
+        return True, held
+    return rank(held) >= rank(minimum), held

@@ -32,22 +32,34 @@ schemas:
 
 endpoints:
   - path: config
-    methods: [GET, PATCH]
-    capability: slurm.write
+    methods: [GET]
+    minimum: none
+    handler: config
+    summary: Where this plugin writes and what it runs afterwards
+
+  - path: config
+    methods: [PATCH]
+    minimum: manager
     handler: config
     schema: config
     summary: Where this plugin writes and what it runs afterwards
 
   - path: partitions
-    methods: [GET, PATCH]
-    capability: slurm.write
+    methods: [GET]
+    minimum: none
+    handler: partitions
+    summary: The partition definitions the render uses
+
+  - path: partitions
+    methods: [PATCH]
+    minimum: manager
     handler: partitions
     schema: partitions
     summary: The partition definitions the render uses
 
   - path: renders/config
     methods: [GET]
-    capability: slurm.read
+    minimum: none
     handler: render_config
     render:
       inputs: [luna.node, luna.group, partitions]

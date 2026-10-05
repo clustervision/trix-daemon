@@ -37,7 +37,8 @@ from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
 from trix.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   PLUGIN_STATE_LOADED)
+                                   PLUGIN_STATE_LOADED, ROLE_MANAGER, ROLE_NONE,
+                                   ROLE_OPERATOR)
 from trix.common.errors import BadRequest, NotFound, PluginRefused
 from trix.core.plugins import loader
 from trix.core.plugins.registry import current as registry
@@ -76,7 +77,7 @@ class Acl(BaseModel):
 
 @router.get("/acl/{plugin}", summary="A plugin's owners, usergroups and mode")
 def get_acl(plugin: str, handle: Session = Depends(scoped),
-            caller: Caller = Depends(guard("system.read"))) -> dict:
+            caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     What the permission row on this plugin says, in the form ls would print.
     """
@@ -87,7 +88,7 @@ def get_acl(plugin: str, handle: Session = Depends(scoped),
 
 @router.patch("/acl/{plugin}", summary="chown, chgrp and chmod a plugin")
 def set_acl(plugin: str, body: Acl, handle: Session = Depends(scoped),
-            caller: Caller = Depends(guard("system.write"))) -> dict:
+            caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Only what the body names is changed, so chgrp does not silently chmod.
     """
@@ -136,7 +137,7 @@ def version() -> dict:
 
 
 @router.get("/plugins", summary="Every plugin, its state and why")
-def plugins(caller: Caller = Depends(guard("system.read"))) -> dict:
+def plugins(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     Every plugin, its state, its digest and why it was refused.
     """
@@ -145,7 +146,7 @@ def plugins(caller: Caller = Depends(guard("system.read"))) -> dict:
 
 @router.post("/plugins/{name}/reload", summary="Plug a plugin in, or reload it in place")
 def reload_plugin(name: str, request: Request,
-                  caller: Caller = Depends(guard("system.write"))) -> dict:
+                  caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Discover, validate and swap. Nothing changes if the plugin is refused.
     """
@@ -157,7 +158,7 @@ def reload_plugin(name: str, request: Request,
 
 @router.post("/plugins/{name}/disable", summary="Unplug a plugin")
 def disable_plugin(name: str, request: Request,
-                   caller: Caller = Depends(guard("system.write"))) -> dict:
+                   caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Its paths stop resolving from the next request, and a restart agrees.
     """
@@ -166,7 +167,7 @@ def disable_plugin(name: str, request: Request,
 
 
 @router.get("/renders", summary="Every declared render and when it last ran")
-def render_listing(caller: Caller = Depends(guard("system.read"))) -> dict:
+def render_listing(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     Every declared render and when it last ran.
     """
@@ -174,7 +175,7 @@ def render_listing(caller: Caller = Depends(guard("system.read"))) -> dict:
 
 
 @router.post("/notify", summary="A Luna object changed")
-def notify(body: Change, caller: Caller = Depends(guard("system.notify"))) -> dict:
+def notify(body: Change, caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
     """
     Luna's hook posts here and does not wait. Losing one is acceptable: the hash
     comparison on the slow timer catches up.
@@ -185,7 +186,7 @@ def notify(body: Change, caller: Caller = Depends(guard("system.notify"))) -> di
 
 
 @router.get("/replication/hashes", summary="One hash per replicated table")
-def replication_hashes(caller: Caller = Depends(guard("system.read"))) -> dict:
+def replication_hashes(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     What a peer compares against before copying anything.
     """
@@ -197,7 +198,7 @@ def replication_hashes(caller: Caller = Depends(guard("system.read"))) -> dict:
 
 
 @router.get("/replication/table/{name}", summary="One replicated table as documents")
-def replication_table(name: str, caller: Caller = Depends(guard("system.read"))) -> dict:
+def replication_table(name: str, caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     Addressed by name rather than by identifier, because identifiers are local.
     """
@@ -211,7 +212,7 @@ def replication_table(name: str, caller: Caller = Depends(guard("system.read")))
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now")
-def replication_sweep(caller: Caller = Depends(guard("system.write"))) -> dict:
+def replication_sweep(caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     The same pass the timer makes, run on demand.
     """
@@ -219,7 +220,7 @@ def replication_sweep(caller: Caller = Depends(guard("system.write"))) -> dict:
 
 
 @router.get("/triggers", summary="The state of the fallback trigger")
-def trigger_state(caller: Caller = Depends(guard("system.read"))) -> dict:
+def trigger_state(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
     """
     Whether Luna's table hashes are actually answering here.
     """

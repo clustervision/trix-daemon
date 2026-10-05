@@ -55,7 +55,7 @@ def _call(handler, supplied: dict):
     return handler(**{key: value for key, value in supplied.items() if key in accepted})
 
 
-def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""):
+def _endpoint_function(handler, endpoint: Endpoint, body_model):
     """
     Build a path operation whose signature FastAPI can introspect.
     """
@@ -80,8 +80,7 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
     if not endpoint.public:
         parameters.append(inspect.Parameter(
             "caller", inspect.Parameter.KEYWORD_ONLY, annotation=Caller,
-            default=Depends(guard(endpoint.capability, endpoint.token,
-                                  plugin, endpoint.bit))))
+            default=Depends(guard(endpoint.minimum, endpoint.token))))
 
     operation.__signature__ = inspect.Signature(parameters)
     operation.__name__ = (endpoint.handler or "render").replace("-", "_")
@@ -116,7 +115,7 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
             wants_body = body_model if verb in BODY_VERBS else None
             router.add_api_route(
                 "/" + endpoint.route_path if endpoint.route_path else "",
-                _endpoint_function(handler, endpoint, wants_body, manifest.plugin),
+                _endpoint_function(handler, endpoint, wants_body),
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",
                 summary=endpoint.summary or f"{verb} {endpoint.path}",

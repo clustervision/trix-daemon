@@ -66,7 +66,7 @@ class Unauthenticated(TrixError):
 
 class Forbidden(TrixError):
     """
-    The principal is known and lacks the capability the endpoint declared.
+    The principal is known and sits below the minimum role the endpoint declared.
     """
 
     status_code = 403

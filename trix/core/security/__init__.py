@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Keys, tokens, principals and the capability gate.
+Keys, tokens, principals and the role gate.
 """
 
 __author__      = "Sumit Sharma"

@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE
+from trix.common.constants import DEFAULT_MODE, DEFAULT_ROLE, ROLE_NONE
 from trix.db import models
 
 LOGGER = trixlog.get("replication")
@@ -102,7 +102,7 @@ def to_document(handle: Session, table: str, row) -> dict:
     if table == "principal":
         body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
                     password_digest=row.password_digest, external_id=row.external_id,
-                    enabled=bool(row.enabled), admin=bool(row.admin),
+                    enabled=bool(row.enabled), role=row.role, admin=bool(row.admin),
                     delegate=bool(row.delegate))
     elif table == "usergroup":
         body.update(key=[row.name], name=row.name)
@@ -178,6 +178,7 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
                 "password_digest": document.get("password_digest", ""),
                 "external_id": document.get("external_id", ""),
                 "enabled": bool(document.get("enabled", True)),
+                "role": document.get("role", ROLE_NONE),
                 "admin": bool(document.get("admin", False)),
                 "delegate": bool(document.get("delegate", False))}
     if table == "usergroup":

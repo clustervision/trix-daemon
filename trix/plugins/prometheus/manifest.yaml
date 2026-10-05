@@ -42,42 +42,65 @@ schemas:
 
 endpoints:
   - path: config
-    methods: [GET, PATCH]
-    capability: monitoring.write
+    methods: [GET]
+    minimum: none
+    handler: config
+    summary: Where this plugin writes, and what it reloads
+
+  - path: config
+    methods: [PATCH]
+    minimum: manager
     handler: config
     schema: config
     summary: Where this plugin writes, and what it reloads
 
   - path: rules
-    methods: [GET, PATCH]
-    capability: monitoring.write
+    methods: [GET]
+    minimum: none
+    handler: rules
+    summary: The generic and service alert rules
+
+  - path: rules
+    methods: [PATCH]
+    minimum: manager
     handler: rules
     schema: rules
     summary: The generic and service alert rules
 
   - path: settings
-    methods: [GET, PATCH]
-    capability: monitoring.write
+    methods: [GET]
+    minimum: none
+    handler: settings
+    summary: The settings hardware rules are generated from
+
+  - path: settings
+    methods: [PATCH]
+    minimum: manager
     handler: settings
     schema: settings
     summary: The settings hardware rules are generated from
 
   - path: tuning
-    methods: [GET, PATCH]
-    capability: monitoring.write
+    methods: [GET]
+    minimum: none
+    handler: tuning
+    summary: Drop lists, intervals and retention
+
+  - path: tuning
+    methods: [PATCH]
+    minimum: manager
     handler: tuning
     schema: tuning
     summary: Drop lists, intervals and retention
 
   - path: hw-rules/<node>
     methods: [GET]
-    capability: monitoring.read
+    minimum: none
     handler: get_hw_rules
     summary: The hardware rules held for one node
 
   - path: hw-rules/<node>
     methods: [PATCH]
-    capability: monitoring.node-self
     token: node
     handler: import_hw_rules
     schema: hw_rules
@@ -85,7 +108,6 @@ endpoints:
 
   - path: renders/targets
     methods: [GET]
-    capability: monitoring.read
     public: true
     handler: render_targets
     render:
@@ -97,7 +119,7 @@ endpoints:
 
   - path: renders/rule-files
     methods: [GET]
-    capability: monitoring.read
+    minimum: none
     handler: render_rule_files
     render:
       inputs: [settings, rules, luna.node]
