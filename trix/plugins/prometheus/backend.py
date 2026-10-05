@@ -204,13 +204,16 @@ class Backend:
         for path in dict.fromkeys(paths):
             if not os.path.isfile(path):
                 continue
-            document = _read_yaml(path)
+            try:
+                document = _read_yaml(path)
+            except FileNotFoundError:
+                continue
             changed = _relabel_document(document, want)
             if path == target and not changed:
                 continue
             files.write_yaml(target, document)
             if path != target:
-                os.remove(path)
+                _discard(path)
                 moved.append(os.path.basename(path))
             if changed:
                 rewritten.append(os.path.basename(target))
@@ -223,7 +226,7 @@ class Backend:
         """
         Retire the files that name a node that is gone: out of the glob Prometheus loads.
         """
-        retired = [self._retire(path) for path in self._hw_paths(node)]
+        retired = [name for name in (self._retire(path) for path in self._hw_paths(node)) if name]
         if retired:
             self.reload()
         return {"node": node, "retired": retired}
@@ -248,7 +251,10 @@ class Backend:
         backup = os.path.join(self._rules_dir(), "backup")
         os.makedirs(backup, exist_ok=True)
         kept = os.path.join(backup, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
-        os.replace(path, kept)
+        try:
+            os.replace(path, kept)
+        except FileNotFoundError:
+            return ""
         LOGGER.info("retired %s to %s", path, kept)
         return os.path.basename(path)
 
@@ -357,18 +363,23 @@ class Backend:
             host = _hw_host(path)
             name = by_host.get(host) or by_host.get(host.split(".")[0])
             if name is None:
-                retired.append(self._retire(path))
+                gone = self._retire(path)
+                if gone:
+                    retired.append(gone)
                 continue
             record = nodes[name]
             want = {"hostname": record.get("hostname") or name, "luna_group": record.get("group") or ""}
             target = os.path.join(self._rules_dir(), HW_RULES.format(host=want["hostname"]))
-            document = _read_yaml(path)
+            try:
+                document = _read_yaml(path)
+            except FileNotFoundError:
+                continue
             changed = _relabel_document(document, want)
             if not changed and path == target:
                 continue
             files.write_yaml(target, document)
             if path != target:
-                os.remove(path)
+                _discard(path)
             repaired.append(os.path.basename(target))
         if repaired or retired:
             LOGGER.info("hardware rules reconciled: repaired %s, retired %s", repaired, retired)
@@ -470,6 +481,16 @@ def _relabel_document(document: dict, values: dict) -> bool:
                 labels["hostname"] = values["hostname"]
                 changed = True
     return changed
+
+
+def _discard(path: str) -> None:
+    """
+    Remove a file another repair may already have moved; absence is the outcome wanted.
+    """
+    try:
+        os.remove(path)
+    except FileNotFoundError:
+        pass
 
 
 def _read_yaml(path: str) -> dict:

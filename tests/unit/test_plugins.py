@@ -469,3 +469,15 @@ def test_the_reconcile_removes_nothing_when_luna_lists_no_nodes(rig, tmp_path, m
 
     assert outcome["repaired"] == [] and outcome["retired"] == []
     assert kept.read_text(encoding="utf-8") == before
+
+
+def test_two_repairs_may_meet_on_one_file(rig, tmp_path, monkeypatch):
+    """
+    The worker and a render can reach the same file; the one that finds it gone carries on.
+    """
+    from trix.plugins.prometheus.backend import _discard
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _discard(str(tmp_path / "never-there.rules"))
+    assert backend._retire(str(tmp_path / "never-there.rules")) == ""
+    assert backend.remove_hw_rules("node001") == {"node": "node001", "retired": []}
