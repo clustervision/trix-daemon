@@ -298,7 +298,8 @@ def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
     memory, infiniband = group["rules"]
     assert memory["alert"] == "MissingHardwareComponent" and "for" not in memory
     assert memory["expr"] == ('absent(lshw_device{hostname="node001.cluster",luna_group="compute",'
-                              'class="memory",description="DIMM",product="P",vendor="V",serial="S1"})')
+                              'class="memory",description="DIMM",product="P",vendor="V",'
+                              'serial="S1"})')
     assert "serial=" not in infiniband["expr"]
     assert (tmp_path / "trix.hw.node001.cluster.rules").is_file()
 

@@ -303,7 +303,8 @@ class Backend:
         """
         url = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         query = (f'count({HW_METRIC}{{class=~"{HW_CLASSES}", hostname="{host}", '
-                 f'description!~"Virt|virt|USB", product!~"Virt.*"}}) by ({",".join(COMPONENT_LABELS)})')
+                 f'description!~"Virt|virt|USB", product!~"Virt.*"}}) '
+                 f'by ({",".join(COMPONENT_LABELS)})')
         try:
             answer = requests.get(f"{url}/api/v1/query", params={"query": query},
                                   timeout=20, verify=False)
