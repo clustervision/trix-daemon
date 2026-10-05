@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import glob
 import os
 
 import requests
@@ -64,11 +65,21 @@ EXPORTERS: dict = {
 
 GENERIC_RULES: str = "trix.generic.rules"
 SERVICE_RULES: str = "trix.service.rules"
-HW_RULES: str = "trix.hw.{node}.rules"
+HW_RULES: str = "trix.hw.{host}.rules"
 SETTINGS_FILE: str = "rules_settings.yaml"
 
-# The labels a hardware rule is built from, as the lshw exporter reports them.
-COMPONENT_LABELS: tuple = ("hostname", "component", "vendor", "product", "serial")
+# The hardware rules take the shape Luna's generator gave them, so a file written by
+# either daemon reads the same: this metric, these labels, this alert and group.
+HW_METRIC: str = "lshw_device"
+HW_GROUP: str = "trinityx_hw"
+HW_ALERT: str = "MissingHardwareComponent"
+HW_CLASSES: str = "processor|memory|disk|network|display"
+HW_DESCRIPTION: str = ("Hardware component {{ $labels.class }} with {{ $labels.product }} "
+                       "{{ $labels.vendor }} {{ $labels.serial }} is missing.")
+COMPONENT_LABELS: tuple = ("hostname", "luna_group", "class", "description", "product",
+                           "vendor", "serial")
+# InfiniBand reports no serial, so those rules select on one label fewer.
+INFINIBAND_LABELS: tuple = COMPONENT_LABELS[:-1]
 
 
 class Backend:
@@ -138,11 +149,10 @@ class Backend:
         """
         What is currently held for one node.
         """
-        path = os.path.join(self._rules_dir(), HW_RULES.format(node=node.split(".")[0]))
-        if not os.path.isfile(path):
+        paths = self._hw_paths(node)
+        if not paths:
             raise NotFound(f"no hardware rules held for {node}")
-        with open(path, "r", encoding="utf-8") as handle:
-            return yaml.safe_load(handle) or {}
+        return _read_yaml(paths[0])
 
     def import_hw_rules(self, node: str, body: dict = None) -> dict:
         """
@@ -150,14 +160,13 @@ class Backend:
         node asks for this itself after boot, with a token scoped to itself.
         """
         body = body or {}
-        short = node.split(".")[0]
-        path = os.path.join(self._rules_dir(), HW_RULES.format(node=short))
-
-        if not body.get("force") and os.path.isfile(path):
-            with open(path, "r", encoding="utf-8") as handle:
-                document = yaml.safe_load(handle) or {"groups": []}
+        paths = self._hw_paths(node)
+        if paths and not body.get("force"):
+            path, document = paths[0], _read_yaml(paths[0])
         else:
-            document = self._generate_hw_rules(node)
+            host = self._host_of(node)
+            path = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
+            document = self._generate_hw_rules(host)
 
         for group in document.get("groups", []):
             for rule in group.get("rules", []):
@@ -169,43 +178,56 @@ class Backend:
 
         files.write_yaml(path, document)
         self.reload()
-        LOGGER.info("hardware rules written for %s", short)
-        return {"hostname": node, "rules": sum(len(group.get("rules", []))
-                                               for group in document.get("groups", []))}
+        LOGGER.info("hardware rules written for %s at %s", node, path)
+        return {"hostname": _hw_host(path), "rules": sum(len(group.get("rules", []))
+                                                         for group in document.get("groups", []))}
 
-    def _generate_hw_rules(self, node: str) -> dict:
+    def _host_of(self, node: str) -> str:
         """
-        Ask Prometheus which components this node has, and build a rule each.
+        The hostname Prometheus labels this node with: Luna's, as the targets render uses it.
         """
-        components = self._components(node)
+        record = luna().node(node.split(".")[0]) or {}
+        return record.get("hostname") or node
+
+    def _hw_paths(self, node: str) -> list:
+        """
+        The rule files that name this node, by full hostname or by short name.
+        """
+        pattern = os.path.join(self._rules_dir(), HW_RULES.format(host="*"))
+        return sorted(path for path in glob.glob(pattern) if _names_node(_hw_host(path), node))
+
+    def _generate_hw_rules(self, host: str) -> dict:
+        """
+        Ask Prometheus which components this host has, and build one rule each, as Luna does.
+        """
+        components = self._components(host)
         if not components:
             raise BackendFailure(
-                f"no data found for {node}; the hardware exporter has not been scraped yet")
-
-        settings = self.settings().get("settings") or {}
+                f"no data found for {host}; the hardware exporter has not been scraped yet")
+        hardware = (self.settings().get("settings") or {}).get("hw") or {}
         rules = []
         for component in components:
-            name = component.get("component", "component")
-            selector = ",".join(f'{key}="{value}"' for key, value in component.items()
-                                if key in COMPONENT_LABELS and value)
-            severity = str(settings.get(name, {}).get("severity", "warning"))
+            labels = COMPONENT_LABELS
+            if component.get("class") == "network" and component.get("description") == "interface":
+                labels = INFINIBAND_LABELS
+            selector = ",".join(f'{key}="{component[key]}"' for key in labels if component.get(key))
             rules.append({
-                "alert": f'{name}_missing_on_{node.split(".")[0]}',
-                "expr": f"absent(lshw_component_info{{{selector}}})",
-                "for": str(settings.get(name, {}).get("for", "5m")),
-                "labels": {"severity": severity, "category": "hardware",
-                           "nhc": True, "disabled": False, "hostname": node},
-                "annotations": {
-                    "description": f"{name} reported by {node} is no longer present"},
+                "alert": HW_ALERT,
+                "expr": f"absent({HW_METRIC}{{{selector}}})",
+                "labels": {"severity": "warning", "category": "hardware",
+                           "nhc": bool(hardware.get("nhc", True)),
+                           "disabled": bool(hardware.get("disabled", False))},
+                "annotations": {"description": HW_DESCRIPTION},
             })
-        return {"groups": [{"name": f'trix.hw.{node.split(".")[0]}', "rules": rules}]}
+        return {"groups": [{"name": HW_GROUP, "rules": rules}]}
 
-    def _components(self, node: str) -> list:
+    def _components(self, host: str) -> list:
         """
-        Query the hardware exporter's series for this node.
+        The hardware exporter's series for this host, one label set per component.
         """
         url = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
-        query = f'lshw_component_info{{hostname=~"{node.split(".")[0]}.*"}}'
+        query = (f'count({HW_METRIC}{{class=~"{HW_CLASSES}", hostname="{host}", '
+                 f'description!~"Virt|virt|USB", product!~"Virt.*"}}) by ({",".join(COMPONENT_LABELS)})')
         try:
             answer = requests.get(f"{url}/api/v1/query", params={"query": query},
                                   timeout=20, verify=False)
@@ -214,7 +236,7 @@ class Backend:
         if answer.status_code >= 400:
             raise BackendFailure(f"Prometheus answered {answer.status_code}")
         result = ((answer.json() or {}).get("data") or {}).get("result") or []
-        return [item.get("metric", {}) for item in result]
+        return [dict(item.get("metric") or {}) for item in result]
 
     # --------------------------------------------------------------- renders
 
@@ -294,6 +316,32 @@ class Backend:
         if not result.ok:
             LOGGER.error("reload failed: %s", result.err or result.out)
         return result.ok
+
+
+def _hw_host(path: str) -> str:
+    """
+    The host a hardware rule file names, read from its filename alone.
+    """
+    name = os.path.basename(path)
+    prefix, suffix = HW_RULES.split("{host}")
+    if name.startswith(prefix) and name.endswith(suffix):
+        return name[len(prefix):-len(suffix)]
+    return ""
+
+
+def _names_node(host: str, node: str) -> bool:
+    """
+    Whether a file's host is this node, by full hostname or by short name, never by prefix.
+    """
+    return bool(host) and (host == node or host.split(".")[0] == node.split(".")[0])
+
+
+def _read_yaml(path: str) -> dict:
+    """
+    One rule file as a document, empty when the file is.
+    """
+    with open(path, "r", encoding="utf-8") as handle:
+        return yaml.safe_load(handle) or {"groups": []}
 
 
 def _provision_address(node: dict) -> str:

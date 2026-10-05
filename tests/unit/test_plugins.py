@@ -246,3 +246,58 @@ def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
     scaffold.new("once", settings().plugins.directory)
     with pytest.raises(Conflict):
         scaffold.new("once", settings().plugins.directory)
+
+
+def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
+    """
+    The metric the exporter emits, the labels Luna selects on, and Luna's alert and group.
+    """
+    from types import SimpleNamespace
+    from trix.plugins.prometheus import backend as prometheus
+
+    class Luna:
+        """
+        One node, as Luna would answer it.
+        """
+
+        def node(self, name):
+            """
+            The record the targets render reads the hostname from.
+            """
+            return {"hostname": "node001.cluster", "group": "compute"}
+
+    asked = {}
+
+    def query(url, params=None, **_):
+        """
+        Prometheus, answering two components, one of them InfiniBand.
+        """
+        asked["query"] = params["query"]
+        result = [{"metric": {"hostname": "node001.cluster", "luna_group": "compute",
+                              "class": "memory", "description": "DIMM", "product": "P",
+                              "vendor": "V", "serial": "S1"}},
+                  {"metric": {"hostname": "node001.cluster", "luna_group": "compute",
+                              "class": "network", "description": "interface", "product": "IB",
+                              "vendor": "M", "serial": "S2"}}]
+        return SimpleNamespace(status_code=200, json=lambda: {"data": {"result": result}})
+
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    monkeypatch.setattr(prometheus.shell, "run",
+                        lambda *args, **kwargs: SimpleNamespace(ok=True, out="", err=""))
+    backend = prometheus.Backend()
+    backend.config(body={"rules_directory": str(tmp_path)})
+
+    answer = backend.import_hw_rules("node001", {"force": True})
+    assert answer == {"hostname": "node001.cluster", "rules": 2}
+    assert 'hostname="node001.cluster"' in asked["query"]
+    assert "by (hostname,luna_group,class,description,product,vendor,serial)" in asked["query"]
+
+    group = backend.get_hw_rules("node001")["groups"][0]
+    assert group["name"] == "trinityx_hw"
+    memory, infiniband = group["rules"]
+    assert memory["alert"] == "MissingHardwareComponent" and "for" not in memory
+    assert memory["expr"] == ('absent(lshw_device{hostname="node001.cluster",luna_group="compute",'
+                              'class="memory",description="DIMM",product="P",vendor="V",serial="S1"})')
+    assert "serial=" not in infiniband["expr"]
+    assert (tmp_path / "trix.hw.node001.cluster.rules").is_file()
