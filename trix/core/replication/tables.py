@@ -77,8 +77,7 @@ def to_document(handle: Session, table: str, row) -> dict:
     """
     body = dict(_common(row))
     if table == "principal":
-        body.update(key=[row.name], name=row.name, kind=row.kind, source=row.source,
-                    password_digest=row.password_digest, external_id=row.external_id,
+        body.update(key=[row.name], name=row.name, password_digest=row.password_digest,
                     enabled=bool(row.enabled), role=row.role)
     elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
@@ -127,10 +126,8 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
     """
     key = document["key"]
     if table == "principal":
-        return {"name": key[0], "kind": document.get("kind", "user"),
-                "source": document.get("source", "local"),
+        return {"name": key[0],
                 "password_digest": document.get("password_digest", ""),
-                "external_id": document.get("external_id", ""),
                 "enabled": bool(document.get("enabled", True)),
                 "role": document.get("role", ROLE_NONE)}
     return {"plugin": key[0], "kind": key[1], "name": key[2],

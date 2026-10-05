@@ -110,8 +110,7 @@ def test_the_merge_carries_a_principal_across_by_name(rig, tmp_path):
     The peer's row arrives under a local identifier of its own, with its role intact.
     """
     peer = _peer(tmp_path)
-    peer.add(models.Principal(name="alice", kind="user", source="local", role="manager",
-                              origin="peer"))
+    peer.add(models.Principal(name="alice", role="manager", origin="peer"))
     peer.commit()
     theirs = peer.scalar(select(models.Principal).where(models.Principal.name == "alice"))
 
@@ -205,12 +204,13 @@ def test_a_single_controller_runs_no_sweep(rig):
 
 def test_one_table_carries_the_whole_of_rbac(rig):
     """
-    A role on the principal and nothing else: no groups, no flags, no object modes.
+    A user, a password, a role, as the whiteboard drew it: no groups, flags or modes.
     """
     from trix.db import models
 
     columns = {c.name for c in models.Principal.__table__.columns}
-    assert "role" in columns and not {"admin", "delegate"} & columns, columns
+    assert columns == {"id", "name", "password_digest", "enabled", "role",
+                       "version", "origin", "updated_at"}, columns
     for gone in ("Usergroup", "Membership", "UsergroupMap", "Permission"):
         assert not hasattr(models, gone), gone
     assert models.REPLICATED == ("declaration", "principal")
@@ -238,7 +238,7 @@ def test_every_replicated_column_reaches_the_document(rig):
     try:
         # Something in every table, so each one has a row to export.
         handle.add_all([
-            models.Principal(name="peered", external_id="1234", role="manager"),
+            models.Principal(name="peered", role="manager"),
             models.Declaration(plugin="peer", kind="config", name="", body={}),
         ])
         handle.commit()

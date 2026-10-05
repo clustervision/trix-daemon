@@ -51,8 +51,7 @@ LOGGER = trixlog.get("lifespan")
 
 def seed(handle) -> None:
     """
-    The administrator the ini names. Until somebody is put in a usergroup the gate
-    permits everything, which is what a cluster does today.
+    The account the ini names: rootus. Its row holds its password digest and no role.
     """
     config = settings().api
     if config.username:
@@ -60,7 +59,7 @@ def seed(handle) -> None:
                             .where(models.Principal.name == config.username))
         if row is None:
             handle.add(models.Principal(
-                name=config.username, kind="user", source="local",
+                name=config.username,
                 password_digest=principals.hash_password(config.password)))
             LOGGER.info("seeded the local principal %s", config.username)
     handle.commit()

@@ -76,16 +76,15 @@ def verify_password(password: str, stored: str) -> bool:
 
 class Resolved:
     """
-    A principal the daemon could name, the groups its source reports, and its role here.
+    A user the daemon could name, the groups its source reports, and its role here.
     """
 
-    def __init__(self, name: str, kind: str = "user", source: str = "",
-                 groups: list = None, role: str = ROLE_NONE) -> None:
+    def __init__(self, name: str, source: str = "", groups: list = None,
+                 role: str = ROLE_NONE) -> None:
         """
         A principal and what is known about it.
         """
         self.name = name
-        self.kind = kind
         self.source = source
         self.groups = groups or []
         self.role = role
@@ -94,7 +93,7 @@ class Resolved:
         """
         Enough to identify the principal in a log.
         """
-        return f"<Resolved {self.name} kind={self.kind} src={self.source}>"
+        return f"<Resolved {self.name} role={self.role} src={self.source}>"
 
 
 class _Cache:
@@ -149,7 +148,7 @@ def resolve(handle: Session, name: str) -> Resolved:
         # this flag: disabling somebody has to cut them whatever vouched for them.
         LOGGER.warning("%s is disabled here, so the token is refused", name)
         return None
-    found = Resolved(identity.get("name") or name, "user", source,
+    found = Resolved(identity.get("name") or name, source,
                      list(identity.get("groups") or []),
                      row.role if row is not None else ROLE_NONE)
     CACHE.put(f"user:{name}", found)
@@ -175,7 +174,7 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
     name = identity.get("name") or ""
     row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
     if row is None:
-        row = models.Principal(name=name, kind="user", source=source, password_digest="")
+        row = models.Principal(name=name, password_digest="")
         handle.add(row)
         handle.commit()
         LOGGER.info("first login of %s through %s; principal created", name, source)
@@ -183,6 +182,6 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
         LOGGER.warning("%s is disabled here, whatever %s says", name, source)
         return None
 
-    found = Resolved(name, row.kind, source, list(identity.get("groups") or []), row.role)
+    found = Resolved(name, source, list(identity.get("groups") or []), row.role)
     CACHE.put(f"user:{name}", found)
     return found

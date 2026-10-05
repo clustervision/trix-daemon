@@ -85,10 +85,7 @@ class Principal(Base, Replicated):
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
-    kind: Mapped[str] = mapped_column(String(16), default="user", nullable=False)
-    source: Mapped[str] = mapped_column(String(32), default="local", nullable=False)
     password_digest: Mapped[str] = mapped_column(String(255), default="", nullable=False)
-    external_id: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Where this principal sits on the ladder. rootus is the ini name, not a role.
     role: Mapped[str] = mapped_column(String(16), default=ROLE_NONE, nullable=False)
