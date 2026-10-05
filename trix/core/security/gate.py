@@ -127,7 +127,7 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
         finally:
             handle.close()
 
-        allowed, held = access.permits(who, minimum)
+        allowed, held = access.permits(who, minimum, claims.kind)
         if not allowed:
             audit.refused(claims.subject, request.method, _target(request),
                           f"needs {minimum}, holds {held}")

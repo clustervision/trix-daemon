@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
-from trix.common.constants import MINIMUMS, ROLE_NONE
+from trix.common.constants import MINIMUMS, ROLE_NONE, TOKEN_KIND_SERVICE
 
 LOGGER = trixlog.get("access")
 
@@ -51,10 +51,13 @@ def rank(role: str) -> int:
     return MINIMUMS.index(role) if role in MINIMUMS else 0
 
 
-def permits(who, minimum: str) -> tuple:
+def permits(who, minimum: str, kind: str = "") -> tuple:
     """
-    Whether the caller reaches the minimum, and the role they hold. rootus always does.
+    Whether the caller reaches the minimum, and the role they hold. rootus always does,
+    and so does a peer daemon: a service token names a controller, never a person.
     """
+    if kind == TOKEN_KIND_SERVICE:
+        return True, TOKEN_KIND_SERVICE
     held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):
         return True, held

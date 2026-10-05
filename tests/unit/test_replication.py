@@ -173,6 +173,19 @@ def test_the_replication_endpoints_answer(client, headers):
     assert answer.status_code == 404, "audit is local and must not be offered"
 
 
+def test_a_peer_daemon_reaches_the_replication_endpoints(client):
+    """
+    The sweep presents a service token, which names the other daemon and no principal.
+    """
+    from trix.common.constants import TOKEN_HEADER
+    from trix.core.security import tokens
+
+    peer = {TOKEN_HEADER: tokens.service_token()}
+    for path in ("hashes", "table/principal"):
+        answer = client.get(f"{API_PREFIX}/system/replication/{path}", headers=peer)
+        assert answer.status_code == 200, answer.text
+
+
 def test_the_trigger_state_is_reported(client, headers):
     """
     Whether the fallback poller is doing anything, which on one controller it is not.

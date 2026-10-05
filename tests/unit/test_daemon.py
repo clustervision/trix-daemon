@@ -702,6 +702,7 @@ def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):
     assert access.permits(None, "none") == (True, "none")
     assert access.permits(None, "operator") == (False, "none")
     assert access.permits(None, "rootus") == (False, "none")
+    assert access.permits(None, "rootus", "service") == (True, "service")
 
 
 def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch):
