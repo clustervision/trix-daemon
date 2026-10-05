@@ -105,13 +105,12 @@ check("unknown request is 404",
       call("GET", f"{PLAIN}/services/status/nope", T)[0], 404)
 
 print("=== identity and RBAC ===")
-call("POST", f"{PLAIN}/identity/principals", T, {"name": "httpnone", "password": "pw"})
-check("a principal is created with a role",
-      call("POST", f"{PLAIN}/identity/principals", T,
-           {"name": "httpop", "password": "pw", "role": "operator"})[0], 201)
+call("PUT", f"{PLAIN}/identity/users/httpnone", T, {"password": "pw"})
+check("a user is created with a role",
+      call("PUT", f"{PLAIN}/identity/users/httpop", T,
+           {"password": "pw", "role": "operator"})[0], 200)
 check("a bad role is refused",
-      call("POST", f"{PLAIN}/identity/principals", T,
-           {"name": "httpking", "role": "king"})[0], 400)
+      call("PUT", f"{PLAIN}/identity/users/httpking", T, {"role": "king"})[0], 400)
 N = call("POST", f"{PLAIN}/auth/token", body={"username": "httpnone", "password": "pw"})[1].get("token", "")
 status, theirs = call("POST", f"{PLAIN}/auth/token",
                       body={"username": "httpop", "password": "pw"})
@@ -125,7 +124,7 @@ check("an operator may operate",
       call("POST", f"{PLAIN}/services/slurmctld/actions/status", R)[0], 200)
 check("an operator may not change", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 403)
 check("rootus is never refused", call("PATCH", f"{PLAIN}/genders/config", T, {})[0], 200)
-call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"role": "manager"})
+call("PUT", f"{PLAIN}/identity/users/httpop", T, {"role": "manager"})
 check("promoted, the same token changes", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 200)
 
 print("=== whoami ===")
@@ -135,9 +134,9 @@ check("whoami reports the role", said.get("role"), "manager")
 check("whoami says not rootus", said.get("rootus"), False)
 
 print("=== disabling cuts at once ===")
-call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"enabled": False})
+call("PUT", f"{PLAIN}/identity/users/httpop", T, {"enabled": False})
 check("the same token stops working", call("GET", f"{PLAIN}/auth/whoami", R)[0], 401)
-call("PATCH", f"{PLAIN}/identity/principals/httpop", T, {"enabled": True})
+call("PUT", f"{PLAIN}/identity/users/httpop", T, {"enabled": True})
 check("and works again when re-enabled", call("GET", f"{PLAIN}/auth/whoami", R)[0], 200)
 
 print("=== node tokens ===")
@@ -159,8 +158,8 @@ for name in ("principal", "declaration"):
         check("principal carries the role", "role" in carried, True)
 
 print("=== tidy up ===")
-call("DELETE", f"{PLAIN}/identity/principals/httpop", T)
-call("DELETE", f"{PLAIN}/identity/principals/httpnone", T)
+call("DELETE", f"{PLAIN}/identity/users/httpop", T)
+call("DELETE", f"{PLAIN}/identity/users/httpnone", T)
 print("  PASS   removed the test principals")
 
 print(f"\nfailures: {len(failures)}")

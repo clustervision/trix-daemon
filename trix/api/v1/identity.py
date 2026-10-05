@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Principals, usergroups, memberships and the external group map, over the API.
+The one table RBAC has, over the API: a user, a password, a role.
 """
 
 __author__      = "Sumit Sharma"
@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import re
 from typing import Optional
 
 from fastapi import APIRouter, Depends
@@ -38,8 +39,8 @@ from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
 from trix.common.constants import API_PREFIX, ROLE_NONE, ROLE_ROOTUS, ROLES
-from trix.common.errors import BadRequest, Conflict, NotFound
-from trix.core.security import audit, principals
+from trix.common.errors import BadRequest, NotFound
+from trix.core.security import access, audit, principals
 from trix.core.security.gate import Caller, guard
 from trix.db import models
 from trix.db.engine import scoped
@@ -50,35 +51,31 @@ router = APIRouter(prefix=f"{API_PREFIX}/identity", tags=["identity"])
 
 WRITE: str = "identity.write"
 
-# A principal is not only a person: a service and a node are named here too, which
-# is why this table is not called user the way luna2-daemon's is.
-KINDS: tuple = ("user", "service", "node")
+# A login name as the chain's sources know it; an Active Directory one carries an @.
+NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
 
 
-class PrincipalIn(BaseModel):
+class UserIn(BaseModel):
     """
-    What a caller may set on a principal.
+    What a caller may set on a user; a field left out stays as it is.
     """
 
     model_config = ConfigDict(extra="forbid")
 
-    name: str = ""
-    kind: str = "user"
-    source: str = "local"
-    password: str = ""
-    external_id: str = ""
-    enabled: Optional[bool] = None
     role: Optional[str] = None
+    password: Optional[str] = None
+    enabled: Optional[bool] = None
 
 
-def _principal(handle: Session, name: str) -> models.Principal:
+def _named(name: str) -> str:
     """
-    One principal by name, or 404.
+    A name the API may write: well formed, and never the account the ini names.
     """
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
-    if row is None:
-        raise NotFound(f"no principal named {name}")
-    return row
+    if not NAME.match(name or ""):
+        raise BadRequest(f"{name} is not a login name")
+    if access.is_rootus(name):
+        raise BadRequest(f"{name} is the account the ini names: it is rootus, set there")
+    return name
 
 
 def _ladder(role: str) -> str:
@@ -92,93 +89,64 @@ def _ladder(role: str) -> str:
 
 def _shown(row: models.Principal) -> dict:
     """
-    A principal as the API shows it.
+    A user as the API shows it: whether it has a password here, never the password.
     """
-    return {"name": row.name, "kind": row.kind, "source": row.source,
-            "enabled": row.enabled, "role": row.role, "external_id": row.external_id}
+    role = ROLE_ROOTUS if access.is_rootus(row.name) else row.role
+    return {"name": row.name, "role": role, "enabled": row.enabled,
+            "local": bool(row.password_digest)}
 
 
-@router.get("/principals", summary="Every principal this daemon knows")
-def list_principals(handle: Session = Depends(scoped),
-                    caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+@router.get("/users", summary="Every user and the role each holds")
+def list_users(handle: Session = Depends(scoped),
+               caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
-    All of them, with their usergroups and roles.
+    Every row of the one table RBAC has; anyone without a row is none.
     """
     rows = handle.scalars(select(models.Principal).order_by(models.Principal.name)).all()
-    return {"principals": [_shown(row) for row in rows]}
+    return {"users": [_shown(row) for row in rows]}
 
 
-@router.get("/principals/{name}", summary="One principal")
-def get_principal(name: str, handle: Session = Depends(scoped),
-                  caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+@router.put("/users/{name}", summary="Give a user a role, a password, or both")
+def put_user(name: str, body: UserIn, handle: Session = Depends(scoped),
+             caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
-    One, by name.
+    Creates the user when it is new, and changes only what the body names when it is not.
     """
-    return _shown(_principal(handle, name))
-
-
-@router.post("/principals", status_code=201, summary="Create a principal")
-def create_principal(body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
-    """
-    A row with a password digest is a login here; one without authenticates elsewhere.
-    """
-    if not body.name:
-        raise BadRequest("a principal needs a name")
-    if body.kind not in KINDS:
-        raise BadRequest(f"{body.kind} is not one of {', '.join(KINDS)}")
-    if handle.scalar(select(models.Principal).where(models.Principal.name == body.name)):
-        raise Conflict(f"{body.name} already exists")
-
-    row = models.Principal(
-        name=body.name, kind=body.kind, source=body.source,
-        external_id=body.external_id,
-        password_digest=principals.hash_password(body.password) if body.password else "",
-        enabled=True if body.enabled is None else body.enabled,
-        role=_ladder(body.role) if body.role else ROLE_NONE)
-    handle.add(row)
-    handle.flush()
-    audit.granted(caller.name, WRITE, f"principal/{body.name}", "created", handle=handle)
-    handle.commit()
-    return _shown(row)
-
-
-@router.patch("/principals/{name}", summary="Change a principal")
-def update_principal(name: str, body: PrincipalIn, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
-    """
-    Only what the body names is changed; an absent field is left alone.
-    """
-    row = _principal(handle, name)
-    if body.password:
-        row.password_digest = principals.hash_password(body.password)
-    if body.external_id:
-        row.external_id = body.external_id
-    if body.kind and body.kind != row.kind:
-        if body.kind not in KINDS:
-            raise BadRequest(f"{body.kind} is not one of {', '.join(KINDS)}")
-        row.kind = body.kind
-    if body.enabled is not None:
-        row.enabled = body.enabled
+    _named(name)
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    created = row is None
+    if created:
+        row = models.Principal(name=name, role=ROLE_NONE, password_digest="", enabled=True)
+        handle.add(row)
     if body.role is not None:
         row.role = _ladder(body.role)
-    row.version += 1
-    audit.granted(caller.name, WRITE, f"principal/{name}", "changed", handle=handle)
+    if body.password:
+        row.password_digest = principals.hash_password(body.password)
+    if body.enabled is not None:
+        row.enabled = body.enabled
+    if not created:
+        row.version += 1
+    handle.flush()
+    audit.granted(caller.name, WRITE, f"user/{name}", "created" if created else "changed",
+                  handle=handle)
     # Committed, then forgotten: cleared first, a request in between caches the old row.
     handle.commit()
     principals.CACHE.clear()
     return _shown(row)
 
 
-@router.delete("/principals/{name}", summary="Delete a principal")
-def delete_principal(name: str, handle: Session = Depends(scoped),
-                     caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+@router.delete("/users/{name}", summary="Remove a user, and with it their role")
+def delete_user(name: str, handle: Session = Depends(scoped),
+                caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     The cache goes with it, so a token for the name is refused on its next request.
     """
-    row = _principal(handle, name)
+    _named(name)
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    if row is None:
+        raise NotFound(f"no user named {name}")
     handle.delete(row)
-    audit.granted(caller.name, WRITE, f"principal/{name}", "deleted", handle=handle)
+    audit.granted(caller.name, WRITE, f"user/{name}", "deleted", handle=handle)
     handle.commit()
     principals.CACHE.clear()
     return {"deleted": name}

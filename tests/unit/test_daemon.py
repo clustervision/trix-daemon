@@ -528,14 +528,13 @@ def test_an_identity_write_leaves_its_audit_row(rig, client, headers):
     from trix.db import engine as database
     from trix.db import models
 
-    # create_principal flushes before it audits, so the request holds the write
-    # lock: a second session here waits out the busy timeout and loses the row.
-    client.post(f"{API_PREFIX}/identity/principals", json={"name": "audited"},
-                headers=headers)
+    # put_user flushes before it audits, so the request holds the write lock:
+    # a second session here waits out the busy timeout and loses the row.
+    client.put(f"{API_PREFIX}/identity/users/audited", json={}, headers=headers)
     handle = database.session()
     try:
         rows = handle.query(models.Audit).filter(
-            models.Audit.object == "principal/audited").all()
+            models.Audit.object == "user/audited").all()
         outcomes = [(r.action, r.outcome, r.detail) for r in rows]
     finally:
         handle.close()
@@ -556,11 +555,11 @@ def _principal(client, headers, name, role=None):
     """
     One login with a role on the ladder, or with none when no role is given.
     """
-    body = {"name": name, "password": "pw"}
+    body = {"password": "pw"}
     if role is not None:
         body["role"] = role
-    answer = client.post(f"{API_PREFIX}/identity/principals", json=body, headers=headers)
-    assert answer.status_code == 201, answer.text
+    answer = client.put(f"{API_PREFIX}/identity/users/{name}", json=body, headers=headers)
+    assert answer.status_code == 200, answer.text
     return _as(client, name, "pw")
 
 
@@ -610,8 +609,8 @@ def test_a_role_outside_the_ladder_is_refused(rig, client, headers):
     """
     An unknown role would rank at the bottom and look like a working account.
     """
-    answer = client.post(f"{API_PREFIX}/identity/principals",
-                         json={"name": "king", "role": "king"}, headers=headers)
+    answer = client.put(f"{API_PREFIX}/identity/users/king", json={"role": "king"},
+                        headers=headers)
     assert answer.status_code == 400
     assert "king" in answer.text
 
@@ -649,14 +648,15 @@ def test_a_refusal_is_in_the_audit_trail(rig, client, headers):
 
 def test_a_role_is_set_and_changed_over_the_api(rig, client, headers):
     """
-    The one table RBAC has: a role is given on creation and changed in place.
+    The one table RBAC has: a role given when the user is made, changed in place, password kept.
     """
     carol = _principal(client, headers, "carol", "operator")
-    shown = client.get(f"{API_PREFIX}/identity/principals/carol", headers=headers).json()
-    assert shown["role"] == "operator"
-    assert client.patch(f"{API_PREFIX}/identity/principals/carol", json={"role": "manager"},
-                        headers=headers).status_code == 200
+    listed = client.get(f"{API_PREFIX}/identity/users", headers=headers).json()["users"]
+    assert {"name": "carol", "role": "operator", "enabled": True, "local": True} in listed
+    assert client.put(f"{API_PREFIX}/identity/users/carol", json={"role": "manager"},
+                      headers=headers).status_code == 200
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=carol).json()["role"] == "manager"
+    assert _as(client, "carol", "pw")
 
 
 def test_the_oidc_source_lets_the_chain_continue(rig):
@@ -675,18 +675,18 @@ def test_a_rootus_minimum_admits_the_ini_account_only(rig, client, headers):
     The top of the ladder is not a role: a manager is refused where Luna wants rootus.
     """
     mo = _principal(client, headers, "mo", "manager")
-    refused = client.get(f"{API_PREFIX}/identity/principals", headers=mo)
+    refused = client.get(f"{API_PREFIX}/identity/users", headers=mo)
     assert refused.status_code == 403 and "rootus" in refused.text, refused.text
     assert client.get(f"{API_PREFIX}/system/replication/hashes", headers=mo).status_code == 403
-    assert client.get(f"{API_PREFIX}/identity/principals", headers=headers).status_code == 200
+    assert client.get(f"{API_PREFIX}/identity/users", headers=headers).status_code == 200
 
 
 def test_rootus_cannot_be_given_as_a_role(rig, client, headers):
     """
     It is the ini account by name, never a row, so the API refuses to store it.
     """
-    answer = client.post(f"{API_PREFIX}/identity/principals",
-                         json={"name": "pretender", "role": "rootus"}, headers=headers)
+    answer = client.put(f"{API_PREFIX}/identity/users/pretender", json={"role": "rootus"},
+                        headers=headers)
     assert answer.status_code == 400
 
 
@@ -696,7 +696,7 @@ def test_a_deleted_principal_is_refused_at_once(rig, client, headers):
     """
     frank = _principal(client, headers, "frank")
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=frank).status_code == 200
-    assert client.delete(f"{API_PREFIX}/identity/principals/frank",
+    assert client.delete(f"{API_PREFIX}/identity/users/frank",
                          headers=headers).status_code == 200
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=frank).status_code == 401
 
@@ -774,17 +774,14 @@ def test_disabling_a_principal_cuts_them_at_once(rig, client, headers):
     """
     The token stays valid; the flag is read per request, so it stops working.
     """
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "cut", "password": "pw"}, headers=headers)
+    client.put(f"{API_PREFIX}/identity/users/cut", json={"password": "pw"}, headers=headers)
     theirs = _as(client, "cut", "pw")
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 200
 
-    client.patch(f"{API_PREFIX}/identity/principals/cut",
-                 json={"enabled": False}, headers=headers)
+    client.put(f"{API_PREFIX}/identity/users/cut", json={"enabled": False}, headers=headers)
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 401
 
-    client.patch(f"{API_PREFIX}/identity/principals/cut",
-                 json={"enabled": True}, headers=headers)
+    client.put(f"{API_PREFIX}/identity/users/cut", json={"enabled": True}, headers=headers)
     assert client.get(f"{API_PREFIX}/auth/whoami", headers=theirs).status_code == 200
 
 
@@ -1005,8 +1002,8 @@ def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers
     from trix.db import engine as database
     from trix.db import models
 
-    client.post(f"{API_PREFIX}/identity/principals", json={"name": "sealed", "password": "pw"},
-                headers=headers)
+    client.put(f"{API_PREFIX}/identity/users/sealed", json={"password": "pw"},
+               headers=headers)
     seen = []
     real = principals.CACHE.clear
 
@@ -1024,7 +1021,31 @@ def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers
         real()
 
     monkeypatch.setattr(principals.CACHE, "clear", clear)
-    client.patch(f"{API_PREFIX}/identity/principals/sealed", json={"enabled": False},
-                 headers=headers)
-    client.delete(f"{API_PREFIX}/identity/principals/sealed", headers=headers)
+    client.put(f"{API_PREFIX}/identity/users/sealed", json={"enabled": False},
+               headers=headers)
+    client.delete(f"{API_PREFIX}/identity/users/sealed", headers=headers)
     assert seen == [False, None], seen
+
+
+def test_the_ini_account_is_not_a_row_the_api_changes(rig, client, headers):
+    """
+    rootus is set in trix.ini; the API shows it as rootus and refuses to change or remove it.
+    """
+    assert client.put(f"{API_PREFIX}/identity/users/tester", json={"role": "manager"},
+                      headers=headers).status_code == 400
+    assert client.delete(f"{API_PREFIX}/identity/users/tester", headers=headers).status_code == 400
+    listed = client.get(f"{API_PREFIX}/identity/users", headers=headers).json()["users"]
+    assert [user["role"] for user in listed if user["name"] == "tester"] == ["rootus"]
+    assert all("password" not in key for user in listed for key in user if key != "local")
+
+
+def test_identity_is_three_routes(rig):
+    """
+    List, set and remove: what obol will call, and nothing else.
+    """
+    document = rig.openapi()
+    routes = sorted((method.upper(), path) for path, item in document["paths"].items()
+                    for method in item if path.startswith(f"{API_PREFIX}/identity"))
+    assert routes == [("DELETE", f"{API_PREFIX}/identity/users/{{name}}"),
+                      ("GET", f"{API_PREFIX}/identity/users"),
+                      ("PUT", f"{API_PREFIX}/identity/users/{{name}}")], routes

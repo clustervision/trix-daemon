@@ -125,7 +125,7 @@ its user, directory, table and journal families. Everyone else is what the
 `principal` table says, and a principal with no row or no role is `none`.
 
 ```
-curl -X PATCH http://<controller>:8051/api/v1/identity/principals/harry \
+curl -X PUT http://<controller>:8051/api/v1/identity/users/harry \
      -H "x-access-tokens: $TOKEN" \
      -d '{"role": "operator"}'
 ```

@@ -80,8 +80,8 @@ check "an unknown request is 404"      "$(code $PLAIN/api/v1/services/status/nop
 
 echo "=== 8. identity and RBAC ==="
 J='Content-Type: application/json'
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2enone","password":"pw"}'
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2eop","password":"pw","role":"operator"}'
+curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2enone -H "$H" -H "$J" -d '{"password":"pw"}'
+curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"password":"pw","role":"operator"}'
 NT0=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2enone","password":"pw"}' | jq_ "d['token']")
 OT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2eop","password":"pw"}' | jq_ "d['token']")
 NH="x-access-tokens: $NT0"; OH="x-access-tokens: $OT"
@@ -92,8 +92,8 @@ check "no role may not operate"        "$(code -X POST $PLAIN/api/v1/services/sl
 check "an operator may operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$OH")" 200
 check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 403
 check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$H" -H "$J" -d '{}')" 200
-check "a bad role is refused"          "$(code -X POST $PLAIN/api/v1/identity/principals -H "$H" -H "$J" -d '{"name":"e2eking","role":"king"}')" 400
-curl -sk -o /dev/null -X PATCH $PLAIN/api/v1/identity/principals/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
+check "a bad role is refused"          "$(code -X PUT $PLAIN/api/v1/identity/users/e2eking -H "$H" -H "$J" -d '{"role":"king"}')" 400
+curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
 check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 200
 
 echo "=== 9. whoami ==="
@@ -119,7 +119,7 @@ check "anonymous node token refused"   "$(code -X POST $PLAIN/api/v1/auth/node/n
 CRED='{"username":"trix","password":"trix"}'
 check "node token on a credential"     "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d "$CRED")" 201
 NT=$(curl -sk -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{"username":"trix","password":"trix"}' | jq_ "d['token']")
-check "a node token is not a user one" "$(code $PLAIN/api/v1/identity/principals -H "x-access-tokens: $NT")" 403
+check "a node token is not a user one" "$(code $PLAIN/api/v1/identity/users -H "x-access-tokens: $NT")" 403
 
 echo "=== 12. replication endpoints ==="
 check "table hashes answer"            "$(code $PLAIN/api/v1/system/replication/hashes -H "$H")" 200
@@ -128,8 +128,8 @@ check "triggers report"                "$(code $PLAIN/api/v1/system/triggers -H 
 check "renders list"                   "$(code $PLAIN/api/v1/system/renders -H "$H")" 200
 
 echo "=== 13. tidy up ==="
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/principals/e2eop -H "$H"
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/principals/e2enone -H "$H"
+curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2eop -H "$H"
+curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2enone -H "$H"
 say PASS "removed the test principals"
 
 echo
