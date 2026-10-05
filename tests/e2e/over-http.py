@@ -111,7 +111,8 @@ check("a user is created with a role",
            {"password": "pw", "role": "operator"})[0], 200)
 check("a bad role is refused",
       call("PUT", f"{PLAIN}/identity/users/httpking", T, {"role": "king"})[0], 400)
-N = call("POST", f"{PLAIN}/auth/token", body={"username": "httpnone", "password": "pw"})[1].get("token", "")
+N = call("POST", f"{PLAIN}/auth/token",
+         body={"username": "httpnone", "password": "pw"})[1].get("token", "")
 status, theirs = call("POST", f"{PLAIN}/auth/token",
                       body={"username": "httpop", "password": "pw"})
 R = theirs.get("token", "")
