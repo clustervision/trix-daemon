@@ -203,8 +203,9 @@ except `EXPIRY`, where it is hours as in `luna.ini`.
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
 package, and `SITE_DIRECTORY` (`/trinity/local/trix/plugins`), a site's own, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
-what `ENABLED` lists. slurm and genders are not listed by default: luna2-daemon's node
-hook still writes the same files, and each file should have one writer.
+what `ENABLED` lists, by default all five. slurm and genders write the same blocks
+luna2-daemon's node hook still writes, from the same generator and node list, so the two
+agree; once that hook stops, they are the only writers.
 
 Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
 the command line, the alertx CLI, the On Demand apps and the node image. Each names

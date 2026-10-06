@@ -164,9 +164,9 @@ trixd_pip: trix_daemon-1.0-py3-none-any.whl
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 ```
 
-`trixd_plugins`, the plugins loaded, defaults to directory, prometheus and services.
-slurm and genders are left out while luna2-daemon's node hook still writes the same
-files; add them to it once that hook stops.
+`trixd_plugins`, the plugins loaded, defaults to all five. slurm and genders write the
+same blocks luna2-daemon's node hook still writes, from the same generator and node
+list, so the content agrees; once that hook stops, they are the only writers.
 
 Everything else has a default in `roles/trix-daemon/defaults/main.yml`: the
 password, the certificate pair (`ssl_certificate`, else the controller's own

@@ -84,8 +84,9 @@ through Luna's `POST /import/prometheus_hw_rules` with a list of
 an answer of its own, a node Luna does not know is reported by name rather than
 written, and Prometheus is reloaded once for the lot.
 
-The slurm and genders plugins are not in the installer's default `[PLUGINS] ENABLED`
-while Luna's node hook still writes the same files; they go in when it stops.
+The slurm and genders plugins write the same blocks Luna's node hook still writes, from
+the same generator and node list. When that hook stops, they are the only writers, and
+nothing else has to change here.
 
 Two shapes the users application depends on. The directory plugin keeps one of
 them and deliberately does not keep the other, so this is what changes when

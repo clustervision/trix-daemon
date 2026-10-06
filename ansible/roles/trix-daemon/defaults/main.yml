@@ -76,12 +76,15 @@ trixd_alertx_config_dir: '{{ trix_local }}/alertx/cli/config'
 trixd_ood_config_dir: '{{ trix_ood }}/3.0/config'
 trixd_ood_group: "{{ ood_apps_admin_group | default('admins') }}"
 
-# slurm and genders are left out while luna2-daemon's node hook still writes the same
-# files, so each file has one writer. Add them here once that hook stops.
+# slurm and genders write the same blocks luna2-daemon's node hook still writes, from
+# the same generator and node list, so the content agrees; once that hook stops, these
+# are the only writers.
 trixd_plugins:
   - directory
   - prometheus
   - services
+  - slurm
+  - genders
 
 trixd_auth_chain: local, pam
 
