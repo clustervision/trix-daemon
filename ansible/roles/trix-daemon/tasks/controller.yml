@@ -78,10 +78,12 @@
     state: link
     force: true
 
-- name: Render trix.ini
+# In etc, not inside the package as luna.ini is: a pip upgrade replaces what it
+# shipped, and an ini it shipped would go with it.
+- name: Render the daemon's trixd.ini
   template:
-    src: trix.ini.j2
-    dest: '{{ trixd_config_dir }}/trix.ini'
+    src: trixd.ini.j2
+    dest: '{{ trixd_config_dir }}/trixd.ini'
     owner: root
     group: root
     mode: '0640'
