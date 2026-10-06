@@ -526,3 +526,141 @@ def test_a_directory_change_names_the_user_in_the_path_only(rig, client, headers
     answer = client.patch(f"{API_PREFIX}/directory/users/carol", json={"shell": "/bin/zsh"},
                           headers=headers)
     assert answer.status_code == 200, answer.text
+
+
+def test_a_manager_sets_several_nodes_hardware_rules_in_one_call(rig, tmp_path, monkeypatch):
+    """
+    What alertx's save-nodes needs: per node, an answer of its own, a node Luna does not
+    know refused by name, and Prometheus reloaded once for the lot.
+    """
+    from types import SimpleNamespace
+    from trix.plugins.prometheus import backend as prometheus
+
+    known = {"node001": {"hostname": "node001.cluster", "group": "compute"},
+             "node002": {"hostname": "node002.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+    reloads = []
+    monkeypatch.setattr(prometheus.shell, "run",
+                        lambda *a, **k: reloads.append(a) or SimpleNamespace(ok=True, out="", err=""))
+
+    def query(url, params=None, **_):
+        """
+        Prometheus, answering one memory part for whichever host is asked about.
+        """
+        host = params["query"].split('hostname="')[1].split('"')[0]
+        result = [{"metric": {"hostname": host, "luna_group": "compute", "class": "memory",
+                              "description": "DIMM", "product": "P", "vendor": "V",
+                              "serial": "S"}}]
+        return SimpleNamespace(status_code=200, json=lambda: {"data": {"result": result}})
+
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    answer = backend.set_hw_rules({"nodes": [{"node": "node001", "force": True},
+                                             {"node": "node002", "disabled": True},
+                                             {"node": "node999"}]})
+    by_node = {item["node"]: item for item in answer["nodes"]}
+    assert by_node["node001"]["ok"] and by_node["node002"]["ok"]
+    assert by_node["node999"] == {"node": "node999", "ok": False,
+                                  "message": "not a node Luna knows"}
+    assert len(reloads) == 1
+    rule = backend.get_hw_rules("node002")["groups"][0]["rules"][0]
+    assert rule["labels"]["disabled"] is True
+
+
+def test_a_node_name_that_could_leave_the_rules_directory_is_refused(rig, tmp_path, monkeypatch):
+    """
+    The name ends up in a file name, so anything but a plain host name is a 400.
+    """
+    from trix.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    with pytest.raises(BadRequest):
+        backend.set_hw_rules({"nodes": [{"node": "../../etc/passwd"}]})
+
+
+def test_the_hardware_rules_route_admits_a_manager_and_not_an_operator(rig, client, headers):
+    """
+    Regenerating rules or switching a node's alerts off is a change, so it needs manager.
+    """
+    from trix.core.plugins import manifest as manifests
+
+    path = os.path.join(os.path.dirname(prometheus_module_file()), "manifest.yaml")
+    parsed = manifests.parse(manifests.read_yaml(path))
+    route = [e for e in parsed.endpoints if e.path == "hw-rules" and "PATCH" in e.methods]
+    assert [e.minimum for e in route] == ["manager"]
+
+
+def prometheus_module_file() -> str:
+    """
+    Where the shipped prometheus plugin lives.
+    """
+    from trix.plugins.prometheus import backend as prometheus
+    return prometheus.__file__
+
+
+def test_a_site_plugin_lives_outside_the_package_and_loads(rig, client, headers):
+    """
+    A plugin in SITE_DIRECTORY loads beside the shipped ones, and an upgrade, which only
+    replaces the package, never touches it.
+    """
+    from trix.common.settings import current as settings
+    from trix.core.plugins import loader, scaffold
+
+    site = settings().plugins.site_directory
+    scaffold.new("hello", site)
+    assert loader.discover()["hello"].startswith(site)
+    assert loader.load(rig, "hello").state == "loaded"
+    assert client.get(f"{API_PREFIX}/hello", headers=headers).status_code == 200
+
+
+def test_a_site_plugin_cannot_take_a_shipped_name(rig):
+    """
+    A site copy of services would replace shipped code unseen, so the shipped one wins.
+    """
+    from trix.common.settings import current as settings
+    from trix.core.plugins import loader, scaffold
+
+    site = settings().plugins.site_directory
+    os.makedirs(site, exist_ok=True)
+    scaffold.new("services", site)
+    assert not loader.discover()["services"].startswith(site)
+
+
+def test_the_scaffold_command_writes_into_the_site_directory(rig, tmp_path, capsys):
+    """
+    What `trix.server plugin new` writes has to survive the next upgrade.
+    """
+    from trix import server
+    from trix.common.settings import current as settings
+
+    config = settings().config_file
+    assert server.main(["--config", config, "plugin", "new", "kept"]) == 0
+    assert os.path.isfile(os.path.join(settings().plugins.site_directory, "kept",
+                                       "manifest.yaml"))
+    assert "[PLUGINS] ENABLED" in capsys.readouterr().out
+
+
+def test_a_reconcile_with_nothing_to_change_reads_no_file(rig, tmp_path, monkeypatch):
+    """
+    At a thousand nodes the parse is the whole cost, so an unchanged file under an
+    unchanged node is not read again; a node that moved still is, and is repaired.
+    """
+    from trix.plugins.prometheus import backend as prometheus
+
+    nodes = {"node001": {"hostname": "node001.cluster", "group": "compute"},
+             "node002": {"hostname": "node002.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, nodes)
+    for name in nodes:
+        _hw_file(tmp_path, f"{name}.cluster", "compute")
+    read = []
+    real = prometheus._read_yaml
+    monkeypatch.setattr(prometheus, "_read_yaml", lambda path: read.append(path) or real(path))
+
+    backend.render_rule_files()
+    assert len([p for p in read if ".hw." in p]) == 2
+    read.clear()
+    backend.render_rule_files()
+    assert [p for p in read if ".hw." in p] == []
+
+    nodes["node002"]["group"] = "gpu"
+    assert backend.render_rule_files()["repaired"] == ["trix.hw.node002.cluster.rules"]
+    assert 'luna_group="gpu"' in (tmp_path / "trix.hw.node002.cluster.rules").read_text()

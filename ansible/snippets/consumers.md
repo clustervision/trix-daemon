@@ -74,13 +74,18 @@ role, which needs a sign-in screen the applications do not have yet.
 |---|---|---|---|
 | users | `users/luna_requests.py` | eight URLs on `/config/osuser` and `/config/osgroup` | `/api/v1/directory/users`, `.../groups`, real verbs |
 | alertx | `alertx/rest.py` | six URLs on `/export/…` and `/import/…` | `/api/v1/prometheus/rules`, `.../settings`, `.../hw-rules` |
-| slurm | `slurm/app.py` | writes `/etc/slurm` itself through the generator | `PATCH /api/v1/slurm/partitions`, and the render writes the files |
+| slurm | `slurm/app.py` | writes `/etc/slurm` itself through the generator | the slurm plugin's render writes the blocks from Luna's nodes and groups; editing partitions through the API waits for the generator to take them |
 
-alertx's "save nodes" is the one that needs a route first. It regenerates a
-node's hardware rules, or switches its alerts off, through Luna's
-`/import/prometheus_hw_rules`. trix-daemon's `PATCH .../hw-rules/<node>` takes a
-node token only, so a user route with minimum manager has to exist before the
-button can move.
+alertx's "save nodes" regenerates nodes' hardware rules, or switches their alerts off,
+through Luna's `POST /import/prometheus_hw_rules` with a list of
+`{hostname, force, nhc, disabled}`. Its route here is
+`PATCH /api/v1/prometheus/hw-rules`, minimum manager, with
+`{"nodes": [{"node": ..., "force": ..., "nhc": ..., "disabled": ...}]}`. Each node gets
+an answer of its own, a node Luna does not know is reported by name rather than
+written, and Prometheus is reloaded once for the lot.
+
+The slurm and genders plugins are not in the installer's default `[PLUGINS] ENABLED`
+while Luna's node hook still writes the same files; they go in when it stops.
 
 Two shapes the users application depends on. The directory plugin keeps one of
 them and deliberately does not keep the other, so this is what changes when

@@ -39,7 +39,7 @@ import urllib3
 import yaml
 
 from trix.common import logging as trixlog
-from trix.common.errors import BackendFailure, NotFound
+from trix.common.errors import BackendFailure, BadRequest, NotFound, TrixError
 from trix.core.luna.client import current as luna
 from trix.utils import declarations, files
 from trix.utils import shell
@@ -68,6 +68,11 @@ EXPORTERS: dict = {
 GENERIC_RULES: str = "trix.generic.rules"
 SERVICE_RULES: str = "trix.service.rules"
 HW_RULES: str = "trix.hw.{host}.rules"
+# libyaml's safe loader where it is installed: the same documents, an order of magnitude
+# faster, which is what a reconcile over every node's file needs.
+SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
+# A node or host name as Luna holds it; it ends up in a file name, so nothing else passes.
+NODE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SETTINGS_FILE: str = "rules_settings.yaml"
 
 # The hardware rules take the shape Luna's generator gave them, so a file written by
@@ -92,6 +97,15 @@ class Backend:
     """
     One writer of the Prometheus configuration.
     """
+
+    def __init__(self) -> None:
+        """
+        No hardware file seen yet.
+        """
+        # path -> (mtime, size, hostname, group) of a file as last read or written here, so a
+        # reconcile with nothing to change reads no file: at a thousand nodes, the parse is
+        # the whole cost.
+        self.seen: dict = {}
 
     # ---------------------------------------------------------------- config
 
@@ -141,14 +155,6 @@ class Backend:
             return held
         return {"settings": self._read_settings_file()}
 
-    def tuning(self, body: dict = None) -> dict:
-        """
-        Drop lists, rule group intervals, scrape intervals and retention.
-        """
-        if body:
-            return declarations.merge(PLUGIN, "tuning", "", body, {})
-        return declarations.read(PLUGIN, "tuning", "", {})
-
     # ------------------------------------------------------------- hardware
 
     def get_hw_rules(self, node: str) -> dict:
@@ -165,7 +171,36 @@ class Backend:
         Generate this node's rule file from what Prometheus knows about it. The
         node asks for this itself after boot, with a token scoped to itself.
         """
-        body = body or {}
+        written = self._write_hw_rules(node, body or {})
+        self.reload()
+        return written
+
+    def set_hw_rules(self, body: dict = None) -> dict:
+        """
+        Several nodes at once, as alertx's save-nodes asks: regenerate (force), or set
+        whether a node's alerts count for health (nhc) and fire at all (disabled).
+        """
+        results = []
+        for entry in (body or {}).get("nodes") or []:
+            node = str((entry or {}).get("node") or "")
+            if not NODE_NAME.match(node):
+                raise BadRequest(f"{node or 'an entry'} does not name a node")
+            if luna().node(node.split(".")[0]) is None:
+                results.append({"node": node, "ok": False, "message": "not a node Luna knows"})
+                continue
+            try:
+                results.append({"node": node, "ok": True, **self._write_hw_rules(node, entry)})
+            except TrixError as error:
+                results.append({"node": node, "ok": False, "message": error.message})
+        # One reload for the lot, not one per node.
+        if any(item["ok"] for item in results):
+            self.reload()
+        return {"nodes": results}
+
+    def _write_hw_rules(self, node: str, body: dict) -> dict:
+        """
+        Write one node's rule file, generated afresh when asked or when there is none.
+        """
         paths = self._hw_paths(node)
         if paths and not body.get("force"):
             path, document = paths[0], _read_yaml(paths[0])
@@ -183,7 +218,6 @@ class Backend:
                     labels["disabled"] = bool(body["disabled"])
 
         files.write_yaml(path, document)
-        self.reload()
         LOGGER.info("hardware rules written for %s at %s", node, path)
         return {"hostname": _hw_host(path), "rules": sum(len(group.get("rules", []))
                                                          for group in document.get("groups", []))}
@@ -360,7 +394,9 @@ class Backend:
         for name, record in nodes.items():
             by_host.setdefault(name.split(".")[0], name)
             by_host[record.get("hostname") or name] = name
-        for path in sorted(glob.glob(os.path.join(self._rules_dir(), HW_RULES.format(host="*")))):
+        # Read once: the setting lives in the database, and this loop runs per node.
+        directory = self._rules_dir()
+        for path in sorted(glob.glob(os.path.join(directory, HW_RULES.format(host="*")))):
             host = _hw_host(path)
             name = by_host.get(host) or by_host.get(host.split(".")[0])
             if name is None:
@@ -371,17 +407,22 @@ class Backend:
             record = nodes[name]
             want = {"hostname": record.get("hostname") or name,
                     "luna_group": record.get("group") or ""}
-            target = os.path.join(self._rules_dir(), HW_RULES.format(host=want["hostname"]))
+            target = os.path.join(directory, HW_RULES.format(host=want["hostname"]))
+            if path == target and self.seen.get(path) == _stamp(path, want):
+                continue
             try:
                 document = _read_yaml(path)
             except FileNotFoundError:
                 continue
             changed = _relabel_document(document, want)
             if not changed and path == target:
+                self.seen[path] = _stamp(path, want)
                 continue
             files.write_yaml(target, document)
+            self.seen[target] = _stamp(target, want)
             if path != target:
                 _discard(path)
+                self.seen.pop(path, None)
             repaired.append(os.path.basename(target))
         if repaired or retired:
             LOGGER.info("hardware rules reconciled: repaired %s, retired %s", repaired, retired)
@@ -506,7 +547,18 @@ def _read_yaml(path: str) -> dict:
     One rule file as a document, empty when the file is.
     """
     with open(path, "r", encoding="utf-8") as handle:
-        return yaml.safe_load(handle) or {"groups": []}
+        return yaml.load(handle, Loader=SAFE_LOADER) or {"groups": []}
+
+
+def _stamp(path: str, want: dict) -> tuple:
+    """
+    What a file looked like and which host and group it named, or None if it is gone.
+    """
+    try:
+        found = os.stat(path)
+    except OSError:
+        return None
+    return (found.st_mtime_ns, found.st_size, want["hostname"], want["luna_group"])
 
 
 def _provision_address(node: dict) -> str:

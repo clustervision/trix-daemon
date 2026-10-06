@@ -43,16 +43,17 @@ NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['
 
 echo "=== 4. plugins ==="
 LOADED=$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "sum(1 for p in d['plugins'] if p['state']=='loaded')")
-check "five plugins loaded"            "$LOADED" 5
+WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trix/etc/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
+check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
 check "luna is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/luna/reload -H "$H")" 409
 
 echo "=== 5. hot unplug and plug ==="
 PID1=$(systemctl show trix-daemon -p MainPID --value)
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/genders/disable -H "$H"
-check "routes gone after unplug"       "$(code $PLAIN/api/v1/genders/config -H "$H")" 404
-curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/genders/reload -H "$H"
-check "routes back after re-plug"      "$(code $PLAIN/api/v1/genders/config -H "$H")" 200
+curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/services/disable -H "$H"
+check "routes gone after unplug"       "$(code $PLAIN/api/v1/services/catalogue -H "$H")" 404
+curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/services/reload -H "$H"
+check "routes back after re-plug"      "$(code $PLAIN/api/v1/services/catalogue -H "$H")" 200
 PID2=$(systemctl show trix-daemon -p MainPID --value)
 check "the daemon never restarted"     "$PID1" "$PID2"
 
@@ -86,15 +87,15 @@ NT0=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2enone
 OT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2eop","password":"pw"}' | jq_ "d['token']")
 NH="x-access-tokens: $NT0"; OH="x-access-tokens: $OT"
 [ -n "$NT0" ] && [ -n "$OT" ] && say PASS "both principals can log in" || say FAIL "a principal cannot log in"
-check "no role may look"               "$(code $PLAIN/api/v1/genders/config -H "$NH")" 200
-check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$NH" -H "$J" -d '{}')" 403
+check "no role may look"               "$(code $PLAIN/api/v1/prometheus/config -H "$NH")" 200
+check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/prometheus/settings -H "$NH" -H "$J" -d '{}')" 403
 check "no role may not operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$NH")" 403
 check "an operator may operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$OH")" 200
-check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$OH" -H "$J" -d '{}')" 403
-check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$H" -H "$J" -d '{}')" 200
+check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/prometheus/settings -H "$OH" -H "$J" -d '{}')" 403
+check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/prometheus/settings -H "$H" -H "$J" -d '{}')" 200
 check "a bad role is refused"          "$(code -X PUT $PLAIN/api/v1/identity/users/e2eking -H "$H" -H "$J" -d '{"role":"king"}')" 400
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
-check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$OH" -H "$J" -d '{}')" 200
+check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/prometheus/settings -H "$OH" -H "$J" -d '{}')" 200
 check "a personal token is nobody at Luna" "$(code https://$LUNA/config/osuser -H "$NH")" 401
 check "nor through the pass-through"   "$(code $PLAIN/api/v1/luna/config/node -H "$OH")" 401
 

@@ -63,7 +63,7 @@ class Replicated:
 
 class Declaration(Base, Replicated):
     """
-    A plugin document: rule settings, a service list, a partition, a tuning knob.
+    A plugin document: rule settings, a service catalogue, where a plugin writes.
     """
 
     __tablename__ = "declaration"

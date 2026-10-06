@@ -33,11 +33,9 @@ schemas:
     force:    {type: boolean, optional: true}
     nhc:      {type: boolean, optional: true}
     disabled: {type: boolean, optional: true}
-  tuning:
-    drop:               {type: array, items: string, optional: true}
-    rule_group_interval: {type: string, optional: true}
-    scrape_interval:    {type: string, optional: true}
-    retention_size:     {type: string, optional: true}
+  # Each entry: node, and any of force, nhc and disabled as above.
+  hw_rules_many:
+    nodes:    {type: array, items: object}
   config:
     rules_directory: {type: string, optional: true}
     prometheus_url:  {type: string, optional: true}
@@ -84,19 +82,6 @@ endpoints:
     schema: settings
     summary: The settings hardware rules are generated from
 
-  - path: tuning
-    methods: [GET]
-    minimum: none
-    handler: tuning
-    summary: Drop lists, intervals and retention, held for TRIX-1984 and not yet applied
-
-  - path: tuning
-    methods: [PATCH]
-    minimum: manager
-    handler: tuning
-    schema: tuning
-    summary: Drop lists, intervals and retention, held for TRIX-1984 and not yet applied
-
   - path: hw-rules/<node>
     methods: [GET]
     minimum: none
@@ -109,6 +94,13 @@ endpoints:
     handler: import_hw_rules
     schema: hw_rules
     summary: A node asks for its own hardware rules to be generated
+
+  - path: hw-rules
+    methods: [PATCH]
+    minimum: manager
+    handler: set_hw_rules
+    schema: hw_rules_many
+    summary: Regenerate, or switch the alerts of, several nodes' hardware rules
 
   - path: renders/targets
     methods: [GET]
