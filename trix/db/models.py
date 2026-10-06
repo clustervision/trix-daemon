@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint
+from sqlalchemy import JSON, Boolean, DateTime, Integer, String, Text, UniqueConstraint, text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 from trix.common.constants import ROLE_NONE
@@ -78,7 +78,7 @@ class Declaration(Base, Replicated):
 
 class Principal(Base, Replicated):
     """
-    Someone or something the daemon can name: an administrator, a service, a node.
+    A user and the role they hold. The ini account is rootus and never has a row.
     """
 
     __tablename__ = "principal"
@@ -89,6 +89,9 @@ class Principal(Base, Replicated):
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
     # Where this principal sits on the ladder. rootus is the ini name, not a role.
     role: Mapped[str] = mapped_column(String(16), default=ROLE_NONE, nullable=False)
+    # A deleted user stays as a marker so the deletion reaches the peer; it counts as no row.
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"),
+                                          nullable=False)
 
 
 class Audit(Base):

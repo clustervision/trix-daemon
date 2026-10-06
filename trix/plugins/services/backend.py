@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import re
+
 from trix.common import logging as trixlog
 from trix.common.errors import BackendFailure, BadRequest, NotFound
 from trix.common.settings import current as settings
@@ -44,6 +46,8 @@ DEFAULT_COMMAND: str = "/usr/bin/systemctl"
 TIMEOUT: int = 60
 
 ACTIONS: tuple = ("start", "stop", "restart", "reload", "status")
+# A unit or service name: never a leading dash, so it cannot reach systemctl as an option.
+UNIT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._:-]*$")
 
 
 def run_task(action: str, unit: str) -> str:
@@ -62,8 +66,8 @@ def _command() -> str:
     """
     return settings().services.command or DEFAULT_COMMAND
 
-# A name only reaches systemd if it is in this catalogue. An endpoint that took
-# an arbitrary unit name would be a way to restart anything on the controller.
+# A name only reaches systemd if it is in this catalogue, which a manager keeps. An
+# endpoint that took an arbitrary unit name would let an operator restart anything.
 DEFAULT_CATALOGUE: dict = {
     "services": {
         "prometheus-server": "prometheus-server",
@@ -88,6 +92,9 @@ class Backend:
         Which names this daemon will act on, and the unit each one means.
         """
         if body:
+            for name, unit in (body.get("services") or {}).items():
+                if not (UNIT_NAME.match(str(name)) and UNIT_NAME.match(str(unit))):
+                    raise BadRequest(f"{name}: {unit} is not a systemd unit name")
             return declarations.write(PLUGIN, "catalogue", "", body)
         return declarations.read(PLUGIN, "catalogue", "", dict(DEFAULT_CATALOGUE))
 

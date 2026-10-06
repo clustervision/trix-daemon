@@ -63,16 +63,16 @@ class Claims:
         self.scope: str = payload.get(LUNA_CLAIM_SCOPE, "")
         self.luna_id = payload.get(LUNA_CLAIM_ID)
         if not self.kind:
-            # Luna names no kind. A provision scope is its node token and anything
-            # else is its administrator, which is the reading Luna itself applies.
+            # Luna names no kind. A provision scope is its node token; anything else is a
+            # user token, and only id 0 below has a counterpart here.
             self.kind = (TOKEN_KIND_NODE if self.scope == LUNA_SCOPE_PROVISION
                          else TOKEN_KIND_USER)
             self.source = self.source or "luna"
         if not self.subject and self.kind == TOKEN_KIND_NODE:
             self.subject = self.node
         if not self.subject and self.luna_id == LUNA_SUPERUSER_ID:
-            # Luna's id 0 is the administrator its ini names, which is the account
-            # seeded from ours. Any other id has no counterpart here, so it fails.
+            # Luna's id 0 is the administrator its ini names, the same account as ours.
+            # Any other id has no counterpart here, so the token has no subject and fails.
             self.subject = settings().api.username
 
     def __repr__(self) -> str:
@@ -85,7 +85,7 @@ class Claims:
 def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
          source: str = "local", node: str = "") -> str:
     """
-    Sign a token with this daemon's private key.
+    Sign a token with this daemon's key: the shared secret, or its private key under EdDSA.
     """
     if kind not in TOKEN_KINDS:
         raise Unauthenticated(f"unknown token kind {kind}")

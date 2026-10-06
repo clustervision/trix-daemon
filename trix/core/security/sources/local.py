@@ -31,11 +31,6 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 
-from sqlalchemy import select
-
-from trix.db import models
-
-
 class Source:
     """
     The local principal table. See the README beside it.
@@ -73,15 +68,16 @@ class Source:
 
     def _row(self, name: str):
         """
-        The principal row for this name, or None.
+        The live principal row for this name, or None.
         """
+        from trix.core.security.principals import row_for
+
         if self.handle is None:
             return None
-        return self.handle.scalar(
-            select(models.Principal).where(models.Principal.name == name))
+        return row_for(self.handle, name)
 
     def _identity(self, row) -> dict:
         """
-        The name and the row id. This source holds no groups.
+        The name, which is all the chain needs.
         """
-        return {"name": row.name, "external_id": str(row.id), "groups": []}
+        return {"name": row.name}

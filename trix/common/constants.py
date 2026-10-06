@@ -58,6 +58,8 @@ LUNA_NO_USER_ID: int = -1
 TOKEN_KIND_USER: str = "user"
 TOKEN_KIND_NODE: str = "node"
 TOKEN_KIND_SERVICE: str = "service"
+# Where the ini account is known from: trixd.ini itself, never a source or a row.
+SOURCE_INI: str = "ini"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
 
 # The ladder, lowest first. A principal with no role holds a token and nothing more.

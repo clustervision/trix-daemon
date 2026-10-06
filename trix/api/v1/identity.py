@@ -38,8 +38,9 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import API_PREFIX, ROLE_NONE, ROLE_ROOTUS, ROLES
+from trix.common.constants import API_PREFIX, ROLE_ROOTUS, ROLES
 from trix.common.errors import BadRequest, NotFound
+from trix.common.settings import current as settings
 from trix.core.security import access, audit, principals
 from trix.core.security.gate import Caller, guard
 from trix.db import models
@@ -91,8 +92,7 @@ def _shown(row: models.Principal) -> dict:
     """
     A user as the API shows it: whether it has a password here, never the password.
     """
-    role = ROLE_ROOTUS if access.is_rootus(row.name) else row.role
-    return {"name": row.name, "role": role, "enabled": row.enabled,
+    return {"name": row.name, "role": row.role, "enabled": row.enabled,
             "local": bool(row.password_digest)}
 
 
@@ -100,10 +100,16 @@ def _shown(row: models.Principal) -> dict:
 def list_users(handle: Session = Depends(scoped),
                caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
-    Every row of the one table RBAC has; anyone without a row is none.
+    The ini account first, then every live row; anyone without a row is none.
     """
-    rows = handle.scalars(select(models.Principal).order_by(models.Principal.name)).all()
-    return {"users": [_shown(row) for row in rows]}
+    rows = handle.scalars(select(models.Principal)
+                          .where(models.Principal.deleted.is_(False))
+                          .order_by(models.Principal.name)).all()
+    users = [{"name": settings().api.username, "role": ROLE_ROOTUS, "enabled": True,
+              "local": False}]
+    # A row left under the ini name by an older release is not a user: skip it.
+    users += [_shown(row) for row in rows if not access.is_rootus(row.name)]
+    return {"users": users}
 
 
 @router.put("/users/{name}", summary="Give a user a role, a password, or both")
@@ -113,11 +119,7 @@ def put_user(name: str, body: UserIn, handle: Session = Depends(scoped),
     Creates the user when it is new, and changes only what the body names when it is not.
     """
     _named(name)
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
-    created = row is None
-    if created:
-        row = models.Principal(name=name, role=ROLE_NONE, password_digest="", enabled=True)
-        handle.add(row)
+    row, created = principals.claim_row(handle, name)
     if body.role is not None:
         row.role = _ladder(body.role)
     if body.password:
@@ -139,13 +141,14 @@ def put_user(name: str, body: UserIn, handle: Session = Depends(scoped),
 def delete_user(name: str, handle: Session = Depends(scoped),
                 caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
-    The cache goes with it, so a token for the name is refused on its next request.
+    The role and any password here go at once. A local user can no longer sign in; a
+    PAM or LDAP user still can, and holds role none.
     """
     _named(name)
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    row = principals.row_for(handle, name)
     if row is None:
         raise NotFound(f"no user named {name}")
-    handle.delete(row)
+    principals.retire_row(row)
     audit.granted(caller.name, WRITE, f"user/{name}", "deleted", handle=handle)
     handle.commit()
     principals.CACHE.clear()

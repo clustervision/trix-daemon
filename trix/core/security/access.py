@@ -57,6 +57,7 @@ def permits(who, minimum: str, kind: str = "") -> tuple:
     and so does a peer daemon: a service token names a controller, never a person.
     """
     if kind == TOKEN_KIND_SERVICE:
+        # Not a role on the ladder: it is what the audit trail shows a peer as holding.
         return True, TOKEN_KIND_SERVICE
     held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):

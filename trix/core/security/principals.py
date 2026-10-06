@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Resolving a name to a principal and its usergroups, the way nsswitch does it.
+Resolving a name to a principal and its role, the way nsswitch resolves a user.
 """
 
 __author__      = "Sumit Sharma"
@@ -38,11 +38,10 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
-from trix.common.constants import ROLE_NONE
+from trix.common.constants import ROLE_NONE, SOURCE_INI
 from trix.common.settings import current as settings
 from trix.db import models
-from trix.core.security import chain
-from trix.utils import shell
+from trix.core.security import access, chain
 
 LOGGER = trixlog.get("principals")
 
@@ -76,17 +75,15 @@ def verify_password(password: str, stored: str) -> bool:
 
 class Resolved:
     """
-    A user the daemon could name, the groups its source reports, and its role here.
+    A user the daemon could name, where it was found, and its role here.
     """
 
-    def __init__(self, name: str, source: str = "", groups: list = None,
-                 role: str = ROLE_NONE) -> None:
+    def __init__(self, name: str, source: str = "", role: str = ROLE_NONE) -> None:
         """
         A principal and what is known about it.
         """
         self.name = name
         self.source = source
-        self.groups = groups or []
         self.role = role
 
     def __repr__(self) -> str:
@@ -103,7 +100,7 @@ class _Cache:
 
     def __init__(self) -> None:
         """
-        A principal and what is known about it.
+        Start empty.
         """
         self.entries: dict = {}
 
@@ -132,24 +129,72 @@ class _Cache:
 CACHE = _Cache()
 
 
+def row_for(handle: Session, name: str):
+    """
+    The live row for a name, or None. A deleted row is only a marker for the peer.
+    """
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    return None if row is None or row.deleted else row
+
+
+def claim_row(handle: Session, name: str) -> tuple:
+    """
+    The row for a name and whether it is new: created, or brought back from deletion as
+    a fresh role-none user whose version moves on, so the peer takes it over the marker.
+    """
+    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    if row is None:
+        row = models.Principal(name=name, role=ROLE_NONE, password_digest="", enabled=True)
+        handle.add(row)
+        return row, True
+    if row.deleted:
+        row.deleted = False
+        row.role = ROLE_NONE
+        row.password_digest = ""
+        row.enabled = True
+        row.version += 1
+        return row, True
+    return row, False
+
+
+def retire_row(row: models.Principal) -> None:
+    """
+    Delete a user by leaving a marker the peer can see, holding no role and no password.
+    """
+    row.deleted = True
+    row.role = ROLE_NONE
+    row.password_digest = ""
+    row.enabled = True
+    row.version += 1
+
+
+def _ini_account(name: str) -> Resolved:
+    """
+    rootus: known from trixd.ini alone, never from a row or a source.
+    """
+    return Resolved(name, SOURCE_INI)
+
+
 def resolve(handle: Session, name: str) -> Resolved:
     """
-    Walk the chain with no credential. First answer wins, a failing source is skipped.
+    The ini account first; anyone else through the chain with no credential, where the
+    first answer wins and a failing source is skipped.
     """
+    if access.is_rootus(name):
+        return _ini_account(name)
     cached = CACHE.get(f"user:{name}", settings().auth.cache)
     if cached is not None:
         return cached
     identity, source = chain.resolve(handle, name)
     if identity is None:
         return None
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
+    row = row_for(handle, name)
     if row is not None and not row.enabled:
         # Read here rather than in a source, because pam and ldap know nothing of
         # this flag: disabling somebody has to cut them whatever vouched for them.
         LOGGER.warning("%s is disabled here, so the token is refused", name)
         return None
     found = Resolved(identity.get("name") or name, source,
-                     list(identity.get("groups") or []),
                      row.role if row is not None else ROLE_NONE)
     CACHE.put(f"user:{name}", found)
     return found
@@ -157,9 +202,14 @@ def resolve(handle: Session, name: str) -> Resolved:
 
 def authenticate(handle: Session, name: str, password: str) -> Resolved:
     """
-    Walk the chain. The first source that knows the name decides, and it checks the
-    password itself: this function never sees a credential verified anywhere else.
+    The ini account is checked against trixd.ini and never walks the chain. Anyone else
+    does: the first source that knows the name decides, and checks the password itself.
     """
+    if access.is_rootus(name):
+        expected = settings().api.password
+        if expected and hmac.compare_digest(password.encode(), expected.encode()):
+            return _ini_account(name)
+        return None
     identity, source = chain.authenticate(handle, name, password)
     if identity is None:
         return None
@@ -172,16 +222,14 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
     It carries no digest: the source holds the credential and we must not.
     """
     name = identity.get("name") or ""
-    row = handle.scalar(select(models.Principal).where(models.Principal.name == name))
-    if row is None:
-        row = models.Principal(name=name, password_digest="")
-        handle.add(row)
+    row, created = claim_row(handle, name)
+    if created:
         handle.commit()
         LOGGER.info("first login of %s through %s; principal created", name, source)
     elif not row.enabled:
         LOGGER.warning("%s is disabled here, whatever %s says", name, source)
         return None
 
-    found = Resolved(name, source, list(identity.get("groups") or []), row.role)
+    found = Resolved(name, source, row.role)
     CACHE.put(f"user:{name}", found)
     return found
