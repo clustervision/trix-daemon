@@ -82,10 +82,29 @@ def test_luna_verifies_a_token_this_daemon_minted(token):
     The shared secret is the whole point: Luna decodes this without our help.
     """
     claims = jwt.decode(token, SHARED_SECRET, algorithms=["HS256"])
-    # Luna turns a token away only when it carries a provision scope, so a user
-    # token minted here is an administrator there, exactly as its own token is.
+    # Luna knows a caller by id alone. The ini account is its id 0, the
+    # administrator its own ini names, so the two agree on who that is.
     assert claims.get("scope") is None
     assert claims["sub"] == "tester"
+    assert claims["id"] == 0
+
+
+def test_a_personal_token_is_nobody_at_luna(rig):
+    """
+    Luna reads a missing id as its administrator, so every other login names one it never issues.
+    """
+    minted = tokens.mint("alice", source="pam")
+    claims = jwt.decode(minted, SHARED_SECRET, algorithms=["HS256"])
+    assert claims["id"] == -1
+    assert tokens.verify(minted).subject == "alice"
+
+
+def test_the_service_token_is_nobody_at_luna(rig):
+    """
+    The peer's token is for the peer; at Luna it is refused, not obeyed.
+    """
+    claims = jwt.decode(tokens.service_token(), SHARED_SECRET, algorithms=["HS256"])
+    assert claims["id"] == -1
 
 
 def test_a_node_token_carries_lunas_provision_scope(rig):
@@ -96,6 +115,8 @@ def test_a_node_token_carries_lunas_provision_scope(rig):
     claims = jwt.decode(minted, SHARED_SECRET, algorithms=["HS256"])
     assert claims["scope"] == "provision"
     assert claims["node"] == "node001"
+    # Luna never asks a provision token who it is, so it names no one.
+    assert "id" not in claims
 
 
 def test_a_token_luna_minted_is_accepted_here(rig):

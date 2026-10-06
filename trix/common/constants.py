@@ -46,12 +46,14 @@ TOKEN_ALGORITHMS: tuple = (TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHM_KEYPAIR)
 DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
 MINIMUM_SECRET_LENGTH: int = 32
 
-# Luna reads back only scope and node; id 0 is the administrator its ini names.
+# Luna reads back id, scope and node; id 0 is the administrator its ini names.
 LUNA_CLAIM_ID: str = "id"
 LUNA_CLAIM_NODE: str = "node"
 LUNA_CLAIM_SCOPE: str = "scope"
 LUNA_SCOPE_PROVISION: str = "provision"
 LUNA_SUPERUSER_ID: int = 0
+# Luna numbers its users from 1, so this one never exists and Luna answers 401.
+LUNA_NO_USER_ID: int = -1
 
 TOKEN_KIND_USER: str = "user"
 TOKEN_KIND_NODE: str = "node"

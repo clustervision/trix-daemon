@@ -35,7 +35,7 @@ import jwt
 
 from trix.common import logging as trixlog
 from trix.common.constants import (LUNA_CLAIM_ID, LUNA_CLAIM_NODE, LUNA_CLAIM_SCOPE,
-                                   LUNA_SCOPE_PROVISION, LUNA_SUPERUSER_ID,
+                                   LUNA_NO_USER_ID, LUNA_SCOPE_PROVISION, LUNA_SUPERUSER_ID,
                                    TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER,
                                    TOKEN_KINDS)
 from trix.common.errors import Unauthenticated
@@ -107,6 +107,11 @@ def mint(subject: str, kind: str = TOKEN_KIND_USER, expiry: int = 3600,
         # Luna confines a provision-scoped token to the node it names. Saying so
         # narrows the token: without it Luna would read this as an administrator.
         payload[LUNA_CLAIM_SCOPE] = LUNA_SCOPE_PROVISION
+    else:
+        # Luna knows a caller by id alone and reads a missing one as its administrator.
+        # Only the ini account is that administrator; anyone else is nobody there.
+        rootus = kind == TOKEN_KIND_USER and subject == settings().api.username
+        payload[LUNA_CLAIM_ID] = LUNA_SUPERUSER_ID if rootus else LUNA_NO_USER_ID
 
     # One secret means no identifier to choose between keys, so no kid header goes
     # out. That is what Luna's own tokens carry, or rather what they do not.

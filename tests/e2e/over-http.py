@@ -127,6 +127,7 @@ check("an operator may not change", call("PATCH", f"{PLAIN}/genders/config", R, 
 check("rootus is never refused", call("PATCH", f"{PLAIN}/genders/config", T, {})[0], 200)
 call("PUT", f"{PLAIN}/identity/users/httpop", T, {"role": "manager"})
 check("promoted, the same token changes", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 200)
+check("a personal token is nobody at Luna", call("GET", f"{PLAIN}/luna/config/node", R)[0], 401)
 
 print("=== whoami ===")
 status, said = call("GET", f"{PLAIN}/auth/whoami", R)

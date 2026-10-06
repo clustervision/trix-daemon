@@ -95,6 +95,8 @@ check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/genders/co
 check "a bad role is refused"          "$(code -X PUT $PLAIN/api/v1/identity/users/e2eking -H "$H" -H "$J" -d '{"role":"king"}')" 400
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
 check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 200
+check "a personal token is nobody at Luna" "$(code https://$LUNA/config/osuser -H "$NH")" 401
+check "nor through the pass-through"   "$(code $PLAIN/api/v1/luna/config/node -H "$OH")" 401
 
 echo "=== 9. whoami ==="
 WHO=$(curl -sk $PLAIN/api/v1/auth/whoami -H "$OH")
