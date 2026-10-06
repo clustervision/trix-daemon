@@ -162,6 +162,8 @@ class PluginSettings(BaseModel):
     Where plugins live, and which of them to load.
     """
     directory: str = "/trinity/local/trix/daemon/plugins"
+    # A site's own plugins: outside the package, so an upgrade leaves them alone.
+    site_directory: str = "/trinity/local/trix/plugins"
     enabled: list = Field(default_factory=list)
 
 
@@ -300,6 +302,7 @@ def load(path: str = "") -> Settings:
         luna_hashes=duration("TRIGGERS", "LUNA_HASHES", "60s"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
+        site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),
         enabled=_csv(get("PLUGINS", "ENABLED", "")))
     return data
 

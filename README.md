@@ -110,6 +110,7 @@ render once, start the background timers, and only then open the listeners.
 | `trix/api/v1/` | The daemon's own routes: auth, identity, system. |
 | `trix/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
 | `trix/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
+| `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `ansible/` | The installer role, for trinityx-combined. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
 
@@ -153,6 +154,7 @@ LUNA_HASHES = 0s
 
 [PLUGINS]
 DIRECTORY = trix/plugins
+SITE_DIRECTORY = dev/plugins
 ENABLED = services, genders
 ```
 
@@ -198,6 +200,12 @@ missing file, an unknown algorithm or an unreadable duration stops the daemon wi
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
+Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
+package, and `SITE_DIRECTORY` (`/trinity/local/trix/plugins`), a site's own, which an
+upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
+what `ENABLED` lists. slurm and genders are not listed by default: luna2-daemon's node
+hook still writes the same files, and each file should have one writer.
+
 Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
 the command line, the alertx CLI, the On Demand apps and the node image. Each names
 where the daemon answers and the ini account. Where each goes, and who can read it,
@@ -209,7 +217,7 @@ is in [ansible/README.md](ansible/README.md).
 |---|---|
 | none | read, apart from the routes kept for rootus |
 | operator | that, and act: start, stop, restart, reload or query a catalogued service |
-| manager | that, and change configuration: rules, settings, tuning, the service catalogue |
+| manager | that, and change configuration: rules, settings, a node's hardware rules, the service catalogue |
 | rootus | everything, and alone: users and roles, the cluster directory, plugin control, replication, notify, and plugin settings that name a command or a path run as root |
 
 Every user route names its minimum, and the gate compares it with the caller's role
@@ -296,7 +304,8 @@ class Backend:
 ```
 
 `python -m trix.server plugin new hello --config <path>` writes a working one into
-the plugins directory, and rootus plugs it in without a restart:
+`SITE_DIRECTORY`, and rootus plugs it in without a restart; add it to `ENABLED` so a
+restart keeps it:
 
 ```
 curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload \
@@ -310,6 +319,12 @@ reserved plugin name: it is the pass-through.
 
 ```
 python -m pytest tests/unit
+```
+
+Timing at scale, with Luna stood in for (the files, database and plugin code are real):
+
+```
+python tests/perf/thousand_nodes.py 1000 8
 ```
 
 End to end, against a running daemon and a real Luna:

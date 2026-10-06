@@ -153,20 +153,21 @@ def keygen(config_file: str = "") -> int:
 
 def plugin_new(name: str, config_file: str = "") -> int:
     """
-    Write a plugin that loads, into the directory the ini names.
+    Write a plugin that loads, into the site's own plugins directory.
     """
     from trix.core.plugins import scaffold
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
     try:
-        written = scaffold.new(name, config.plugins.directory)
+        written = scaffold.new(name, config.plugins.site_directory)
     except Exception as error:
         print(getattr(error, "message", str(error)))
         return 1
     for path in written:
         print(f"wrote {path}")
     print(f"reload it with: POST /api/v1/system/plugins/{name}/reload")
+    print(f"and add {name} to [PLUGINS] ENABLED, or a restart leaves it out")
     return 0
 
 

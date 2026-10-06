@@ -60,7 +60,8 @@ are listed in `snippets/consumers.md`.
    forced reinstall: that would reinstall every dependency at its newest and move
    the versions Luna pins in the same environment.
 2. Links the installed package to `/trinity/local/trix/daemon`, which is where the
-   daemon loads its plugins from.
+   daemon loads its shipped plugins from, and creates `/trinity/local/trix/plugins` for
+   a site's own, which an upgrade leaves alone.
 3. In an HA pair, the secondary first takes the API password (and, under EdDSA,
    the keypair) from the primary's sync directory; the primary puts them there.
 4. Writes the daemon's `trixd.ini` and the unit, and a `trixd.ini` for the command
@@ -162,6 +163,10 @@ trixd_token_algorithm: HS256       # what luna2-daemon signs with; EdDSA is the 
 trixd_pip: trix_daemon-1.0-py3-none-any.whl
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 ```
+
+`trixd_plugins`, the plugins loaded, defaults to directory, prometheus and services.
+slurm and genders are left out while luna2-daemon's node hook still writes the same
+files; add them to it once that hook stops.
 
 Everything else has a default in `roles/trix-daemon/defaults/main.yml`: the
 password, the certificate pair (`ssl_certificate`, else the controller's own

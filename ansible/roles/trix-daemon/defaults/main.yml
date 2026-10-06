@@ -24,6 +24,8 @@ trixd_root: '{{ trix_local }}/trix'
 # Outside daemon, which is a symlink into site-packages: anything under it is
 # replaced by a pip upgrade, and a directory there stops the symlink being made.
 trixd_config_dir: '{{ trixd_root }}/etc'
+# A site's own plugins, outside the package, so an upgrade leaves them alone.
+trixd_site_plugins_dir: '{{ trixd_root }}/plugins'
 trixd_db_dir: '{{ trixd_root }}/var'
 trixd_log_dir: /var/log/trix
 
@@ -74,12 +76,12 @@ trixd_alertx_config_dir: '{{ trix_local }}/alertx/cli/config'
 trixd_ood_config_dir: '{{ trix_ood }}/3.0/config'
 trixd_ood_group: "{{ ood_apps_admin_group | default('admins') }}"
 
+# slurm and genders are left out while luna2-daemon's node hook still writes the same
+# files, so each file has one writer. Add them here once that hook stops.
 trixd_plugins:
   - directory
   - prometheus
   - services
-  - slurm
-  - genders
 
 trixd_auth_chain: local, pam
 

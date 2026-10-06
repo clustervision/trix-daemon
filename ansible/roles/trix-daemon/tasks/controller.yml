@@ -68,6 +68,7 @@
   loop:
     - '{{ trixd_root }}'
     - '{{ trixd_config_dir }}'
+    - '{{ trixd_site_plugins_dir }}'
     - '{{ trixd_db_dir }}'
     - '{{ trixd_log_dir }}'
     - '{{ trixd_trust_dir }}'

@@ -17,8 +17,9 @@ README's "Words used here".
 ```
 
 That writes `manifest.yaml`, `backend.py`, `__init__.py` and a README into the
-plugins directory the ini names. It loads as it stands, so the first thing you do
-is see it work and then edit it into shape.
+site's plugins directory, `[PLUGINS] SITE_DIRECTORY` (`/trinity/local/trix/plugins` on
+a controller). It loads as it stands, so the first thing you do is see it work and then
+edit it into shape.
 
 Plug it in without restarting the daemon. Plugin control needs rootus, so get a
 token for the ini account first; on a controller the plain listener is on the
@@ -33,12 +34,12 @@ curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload -H "x-acce
 
 Two things to know before you rely on it:
 
-- **The plugins directory is part of the installed package** on a controller
-  (`/trinity/local/trix/daemon/plugins` links into site-packages), so the next
-  upgrade of trix-daemon removes a plugin written there. Keep your plugin's source
-  elsewhere and copy it in, or ship it with trix-daemon.
-- **A restart loads only the plugins `[PLUGINS] ENABLED` lists.** A plugin plugged
-  in by hand and not listed there is gone after the next restart.
+- **Where a plugin lives decides whether it survives an upgrade.** The shipped plugins
+  are in `[PLUGINS] DIRECTORY`, inside the installed package, which an upgrade
+  replaces. A site's own go in `SITE_DIRECTORY`, which an upgrade leaves alone. A site
+  plugin cannot take a shipped plugin's name: it is skipped, with a warning in the log.
+- **A restart loads only the plugins `[PLUGINS] ENABLED` lists.** Add yours there, or a
+  plugin plugged in by hand is gone after the next restart.
 
 ## The two files
 

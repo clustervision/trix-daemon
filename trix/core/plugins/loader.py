@@ -76,9 +76,26 @@ def _serialised(function):
 
 def discover(directory: str = "") -> dict:
     """
-    Every plugin on disk: a directory with a manifest, or a single script.
+    Every plugin on disk: the shipped ones, then the site's own. A site plugin cannot take
+    a shipped plugin's name, or it would replace shipped code without anyone seeing it.
     """
-    directory = directory or settings().plugins.directory
+    if directory:
+        return _scan(directory)
+    config = settings().plugins
+    found = _scan(config.directory)
+    if config.site_directory and os.path.isdir(config.site_directory):
+        for name, path in _scan(config.site_directory).items():
+            if name in found:
+                LOGGER.warning("site plugin %s ignored: a shipped plugin has that name", path)
+                continue
+            found[name] = path
+    return found
+
+
+def _scan(directory: str) -> dict:
+    """
+    The plugins in one directory: a directory with a manifest, or a single script.
+    """
     found = {}
     if not os.path.isdir(directory):
         LOGGER.warning("no plugins directory at %s", directory)

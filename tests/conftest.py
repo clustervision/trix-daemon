@@ -72,7 +72,8 @@ def build(tmp_path, algorithm: str = "HS256"):
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trix.db"}\n'
         "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
         "[TRIGGERS]\nLUNA_HASHES = 0s\n"
-        f"[PLUGINS]\nDIRECTORY = {plugins}\nENABLED = directory, services\n",
+        f"[PLUGINS]\nDIRECTORY = {plugins}\nSITE_DIRECTORY = {tmp_path / 'site-plugins'}\n"
+        "ENABLED = directory, services\n",
         encoding="utf-8")
 
     config = configuration.set_current(configuration.load(str(ini)))
