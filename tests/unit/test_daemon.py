@@ -1053,7 +1053,7 @@ def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers
 
 def test_the_ini_account_is_not_a_row_the_api_changes(rig, client, headers):
     """
-    rootus is set in trix.ini; the API shows it as rootus and refuses to change or remove it.
+    rootus is set in trixd.ini; the API shows it as rootus and refuses to change or remove it.
     """
     assert client.put(f"{API_PREFIX}/identity/users/tester", json={"role": "manager"},
                       headers=headers).status_code == 400

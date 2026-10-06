@@ -35,7 +35,7 @@ check "the token is accepted"          "$(code $PLAIN/api/v1/system/plugins -H "
 check "bearer works too"               "$(code $PLAIN/api/v1/system/plugins -H "Authorization: Bearer $T")" 200
 
 echo "=== 3. the same token at Luna ==="
-LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/trix/etc/trix.ini | sed 's/.*= *//')
+LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/trix/etc/trixd.ini | sed 's/.*= *//')
 check "trix token works on Luna"       "$(code https://$LUNA/config/node -H "$H")" 200
 check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H "$H")" 200
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")

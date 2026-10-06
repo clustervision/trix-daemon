@@ -82,7 +82,7 @@ class KeyRing:
         if not self.secret:
             raise TrixError(
                 f"{self.algorithm} signs with a shared secret and none was found: set "
-                f"[TOKENS] SECRET_KEY in trix.ini, or put it in {self.config.secret_file}")
+                f"[TOKENS] SECRET_KEY in trixd.ini, or put it in {self.config.secret_file}")
         if len(self.secret) < MINIMUM_SECRET_LENGTH:
             LOGGER.warning("the shared secret is %d characters long; the installer "
                            "writes %d", len(self.secret), MINIMUM_SECRET_LENGTH)

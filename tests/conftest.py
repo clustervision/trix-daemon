@@ -60,7 +60,7 @@ def build(tmp_path, algorithm: str = "HS256"):
     secret = tmp_path / "secret.key"
     secret.write_text(SHARED_SECRET, encoding="utf-8")
 
-    ini = tmp_path / "trix.ini"
+    ini = tmp_path / "trixd.ini"
     ini.write_text(
         "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
         "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"

@@ -68,7 +68,7 @@ class LunaClient:
     def _authenticate(self) -> str:
         """
         Fetch a token from Luna, which still wants a username and a password from
-        trix.ini. TRIX-2085 replaces that with a service principal, only here.
+        trixd.ini. TRIX-2085 replaces that with a service principal, only here.
         """
         config = settings().luna
         try:

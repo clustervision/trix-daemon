@@ -61,7 +61,7 @@ def build_config(config):
     if config.api.insecure_bind:
         served.insecure_bind = [config.api.insecure_bind]
     if not served.bind and not served.insecure_bind:
-        raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trix.ini")
+        raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 
     served.workers = 1
     served.accesslog = "-"
@@ -165,7 +165,7 @@ def main(argv: list = None) -> int:
     Command line for the unit and for the installer.
     """
     parser = argparse.ArgumentParser(prog=DAEMON_NAME, description=__doc__)
-    parser.add_argument("--config", default="", help="path to trix.ini")
+    parser.add_argument("--config", default="", help="path to trixd.ini")
     parser.add_argument("--version", action="version", version=DAEMON_VERSION)
     parser.add_argument("command", nargs="?", default="serve",
                         choices=("serve", "keygen", "plugin"),

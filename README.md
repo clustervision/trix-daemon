@@ -69,7 +69,7 @@ two daemons cannot drift onto different certificates.
 ## Running it
 
 ```
-/trinity/local/python/bin/python3 -m trix.server --config <path>/trix.ini
+/trinity/local/python/bin/python3 -m trix.server --config <path>/trixd.ini
 ```
 
 Tokens are HS256 over the secret at `/trinity/local/etc/ssl/secret.key`, the same

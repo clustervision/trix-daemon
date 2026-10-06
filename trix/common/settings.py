@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Typed settings read once from trix.ini. Importing this module has no side effects.
+Typed settings read once from trixd.ini. Importing this module has no side effects.
 """
 
 __author__      = "Sumit Sharma"
@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 from trix.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHARED,
                                    TOKEN_ALGORITHMS)
 
-DEFAULT_CONFIG: str = "/trinity/local/trix/etc/trix.ini"
+DEFAULT_CONFIG: str = "/trinity/local/trix/etc/trixd.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
 _FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 3600}

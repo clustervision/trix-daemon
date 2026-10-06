@@ -11,7 +11,7 @@ the code is right and this page is a bug.
 ## Start from something that loads
 
 ```
-/trinity/local/python/bin/python3 -m trix.server plugin new hello --config <path>/trix.ini
+/trinity/local/python/bin/python3 -m trix.server plugin new hello --config <path>/trixd.ini
 ```
 
 That writes `manifest.yaml`, `backend.py`, `__init__.py` and a README into the

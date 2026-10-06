@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-The Alembic environment. The URL comes from trix.ini unless one is passed in.
+The Alembic environment. The URL comes from trixd.ini unless one is passed in.
 """
 
 __author__      = "Sumit Sharma"
