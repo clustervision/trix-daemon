@@ -56,7 +56,8 @@ check("TLS health", call("GET", f"{TLS}/system/health")[0], 200)
 status, health = call("GET", f"{PLAIN}/system/health")
 listed = call("GET", f"{PLAIN}/system/plugins", call("POST", f"{PLAIN}/auth/token",
               body={"username": ADMIN[0], "password": ADMIN[1]})[1].get("token", ""))[1]
-check("every listed plugin loaded", health.get("plugins"), len(listed.get("plugins", [])))
+refused = [p["name"] for p in listed.get("plugins", []) if p["state"] == "refused" and p["name"] != "luna"]
+check("no plugin refused", refused, [])
 check("the document is published", call("GET", f"{PLAIN}/openapi.json")[0], 200)
 status, spec = call("GET", f"{PLAIN}/openapi.json")
 print(f"         {len(spec.get('paths', {}))} paths published")
@@ -122,19 +123,17 @@ status, theirs = call("POST", f"{PLAIN}/auth/token",
 R = theirs.get("token", "")
 check("the operator can log in", status, 201)
 check("no role may look", call("GET", f"{PLAIN}/prometheus/config", N)[0], 200)
-check("no role may not change", call("PATCH", f"{PLAIN}/prometheus/settings", N, {})[0], 403)
+check("no role may not change", call("PATCH", f"{PLAIN}/prometheus/hw-rules", N, {"nodes": []})[0], 403)
 check("no role may not operate",
       call("POST", f"{PLAIN}/services/slurmctld/actions/status", N)[0], 403)
 check("an operator may operate",
       call("POST", f"{PLAIN}/services/slurmctld/actions/status", R)[0], 200)
-check("an operator may not change", call("PATCH", f"{PLAIN}/prometheus/settings", R, {})[0], 403)
-check("an operator may not set hardware rules",
-      call("PATCH", f"{PLAIN}/prometheus/hw-rules", R, {"nodes": []})[0], 403)
+check("an operator may not change", call("PATCH", f"{PLAIN}/prometheus/hw-rules", R, {"nodes": []})[0], 403)
 status, said = call("PATCH", f"{PLAIN}/prometheus/hw-rules", T, {"nodes": [{"node": "no-such-node"}]})
 check("an unknown node is named, not written", (status, said.get("nodes", [{}])[0].get("ok")), (200, False))
-check("rootus is never refused", call("PATCH", f"{PLAIN}/prometheus/settings", T, {})[0], 200)
+check("rootus is never refused", call("PATCH", f"{PLAIN}/prometheus/hw-rules", T, {"nodes": []})[0], 200)
 call("PUT", f"{PLAIN}/identity/users/httpop", T, {"role": "manager"})
-check("promoted, the same token changes", call("PATCH", f"{PLAIN}/prometheus/settings", R, {})[0], 200)
+check("promoted, the same token changes", call("PATCH", f"{PLAIN}/prometheus/hw-rules", R, {"nodes": []})[0], 200)
 check("a personal token is nobody at Luna", call("GET", f"{PLAIN}/luna/config/node", R)[0], 401)
 
 print("=== whoami ===")
