@@ -44,18 +44,16 @@ class Source:
     """
 
     def __init__(self, handle=None) -> None:
-        # python-pam sits on libpam, and pwd and grp are Unix only. All three are
-        # imported here so this source fails loudly and the rest of the chain works.
         """
         Hold what this object needs.
         """
-        import grp
+        # python-pam sits on libpam, and pwd is Unix only. Both are imported here so
+        # this source fails loudly and the rest of the chain works.
         import pam
         import pwd
 
         self.pam = pam
         self.pwd = pwd
-        self.grp = grp
         self.service = settings().auth.pam_service
 
     def authenticate(self, name: str = "", password: str = "") -> tuple:
@@ -65,6 +63,8 @@ class Source:
         entry = self._passwd(name)
         if entry is None:
             return None, f"{name} is not a user of this system"
+        if not self._can_log_in(entry):
+            return False, f"{name} is a system account"
         conversation = self.pam.pam()
         if not conversation.authenticate(name, password, service=self.service):
             return False, f"PAM refused {name}: {conversation.reason}"
@@ -114,12 +114,6 @@ class Source:
 
     def _identity(self, entry) -> dict:
         """
-        The name, the uid as the stable id, and every group the name service gives.
+        The name as the name service spells it, which is all the chain needs.
         """
-        groups = []
-        for gid in os.getgrouplist(entry.pw_name, entry.pw_gid):
-            try:
-                groups.append(self.grp.getgrgid(gid).gr_name)
-            except KeyError:
-                continue
-        return {"name": entry.pw_name, "external_id": str(entry.pw_uid), "groups": groups}
+        return {"name": entry.pw_name}

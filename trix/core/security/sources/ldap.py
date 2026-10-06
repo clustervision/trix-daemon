@@ -41,11 +41,11 @@ class Source:
     """
 
     def __init__(self, handle=None) -> None:
-        # ldap3 is pure Python; imported here so a controller without it fails this
-        # source loudly and leaves the rest of the chain working.
         """
         Hold what this object needs.
         """
+        # ldap3 is pure Python; imported here so a controller without it fails this
+        # source loudly and leaves the rest of the chain working.
         import ldap3
 
         self.ldap3 = ldap3
@@ -57,8 +57,6 @@ class Source:
         self.bind_dn = config.ldap_bind_dn or None
         self.bind_password = config.ldap_bind_password or None
         self.user_attribute = config.ldap_user_attribute
-        self.id_attribute = config.ldap_id_attribute
-        self.group_attribute = config.ldap_group_attribute
 
     def authenticate(self, name: str = "", password: str = "") -> tuple:
         """
@@ -94,14 +92,11 @@ class Source:
         """
         safe = self.ldap3.utils.conv.escape_filter_chars(name)
         with self._connection(self.bind_dn, self.bind_password) as connection:
-            connection.search(self.base, f"({self.user_attribute}={safe})",
-                              attributes=[self.id_attribute, self.group_attribute])
+            # No attributes asked for: the entry's DN is all the bind needs.
+            connection.search(self.base, f"({self.user_attribute}={safe})")
             if not connection.entries:
                 return None
-            found = connection.entries[0]
-            return {"dn": found.entry_dn,
-                    "id": self._first(found, self.id_attribute),
-                    "groups": self._all(found, self.group_attribute)}
+            return {"dn": connection.entries[0].entry_dn}
 
     def _bind(self, dn: str, password: str) -> bool:
         """
@@ -113,25 +108,8 @@ class Source:
         except self.ldap3.core.exceptions.LDAPBindError:
             return False
 
-    def _first(self, found, attribute: str) -> str:
-        """
-        The first value of an attribute, or an empty string.
-        """
-        values = self._all(found, attribute)
-        return str(values[0]) if values else ""
-
-    def _all(self, found, attribute: str) -> list:
-        """
-        Every value of an attribute the entry may not carry at all.
-        """
-        try:
-            return [str(value) for value in found[attribute].values]
-        except (KeyError, self.ldap3.core.exceptions.LDAPKeyError):
-            return []
-
     def _identity(self, name: str, entry: dict) -> dict:
         """
-        The login name, the stable id, and the group names without their branch.
+        The login name, which is all the chain needs.
         """
-        groups = [str(item).split(",")[0].replace("cn=", "") for item in entry["groups"]]
-        return {"name": name, "external_id": entry["id"] or entry["dn"], "groups": groups}
+        return {"name": name}
