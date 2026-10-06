@@ -32,15 +32,13 @@ __status__      = "Production"
 from trix.common import logging as trixlog
 from trix.common.errors import BackendFailure
 from trix.plugins.slurm.backend import node_set
-from trix.utils import declarations
 
 LOGGER = trixlog.get("genders")
 
-PLUGIN: str = "genders"
-
-DEFAULT_CONFIG: dict = {
+# The generator writes this file and this managed block and takes no other.
+WRITES: dict = {
     "genders_file": "/etc/genders",
-    "manager": "TrinityX",
+    "managed_block": "TrinityX",
 }
 
 
@@ -61,13 +59,11 @@ class Backend:
     A thin shell around the package.
     """
 
-    def config(self, body: dict = None) -> dict:
+    def config(self) -> dict:
         """
-        Where this plugin writes.
+        Where this plugin writes, which the generator fixes.
         """
-        if body:
-            return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
-        return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
+        return dict(WRITES)
 
     def render_genders(self) -> dict:
         """
@@ -78,6 +74,7 @@ class Backend:
             LOGGER.info("no nodes yet, so nothing to write")
             return {"nodes": 0, "file": self.config()["genders_file"]}
         if not _generator().Genders(fullset):
-            raise BackendFailure("the genders generator reported a failure")
+            raise BackendFailure(f"{WRITES['genders_file']} has no {WRITES['managed_block']} "
+                                 "managed block, so it was left alone")
         LOGGER.info("wrote the genders file for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "file": self.config()["genders_file"]}

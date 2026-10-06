@@ -40,6 +40,7 @@ from trix.common.settings import current as settings
 from trix.core.luna.client import current as luna
 from trix.core.security import audit, principals, tokens
 from trix.core.security.gate import Caller, guard
+from trix.db import engine as database
 from trix.db.engine import scoped
 
 LOGGER = trixlog.get("auth")
@@ -115,7 +116,7 @@ def issue_node(node: str, body: NodeProof) -> Token:
 
     # Luna answers this on a username and password when security is off. The token it
     # mints is one Luna accepts too, so the node name alone can never be enough.
-    handle = next(scoped())
+    handle = database.session()
     try:
         who = principals.authenticate(handle, body.username, body.password)
     finally:

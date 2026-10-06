@@ -21,8 +21,6 @@ description: >
   Luna's nodes through the trinityx-config-slurm package. One writer per file.
 
 schemas:
-  partitions:
-    partitions: {type: object}
   config:
     nodes_file:      {type: string, optional: true}
     partitions_file: {type: string, optional: true}
@@ -39,34 +37,18 @@ endpoints:
 
   - path: config
     methods: [PATCH]
-    minimum: manager
+    # rootus: these are paths the daemon writes and a command it runs, both as root.
+    minimum: rootus
     handler: config
     schema: config
     summary: Where this plugin writes and what it runs afterwards
-
-  - path: partitions
-    methods: [GET]
-    minimum: none
-    handler: partitions
-    summary: The partition definitions the render uses
-
-  - path: partitions
-    methods: [PATCH]
-    minimum: manager
-    handler: partitions
-    schema: partitions
-    summary: The partition definitions the render uses
 
   - path: renders/config
     methods: [GET]
     minimum: none
     handler: render_config
     render:
-      inputs: [luna.node, luna.group, partitions]
-      triggers: [luna.hook, luna.hashes]
+      inputs: [luna.node, luna.group]
       coalesce: 2s
       serve: json
-      files: /etc/slurm
-      blocks: TrinityX
-      after: [scontrol reconfigure]
     summary: What the last render wrote

@@ -199,7 +199,7 @@ class Backend:
         host = record.get("hostname") or node
         want = {"hostname": host, "luna_group": record.get("group") or ""}
         target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
-        paths = self._hw_paths(was) + self._hw_paths(node) if was else self._hw_paths(node)
+        paths = (self._hw_paths(was) + self._hw_paths(node)) if was else self._hw_paths(node)
         moved, rewritten = [], []
         for path in dict.fromkeys(paths):
             if not os.path.isfile(path):
@@ -397,9 +397,14 @@ class Backend:
         generic = [item for item in groups if not str(item.get("name", "")).startswith("service")]
         service = [item for item in groups if str(item.get("name", "")).startswith("service")]
         for filename, subset in ((GENERIC_RULES, generic), (SERVICE_RULES, service)):
-            if not subset:
-                continue
             path = os.path.join(directory, filename)
+            # An emptied subset is written empty, so a group taken out stops firing; a
+            # file that already says the same is left alone, so nothing reloads for it.
+            try:
+                if _read_yaml(path) == {"groups": subset}:
+                    continue
+            except (OSError, yaml.YAMLError):
+                pass
             files.write_yaml(path, {"groups": subset})
             written.append(path)
         return written

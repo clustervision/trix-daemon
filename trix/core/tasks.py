@@ -34,9 +34,9 @@ import queue
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from trix.common import logging as trixlog
 from trix.db import engine as database
@@ -151,7 +151,25 @@ def _loop() -> None:
         if identifier is None:
             return
         _run_one(identifier)
+        _prune()
         _work.task_done()
+
+
+def _prune() -> None:
+    """
+    Forget finished tasks older than KEEP_SECONDS, so the table stays the size of a day.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=KEEP_SECONDS)
+    handle = database.session()
+    try:
+        handle.execute(delete(models.Task).where(models.Task.state.in_((DONE, FAILED)),
+                                                  models.Task.finished < cutoff))
+        handle.commit()
+    except Exception as error:
+        handle.rollback()
+        LOGGER.error("could not prune finished tasks: %s", error)
+    finally:
+        handle.close()
 
 
 def start() -> None:
@@ -162,6 +180,7 @@ def start() -> None:
     if _worker is not None and _worker.is_alive():
         return
     _requeue()
+    _prune()
     _worker = threading.Thread(target=_loop, name="trix-tasks", daemon=True)
     _worker.start()
     LOGGER.info("task worker started")
@@ -188,11 +207,11 @@ def _requeue() -> None:
         handle.close()
 
 
-def drain(timeout: float = 5.0) -> None:
+def drain(timeout: float = 5.0) -> bool:
     """
-    Wait for the queue to empty, which is what a test wants and nothing else does.
+    Wait up to timeout for every queued task to finish; a test's helper. True if they did.
     """
     deadline = time.monotonic() + timeout
-    while not _work.empty() and time.monotonic() < deadline:
+    while _work.unfinished_tasks and time.monotonic() < deadline:
         time.sleep(0.01)
-    _work.join()
+    return not _work.unfinished_tasks

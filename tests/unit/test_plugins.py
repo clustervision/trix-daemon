@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import os
+
 import pytest
 
 from trix.common.constants import API_PREFIX
@@ -146,13 +148,35 @@ def test_the_service_catalogue_round_trips(rig):
 
 def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch):
     """
-    One line per node, from Luna's list, with no call per node.
+    The whole node list goes to the generator in one call, and a file without the
+    managed block is reported as such rather than as a generic failure.
     """
+    from trix.common.errors import BackendFailure
     from trix.plugins.genders import backend as genders
 
-    monkeypatch.setattr(genders, "_generator", lambda: None)
-    document = genders.Backend().config()
-    assert isinstance(document, dict)
+    nodes = [{"name": "node001", "group": "compute"}, {"name": "node002", "group": "compute"}]
+    given = []
+    managed = {"block": True}
+
+    class Generate:
+        """
+        Stands in for trinityx_config_genders.Generate.
+        """
+
+        def Genders(self, fullset):
+            """
+            Record the call and say whether the file had its block.
+            """
+            given.append(fullset)
+            return managed["block"]
+
+    monkeypatch.setattr(genders, "node_set", lambda: nodes)
+    monkeypatch.setattr(genders, "_generator", Generate)
+    assert genders.Backend().render_genders() == {"nodes": 2, "file": "/etc/genders"}
+    assert given == [nodes]
+    managed["block"] = False
+    with pytest.raises(BackendFailure, match="no TrinityX managed block"):
+        genders.Backend().render_genders()
 
 
 def test_the_prometheus_targets_render_is_service_discovery(rig, monkeypatch):
@@ -192,17 +216,6 @@ def test_the_prometheus_targets_render_is_service_discovery(rig, monkeypatch):
     for entry in document:
         assert "targets" in entry and isinstance(entry["targets"], list)
         assert "labels" in entry and isinstance(entry["labels"], dict)
-
-
-def test_the_slurm_partitions_round_trip(rig):
-    """
-    The On Demand application edits partitions through this, so it must persist.
-    """
-    from trix.plugins.slurm import backend as slurm
-
-    backend = slurm.Backend()
-    backend.partitions(body={"partitions": {"defq": {"nodes": "node[001-004]"}}})
-    assert backend.partitions()["partitions"]["defq"]["nodes"] == "node[001-004]"
 
 
 def test_the_scaffold_writes_a_plugin_that_loads(rig, tmp_path, client, headers):
@@ -485,3 +498,31 @@ def test_two_repairs_may_meet_on_one_file(rig, tmp_path, monkeypatch):
     _discard(str(tmp_path / "never-there.rules"))
     assert backend._retire(str(tmp_path / "never-there.rules")) == ""
     assert backend.remove_hw_rules("node001") == {"node": "node001", "retired": []}
+
+
+def test_an_emptied_rule_group_empties_its_file(rig, tmp_path, monkeypatch):
+    """
+    Taking every service group out leaves the service file empty, not as it was.
+    """
+    from trix.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    service = os.path.join(str(tmp_path), prometheus.SERVICE_RULES)
+    backend.rules(body={"groups": [{"name": "service-a", "rules": []},
+                                   {"name": "generic", "rules": []}]})
+    assert "service-a" in open(service, encoding="utf-8").read()
+    backend.rules(body={"groups": [{"name": "generic", "rules": []}]})
+    assert "service-a" not in open(service, encoding="utf-8").read()
+
+
+def test_a_directory_change_names_the_user_in_the_path_only(rig, client, headers, monkeypatch):
+    """
+    Changing a shell needs no username in the body: the path already names the user.
+    """
+    from trix.plugins.directory import backend as directory
+
+    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
+    monkeypatch.setattr(directory.shell, "run_json", lambda *a, **k: {"uid": "carol"})
+    answer = client.patch(f"{API_PREFIX}/directory/users/carol", json={"shell": "/bin/zsh"},
+                          headers=headers)
+    assert answer.status_code == 200, answer.text

@@ -29,10 +29,12 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import functools
 import importlib
 import importlib.util
 import os
 import sys
+import threading
 
 from fastapi import FastAPI
 from sqlalchemy import select
@@ -41,7 +43,7 @@ from trix.common import logging as trixlog
 from trix.common.constants import (PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
                                    RESERVED_PLUGIN)
 from trix.common.errors import NotFound, PluginRefused
-from trix.common.settings import current as settings
+from trix.common.settings import current as settings, seconds
 from trix.core.plugins import binder, manifest as manifests
 from trix.core.plugins.registry import LoadedPlugin, current as registry
 from trix.core.plugins.swap import exchange
@@ -52,6 +54,24 @@ from trix.db import models
 LOGGER = trixlog.get("loader")
 
 MODULE_PREFIX: str = "trix_plugin_"
+
+# A reload from the control endpoint and one from SIGHUP arrive on different threads.
+# One at a time keeps the route table and the registry telling the same story.
+_LOCK = threading.RLock()
+
+
+def _serialised(function):
+    """
+    Run the wrapped load, unload or full load with no other one in progress.
+    """
+    @functools.wraps(function)
+    def run(*args, **kwargs):
+        """
+        Hold the loader's lock for the whole call.
+        """
+        with _LOCK:
+            return function(*args, **kwargs)
+    return run
 
 
 def discover(directory: str = "") -> dict:
@@ -153,22 +173,37 @@ def _from_directory(name: str, path: str):
     return manifest, backend_class()
 
 
-def _register_renders(manifest, backend) -> None:
+def _collect_renders(manifest, backend) -> list:
     """
-    Hand every declared render to the engine, with its producer.
+    Every declared render with its producer, checked but not yet handed to the engine.
     """
-    engine = renders()
-    engine.forget(manifest.plugin)
+    found = []
     for endpoint in manifest.endpoints:
         if endpoint.render is None:
             continue
         slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
-        producer = getattr(backend, endpoint.handler or f"render_{slug}", None)
+        method = endpoint.handler or f"render_{slug}"
+        try:
+            seconds(endpoint.render.coalesce, 2)
+        except ValueError as error:
+            raise PluginRefused(f"{endpoint.path}: coalesce {error}") from None
+        producer = getattr(backend, method, None)
         if producer is None or not callable(producer):
             raise PluginRefused(
-                f"{endpoint.path} declares a render with no producer "
-                f"named render_{slug} on the backend")
-        engine.register(manifest.plugin, endpoint.path, endpoint.render, producer)
+                f"{endpoint.path} declares a render with no producer named {method} "
+                "on the backend")
+        found.append((endpoint.path, endpoint.render, producer))
+    return found
+
+
+def _register_renders(plugin: str, found: list) -> None:
+    """
+    Replace a plugin's renders with the new ones, once the plugin is certain to load.
+    """
+    engine = renders()
+    engine.forget(plugin)
+    for path, spec, producer in found:
+        engine.register(plugin, path, spec, producer)
 
 
 def _bind_hooks(manifest, backend) -> dict:
@@ -185,6 +220,7 @@ def _bind_hooks(manifest, backend) -> dict:
     return hooks
 
 
+@_serialised
 def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     """
     Load or reload one plugin. On a refusal nothing already serving is disturbed.
@@ -210,7 +246,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
                 f"manifest calls itself {manifest.plugin} but sits at {name}")
 
         models_for_plugin = manifests.build_models(manifest)
-        _register_renders(manifest, backend)
+        found_renders = _collect_renders(manifest, backend)
         hooks = _bind_hooks(manifest, backend)
         router = binder.build(manifest, backend, models_for_plugin, renders())
 
@@ -224,10 +260,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         # that is fatal: at startup it is not, at the control endpoint it is.
         reason = error.message if isinstance(error, PluginRefused) else str(error)
         LOGGER.error("plugin %s refused: %s", name, reason)
-        renders().forget(name)
         _remember(known.refuse(name, reason, path))
         raise PluginRefused(reason) from None
 
+    _register_renders(name, found_renders)
     entry = LoadedPlugin(name, PLUGIN_STATE_LOADED)
     entry.manifest = manifest
     entry.backend = backend
@@ -242,6 +278,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     return entry
 
 
+@_serialised
 def unload(app: FastAPI, name: str) -> LoadedPlugin:
     """
     Take a plugin out of the route table. Its paths answer 404 from the next request.
@@ -258,6 +295,7 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
     return entry
 
 
+@_serialised
 def load_all(app: FastAPI) -> dict:
     """
     Load everything discovered, honouring the enabled list and stored state.

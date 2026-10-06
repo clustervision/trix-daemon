@@ -32,8 +32,25 @@ schemas:
     givenname:  {type: string, optional: true}
     expiry:     {type: integer, optional: true}
     groups:     {type: array, items: string, optional: true}
+  # A change names the user in the path, so its body carries no name and every field
+  # is optional.
+  user_change:
+    password:   {type: string, optional: true}
+    uid:        {type: integer, optional: true}
+    gid:        {type: integer, optional: true}
+    shell:      {type: string, optional: true}
+    home:       {type: string, optional: true}
+    mail:       {type: string, optional: true}
+    phone:      {type: string, optional: true}
+    surname:    {type: string, optional: true}
+    givenname:  {type: string, optional: true}
+    expiry:     {type: integer, optional: true}
+    groups:     {type: array, items: string, optional: true}
   group:
     groupname:  {type: string, pattern: "^[a-zA-Z_][a-zA-Z0-9_.-]*$"}
+    gid:        {type: integer, optional: true}
+    members:    {type: array, items: string, optional: true}
+  group_change:
     gid:        {type: integer, optional: true}
     members:    {type: array, items: string, optional: true}
 
@@ -61,7 +78,7 @@ endpoints:
     methods: [PATCH]
     minimum: rootus
     handler: update_user
-    schema: user
+    schema: user_change
     summary: Update a user
 
   - path: users/<name>
@@ -93,7 +110,7 @@ endpoints:
     methods: [PATCH]
     minimum: rootus
     handler: update_group
-    schema: group
+    schema: group_change
     summary: Update a group
 
   - path: groups/<name>

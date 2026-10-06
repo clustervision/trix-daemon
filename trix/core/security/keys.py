@@ -128,7 +128,9 @@ def generate(private_path: str, public_path: str = "") -> str:
         encoding=serialization.Encoding.PEM,
         format=serialization.PrivateFormat.PKCS8,
         encryption_algorithm=serialization.NoEncryption())
-    with open(private_path, "wb") as handle:
+    # Created 0600, so the key is never readable by others, not even for a moment.
+    descriptor = os.open(private_path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(descriptor, "wb") as handle:
         handle.write(blob)
     os.chmod(private_path, 0o600)
 

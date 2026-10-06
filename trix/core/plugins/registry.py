@@ -74,7 +74,7 @@ class Registry:
 
     def __init__(self) -> None:
         """
-        One plugin and the state it is in.
+        No plugins yet.
         """
         self.plugins: dict = {}
 

@@ -29,11 +29,11 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import os
 import threading
 import time
 
 import requests
-import urllib3
 
 from trix.common import logging as trixlog
 from trix.common.constants import API_PREFIX, TOKEN_HEADER
@@ -43,8 +43,6 @@ from trix.core.security import tokens
 from trix.db import engine as database
 
 LOGGER = trixlog.get("sweep")
-
-urllib3.disable_warnings()
 
 TIMEOUT: int = 30
 
@@ -69,10 +67,19 @@ class Sweep:
         """
         url = f"https://{peer}{API_PREFIX}/system/replication/{path}"
         headers = {TOKEN_HEADER: tokens.service_token()}
-        answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=False)
+        # The service token passes every check, so it goes only to a peer that proves
+        # itself with a certificate the cluster's own CA signed.
+        answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=self._trust())
         if answer.status_code >= 400:
             raise RuntimeError(f"{peer} answered {answer.status_code}")
         return answer.json()
+
+    def _trust(self):
+        """
+        The cluster CA to check a peer against, or the system store when it is missing.
+        """
+        ca_file = settings().replication.ca_file
+        return ca_file if ca_file and os.path.isfile(ca_file) else True
 
     def pass_over(self, peer: str) -> dict:
         """
@@ -127,6 +134,10 @@ class Sweep:
         if not config.enabled or not config.peers:
             LOGGER.info("no replication peers configured, so no sweep is running")
             return False
+        if self._trust() is True:
+            LOGGER.warning("CA_FILE %s is missing: peers are checked against the system store, "
+                           "which does not hold the cluster CA, so every pass will fail",
+                           config.ca_file)
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="trix-sweep", daemon=True)
         self.thread.start()
@@ -135,7 +146,7 @@ class Sweep:
 
     def shutdown(self) -> None:
         """
-        Ask the sweep to stop and wait briefly for it.
+        Ask the sweep to stop; it ends at its next wake-up.
         """
         self.stop.set()
 

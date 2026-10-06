@@ -93,7 +93,7 @@ def start(url: str) -> Engine:
     """
     global _engine, _factory
     path = _sqlite_path(url)
-    if path:
+    if path and os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
     migrate(url)
     _engine = create_engine(url, future=True, connect_args={"check_same_thread": False}

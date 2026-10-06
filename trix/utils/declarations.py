@@ -42,7 +42,7 @@ LOGGER = trixlog.get("declarations")
 
 def _origin() -> str:
     """
-    Which controller wrote this. The anti-entropy merge compares it.
+    Which controller wrote this, so a document can be traced to where it was changed.
     """
     return socket.gethostname().split(".")[0]
 

@@ -63,7 +63,7 @@ ONE=$(curl -sk $PLAIN/api/v1/prometheus/renders/targets | jq_ "len(d)")
 TWO=$(curl -sk $PLAIN/api/v1/prometheus/renders/targets | jq_ "len(d)")
 check "the render is stable"           "$ONE" "$TWO"
 
-echo "=== 7. the queue, and the thirteenth route ==="
+echo "=== 7. the queue, and the status of a queued action ==="
 R=$(curl -sk -X POST $PLAIN/api/v1/services/slurmctld/actions/restart -H "$H")
 ID=$(echo "$R" | jq_ "d['request_id']")
 [ -n "$ID" ] && say PASS "an action is queued as $ID" || say FAIL "no request id"
@@ -87,14 +87,14 @@ OT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2eop","
 NH="x-access-tokens: $NT0"; OH="x-access-tokens: $OT"
 [ -n "$NT0" ] && [ -n "$OT" ] && say PASS "both principals can log in" || say FAIL "a principal cannot log in"
 check "no role may look"               "$(code $PLAIN/api/v1/genders/config -H "$NH")" 200
-check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$NH" -H "$J" -d '{}')" 403
+check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$NH" -H "$J" -d '{}')" 403
 check "no role may not operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$NH")" 403
 check "an operator may operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$OH")" 200
-check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 403
-check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$H" -H "$J" -d '{}')" 200
+check "an operator may not change"     "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$OH" -H "$J" -d '{}')" 403
+check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$H" -H "$J" -d '{}')" 200
 check "a bad role is refused"          "$(code -X PUT $PLAIN/api/v1/identity/users/e2eking -H "$H" -H "$J" -d '{"role":"king"}')" 400
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
-check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/genders/config -H "$OH" -H "$J" -d '{}')" 200
+check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/prometheus/tuning -H "$OH" -H "$J" -d '{}')" 200
 check "a personal token is nobody at Luna" "$(code https://$LUNA/config/osuser -H "$NH")" 401
 check "nor through the pass-through"   "$(code $PLAIN/api/v1/luna/config/node -H "$OH")" 401
 

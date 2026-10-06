@@ -114,13 +114,15 @@ def run(task: str, param: str = "") -> str:
     """
     payload = json.loads(param or "{}")
     outcomes = []
-    for plugin, handler in registry().hooks_for(task):
-        try:
-            outcomes.append(f"{plugin}: {handler(**payload)}")
-        except Exception as error:
-            LOGGER.error("%s could not act on %s: %s", plugin, task, error)
-            outcomes.append(f"{plugin}: failed: {error}")
-    # Only now: a reconcile woken beside a hook could retire a file the hook is moving.
+    # Under the engine's lock, so no render, the hash poller's included, runs mid-hook and
+    # retires a file the hook is moving.
+    with renders().lock:
+        for plugin, handler in registry().hooks_for(task):
+            try:
+                outcomes.append(f"{plugin}: {handler(**payload)}")
+            except Exception as error:
+                LOGGER.error("%s could not act on %s: %s", plugin, task, error)
+                outcomes.append(f"{plugin}: failed: {error}")
     woken = renders().notify(f"luna.{task.split('.')[0]}")
     if woken:
         outcomes.append(f"woke {', '.join(woken)}")

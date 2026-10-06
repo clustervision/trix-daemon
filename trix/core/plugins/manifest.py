@@ -56,18 +56,14 @@ TYPES: dict = {
 
 class Render(BaseModel):
     """
-    A derived output: what it reads, what wakes it, and where it goes.
+    A derived output: what it reads, how long a burst is gathered, and whether it is served.
     """
 
     model_config = ConfigDict(extra="forbid")
 
     inputs: list = Field(default_factory=list)
-    triggers: list = Field(default_factory=list)
     coalesce: str = "2s"
     serve: str = ""
-    files: str = ""
-    blocks: str = ""
-    after: list = Field(default_factory=list)
 
 
 class Endpoint(BaseModel):

@@ -6,7 +6,9 @@ import urllib.error
 import ssl
 import time
 
-HOST = sys.argv[1] if len(sys.argv) > 1 else "192.168.164.21"
+if len(sys.argv) < 2:
+    sys.exit("usage: over-http.py <controller>")
+HOST = sys.argv[1]
 PLAIN = f"http://{HOST}:8051/api/v1"
 TLS = f"https://{HOST}:8050/api/v1"
 ADMIN = ("trix", "trix")
@@ -89,7 +91,7 @@ print(f"         {len(first)} targets")
 status, again = call("GET", f"{PLAIN}/prometheus/renders/targets")
 check("the render is stable", first == again, True)
 
-print("=== the queue and the thirteenth route ===")
+print("=== the queue and the status of a queued action ===")
 status, queued = call("POST", f"{PLAIN}/services/slurmctld/actions/restart", T)
 check("an action is queued", status, 200)
 identifier = queued.get("request_id", "")
@@ -118,15 +120,15 @@ status, theirs = call("POST", f"{PLAIN}/auth/token",
 R = theirs.get("token", "")
 check("the operator can log in", status, 201)
 check("no role may look", call("GET", f"{PLAIN}/genders/config", N)[0], 200)
-check("no role may not change", call("PATCH", f"{PLAIN}/genders/config", N, {})[0], 403)
+check("no role may not change", call("PATCH", f"{PLAIN}/prometheus/tuning", N, {})[0], 403)
 check("no role may not operate",
       call("POST", f"{PLAIN}/services/slurmctld/actions/status", N)[0], 403)
 check("an operator may operate",
       call("POST", f"{PLAIN}/services/slurmctld/actions/status", R)[0], 200)
-check("an operator may not change", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 403)
-check("rootus is never refused", call("PATCH", f"{PLAIN}/genders/config", T, {})[0], 200)
+check("an operator may not change", call("PATCH", f"{PLAIN}/prometheus/tuning", R, {})[0], 403)
+check("rootus is never refused", call("PATCH", f"{PLAIN}/prometheus/tuning", T, {})[0], 200)
 call("PUT", f"{PLAIN}/identity/users/httpop", T, {"role": "manager"})
-check("promoted, the same token changes", call("PATCH", f"{PLAIN}/genders/config", R, {})[0], 200)
+check("promoted, the same token changes", call("PATCH", f"{PLAIN}/prometheus/tuning", R, {})[0], 200)
 check("a personal token is nobody at Luna", call("GET", f"{PLAIN}/luna/config/node", R)[0], 401)
 
 print("=== whoami ===")

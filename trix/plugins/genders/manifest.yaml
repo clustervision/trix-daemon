@@ -20,24 +20,12 @@ description: >
   The genders file, rendered from the same node list through the
   trinityx-config-genders package.
 
-schemas:
-  config:
-    genders_file: {type: string, optional: true}
-    manager:      {type: string, optional: true}
-
 endpoints:
   - path: config
     methods: [GET]
     minimum: none
     handler: config
-    summary: Where this plugin writes
-
-  - path: config
-    methods: [PATCH]
-    minimum: manager
-    handler: config
-    schema: config
-    summary: Where this plugin writes
+    summary: Where this plugin writes, which the generator fixes
 
   - path: renders/genders
     methods: [GET]
@@ -45,9 +33,6 @@ endpoints:
     handler: render_genders
     render:
       inputs: [luna.node, luna.group]
-      triggers: [luna.hook, luna.hashes]
       coalesce: 2s
       serve: json
-      files: /etc/genders
-      blocks: TrinityX
     summary: What the last render wrote

@@ -42,8 +42,8 @@ LOGGER = trixlog.get("triggers")
 
 class LunaHashes:
     """
-    One request and one comparison per pass, which is what lets the hook be lossy:
-    a notification that never arrives is picked up here instead.
+    One request and one comparison per pass. A change made at Luna directly, never
+    passing through this daemon, is picked up here wherever Luna answers the route.
     """
 
     def __init__(self) -> None:
@@ -93,6 +93,14 @@ class LunaHashes:
                         ", ".join(changed), ", ".join(woken) or "nothing")
         return woken
 
+    def baseline(self) -> None:
+        """
+        Read the hashes once before the reconcile, so that a change landing after it is
+        seen as a change rather than absorbed into the first reading.
+        """
+        if settings().triggers.luna_hashes > 0:
+            self.once()
+
     def _loop(self) -> None:
         """
         One pass per interval until the daemon stops.
@@ -117,7 +125,7 @@ class LunaHashes:
 
     def shutdown(self) -> None:
         """
-        Ask the poller to stop and wait briefly for it.
+        Ask the poller to stop; it ends at its next wake-up.
         """
         self.stop.set()
 

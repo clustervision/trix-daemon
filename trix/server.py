@@ -52,15 +52,23 @@ def build_config(config):
     served.bind = []
     served.insecure_bind = []
 
-    if config.api.certfile and config.api.keyfile:
-        if not os.path.isfile(config.api.certfile):
-            raise SystemExit(f"certificate {config.api.certfile} is missing")
-        served.bind = [config.api.bind]
+    tls = bool(config.api.certfile and config.api.keyfile)
+    if tls:
+        for path in (config.api.certfile, config.api.keyfile):
+            if not os.path.isfile(path):
+                raise SystemExit(f"{path} is missing; check CERTFILE and KEYFILE in trixd.ini")
+        served.bind = [config.api.bind] if config.api.bind else []
         served.certfile = config.api.certfile
         served.keyfile = config.api.keyfile
-    if config.api.insecure_bind:
-        served.insecure_bind = [config.api.insecure_bind]
-    if not served.bind and not served.insecure_bind:
+        if config.api.insecure_bind:
+            served.insecure_bind = [config.api.insecure_bind]
+    elif config.api.insecure_bind:
+        # Hypercorn opens insecure_bind only beside a TLS listener; without one, the
+        # plain listener has to be the bind itself.
+        served.bind = [config.api.insecure_bind]
+        LOGGER.warning("no CERTFILE and KEYFILE: serving plain HTTP on %s only",
+                       config.api.insecure_bind)
+    if not served.bind:
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 
     served.workers = 1
@@ -116,7 +124,9 @@ def _on_hangup(application) -> None:
             return
         LOGGER.info("SIGHUP: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")
 
-    asyncio.get_running_loop().add_signal_handler(signal.SIGHUP, reload_plugins)
+    # In the worker pool: a reload imports and validates, and must not hold the event loop.
+    loop = asyncio.get_running_loop()
+    loop.add_signal_handler(signal.SIGHUP, lambda: loop.run_in_executor(None, reload_plugins))
 
 
 def keygen(config_file: str = "") -> int:
@@ -174,6 +184,12 @@ def main(argv: list = None) -> int:
                         help="for plugin: new")
     parser.add_argument("name", nargs="?", default="", help="the plugin name")
     args = parser.parse_args(argv)
+    try:
+        configuration.load(args.config)
+    except ValueError as error:
+        # A wrong setting stops the daemon here, named, rather than as a traceback later.
+        print(f"{DAEMON_NAME}: {error}", file=sys.stderr)
+        return 2
 
     if args.command == "keygen":
         return keygen(args.config)

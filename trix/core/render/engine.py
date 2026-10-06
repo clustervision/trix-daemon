@@ -64,12 +64,17 @@ class Render:
 
     def wants(self, changed: str) -> bool:
         """
-        Whether a change to this kind of object is one of our inputs.
+        Whether a change is one of our inputs: a Luna object such as luna.node, or one of
+        this plugin's own declarations, named bare in the manifest and plugin.kind here.
         """
         if not changed:
             return True
-        return any(str(item) == changed or str(item).startswith(f"{changed}.")
-                   or changed.startswith(f"{item}.") for item in self.spec.inputs)
+        for item in map(str, self.spec.inputs):
+            if not item.startswith("luna."):
+                item = f"{self.plugin}.{item}"
+            if item == changed or item.startswith(f"{changed}.") or changed.startswith(f"{item}."):
+                return True
+        return False
 
 
 class Engine:
@@ -79,7 +84,7 @@ class Engine:
 
     def __init__(self) -> None:
         """
-        One render, its declaration and what produces it.
+        No renders yet; the lock is held by every render and every hook.
         """
         self.renders: dict = {}
         self.lock = threading.RLock()

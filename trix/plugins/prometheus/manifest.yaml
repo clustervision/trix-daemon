@@ -52,7 +52,8 @@ endpoints:
 
   - path: config
     methods: [PATCH]
-    minimum: manager
+    # rootus: these are a path the daemon writes and a command it runs, both as root.
+    minimum: rootus
     handler: config
     schema: config
     summary: Where this plugin writes, and what it reloads
@@ -87,14 +88,14 @@ endpoints:
     methods: [GET]
     minimum: none
     handler: tuning
-    summary: Drop lists, intervals and retention
+    summary: Drop lists, intervals and retention, held for TRIX-1984 and not yet applied
 
   - path: tuning
     methods: [PATCH]
     minimum: manager
     handler: tuning
     schema: tuning
-    summary: Drop lists, intervals and retention
+    summary: Drop lists, intervals and retention, held for TRIX-1984 and not yet applied
 
   - path: hw-rules/<node>
     methods: [GET]
@@ -115,7 +116,6 @@ endpoints:
     handler: render_targets
     render:
       inputs: [luna.node, luna.network]
-      triggers: [luna.hook, luna.hashes]
       serve: json
       coalesce: 2s
     summary: Service discovery targets, served from the render
@@ -126,7 +126,5 @@ endpoints:
     handler: render_rule_files
     render:
       inputs: [settings, rules, luna.node]
-      triggers: [luna.hook]
-      files: /trinity/local/etc/prometheus_server/rules/
-      after: [prometheus reload]
+    # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk

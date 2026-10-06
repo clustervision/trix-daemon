@@ -38,6 +38,8 @@ from sqlalchemy.orm import Session
 
 from trix.common import logging as trixlog
 from trix.common.constants import ROLE_NONE
+from trix.core.render.engine import current as renders
+from trix.core.security import principals
 from trix.db import models
 
 LOGGER = trixlog.get("replication")
@@ -63,6 +65,19 @@ def _stamp(value) -> str:
     return str(value or "")
 
 
+def _unstamp(text: str):
+    """
+    A document's timestamp as the naive UTC time the column stores, or None.
+    """
+    try:
+        value = datetime.fromisoformat(str(text))
+    except ValueError:
+        return None
+    if value.tzinfo is not None:
+        value = value.astimezone(timezone.utc).replace(tzinfo=None)
+    return value
+
+
 def _common(row) -> dict:
     """
     The columns every replicated document carries.
@@ -78,7 +93,7 @@ def to_document(handle: Session, table: str, row) -> dict:
     body = dict(_common(row))
     if table == "principal":
         body.update(key=[row.name], name=row.name, password_digest=row.password_digest,
-                    enabled=bool(row.enabled), role=row.role)
+                    enabled=bool(row.enabled), role=row.role, deleted=bool(row.deleted))
     elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
                     kind=row.kind, name=row.name, body=dict(row.body or {}))
@@ -129,7 +144,8 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         return {"name": key[0],
                 "password_digest": document.get("password_digest", ""),
                 "enabled": bool(document.get("enabled", True)),
-                "role": document.get("role", ROLE_NONE)}
+                "role": document.get("role", ROLE_NONE),
+                "deleted": bool(document.get("deleted", False))}
     return {"plugin": key[0], "kind": key[1], "name": key[2],
             "body": dict(document.get("body") or {})}
 
@@ -152,13 +168,20 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
     """
     model = MODELS[table]
     added = updated = conflicts = 0
+    touched = set()
     for document in documents:
         columns = _columns(handle, table, document)
+        # The peer's timestamp travels with the row; stamped afresh here, the two copies
+        # would never hash the same and each pass would copy the row back again.
+        stamped = _unstamp(document.get("updated_at"))
+        if stamped is not None:
+            columns["updated_at"] = stamped
         row = _find(handle, table, document["key"])
         if row is None:
             handle.add(model(version=int(document.get("version") or 1),
                              origin=document.get("origin", ""), **columns))
             added += 1
+            touched.add(tuple(document["key"][:2]))
             continue
         if _newer(document, row):
             for column, value in columns.items():
@@ -166,6 +189,7 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
             row.version = int(document.get("version") or 1)
             row.origin = document.get("origin", "")
             updated += 1
+            touched.add(tuple(document["key"][:2]))
         elif (int(document.get("version") or 1) == int(row.version or 1)
               and str(document.get("updated_at") or "") == _stamp(row.updated_at)
               and document != to_document(handle, table, row)):
@@ -173,4 +197,12 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
             LOGGER.warning("conflict on %s %s: same version and time, different content; "
                            "keeping the local row", table, document["key"])
     handle.commit()
+    if table == "principal" and (added or updated):
+        # A role or a disable from the peer applies on the next request, not after the cache.
+        principals.CACHE.clear()
+    if table == "declaration":
+        # A plugin's own settings arriving from the peer wake the renders that read them,
+        # as a change made here would.
+        for plugin, kind in sorted(touched):
+            renders().notify(f"{plugin}.{kind}")
     return {"added": added, "updated": updated, "conflicts": conflicts}

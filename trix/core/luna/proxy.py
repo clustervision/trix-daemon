@@ -51,13 +51,13 @@ HOP_BY_HOP: tuple = ("connection", "keep-alive", "transfer-encoding", "upgrade",
                      "content-length", "content-encoding", "host")
 
 
-def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
+def _forward(method: str, url: str, headers: dict, body: bytes):
     """
     The blocking call itself, run in the worker pool.
     """
     config = settings().luna
     try:
-        return requests.request(method, url, headers=headers, params=params, data=body or None,
+        return requests.request(method, url, headers=headers, data=body or None,
                                 timeout=config.timeout, verify=config.verify_certificate)
     except requests.RequestException as error:
         raise ServiceUnavailable(f"Luna is not answering: {error}") from None
@@ -65,17 +65,20 @@ def _forward(method: str, url: str, headers: dict, params: dict, body: bytes):
 
 async def forward(path: str, request: Request) -> Response:
     """
-    Hand /api/v1/luna/xyz to Luna as /xyz, byte for byte, enforcement left to Luna.
-    The call blocks, so it runs in the worker pool rather than on the event loop.
+    Hand /api/v1/luna/xyz to Luna as /xyz: method, query, headers and body as sent, less
+    the connection headers. Luna decides who may. The call blocks, so it runs in the pool.
     """
     config = settings().luna
     url = f"{config.protocol}://{config.endpoint}/{path}"
+    if request.url.query:
+        # As sent: a parsed copy would keep only the last of a repeated key.
+        url = f"{url}?{request.url.query}"
     headers = {key: value for key, value in request.headers.items()
                if key.lower() not in HOP_BY_HOP}
     body = await request.body()
 
     answer = await run_in_threadpool(
-        _forward, request.method, url, headers, dict(request.query_params), body)
+        _forward, request.method, url, headers, body)
 
     passed = {key: value for key, value in answer.headers.items()
               if key.lower() not in HOP_BY_HOP}

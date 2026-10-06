@@ -32,7 +32,6 @@ __status__      = "Production"
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
-from sqlalchemy import select
 
 from trix.common import logging as trixlog
 from trix.common.settings import current as settings
@@ -42,27 +41,10 @@ from trix.core.plugins import loader
 from trix.core.render.engine import current as renders
 from trix.core.render.triggers import current as luna_hashes
 from trix.core.replication.sweep import current as sweep
-from trix.core.security import keys, principals
+from trix.core.security import keys
 from trix.db import engine as database
-from trix.db import models
 
 LOGGER = trixlog.get("lifespan")
-
-
-def seed(handle) -> None:
-    """
-    The account the ini names: rootus. Its row holds its password digest and no role.
-    """
-    config = settings().api
-    if config.username:
-        row = handle.scalar(select(models.Principal)
-                            .where(models.Principal.name == config.username))
-        if row is None:
-            handle.add(models.Principal(
-                name=config.username,
-                password_digest=principals.hash_password(config.password)))
-            LOGGER.info("seeded the local principal %s", config.username)
-    handle.commit()
 
 
 def start(app: FastAPI) -> None:
@@ -71,13 +53,6 @@ def start(app: FastAPI) -> None:
     """
     config = settings()
     database.start(config.database.url)
-
-    handle = database.session()
-    try:
-        seed(handle)
-    finally:
-        handle.close()
-
     keys.set_current(keys.KeyRing(config.tokens).load())
 
     states = loader.load_all(app)
@@ -88,6 +63,8 @@ def start(app: FastAPI) -> None:
     hooks.install()
     tasks.start()
 
+    # The baseline comes first, so a change made at Luna during the reconcile is caught.
+    luna_hashes().baseline()
     done = renders().run_all()
     LOGGER.info("reconciled %d render(s) before opening the listeners", done)
 
@@ -99,7 +76,7 @@ def start(app: FastAPI) -> None:
 
 def stop(app: FastAPI) -> None:
     """
-    Stop the timers. Nothing here holds a queue, so there is nothing to drain.
+    Stop the timers. Queued tasks are in the database and are requeued on the next start.
     """
     luna_hashes().shutdown()
     sweep().shutdown()

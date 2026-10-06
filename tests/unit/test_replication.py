@@ -116,8 +116,9 @@ def test_the_merge_carries_a_principal_across_by_name(rig, tmp_path):
 
     handle = database.session()
     try:
-        # The seeded administrator already holds the first local identifier, so the
-        # two sides cannot line up by accident.
+        # A local row takes the first identifier, so the two sides cannot line up by accident.
+        handle.add(models.Principal(name="zed"))
+        handle.commit()
         tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
         ours = handle.scalar(select(models.Principal).where(models.Principal.name == "alice"))
         assert ours is not None and ours.role == "manager"
@@ -204,12 +205,13 @@ def test_a_single_controller_runs_no_sweep(rig):
 
 def test_one_table_carries_the_whole_of_rbac(rig):
     """
-    A user, a password, a role, as the whiteboard drew it: no groups, flags or modes.
+    A user, a password, a role, as the whiteboard drew it: no groups, flags or modes. The
+    rest is bookkeeping so the row and its deletion reach the peer.
     """
     from trix.db import models
 
     columns = {c.name for c in models.Principal.__table__.columns}
-    assert columns == {"id", "name", "password_digest", "enabled", "role",
+    assert columns == {"id", "name", "password_digest", "enabled", "role", "deleted",
                        "version", "origin", "updated_at"}, columns
     for gone in ("Usergroup", "Membership", "UsergroupMap", "Permission"):
         assert not hasattr(models, gone), gone
@@ -276,3 +278,69 @@ def test_a_role_survives_the_round_trip(rig):
     crossing = [d for d in documents if d["key"] == ["traveller"]]
     assert crossing, documents
     assert crossing[0]["role"] == "operator"
+
+
+def test_two_controllers_converge_and_stay_converged(rig, tmp_path):
+    """
+    The peer's timestamp travels with the row, so after one exchange each way the hashes
+    agree and a further pass copies nothing.
+    """
+    peer = _peer(tmp_path)
+    peer.add(models.Principal(name="alice", role="manager", origin="peer"))
+    peer.commit()
+    handle = database.session()
+    try:
+        tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+        assert tables.table_hash(handle, "principal") == tables.table_hash(peer, "principal")
+        again = tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        assert again == {"added": 0, "updated": 0, "conflicts": 0}
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_a_deletion_reaches_the_peer_instead_of_coming_back(rig, client, headers, tmp_path):
+    """
+    A deleted user stays as a marker with a newer version, so the peer drops them too.
+    """
+    from trix.common.constants import API_PREFIX
+
+    client.put(f"{API_PREFIX}/identity/users/bob", json={"role": "manager"}, headers=headers)
+    handle = database.session()
+    peer = _peer(tmp_path)
+    try:
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+        assert client.delete(f"{API_PREFIX}/identity/users/bob",
+                             headers=headers).status_code == 200
+        handle.expire_all()
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+        tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        theirs = peer.scalar(select(models.Principal).where(models.Principal.name == "bob"))
+        assert theirs.deleted and theirs.role == "none"
+        listed = client.get(f"{API_PREFIX}/identity/users", headers=headers).json()["users"]
+        assert "bob" not in [user["name"] for user in listed]
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_a_declaration_from_the_peer_wakes_the_renders_that_read_it(rig, tmp_path, monkeypatch):
+    """
+    A plugin's settings arriving by replication render here, as a change made here would.
+    """
+    from trix.core.render.engine import current as renders
+
+    woken = []
+    monkeypatch.setattr(renders(), "notify", lambda changed="": woken.append(changed) or [])
+    peer = _peer(tmp_path)
+    peer.add(models.Declaration(plugin="prometheus", kind="rules", name="",
+                                body={"groups": []}, origin="peer"))
+    peer.commit()
+    handle = database.session()
+    try:
+        tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+    finally:
+        handle.close()
+        peer.close()
+    assert woken == ["prometheus.rules"]

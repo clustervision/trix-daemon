@@ -41,17 +41,22 @@ from trix.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHAR
 DEFAULT_CONFIG: str = "/trinity/local/trix/etc/trixd.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
-_FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400, "": 3600}
+_FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
-def seconds(value: str, fallback: int = 3600) -> int:
+def seconds(value: str, fallback: int = 3600, bare: int = 1) -> int:
     """
-    Turn 30s, 5m, 1h or a bare number into seconds.
+    Turn 30s, 5m, 1h or 2d into seconds; a bare number counts in units of bare seconds.
+    Empty is the fallback, and anything else unreadable is an error.
     """
-    found = _DURATION.match(str(value or ""))
-    if not found:
+    text = str(value or "").strip()
+    if not text:
         return fallback
-    return int(found.group(1)) * _FACTOR[found.group(2).lower()]
+    found = _DURATION.match(text)
+    if not found:
+        raise ValueError(f"{text} is not a duration such as 30s, 5m, 1h or 2d")
+    unit = found.group(2).lower()
+    return int(found.group(1)) * (_FACTOR[unit] if unit else bare)
 
 
 class LoggerSettings(BaseModel):
@@ -126,8 +131,6 @@ class AuthSettings(BaseModel):
     ldap_bind_dn: str = ""
     ldap_bind_password: str = ""
     ldap_user_attribute: str = "uid"
-    ldap_id_attribute: str = "entryUUID"
-    ldap_group_attribute: str = "memberOf"
 
 
 class ServicesSettings(BaseModel):
@@ -144,6 +147,7 @@ class ReplicationSettings(BaseModel):
     peers: list = Field(default_factory=list)
     interval: int = 300
     enabled: bool = True
+    ca_file: str = "/trinity/local/etc/ssl/cluster-ca.crt"
 
 
 class TriggerSettings(BaseModel):
@@ -224,6 +228,8 @@ def load(path: str = "") -> Settings:
     Read the ini into a Settings object, falling back to the defaults above.
     """
     path = path or os.environ.get("TRIX_CONFIG") or DEFAULT_CONFIG
+    if not os.path.isfile(path):
+        raise ValueError(f"{path} does not exist")
     parser = RawConfigParser()
     parser.read(path)
 
@@ -235,6 +241,15 @@ def load(path: str = "") -> Settings:
             return parser.get(section, option)
         return fallback
 
+    def duration(section: str, option: str, default: str, bare: int = 1) -> int:
+        """
+        One duration from the ini; an unreadable one names itself and stops the daemon.
+        """
+        try:
+            return seconds(get(section, option, default), seconds(default), bare)
+        except ValueError as error:
+            raise ValueError(f"[{section}] {option}: {error}") from None
+
     data = Settings(config_file=path)
     data.logger = LoggerSettings(
         level=get("LOGGER", "LEVEL", data.logger.level),
@@ -244,7 +259,8 @@ def load(path: str = "") -> Settings:
         insecure_bind=get("API", "INSECURE_BIND", data.api.insecure_bind),
         certfile=get("API", "CERTFILE", ""),
         keyfile=get("API", "KEYFILE", ""),
-        expiry=seconds(get("API", "EXPIRY", "1h")),
+        # A bare EXPIRY counts in hours, as luna.ini's does.
+        expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""))
     secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
@@ -262,27 +278,26 @@ def load(path: str = "") -> Settings:
         verify_certificate=_bool(get("LUNA", "VERIFY_CERTIFICATE", "no")),
         username=get("LUNA", "USERNAME", ""),
         password=get("LUNA", "PASSWORD", ""),
-        timeout=seconds(get("LUNA", "TIMEOUT", "20s"), 20))
+        timeout=duration("LUNA", "TIMEOUT", "20s"))
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
-        cache=seconds(get("AUTH", "CACHE", "60s"), 60),
+        cache=duration("AUTH", "CACHE", "60s"),
         pam_service=get("AUTH_PAM", "SERVICE", "login"),
         ldap_uri=get("AUTH_LDAP", "URI", ""),
         ldap_base=get("AUTH_LDAP", "BASE", ""),
         ldap_bind_dn=get("AUTH_LDAP", "BIND_DN", ""),
         ldap_bind_password=get("AUTH_LDAP", "BIND_PASSWORD", ""),
-        ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"),
-        ldap_id_attribute=get("AUTH_LDAP", "ID_ATTRIBUTE", "entryUUID"),
-        ldap_group_attribute=get("AUTH_LDAP", "GROUP_ATTRIBUTE", "memberOf"))
+        ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"))
     data.services = ServicesSettings(
         command=get("SERVICES", "COMMAND", data.services.command))
     data.replication = ReplicationSettings(
         peers=_csv(get("REPLICATION", "PEERS", "")),
-        interval=seconds(get("REPLICATION", "INTERVAL", "300s"), 300),
-        enabled=_bool(get("REPLICATION", "ENABLED", "yes")))
+        interval=duration("REPLICATION", "INTERVAL", "300s"),
+        enabled=_bool(get("REPLICATION", "ENABLED", "yes")),
+        ca_file=get("REPLICATION", "CA_FILE", data.replication.ca_file))
     data.triggers = TriggerSettings(
-        luna_hashes=seconds(get("TRIGGERS", "LUNA_HASHES", "60s"), 60))
+        luna_hashes=duration("TRIGGERS", "LUNA_HASHES", "60s"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
         enabled=_csv(get("PLUGINS", "ENABLED", "")))

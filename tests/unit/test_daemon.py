@@ -30,6 +30,8 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import inspect
+import os
+import re
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -175,30 +177,48 @@ def test_an_endpoint_refuses_without_a_token(client):
     assert answer.status_code == 401
 
 
-def test_every_user_endpoint_declares_a_minimum_role(rig):
+def test_every_user_endpoint_declares_a_minimum_role():
     """
-    Derived from the loaded manifests: it fails on the first one that forgets.
+    Read from every shipped manifest, not only the ones a test loads: it fails on the
+    first endpoint that forgets.
     """
-    from trix.core.plugins.registry import current as registry
-    for entry in registry().plugins.values():
-        if entry.manifest is None:
-            continue
-        for endpoint in entry.manifest.endpoints:
-            if endpoint.public or endpoint.token == "node":
+    import glob
+    import os
+
+    import yaml
+
+    manifests = glob.glob(os.path.join(os.path.dirname(trix.__file__), "plugins", "*",
+                                       "manifest.yaml"))
+    assert len(manifests) == 5, manifests
+    for path in manifests:
+        with open(path, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for endpoint in document["endpoints"]:
+            if endpoint.get("public") or endpoint.get("token") == "node":
                 continue
-            assert endpoint.minimum in MINIMUMS, f"{entry.name}/{endpoint.path} declares none"
+            assert endpoint.get("minimum") in MINIMUMS, f"{path}: {endpoint['path']}"
 
 
 def test_the_published_document_matches_the_route_table(rig):
     """
     Enumerate one, assert the other.
     """
+    from trix.api.v1 import auth, identity, system
+    from trix.core.luna import proxy
+
     document = rig.openapi()
     published = set(document["paths"])
-    registered = {route.path for route in rig.router.routes
+    # The daemon's own routers sit in the table as one entry each, so they are listed
+    # from the routers themselves; plugin routes are swapped in one by one.
+    routes = list(rig.router.routes)
+    for module in (auth, identity, system, proxy):
+        routes += module.router.routes
+    # The document shows {path} where the route says {path:path}.
+    registered = {re.sub(r"\{(\w+):\w+\}", r"{\1}", route.path) for route in routes
                   if getattr(route, "include_in_schema", False)
                   and getattr(route, "path", "").startswith(API_PREFIX)}
     assert registered - published == set()
+    assert published - registered == set()
 
 
 def test_luna_is_reserved(rig):
@@ -358,6 +378,23 @@ def test_no_source_authenticates_without_checking_the_password(rig):
         assert "password" in before, f"{name} answers True without using the password"
 
 
+def _local_user(name: str, password: str) -> None:
+    """
+    A user whose password the local source holds.
+    """
+    from trix.core.security import principals
+    from trix.db import engine as database
+    from trix.db import models
+
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name=name,
+                                    password_digest=principals.hash_password(password)))
+        handle.commit()
+    finally:
+        handle.close()
+
+
 def test_a_source_that_cannot_work_is_skipped(rig, monkeypatch):
     """
     A missing library must not stop a local principal from logging in.
@@ -365,14 +402,15 @@ def test_a_source_that_cannot_work_is_skipped(rig, monkeypatch):
     from trix.core.security import chain
     from trix.db import engine as database
 
+    _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["ldap", "local"])
     handle = database.session()
     try:
-        identity, source = chain.authenticate(handle, "tester", "secret")
+        identity, source = chain.authenticate(handle, "alice", "secret")
     finally:
         handle.close()
     assert source == "local"
-    assert identity["name"] == "tester"
+    assert identity["name"] == "alice"
 
 
 def test_a_refusal_stops_the_chain(rig, monkeypatch):
@@ -382,10 +420,11 @@ def test_a_refusal_stops_the_chain(rig, monkeypatch):
     from trix.core.security import chain
     from trix.db import engine as database
 
+    _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["local", "pam"])
     handle = database.session()
     try:
-        identity, source = chain.authenticate(handle, "tester", "wrong")
+        identity, source = chain.authenticate(handle, "alice", "wrong")
     finally:
         handle.close()
     assert identity is None
@@ -399,10 +438,11 @@ def test_an_unknown_source_name_is_skipped(rig, monkeypatch):
     from trix.core.security import chain
     from trix.db import engine as database
 
+    _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["nosuchsource"])
     handle = database.session()
     try:
-        identity, source = chain.authenticate(handle, "tester", "secret")
+        identity, source = chain.authenticate(handle, "alice", "secret")
     finally:
         handle.close()
     assert identity is None
@@ -614,16 +654,18 @@ def test_a_manager_may_change_what_an_operator_may_not(rig, client, headers):
     Same endpoint, one step up the ladder: that is the axis the design turns on.
     """
     mo = _principal(client, headers, "mo", "manager")
-    assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
-                        headers=mo).status_code in (200, 422)
+    catalogue = {"services": {"slurmctld": "slurmctld"}}
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json=catalogue,
+                        headers=mo).status_code == 200
 
 
 def test_rootus_is_checked_against_nothing(rig, client, headers):
     """
     The account the ini names holds no role and needs none.
     """
-    assert client.patch(f"{API_PREFIX}/services/catalogue", json={},
-                        headers=headers).status_code in (200, 422)
+    catalogue = {"services": {"slurmctld": "slurmctld"}}
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json=catalogue,
+                        headers=headers).status_code == 200
     said = client.get(f"{API_PREFIX}/auth/whoami", headers=headers).json()
     assert said["rootus"] is True
     assert said["role"] == "none"
@@ -742,7 +784,7 @@ def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):
 
 def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch):
     """
-    The thirteenth route: Luna answers an action with an id and you poll it.
+    The status route: an action answers at once with an id, and the caller polls it.
     """
     from trix.core import tasks
     from trix.plugins.services import backend as services
@@ -813,9 +855,9 @@ def test_a_disabled_principal_cannot_log_in_again(rig, client, headers):
     """
     And the source refuses the password too, not only the resolve.
     """
-    client.post(f"{API_PREFIX}/identity/principals",
-                json={"name": "barred", "password": "pw", "enabled": False},
-                headers=headers)
+    assert client.put(f"{API_PREFIX}/identity/users/barred",
+                      json={"password": "pw", "enabled": False},
+                      headers=headers).status_code == 200
     answer = client.post(f"{API_PREFIX}/auth/token",
                          json={"username": "barred", "password": "pw"})
     assert answer.status_code == 401
@@ -826,8 +868,6 @@ def test_a_requeued_task_finds_its_handler(rig):
     Starting the worker before the plugins register fails the work it recovers.
     """
     from trix.core import lifespan
-    from trix.core.plugins import loader
-    from trix.core import tasks
 
     source = inspect.getsource(lifespan.start)
     assert source.index("loader.load_all") < source.index("tasks.start()"), \
@@ -1007,10 +1047,11 @@ def test_a_source_missing_its_library_says_so(rig, monkeypatch):
     said = []
     monkeypatch.setattr(chain, "_source", without_pam)
     monkeypatch.setattr(chain.LOGGER, "error", lambda message, *args: said.append(message % args))
+    _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["pam", "nosuch", "local"])
     handle = database.session()
     try:
-        identity, source = chain.authenticate(handle, "tester", "secret")
+        identity, source = chain.authenticate(handle, "alice", "secret")
     finally:
         handle.close()
     assert source == "local"
@@ -1039,7 +1080,7 @@ def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers
         try:
             row = other.query(models.Principal).filter(
                 models.Principal.name == "sealed").one_or_none()
-            seen.append(None if row is None else bool(row.enabled))
+            seen.append(None if row is None or row.deleted else bool(row.enabled))
         finally:
             other.close()
         real()
@@ -1073,3 +1114,144 @@ def test_identity_is_three_routes(rig):
     assert routes == [("DELETE", f"{API_PREFIX}/identity/users/{{name}}"),
                       ("GET", f"{API_PREFIX}/identity/users"),
                       ("PUT", f"{API_PREFIX}/identity/users/{{name}}")], routes
+
+
+def test_the_ini_account_signs_in_from_trixd_ini_alone(rig, client, monkeypatch):
+    """
+    rootus is checked against trixd.ini, whatever the chain lists, leaves no row, and a
+    new password in the ini applies at once.
+    """
+    from trix.db import engine as database
+    from trix.db import models
+
+    monkeypatch.setattr(configuration.current().auth, "chain", ["pam"])
+    login = {"username": "tester", "password": "secret"}
+    assert client.post(f"{API_PREFIX}/auth/token", json=login).status_code == 201
+    monkeypatch.setattr(configuration.current().api, "password", "changed")
+    assert client.post(f"{API_PREFIX}/auth/token", json=login).status_code == 401
+    login["password"] = "changed"
+    assert client.post(f"{API_PREFIX}/auth/token", json=login).status_code == 201
+    handle = database.session()
+    try:
+        assert handle.query(models.Principal).filter(
+            models.Principal.name == "tester").count() == 0
+    finally:
+        handle.close()
+
+
+def test_a_deleted_user_comes_back_fresh(rig, client, headers):
+    """
+    Deleting takes the role and the password; setting the user again starts from none.
+    """
+    client.put(f"{API_PREFIX}/identity/users/carol", json={"password": "pw", "role": "manager"},
+               headers=headers)
+    assert client.delete(f"{API_PREFIX}/identity/users/carol", headers=headers).status_code == 200
+    login = {"username": "carol", "password": "pw"}
+    assert client.post(f"{API_PREFIX}/auth/token", json=login).status_code == 401
+    assert client.delete(f"{API_PREFIX}/identity/users/carol", headers=headers).status_code == 404
+    shown = client.put(f"{API_PREFIX}/identity/users/carol", json={"password": "pw2"},
+                       headers=headers).json()
+    assert shown["role"] == "none"
+
+
+def test_pam_refuses_a_system_account_at_sign_in(rig):
+    """
+    A system account is refused on a correct password too, not only when resolved.
+    """
+    from types import SimpleNamespace
+
+    from trix.core.security.sources import pam as pam_source
+
+    source = pam_source.Source.__new__(pam_source.Source)
+    source.service = "login"
+    source.pwd = SimpleNamespace(getpwnam=lambda name: SimpleNamespace(
+        pw_name=name, pw_uid=2, pw_shell="/sbin/nologin"))
+    source.pam = SimpleNamespace(pam=lambda: SimpleNamespace(
+        authenticate=lambda *args, **kwargs: True, reason=""))
+    verdict, said = source.authenticate("daemon", "right")
+    assert verdict is False and "system account" in said
+
+
+def test_a_unit_name_never_reaches_systemctl_as_an_option(rig, client, headers):
+    """
+    A catalogue entry that would start with a dash is refused before it is stored.
+    """
+    catalogue = {"services": {"sneaky": "--root=/tmp"}}
+    assert client.patch(f"{API_PREFIX}/services/catalogue", json=catalogue,
+                        headers=headers).status_code == 400
+
+
+def test_settings_that_name_a_command_need_rootus(rig, client, headers):
+    """
+    A manager changes rules and settings; the command run as root is rootus alone.
+    """
+    from trix.core.plugins import manifest as manifests
+
+    for plugin in ("prometheus", "slurm"):
+        path = os.path.join(os.path.dirname(trix.__file__), "plugins", plugin, "manifest.yaml")
+        parsed = manifests.parse(manifests.read_yaml(path))
+        patched = [e for e in parsed.endpoints if e.path == "config" and "PATCH" in e.methods]
+        assert [e.minimum for e in patched] == ["rootus"], plugin
+
+
+def test_a_bare_duration_is_seconds_except_the_token_expiry(tmp_path):
+    """
+    TIMEOUT = 20 is twenty seconds; EXPIRY = 2 is two hours, as luna.ini reads it.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[API]\nEXPIRY = 2\n[LUNA]\nTIMEOUT = 20\n", encoding="utf-8")
+    loaded = configuration.load(str(ini))
+    assert loaded.api.expiry == 7200
+    assert loaded.luna.timeout == 20
+    ini.write_text("[LUNA]\nTIMEOUT = soon\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="TIMEOUT"):
+        configuration.load(str(ini))
+
+
+def _render_plugin(directory: str, handler: str = "about") -> None:
+    """
+    A plugin with one served render and one plain endpoint, written to the plugins directory.
+    """
+    root = os.path.join(directory, "docs")
+    os.makedirs(root, exist_ok=True)
+    with open(os.path.join(root, "manifest.yaml"), "w", encoding="utf-8") as handle:
+        handle.write("plugin: docs\nbackend: backend\nendpoints:\n"
+                     "  - path: doc\n    methods: [GET]\n    minimum: none\n"
+                     "    handler: render_doc\n    render:\n"
+                     "      inputs: [luna.node]\n      serve: json\n"
+                     "  - path: about\n    methods: [GET]\n    minimum: none\n"
+                     f"    handler: {handler}\n")
+    with open(os.path.join(root, "backend.py"), "w", encoding="utf-8") as handle:
+        handle.write("class Backend:\n"
+                     "    def render_doc(self):\n        return {'rendered': True}\n"
+                     "    def about(self):\n        return {'about': 'docs'}\n")
+
+
+def test_a_refused_reload_keeps_the_serving_plugins_renders(rig, client, headers):
+    """
+    The routes stay and so do the renders behind them: a broken manifest moves nothing.
+    """
+    from trix.common.settings import current as settings
+
+    _render_plugin(settings().plugins.directory)
+    assert loader.load(rig, "docs").state == "loaded"
+    assert client.get(f"{API_PREFIX}/docs/doc", headers=headers).status_code == 200
+    _render_plugin(settings().plugins.directory, handler="no_such_method")
+    answer = client.post(f"{API_PREFIX}/system/plugins/docs/reload", headers=headers)
+    assert answer.status_code == 409
+    served = client.get(f"{API_PREFIX}/docs/doc", headers=headers)
+    assert served.status_code == 200, served.text
+
+
+def test_without_a_certificate_the_plain_listener_still_opens(tmp_path):
+    """
+    Hypercorn opens insecure_bind only beside TLS, so without one it has to be the bind.
+    """
+    from trix.server import build_config
+
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[API]\nBIND = 0.0.0.0:8050\nINSECURE_BIND = 127.0.0.1:8051\n",
+                   encoding="utf-8")
+    served = build_config(configuration.load(str(ini)))
+    assert served.bind == ["127.0.0.1:8051"]
+    assert not served.ssl_enabled

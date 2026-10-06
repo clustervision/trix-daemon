@@ -83,14 +83,6 @@ class Backend:
             return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
         return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
-    def partitions(self, body: dict = None) -> dict:
-        """
-        The partition definitions the render uses.
-        """
-        if body:
-            return declarations.write(PLUGIN, "partitions", "", body)
-        return declarations.read(PLUGIN, "partitions", "", {"partitions": {}})
-
     def render_config(self) -> dict:
         """
         Write the managed blocks, then reconfigure slurm.

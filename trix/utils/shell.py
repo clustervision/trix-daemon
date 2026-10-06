@@ -38,6 +38,8 @@ from trix.common.errors import BackendFailure
 LOGGER = trixlog.get("shell")
 
 DEFAULT_TIMEOUT: int = 60
+# Arguments whose next value is a secret; it never reaches the log.
+SECRET_FLAGS: tuple = ("--password", "-p", "--bind-pass", "-w", "--bindpw")
 
 
 class Result:
@@ -61,13 +63,24 @@ class Result:
         return self.code == 0
 
 
+def _loggable(argv) -> list:
+    """
+    The arguments as the log may show them, with the value after a secret flag hidden.
+    """
+    shown = []
+    for index, item in enumerate(argv):
+        hidden = index and str(argv[index - 1]) in SECRET_FLAGS
+        shown.append("********" if hidden else str(item))
+    return shown
+
+
 def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False) -> Result:
     """
     Run a command as an argument list. Never a shell string, always a timeout.
     """
     if not argv or not isinstance(argv, (list, tuple)):
         raise BackendFailure("a command must be given as an argument list")
-    LOGGER.debug("running %s", " ".join(str(item) for item in argv))
+    LOGGER.debug("running %s", " ".join(_loggable(argv)))
     try:
         done = subprocess.run([str(item) for item in argv], capture_output=True,
                               timeout=timeout, check=False)

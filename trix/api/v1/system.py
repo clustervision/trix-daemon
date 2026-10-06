@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Health, version, the plugin control surface and the notify endpoint Luna's hook calls.
+Health, version, the plugin control surface, the notify endpoint and replication.
 """
 
 __author__      = "Sumit Sharma"
@@ -53,7 +53,7 @@ router = APIRouter(prefix=f"{API_PREFIX}/system", tags=["system"])
 
 class Change(BaseModel):
     """
-    What Luna's config hook posts when something it owns has changed.
+    Which kind of Luna object changed, and optionally which one.
     """
 
     object: str = ""
@@ -118,8 +118,8 @@ def disable_plugin(name: str, request: Request,
 @router.post("/notify", summary="A Luna object changed")
 def notify(body: Change, caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
-    Luna's hook posts here and does not wait. Losing one is acceptable: the hash
-    comparison on the slow timer catches up.
+    Wake the renders that read this kind of object, or every render when none is named.
+    Nothing calls it on its own; it is there for an operator or a script to nudge.
     """
     woken = renders().notify(f"luna.{body.object}" if body.object else "")
     LOGGER.info("notified of %s %s, woke %d render(s)", body.object, body.name, len(woken))
