@@ -16,4 +16,9 @@
 
 ---
 dependencies:
-  - role: trinity/trix-tree
+  # As luna2 has it: an image build or another role including this one has the
+  # trix path facts already.
+  - role: trix-tree
+    when:
+    - on_controller | default(False)
+    - not extend_image | default(False)

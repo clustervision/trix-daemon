@@ -1,0 +1,55 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+---
+# The node's trixd.ini, beside its luna.ini and under the same two conditions as
+# luna2's nodes.yml: written into an image from the controller, or in place when
+# the play runs inside an image or on a node. The node hook reads it.
+
+- block:
+  - name: Create the node trixd config directory in the image
+    file:
+      path: '{{ image_path }}/{{ trixd_node_config_dir }}/'
+      state: directory
+
+  - name: Render the node trixd.ini into the image
+    template:
+      src: trixd-client.ini.j2
+      dest: '{{ image_path }}/{{ trixd_node_config_dir }}/trixd.ini'
+      owner: root
+      group: root
+      mode: '0640'
+  when:
+    - on_controller | default(False)
+    - image_path is defined
+    - trix_local is defined
+
+- block:
+  - name: Create the node trixd config directory
+    file:
+      path: '{{ trixd_node_config_dir }}/'
+      state: directory
+
+  - name: Render the node trixd.ini
+    template:
+      src: trixd-client.ini.j2
+      dest: '{{ trixd_node_config_dir }}/trixd.ini'
+      owner: root
+      group: root
+      mode: '0640'
+  when:
+    - in_image | default(False) or on_node | default(False)
+    - trix_local is defined

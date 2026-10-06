@@ -49,7 +49,22 @@ trixd_key_id: trix-1
 trixd_trust_dir: '{{ trix_ssl }}/trust.d'
 
 trixd_username: trix
+# Generated once, on the controller that runs the play, as the ood role makes its
+# passphrase, so every trixd.ini the role renders carries the same password.
+trixd_password: "{{ lookup('password', '/etc/trinity/passwords/trix/api.txt chars=ascii_letters,digits') }}"
 trixd_token_expiry: 1h
+
+# A client's trixd.ini goes wherever a luna.ini goes. Clients reach the TLS
+# listener; the plain one stays on the loopback. Remote clients use the
+# controller's cluster name, which follows the active controller in a pair.
+trixd_client_protocol: https
+trixd_client_endpoint: '{{ trix_ctrl_hostname }}.{{ trix_domain }}'
+trixd_verify_certificate: '{{ luna_verify_certificate | default(False) }}'
+trixd_cli_config_dir: '{{ trixd_root }}/cli/config'
+trixd_node_config_dir: '{{ trixd_root }}/node/config'
+trixd_alertx_config_dir: '{{ trix_local }}/alertx/cli/config'
+trixd_ood_config_dir: '{{ trix_ood }}/3.0/config'
+trixd_ood_group: "{{ ood_apps_admin_group | default('admins') }}"
 
 trixd_plugins:
   - directory

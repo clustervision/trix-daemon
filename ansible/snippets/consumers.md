@@ -18,16 +18,22 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 # Consumers that move, and where each one lives
 
-Nothing here is done yet. It is the list, so the work is visible rather than
-discovered halfway through. Every one of these callers is ours and is installed
-by the same installer, which is what makes the move tractable.
+None of these callers has moved yet. This is the list, so the work is visible
+rather than discovered halfway through. Every one of them is ours and is
+installed by the same installer, which is what makes the move tractable, and
+each already has its `trixd.ini` in place beside its `luna.ini` (see the README).
+
+Luna is not changed by any of it. Its routes keep answering; a caller moves when
+it is repointed, and until then it reaches Luna exactly as it does today.
 
 ## The node hook, after boot
 
 `trinityx-combined`, `site/roles/trinity/alertx/templates/alertx-hook.sh.j2`.
 
-Two changes. The hook needs trix-daemon's address next to Luna's, and it fetches
-its token from trix-daemon rather than from Luna.
+Two changes. The hook reads the node's `trixd.ini` as it reads its `luna.ini`,
+with the same parser, and fetches its token from trix-daemon rather than from
+Luna. The file is `{{ trix_local }}/trix/node/config/trixd.ini` and names
+`controller.cluster:8050` over https.
 
 ```sh
 # today
@@ -40,47 +46,41 @@ curl ... -X PATCH -H "x-access-tokens: $TRIX_TOKEN" -d '{"force":false}' \
      "${TRIX_URL}/api/v1/prometheus/hw-rules/${HOST}"
 ```
 
-`TRIX_URL` is rendered next to `LUNA_URL`, from the node's own ini. The node ini
-template is `site/roles/trinity/luna2/templates/luna2.ini.j2`, rendered into the
-image by that role's `tasks/nodes.yml`.
+When the cluster enforces TPM the measurement is the proof. When it does not,
+the hook sends the username and password from the node's `trixd.ini` instead, as
+it does with Luna today.
 
-**This is where the shared secret stops being needed.** trix-daemon verifies the
-measurement by asking Luna what it holds for that node, so nothing signing-related
-has to reach a node image. That is the point of TRIX-2067.
+## Node renames and deletes stay with Luna's hook, and trix repairs after it
 
-## Luna's config hook becomes a notifier
-
-`luna2-daemon`, `daemon/plugins/hooks/config/node.py` and `group.py`.
-
-The hook stops doing the work and posts the changed object name instead. Fire and
-forget: it does not wait for an answer and does not fail if none comes, because
-the hash comparison on the slow timer catches up.
-
-```python
-def postupdate(self, name: str = '', group: str = '') -> tuple:
-    """Tell trix-daemon a node changed, and return."""
-    requests.post(f'{TRIX_URL}/api/v1/system/notify',
-                  json={'object': 'node', 'name': name},
-                  headers={'x-access-tokens': token}, timeout=2)
-    return True, 'notified'
-```
-
-Two things in that file move with it rather than staying behind. `rename` and
-`delete` currently shell out to rename and remove files under the Prometheus
-rules directory, unconditionally, whether or not the config packages import. If
-the prometheus plugin is to be the one writer of that directory, those two go
-too.
+`luna2-daemon`, `daemon/plugins/hooks/config/node.py`, is not changed. Its rename
+and delete still move and remove files under the Prometheus rules directory.
+trix-daemon does its own part when a node is renamed or deleted through its
+pass-through (`/api/v1/luna/config/node/<name>`): it checks the rule file under
+both names, whether Luna moved it or not, and rewrites the `hostname` and
+`luna_group` matchers to what Luna now holds. A rename made at Luna directly is
+repaired when trix-daemon next starts or a node change next passes through it.
+When every caller uses the pass-through, Luna's two shell-outs can go, years
+later if need be.
 
 ## The On Demand applications
 
 `trinityx-ood`. Each application carries its own copy of a REST client, so a
-route change means editing every copy.
+route change means editing every copy. Each reads
+`{{ trix_ood }}/3.0/config/trixd.ini` when it can, which an admin can, and acts as
+rootus. Anyone else signs in with their own password and acts with their own
+role, which needs a sign-in screen the applications do not have yet.
 
 | Application | File | Today | After |
 |---|---|---|---|
 | users | `users/luna_requests.py` | eight URLs on `/config/osuser` and `/config/osgroup` | `/api/v1/directory/users`, `.../groups`, real verbs |
 | alertx | `alertx/rest.py` | six URLs on `/export/…` and `/import/…` | `/api/v1/prometheus/rules`, `.../settings`, `.../hw-rules` |
 | slurm | `slurm/app.py` | writes `/etc/slurm` itself through the generator | `PATCH /api/v1/slurm/partitions`, and the render writes the files |
+
+alertx's "save nodes" is the one that needs a route first. It regenerates a
+node's hardware rules, or switches its alerts off, through Luna's
+`/import/prometheus_hw_rules`. trix-daemon's `PATCH .../hw-rules/<node>` takes a
+node token only, so a user route with minimum manager has to exist before the
+button can move.
 
 Two shapes the users application depends on. The directory plugin keeps one of
 them and deliberately does not keep the other, so this is what changes when
@@ -103,21 +103,12 @@ rewrite after the generator runs because the generator's template overwrites it.
 ## The command line
 
 `luna2-cli`, `luna/utils/rest.py`. Every request builder concatenates one base
-URL, so the seam is a second endpoint in the ini plus a base selector in
-`get_raw` and `post_raw`. `luna service` and `luna monitor` go through that pair
-and nothing else, so moving only those two families needs only the selector.
+URL, so the seam is a second base, read from
+`{{ trix_local }}/trix/cli/config/trixd.ini`, plus a base selector in `get_raw`
+and `post_raw`. `luna service` and `luna monitor` go through that pair and
+nothing else, so moving only those two families needs only the selector.
 
-Both clients verify tokens locally by decoding them with the shared secret, and
-trix-daemon signs with that same secret, so neither needs changing. Were the
-daemon ever switched to EdDSA this would become a code change: the fix then is to
-stop verifying client-side and fetch a new token on a 401, since a client has
-nothing to gain from checking a signature it did not issue.
-
-## The compatibility window
-
-For one release the thirteen moved paths stay registered in Luna and answer 410
-Gone with a `Location` header naming the new path. Not a silent forwarder: a
-forwarder is a copy of the route that drifts, and a consumer nobody repointed
-keeps working until the day it does not. The installer repoints everything in the
-same change that installs the daemon, so a fresh install never sees a 410 and an
-upgraded cluster with a hand-edited caller sees one and knows why.
+luna2-cli checks Luna's tokens locally with the `SECRET_KEY` in its `luna.ini`.
+`trixd.ini` carries no secret, so the trix side does not check: it uses the
+token it was given and signs in again on a 401. A client gains nothing from
+checking a signature it did not issue.

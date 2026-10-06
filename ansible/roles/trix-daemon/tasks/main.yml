@@ -25,3 +25,6 @@
     - on_controller | default(False)
     - not extend_image | default(False)
   tags: install-only
+
+- name: Place trixd.ini for the node, in an image or on the node itself
+  include_tasks: nodes.yml

@@ -16,11 +16,12 @@
 
 ---
 # Paste into the site/controller.yml roles list, directly after trinity/luna2:
-# renders reconcile against Luna at startup, and Luna never needs us back.
+# renders reconcile against Luna at startup, and Luna never needs us back. The
+# password is the role's default, so the roles that include it for a client's
+# trixd.ini get the same one.
 
 - role: trinity/trix-daemon
   when: trixd_enabled | default(True)
   ssl_certificate: "{{ ssl_cert_path }}/{{ ansible_fqdn }}.crt"
   ssl_certificate_key: "{{ ssl_cert_path }}/{{ ansible_fqdn }}.key"
-  trixd_password: "{{ lookup('password', '/etc/trinity/passwords/trix/api.txt chars=ascii_letters,digits') }}"
   tags: trix, trix-daemon

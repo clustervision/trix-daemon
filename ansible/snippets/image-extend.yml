@@ -1,0 +1,28 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+---
+# site/roles/trinity/image-create/tasks/{redhat,ubuntu,opensuse}/extend.yml,
+# directly after "Include luna2 tasks". That include is what writes the node's
+# luna.ini into the image; this writes its trixd.ini beside it. The role skips
+# the daemon itself whenever extend_image is set.
+
+- name: Include trix-daemon tasks
+  include_role:
+    name: trinity/trix-daemon
+  vars:
+    extend_image: true
+  when: trixd_enabled | default(True)

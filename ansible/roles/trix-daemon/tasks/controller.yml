@@ -153,3 +153,6 @@
   until: trixd_health is succeeded
   retries: 12
   delay: 5
+
+- name: Place trixd.ini for the command line
+  include_tasks: cli.yml
