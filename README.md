@@ -19,22 +19,79 @@ along with this program.  If not, see <https://www.gnu.org/licenses/>
 # trix-daemon
 
 The TrinityX control-plane daemon for everything that is not a physical node.
+Short name: trixd.
 
-Luna keeps the physical estate: nodes, groups, images, networks, boot, hardware.
-`trix-daemon` is its peer and takes the rest: the directory, monitoring
-configuration, generic service control and the configuration files that are
-computed from Luna's nodes but belong to another service.
+A TrinityX cluster has a controller that runs **Luna** (luna2-daemon), which owns the
+physical estate: nodes, groups, images, networks, boot and hardware. trix-daemon is
+Luna's peer on the same controller and takes the rest: the cluster's users and
+groups, the Prometheus monitoring configuration, starting and stopping services,
+and configuration files such as slurm's and genders' that are computed from Luna's
+node list but belong to another service.
 
-It is a separate process with its own unit, its own ports, its own configuration
-and its own store. It reaches Luna only through Luna's API, by object name, and
-Luna is not changed for it: trix-daemon notices a change at Luna when the change
-passes through its own route to Luna, and from Luna's table hashes where Luna
-answers them. Neither imports the other.
+It is a separate process with its own unit, ports, configuration and database.
+It reaches Luna only through Luna's HTTP API, by object name, and Luna is not
+changed for it. Neither imports the other.
 
-## The rule that comes before the others
+**The rule that comes before the others: render on change, never on boot.** A
+booting node must never depend on trix-daemon being up. Nothing this daemon serves
+sits on the boot path.
 
-**Render on change, never on boot.** A booting node must never depend on
-`trix-daemon` being up. Nothing this daemon serves sits on the boot path.
+## Words used here
+
+| Word | Meaning |
+|---|---|
+| Luna | luna2-daemon, the peer daemon on port 7050 that owns nodes and boot |
+| `trixd.ini` | this daemon's configuration file; clients have their own copy |
+| ini account | the account `[API] USERNAME` and `PASSWORD` in `trixd.ini` name |
+| rootus | what the ini account is: it passes every check. It is never stored as a user |
+| principal | a stored user: a name, a password (or none, if PAM or LDAP checks it) and a role |
+| role | `none`, `operator` or `manager`, lowest first; a user with no row holds `none` |
+| minimum | the lowest role a route admits, written in the route's manifest entry |
+| plugin | a directory with a `manifest.yaml` and a backend class; it adds routes under `/api/v1/<plugin>/` |
+| manifest | a plugin's declaration of its routes, their minimums, schemas and renders |
+| render | an output computed from inputs, such as the Prometheus target list or a slurm file, redone when an input changes |
+| declaration | a settings document a plugin stores, kept in the `declaration` table |
+| pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged |
+| Luna hook | what a plugin does after a node is renamed or deleted through the pass-through (`luna_hooks` in its manifest) |
+| node token | a token a booted node gets for itself, confined to that node (Luna's "provision" scope) |
+| service token | a short-lived token one controller's trix-daemon gives the other's, for replication |
+| replication | how the two controllers of an HA pair keep `principal` and `declaration` the same |
+| obol | the command-line tool that manages users in the cluster's 389ds LDAP directory |
+| OOD | Open OnDemand, the cluster's web portal, whose TrinityX apps call these APIs |
+| alertx | TrinityX's alerting app; its node hook asks for a node's hardware rules after boot |
+
+## How a request moves through the code
+
+**A plugin route**, for example `PATCH /api/v1/prometheus/rules`:
+
+1. `trix/server.py` serves the app built by `trix/app.py` on both listeners.
+2. The route was built from the plugin's manifest by `trix/core/plugins/binder.py`.
+3. Its gate, `trix/core/security/gate.py`, verifies the token
+   (`core/security/tokens.py`), resolves the caller (`core/security/principals.py`,
+   which asks the sources in `core/security/sources/` through `chain.py`), compares
+   their role with the route's minimum (`core/security/access.py`) and writes the
+   decision to the audit trail (`core/security/audit.py`).
+4. The body is validated against the manifest's schema, then the backend method in
+   `trix/plugins/prometheus/backend.py` runs.
+5. A return value becomes a JSON 200. A `TrixError` from `trix/common/errors.py`
+   becomes its own status (400, 401, 403, 404, 409, 502 or 503), a body that fails
+   its schema is a 422, and anything else is a 500, with the detail in the log.
+
+**A call to Luna**, for example renaming a node:
+
+1. `trix/core/luna/proxy.py` forwards `/api/v1/luna/config/node/node001` to Luna as
+   `/config/node/node001`, with the method, query, headers and body as sent, less
+   the connection headers, and returns Luna's answer unchanged. Luna decides who may.
+2. After the answer has left, `trix/core/luna/hooks.py` looks at what was asked. A
+   successful rename, group move or delete is queued as a task (`trix/core/tasks.py`).
+3. The task worker runs every plugin's `luna_hooks` handler for it; the prometheus
+   plugin moves the node's rule file and rewrites it to the new name and group.
+4. Then the renders that read Luna's nodes wake (`trix/core/render/engine.py`).
+
+**Startup** (`trix/core/lifespan.py`): read and check `trixd.ini`, open the database
+and bring its schema to the newest Alembic revision, load the signing key, load the
+plugins, start the task worker, read Luna's table hashes as a baseline, run every
+render once, start the background timers, and only then open the listeners.
 
 ## Layout
 
@@ -43,114 +100,181 @@ answers them. Neither imports the other.
 | `trix/app.py` | Builds the application. Reads no configuration. |
 | `trix/server.py` | The entry point: read the ini, serve TLS and plain together. |
 | `trix/common/` | Settings, constants, typed errors, logging. |
-| `trix/core/security/` | Keys, tokens, the resolver chain, the role gate. |
-| `trix/core/plugins/` | Manifest, loader, registry, router binder, route swap. |
-| `trix/core/render/` | The render engine. |
-| `trix/core/luna/` | The Luna client and the reserved pass-through. |
-| `trix/db/` | Engine and the declarative models. |
-| `trix/api/v1/` | The daemon's own endpoints. |
+| `trix/core/security/` | Keys, tokens, the sign-in sources and chain, the role gate, the audit trail. |
+| `trix/core/plugins/` | Manifest, loader, registry, router binder, route swap, scaffold. |
+| `trix/core/render/` | The render engine and the Luna table-hash trigger. |
+| `trix/core/replication/` | Keeping two controllers' tables the same. |
+| `trix/core/luna/` | The Luna client, the pass-through and its hooks. |
+| `trix/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
+| `trix/db/` | Engine, models and the Alembic migrations. |
+| `trix/api/v1/` | The daemon's own routes: auth, identity, system. |
 | `trix/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
-| `trix/utils/` | Leaf helpers with no daemon state. |
+| `trix/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
+| `ansible/` | The installer role, for trinityx-combined. |
+| `docs/writing-a-plugin.md` | How to write a plugin. |
 
-## Ports
+## Run it on a workstation
 
-| Port | Protocol | Notes |
-|---|---|---|
-| 8050 | HTTPS | `BIND`, with the cluster certificate and key |
-| 8051 | HTTP | `INSECURE_BIND`, on the loopback by default |
+Python 3.10 or newer.
 
-Both are served from one Hypercorn process. A token crossing the cluster network
-in clear text is readable by anything on it, which is why the plain listener is
-not exposed by default.
+```
+python3 -m venv .venv && . .venv/bin/activate
+pip install -r requirements.txt pytest httpx
+pip install -e .
+mkdir -p dev
+```
 
-`CERTFILE` and `KEYFILE` are the cluster certificate and key, the same pair Luna
-serves on 7050. The Ansible role templates them from `ssl_certificate` and
-`ssl_certificate_key`, which is where Luna's own `gunicorn.py` gets them, so the
-two daemons cannot drift onto different certificates.
+Write `dev/trixd.ini`. Comments go on lines of their own: a comment after a value
+becomes part of the value.
 
-## trixd.ini
+```ini
+[API]
+; No CERTFILE and KEYFILE, so only the plain listener opens.
+INSECURE_BIND = 127.0.0.1:8051
+USERNAME = trix
+PASSWORD = trix
 
-The configuration file is `trixd.ini`: trixd is the TrinityX daemon. The daemon
-reads `/trinity/local/trix/etc/trixd.ini`, or the path given with `--config` or
-in `TRIX_CONFIG`. It lives outside the installed package, so an upgrade never
-replaces it.
+[TOKENS]
+; Any 32 hexadecimal characters, for a workstation.
+SECRET_KEY = 004f2af45d3a4e161a7dd2d17fdae47f
 
-Clients get a `trixd.ini` of their own wherever the installer writes a
-`luna.ini`: the command line, the alertx CLI, the On Demand apps and the node
-image. Each names where the daemon answers and the account in the daemon's ini.
-Where each goes, and who can read it, is in [ansible/README.md](ansible/README.md).
+[DATABASE]
+URL = sqlite:///dev/trix.db
 
-## Running it
+[LOGGER]
+LOGFILE =
+
+[AUTH]
+CHAIN = local
+
+[TRIGGERS]
+; No Luna here, so the hash comparison is off.
+LUNA_HASHES = 0s
+
+[PLUGINS]
+DIRECTORY = trix/plugins
+ENABLED = services, genders
+```
+
+Then:
+
+```
+python -m trix.server --config dev/trixd.ini
+curl -s http://127.0.0.1:8051/api/v1/system/health
+TOKEN=$(curl -s -X POST http://127.0.0.1:8051/api/v1/auth/token \
+        -H 'Content-Type: application/json' -d '{"username":"trix","password":"trix"}' \
+        | python -c 'import sys, json; print(json.load(sys.stdin)["token"])')
+curl -s http://127.0.0.1:8051/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
+```
+
+A token goes in the `x-access-tokens` header, or as `Authorization: Bearer <token>`.
+`http://127.0.0.1:8051/api/v1/docs` lists every route. Without Luna, obol or
+Prometheus the plugins still load: a route whose work needs one answers 503, and a
+render that could not run answers 404 with the reason.
+
+## On a controller
 
 ```
 /trinity/local/python/bin/python3 -m trix.server --config /trinity/local/trix/etc/trixd.ini
 ```
 
-`/api/v1/system/health` answers without a token. `/api/v1/docs` is the published
-document of every route.
+The unit `trix-daemon` runs that. `systemctl reload trix-daemon` reloads the plugins
+from disk without a restart; a change to `trixd.ini` needs a restart.
+
+| Port | Protocol | Notes |
+|---|---|---|
+| 8050 | HTTPS | `BIND`; opens only with `CERTFILE` and `KEYFILE`, the cluster certificate pair |
+| 8051 | HTTP | `INSECURE_BIND`; the loopback by default |
+
+A token crossing the cluster network in clear text is readable by anything on it,
+which is why the plain listener stays on the loopback unless a site opens it.
+
+## trixd.ini
+
+The daemon reads `/trinity/local/trix/etc/trixd.ini`, or the path given with
+`--config` or in `TRIX_CONFIG`. It lives outside the installed package, so an upgrade
+never replaces it. The shipped sample, `trix/config/trixd.ini`, explains each key. A
+missing file, an unknown algorithm or an unreadable duration stops the daemon with
+the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
+except `EXPIRY`, where it is hours as in `luna.ini`.
+
+Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
+the command line, the alertx CLI, the On Demand apps and the node image. Each names
+where the daemon answers and the ini account. Where each goes, and who can read it,
+is in [ansible/README.md](ansible/README.md).
 
 ## Who may do what
 
-One table holds the users: a name, a password and a role. The roles are a ladder.
-
 | Role | May |
 |---|---|
-| none | read: every `GET` |
-| operator | read, and act: start, stop or query a service |
-| manager | read, act, and change configuration and rules |
+| none | read, apart from the routes kept for rootus |
+| operator | that, and act: start, stop, restart, reload or query a catalogued service |
+| manager | that, and change configuration: rules, settings, tuning, the service catalogue |
+| rootus | everything, and alone: users and roles, the cluster directory, plugin control, replication, notify, and plugin settings that name a command or a path run as root |
 
-**rootus** is the account `trixd.ini` names, never a row. It passes every check,
-and only it manages users, plugins, replication and notifications. Every user
-endpoint names the lowest role it admits, and the gate compares that with the
-caller's role before the handler runs. A refusal is a 403 that says both, as in
-`this needs manager; you hold operator`, and goes to the audit trail. The role is
-read on every request, so a change applies to tokens already handed out.
+Every user route names its minimum, and the gate compares it with the caller's role
+before the handler runs. A refusal is a 403 that says both, as in
+`this needs manager; you hold operator`, and goes to the audit trail. The other
+controller's service token passes every check.
 
 Users are managed by rootus with `GET /api/v1/identity/users`,
-`PUT /api/v1/identity/users/<name>` (create, or change the role, password or
-whether the user is enabled) and `DELETE`. Signing in tries the sources in
-`[AUTH] CHAIN`: local, pam, ldap and oidc, of which oidc is a placeholder. Someone
-who signs in through PAM and has no row yet gets one, with role none.
+`PUT /api/v1/identity/users/<name>` (create, or change the role, password or whether
+the user is enabled) and `DELETE`. A change applies to tokens already handed out:
+the role is looked up on each request, through a cache of `[AUTH] CACHE` seconds
+(60 by default) that a change clears at once, on this controller and, when the
+change arrives there, on the other.
+
+Signing in: the ini account is checked against `trixd.ini` and nothing else.
+Anyone else is tried against the sources in `[AUTH] CHAIN` in order, and the first
+that knows the name decides: `local` (a stored password), `pam` (the controller's
+own accounts, which through sssd include the cluster directory; system accounts are
+refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone who
+signs in through PAM or LDAP gets a row on first sign-in, with role none.
 
 ## Tokens, here and at Luna
 
-Tokens are HS256 over the secret at `/trinity/local/etc/ssl/secret.key`, the same
-secret and the same algorithm `luna2-daemon` uses, so either daemon verifies a
-token the other minted. The installer writes that secret at bootstrap.
+`POST /api/v1/auth/token` with a JSON username and password answers 201 with
+`{"token": "..."}`, valid for `[API] EXPIRY`. Tokens are HS256 over the secret Luna
+signs with too, so either daemon verifies a token the other minted. On a controller
+the installer writes that secret into `trixd.ini`, from the value `luna.ini` is
+built from.
 
 Luna knows a caller by the token's `id` alone, and reads a missing one as its
-administrator, so trix-daemon always says:
+administrator, so trix-daemon always sets it:
 
 | Token | `id` | At Luna |
 |---|---|---|
-| rootus, the account in `trixd.ini` | 0 | Luna's administrator, the account `luna.ini` names |
+| rootus, the ini account | 0 | Luna's administrator, the account `luna.ini` names |
 | any other user | -1 | refused, 401: Luna never issues -1 |
-| the peer daemon's service token | -1 | refused, 401 |
+| the other controller's service token | -1 | refused, 401 |
 | a node token | none | confined to that node by its provision scope |
 
-So a user who is not rootus reaches Luna only with a token Luna issued, and
-trix-daemon's role decides nothing there. Luna's own roles do.
+So a user who is not rootus reaches Luna only with a token Luna issued, and a role
+here decides nothing there. Luna's own roles do.
 
-Setting `[TOKENS] ALGORITHM = EdDSA` switches to a keypair, so a daemon that can
-verify a token cannot mint one. It needs Luna to speak EdDSA too, and today Luna
-does not. Generate the keypair with `-m trix.server keygen --config <path>`.
+`[TOKENS] ALGORITHM = EdDSA` switches to a keypair, so a daemon that can verify a
+token cannot mint one. Luna cannot verify EdDSA yet. Generate the keypair with
+`python -m trix.server keygen --config <path>`.
 
 ## Changes made through the route to Luna
 
 `/api/v1/luna/xyz` reaches Luna as `/xyz`, and Luna enforces its own access. Once
 Luna has answered, trix-daemon acts on what changed: a node renamed or moved to
 another group (`POST config/node/<name>` with `newnodename` or `group`) or deleted
-(`GET config/node/<name>/_delete`) is handed to every plugin that declared it.
-The prometheus plugin, for one, makes the node's hardware rule file carry the
-name and group Luna now holds, whether or not Luna's own hook moved it. Nothing
-in Luna is changed for this.
+(`GET config/node/<name>/_delete`) is handed to every plugin that declared it. The
+prometheus plugin, for one, makes the node's hardware rule file carry the name and
+group Luna now holds, whether or not Luna's own hook moved it.
+
+A change made at Luna directly, not through this route, is picked up by comparing
+Luna's table hashes every `[TRIGGERS] LUNA_HASHES`. Luna answers that only on the
+HA master, so on a single controller such a change reaches the rule files when
+trix-daemon next starts, or when the next node change passes through it.
 
 ## Writing a plugin
 
-A plugin declares the endpoints it wants in a manifest. The daemon serves exactly
-those, and builds the permission gate, the request validation and the published
-schema from the same declaration. A plugin cannot expose an endpoint the manifest
-does not name, and no user endpoint can exist without naming the lowest role it admits.
+A plugin declares its routes in a manifest. The daemon serves exactly those, and
+builds the role gate, the request validation and the published schema from the same
+declaration.
 
 ```yaml
 plugin: hello
@@ -168,23 +292,24 @@ class Backend:
 
     def greet(self, who: str) -> dict:
         """Greet whoever was named in the path."""
-        return {'message': f'hello {who}'}
+        return {"message": f"hello {who}"}
 ```
 
-Drop that in the plugins directory and plug it in without restarting anything:
+`python -m trix.server plugin new hello --config <path>` writes a working one into
+the plugins directory, and rootus plugs it in without a restart:
 
 ```
 curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload \
      -H "x-access-tokens: $TOKEN"
 ```
 
-`luna` is a reserved plugin name. It is the one-API route to Luna, and
-`/api/v1/luna/xyz` is handed to Luna as `/xyz`, byte for byte, both ways.
+The guide is [docs/writing-a-plugin.md](docs/writing-a-plugin.md). `luna` is a
+reserved plugin name: it is the pass-through.
 
 ## Tests
 
 ```
-/trinity/local/python/bin/python3 -m pytest tests/unit
+python -m pytest tests/unit
 ```
 
 End to end, against a running daemon and a real Luna:
@@ -192,8 +317,8 @@ End to end, against a running daemon and a real Luna:
 | Script | Where it runs | What it needs |
 |---|---|---|
 | `tests/e2e/on-the-controller.sh` | on the controller | the daemon's `trixd.ini`, naming the account `trix` with password `trix` |
-| `tests/e2e/over-http.py <host>` | anywhere that reaches 8050 and 8051 | the same account |
-| `tests/e2e/node-rename.sh` | on a development controller only | it renames a node at Luna and back |
+| `tests/e2e/over-http.py <host>` | anywhere that reaches 8050 and 8051 | the same account, and port 8051 opened beyond the loopback |
+| `tests/e2e/node-rename.sh <node>` | on a development controller only | it renames a node at Luna and back |
 
-The suites sign in with that test account, so they belong on a test
-controller, never on a customer's.
+The suites sign in with that test account, so they belong on a test controller,
+never on a customer's.

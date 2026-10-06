@@ -143,8 +143,7 @@ def _from_script(name: str, path: str):
         raise PluginRefused(f"{path} has no Plugin class")
     endpoints = getattr(plugin_class, "endpoints", None)
     if not endpoints:
-        # Today's shape: a class with methods and no declaration. It loads as a
-        # library other plugins can import, and serves nothing.
+        # The shape Luna's plugins have: methods and no declaration of routes.
         raise PluginRefused("class declares no endpoints, so it serves no routes")
     document = {
         "plugin": getattr(plugin_class, "name", name),
