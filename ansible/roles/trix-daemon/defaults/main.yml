@@ -38,10 +38,17 @@ trixd_plain_port: 8051
 # readable by anything on it, and that interface is in the trusted zone.
 trixd_plain_bind: 127.0.0.1
 
-# The secret Luna already holds, written once by trinity/init and templated into
-# luna.ini from the same file, so either daemon accepts the other's tokens.
+# The secret luna.ini is templated from on this controller, so either daemon accepts
+# the other's tokens. SECRET_FILE is only read if this is ever left empty.
 trixd_token_algorithm: HS256
+trixd_secret_key: '{{ luna_secret_key | default("") }}'
 trixd_secret_file: '{{ trix_ssl }}/secret.key'
+
+# The cluster certificate, as luna2's gunicorn.py gets it, and the CA that signed it,
+# which a replication peer is checked against.
+trixd_certfile: '{{ ssl_certificate | default(ssl_cert_path ~ "/" ~ ansible_fqdn ~ ".crt") }}'
+trixd_keyfile: '{{ ssl_certificate_key | default(ssl_cert_path ~ "/" ~ ansible_fqdn ~ ".key") }}'
+trixd_ca_file: '{{ ssl_ca_cert | default(ssl_cert_path ~ "/cluster-ca.crt") }}'
 
 # Read only when trixd_token_algorithm is EdDSA, which needs Luna to speak it too.
 trixd_key: '{{ trix_ssl }}/trix.ed25519'
@@ -51,7 +58,8 @@ trixd_trust_dir: '{{ trix_ssl }}/trust.d'
 trixd_username: trix
 # Generated once, on the controller that runs the play, as the ood role makes its
 # passphrase, so every trixd.ini the role renders carries the same password.
-trixd_password: "{{ lookup('password', '/etc/trinity/passwords/trix/api.txt chars=ascii_letters,digits') }}"
+trixd_password_file: /etc/trinity/passwords/trix/api.txt
+trixd_password: "{{ lookup('password', trixd_password_file ~ ' chars=ascii_letters,digits') }}"
 trixd_token_expiry: 1h
 
 # A client's trixd.ini goes wherever a luna.ini goes. Clients reach the TLS

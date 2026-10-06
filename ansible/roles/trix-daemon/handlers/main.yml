@@ -16,7 +16,7 @@
 
 ---
 - name: restart trix-daemon
-  systemd:
+  ansible.builtin.systemd:
     name: trix-daemon
     state: restarted
     daemon_reload: true

@@ -18,9 +18,15 @@
 # Two changes to site/roles/trinity/ood-apps.
 
 # 1. tasks/trinity.yml: inside the "Configure ood apps on the controller or login
-#    image" block, directly after "Render trinityx-ood luna app luna.ini", with the
-#    same condition. The 3.0 directory is re-pointed on an upgrade, which is why
-#    the file is written here and not by the trix-daemon role on its own.
+#    image" block, directly after "Render trinityx-ood luna app luna.ini". The 3.0
+#    directory is re-pointed on an upgrade, which is why the file is written here and
+#    not by the trix-daemon role on its own. Same condition as luna.ini, or the file
+#    is missing: an existing cluster whose apps build has not changed still gets it.
+
+    - name: Check for the trinityx-ood trixd.ini
+      ansible.builtin.stat:
+        path: "{{ trix_ood }}/3.0/config/trixd.ini"
+      register: ood_trixd_ini
 
     - name: Render trinityx-ood trixd.ini
       ansible.builtin.include_role:
@@ -31,6 +37,7 @@
       when:
       - trixd_enabled | default(True)
       - override | default(ood_luna_apps_download.changed) or ('admin-change' in ansible_run_tags)
+        or not ood_trixd_ini.stat.exists
 
 # 2. templates/login/login-node-ood-prepare-script.j2: the last line, repeated for
 #    trixd.ini, so a login node gives it the same group as luna.ini at boot.

@@ -33,7 +33,7 @@ it is repointed, and until then it reaches Luna exactly as it does today.
 Two changes. The hook reads the node's `trixd.ini` as it reads its `luna.ini`,
 with the same parser, and fetches its token from trix-daemon rather than from
 Luna. The file is `{{ trix_local }}/trix/node/config/trixd.ini` and names
-`controller.cluster:8050` over https.
+`{{ trix_ctrl_hostname }}.{{ trix_domain }}:8050` over https.
 
 ```sh
 # today

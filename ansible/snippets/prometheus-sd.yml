@@ -15,20 +15,24 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 ---
-# Replace the luna_nodes job in site/controller.yml, inside the
-# prometheus_server_additional_sd list on the trinity/prometheus-server role.
+# Replaces the luna_nodes job in site/controller.yml: the first entry of
+# prometheus_server_additional_sd on the trinity/prometheus-server role, indented eight
+# spaces as it is there.
 
-# It pointed at Luna's /export/prometheus on 7050, which rebuilt the document per
-# poll. This is served from the render, so an unchanged poll costs one hash.
+# With trix-daemon installed the targets come from its render, served from memory, so
+# an unchanged poll costs no call to Luna. With trixd_enabled false the job reads
+# Luna's /export/prometheus exactly as before. Prometheus runs on the controller, where
+# the plain listener is on the loopback, so there is no certificate and no token: the
+# targets endpoint is public because service discovery presents none. tls_config only
+# applies to Luna's https address.
 
-# Prometheus runs on the loopback, where the plain listener is, so no certificate
-# and no token: the endpoint is declared public because service discovery has none.
-
-- job_name: luna_nodes
-  http_sd_configs:
-    - url: "http://{{ trixd_plain_bind }}:{{ trixd_plain_port }}/api/v1/prometheus/renders/targets"
-  metric_relabel_configs:
-    # Drop transient systemd unit states to reduce cardinality.
-    - source_labels: ['__name__', 'state']
-      regex: 'node_systemd_unit_state;(activating|deactivating)'
-      action: drop
+        - job_name: luna_nodes
+          http_sd_configs:
+          - url: "{{ ('http://' ~ (trixd_plain_bind | default('127.0.0.1')) ~ ':' ~ (trixd_plain_port | default(8051)) ~ '/api/v1/prometheus/renders/targets') if (trixd_enabled | default(True)) else (luna_protocol ~ '://localhost:7050/export/prometheus') }}"
+            tls_config:
+              insecure_skip_verify: true
+          metric_relabel_configs:
+            # Drop transient systemd unit states to reduce cardinality.
+            - source_labels: ['__name__', 'state']
+              regex: 'node_systemd_unit_state;(activating|deactivating)'
+              action: drop
