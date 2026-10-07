@@ -29,8 +29,10 @@ trixd_site_plugins_dir: '{{ trixd_root }}/plugins'
 trixd_db_dir: '{{ trixd_root }}/var'
 trixd_log_dir: /var/log/trix
 
-# Pin the wheel, or leave it undefined to take the newest the index offers. The
-# name follows the published link, as luna2_daemon does.
+# The link the pip pipeline points at the newest 1.0 build, as luna2_daemon_pip is
+# for Luna, so --upgrade takes each new build. A build's own file name, such as
+# trix_daemon-1.0.1791360000-py3-none-any.whl, holds a version. Undefined installs
+# from a package index instead, which the update server does not serve.
 trixd_pip: trix_daemon-1.0-py3-none-any.whl
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 

@@ -113,6 +113,7 @@ render once, start the background timers, and only then open the listeners.
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `ansible/` | The installer role, for trinityx-combined. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
+| `setup.py` | The package itself; see Building and publishing. |
 
 ## Run it on a workstation
 
@@ -338,3 +339,25 @@ End to end, against a running daemon and a real Luna:
 
 The suites sign in with that test account, so they belong on a test controller,
 never on a customer's.
+
+## Building and publishing
+
+`.gitlab-ci.yml` includes the shared pip pipeline from `ClusterVision/gitlab-cicd-pipelines`.
+It builds every branch with `python setup.py sdist bdist_wheel`, on Python 3.10 and an
+old setuptools, which is why the package is declared in `setup.py` and not in
+`pyproject.toml`. Two branches are also published to the repository server:
+
+| Branch | Directory, from the CI/CD variable | Installed by |
+|---|---|---|
+| `development` | `.../trinityx/16.1/trix/noarch/pip/testing/daemon` (`DEV_LOCATION`) | `trix_stream: testing` |
+| `main` | `.../trinityx/16.1/trix/noarch/pip/stable/daemon` (`LOCATION`) | `trix_stream: stable` |
+
+A build's version is the release line and the commit's time, for example
+`trix_daemon-1.0.1791360000-py3-none-any.whl`. The pipeline points
+`trix_daemon-1.0-py3-none-any.whl` at the newest build and keeps the last five. The
+role installs that name with `pip --upgrade`, so a controller takes the newest build
+on its next run, and `GET /api/v1/system/version` says which one it is running.
+
+To build as the pipeline does: `python setup.py sdist bdist_wheel`, and `dist/` holds
+both files. The release line is `DAEMON_RELEASE` in `trix/common/constants.py`.
+Starting a new one means changing it and the role's `trixd_pip` together.

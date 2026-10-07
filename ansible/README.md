@@ -160,7 +160,7 @@ trixd_tls_port: 8050
 trixd_plain_port: 8051
 trixd_plain_bind: 127.0.0.1        # the loopback, unless you mean to expose it
 trixd_token_algorithm: HS256       # what luna2-daemon signs with; EdDSA is the other
-trixd_pip: trix_daemon-1.0-py3-none-any.whl
+trixd_pip: trix_daemon-1.0-py3-none-any.whl     # the link to the newest 1.0 build
 trixd_noarch_pip_repository: "https://updates.clustervision.com/trinityx/{{ trix_version }}/trix/noarch/pip/{{ trix_stream }}"
 ```
 

@@ -14,54 +14,12 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-# Packaging for trix-daemon. The wheel is published to the internal index and
-# installed by the Ansible role into the shared interpreter, as luna2-daemon is.
+# The package itself is declared in setup.py, which says why. This file only
+# names the build backend for a modern pip, and configures pytest.
 
 [build-system]
 requires = ["setuptools>=45", "wheel"]
 build-backend = "setuptools.build_meta"
-
-[project]
-name = "trix-daemon"
-version = "1.0"
-description = "TrinityX control-plane daemon for everything that is not a physical node"
-readme = "README.md"
-requires-python = ">=3.10"
-license = { text = "GPL-3.0-or-later" }
-authors = [{ name = "ClusterVision Development team", email = "support@clustervision.com" }]
-maintainers = [{ name = "ClusterVision Development team", email = "support@clustervision.com" }]
-keywords = ["trinityx", "trix", "daemon", "clustervision"]
-classifiers = [
-    "Development Status :: 3 - Alpha",
-    "Intended Audience :: System Administrators",
-    "Operating System :: POSIX :: Linux",
-    "Programming Language :: Python :: 3.10",
-]
-dependencies = [
-    "fastapi==0.141.1",
-    "hypercorn==0.18.0",
-    "pydantic>=2.9.0",
-    "SQLAlchemy==2.0.54",
-    "alembic==1.20.0",
-    "PyJWT>=2.8.0",
-    "cryptography>=41.0.3",
-    "PyYAML>=6.0.0",
-    "requests>=2.29.0",
-    "python-pam==2.0.2",
-    "ldap3==2.9.1",
-]
-
-[project.scripts]
-trix-daemon = "trix.server:main"
-
-[project.urls]
-Homepage = "https://gitlab.taurusgroup.one/clustervision/trix-daemon"
-
-[tool.setuptools.packages.find]
-include = ["trix*"]
-
-[tool.setuptools.package-data]
-trix = ["config/*.ini", "config/*.service", "config/*.yaml", "plugins/*/manifest.yaml"]
 
 [tool.pytest.ini_options]
 pythonpath = ["."]

@@ -18,7 +18,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Values that never change and never touch the filesystem.
+Values that never change while the daemon runs. Only the version is read from
+anywhere: the installed package's metadata, once, at import.
 """
 
 __author__      = "Sumit Sharma"
@@ -29,8 +30,17 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+from importlib import metadata
+
 DAEMON_NAME: str = "trix-daemon"
-DAEMON_VERSION: str = "1.0"
+# The release line. setup.py adds the build number, the commit's time, after it.
+DAEMON_RELEASE: str = "1.0"
+try:
+    DAEMON_VERSION: str = metadata.version(DAEMON_NAME)
+except metadata.PackageNotFoundError:
+    # Run from a checkout that was never installed, as the tests are.
+    DAEMON_VERSION = DAEMON_RELEASE
+
 API_VERSION: str = "v1"
 API_PREFIX: str = f"/api/{API_VERSION}"
 
