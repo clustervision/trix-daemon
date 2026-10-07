@@ -73,7 +73,7 @@ role, which needs a sign-in screen the applications do not have yet.
 | Application | File | Today | After |
 |---|---|---|---|
 | users | `users/luna_requests.py` | eight URLs on `/config/osuser` and `/config/osgroup` | `/api/v1/directory/users`, `.../groups`, real verbs |
-| alertx | `alertx/rest.py` | six URLs on `/export/…` and `/import/…` | `/api/v1/prometheus/rules`, `.../settings`, `.../hw-rules` |
+| alertx | `alertx/rest.py` | six URLs on `/export/...` and `/import/...` | `/api/v1/prometheus/rules`, `.../settings`, `.../hw-rules` |
 | slurm | `slurm/app.py` | writes `/etc/slurm` itself through the generator | the slurm plugin's render writes the blocks from Luna's nodes and groups; editing partitions through the API waits for the generator to take them |
 
 alertx's "save nodes" regenerates nodes' hardware rules, or switches their alerts off,
