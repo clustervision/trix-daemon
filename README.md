@@ -320,8 +320,24 @@ reserved plugin name: it is the pass-through.
 ## Tests
 
 ```
-python -m pytest tests/unit
+pip install pytest httpx jinja2
+python -m pytest
 ```
+
+| Kind | Where | What it covers |
+|---|---|---|
+| API and RBAC | `tests/unit/test_daemon.py` | tokens both ways with Luna, roles on every route, the audit trail, the task queue, the pass-through |
+| Plugins | `tests/unit/test_plugins.py` | each shipped plugin's handlers and renders, the scaffold, site plugins |
+| Replication | `tests/unit/test_replication.py` | table hashes, the merge, deletions, two controllers converging |
+| Integrations | `tests/unit/test_integrations.py` | Luna, the peer, PAM, LDAP, obol, the slurm and genders generators, each stood in for at its edge; the role gate on its own |
+| Foundations | `tests/unit/test_foundations.py` | the shell runner, file writes and managed blocks, settings, keys, logging |
+| Migrations | `tests/unit/test_migrations.py` | every revision up, down and up again; the models against what the migrations build |
+| Command line | `tests/unit/test_entrypoint.py` | listeners, keygen, the plugin scaffold, a bad `trixd.ini` |
+| Repository | `tests/unit/test_repository.py` | plain ASCII and the licence header in every file, the version, a real wheel build |
+| Installer role | `tests/ansible/test_role.py` | the role's templates rendered with its defaults and read by the daemon's own loader |
+
+Each test builds its own daemon in a temporary directory, so nothing outside the
+checkout is read or written, and the suite runs on Windows as well as Linux.
 
 Timing at scale, with Luna stood in for (the files, database and plugin code are real):
 
