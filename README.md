@@ -111,7 +111,6 @@ render once, start the background timers, and only then open the listeners.
 | `trix/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
 | `trix/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
-| `ansible/` | The installer role, for trinityx-combined. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
 | `setup.py` | The package itself; see Building and publishing. |
 
@@ -211,7 +210,8 @@ agree; once that hook stops, they are the only writers.
 Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
 the command line, the alertx CLI, the On Demand apps and the node image. Each names
 where the daemon answers and the ini account. Where each goes, and who can read it,
-is in [ansible/README.md](ansible/README.md).
+is the installer's business: the trix-daemon role for trinityx-combined, which is
+kept outside this repository until it lands there.
 
 ## Who may do what
 
@@ -320,7 +320,7 @@ reserved plugin name: it is the pass-through.
 ## Tests
 
 ```
-pip install pytest httpx jinja2
+pip install pytest httpx
 python -m pytest
 ```
 
@@ -334,7 +334,6 @@ python -m pytest
 | Migrations | `tests/unit/test_migrations.py` | every revision up, down and up again; the models against what the migrations build |
 | Command line | `tests/unit/test_entrypoint.py` | listeners, keygen, the plugin scaffold, a bad `trixd.ini` |
 | Repository | `tests/unit/test_repository.py` | plain ASCII and the licence header in every file, the version, a real wheel build |
-| Installer role | `tests/ansible/test_role.py` | the role's templates rendered with its defaults and read by the daemon's own loader |
 
 Each test builds its own daemon in a temporary directory, so nothing outside the
 checkout is read or written, and the suite runs on Windows as well as Linux.
@@ -371,9 +370,9 @@ old setuptools, which is why the package is declared in `setup.py` and not in
 A build's version is the release line and the commit's time, for example
 `trix_daemon-1.0.1791360000-py3-none-any.whl`. The pipeline points
 `trix_daemon-1.0-py3-none-any.whl` at the newest build and keeps the last five. The
-role installs that name with `pip --upgrade`, so a controller takes the newest build
-on its next run, and `GET /api/v1/system/version` says which one it is running.
+installer installs that name with `pip --upgrade`, so a controller takes the newest
+build on its next run, and `GET /api/v1/system/version` says which one it is running.
 
 To build as the pipeline does: `python setup.py sdist bdist_wheel`, and `dist/` holds
 both files. The release line is `DAEMON_RELEASE` in `trix/common/constants.py`.
-Starting a new one means changing it and the role's `trixd_pip` together.
+Starting a new one means changing it and the installer's `trixd_pip` together.
