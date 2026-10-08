@@ -36,7 +36,7 @@ from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import API_PREFIX, RESERVED_PLUGIN
+from trixd.common.constants import API_PREFIX, LUNA_PLUGIN
 from trixd.common.errors import ServiceUnavailable
 from trixd.common.settings import current as settings
 from trixd.core.luna import hooks
@@ -45,7 +45,7 @@ LOGGER = trixlog.get("proxy")
 
 urllib3.disable_warnings()
 
-router = APIRouter(prefix=f"{API_PREFIX}/{RESERVED_PLUGIN}", tags=[RESERVED_PLUGIN])
+router = APIRouter(prefix=f"{API_PREFIX}/{LUNA_PLUGIN}", tags=[LUNA_PLUGIN])
 
 HOP_BY_HOP: tuple = ("connection", "keep-alive", "transfer-encoding", "upgrade",
                      "content-length", "content-encoding", "host")

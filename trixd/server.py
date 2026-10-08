@@ -160,7 +160,7 @@ def plugin_new(name: str, config_file: str = "") -> int:
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
     try:
-        written = scaffold.new(name, config.plugins.site_directory)
+        written = scaffold.new(name, config.plugins.site_directory, config.plugins.directory)
     except Exception as error:
         print(getattr(error, "message", str(error)))
         return 1

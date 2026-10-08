@@ -32,6 +32,7 @@ __status__      = "Production"
 import os
 import re
 
+from trixd.common.constants import RESERVED_PLUGINS
 from trixd.common.errors import BadRequest, Conflict
 
 NAME_RULE = re.compile(r"^[a-z][a-z0-9-]*$")
@@ -114,14 +115,16 @@ See docs/writing-a-plugin.md in the trix-daemon repository for the contract.
 '''
 
 
-def new(name: str, directory: str) -> list:
+def new(name: str, directory: str, shipped: str = "") -> list:
     """
     Write a plugin that loads as it stands, for an author to edit into shape.
     """
     if not NAME_RULE.match(str(name or "")):
         raise BadRequest(f"{name} is not a plugin name: lower case, digits and dashes")
-    if name == "luna":
-        raise BadRequest("luna is reserved for the pass-through to Luna")
+    if name in RESERVED_PLUGINS:
+        raise BadRequest(f"{name} is reserved for the daemon's own routes")
+    if shipped and os.path.isdir(os.path.join(shipped, name)):
+        raise Conflict(f"{name} is a shipped plugin; choose another name")
 
     target = os.path.join(directory, name)
     if os.path.exists(target):

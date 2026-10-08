@@ -44,8 +44,10 @@ except metadata.PackageNotFoundError:
 API_VERSION: str = "v1"
 API_PREFIX: str = f"/api/{API_VERSION}"
 
-# No plugin may claim this name: it is the one-API route to Luna.
-RESERVED_PLUGIN: str = "luna"
+# The Luna pass-through's prefix, /api/v1/luna.
+LUNA_PLUGIN: str = "luna"
+# No plugin may take these: the daemon serves /api/v1/<name> itself.
+RESERVED_PLUGINS: tuple = ("auth", "identity", "system", "docs", LUNA_PLUGIN)
 
 TOKEN_HEADER: str = "x-access-tokens"
 

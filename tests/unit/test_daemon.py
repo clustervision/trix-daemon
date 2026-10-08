@@ -41,7 +41,7 @@ import trixd
 
 from tests.conftest import SHARED_SECRET
 from trixd.common import settings as configuration
-from trixd.common.constants import API_PREFIX, MINIMUMS, RESERVED_PLUGIN
+from trixd.common.constants import API_PREFIX, LUNA_PLUGIN, MINIMUMS, RESERVED_PLUGINS
 from trixd.common.errors import PluginRefused, Unauthenticated
 from trixd.core.plugins import loader
 from trixd.core.plugins.manifest import parse
@@ -221,13 +221,31 @@ def test_the_published_document_matches_the_route_table(rig):
     assert published - registered == set()
 
 
-def test_luna_is_reserved(rig):
+def test_every_reserved_name_is_refused(rig):
     """
-    No plugin may claim the one-API route to Luna.
+    No plugin may take a prefix the daemon serves itself.
     """
-    with pytest.raises(PluginRefused) as raised:
-        loader.load(rig, RESERVED_PLUGIN)
-    assert RESERVED_PLUGIN in str(raised.value)
+    assert {"auth", "identity", "system", "docs"} <= set(RESERVED_PLUGINS)
+    for name in RESERVED_PLUGINS:
+        with pytest.raises(PluginRefused, match="is reserved"):
+            loader.load(rig, name)
+
+
+def test_a_plugin_route_on_a_daemon_path_is_refused(rig, tmp_path, monkeypatch):
+    """
+    Defence in depth: even without the reserved list, a route the daemon serves is taken.
+    """
+    site = tmp_path / "site-plugins" / "system"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("", encoding="utf-8")
+    (site / "backend.py").write_text(
+        "class Backend:\n    def health(self):\n        return {}\n", encoding="utf-8")
+    (site / "manifest.yaml").write_text(
+        "plugin: system\nbackend: backend\nendpoints:\n  - path: health\n"
+        "    methods: [GET]\n    minimum: none\n    handler: health\n", encoding="utf-8")
+    monkeypatch.setattr(loader, "RESERVED_PLUGINS", ())
+    with pytest.raises(PluginRefused, match="already served by the daemon itself"):
+        loader.load(rig, "system", str(site))
 
 
 def test_a_manifest_without_a_minimum_role_is_refused():
@@ -311,7 +329,7 @@ def test_no_path_is_served_twice(rig):
     seen = {}
     for route in rig.router.routes:
         path = getattr(route, "path", "")
-        if not path.startswith(API_PREFIX) or RESERVED_PLUGIN in path:
+        if not path.startswith(API_PREFIX) or LUNA_PLUGIN in path:
             continue
         for method in getattr(route, "methods", set()):
             key = (method, path)
@@ -1212,10 +1230,10 @@ def _render_plugin(directory: str, handler: str = "about") -> None:
     """
     A plugin with one served render and one plain endpoint, written to the plugins directory.
     """
-    root = os.path.join(directory, "docs")
+    root = os.path.join(directory, "manual")
     os.makedirs(root, exist_ok=True)
     with open(os.path.join(root, "manifest.yaml"), "w", encoding="utf-8") as handle:
-        handle.write("plugin: docs\nbackend: backend\nendpoints:\n"
+        handle.write("plugin: manual\nbackend: backend\nendpoints:\n"
                      "  - path: doc\n    methods: [GET]\n    minimum: none\n"
                      "    handler: render_doc\n    render:\n"
                      "      inputs: [luna.node]\n      serve: json\n"
@@ -1224,7 +1242,7 @@ def _render_plugin(directory: str, handler: str = "about") -> None:
     with open(os.path.join(root, "backend.py"), "w", encoding="utf-8") as handle:
         handle.write("class Backend:\n"
                      "    def render_doc(self):\n        return {'rendered': True}\n"
-                     "    def about(self):\n        return {'about': 'docs'}\n")
+                     "    def about(self):\n        return {'about': 'manual'}\n")
 
 
 def test_a_refused_reload_keeps_the_serving_plugins_renders(rig, client, headers):
@@ -1234,12 +1252,12 @@ def test_a_refused_reload_keeps_the_serving_plugins_renders(rig, client, headers
     from trixd.common.settings import current as settings
 
     _render_plugin(settings().plugins.directory)
-    assert loader.load(rig, "docs").state == "loaded"
-    assert client.get(f"{API_PREFIX}/docs/doc", headers=headers).status_code == 200
+    assert loader.load(rig, "manual").state == "loaded"
+    assert client.get(f"{API_PREFIX}/manual/doc", headers=headers).status_code == 200
     _render_plugin(settings().plugins.directory, handler="no_such_method")
-    answer = client.post(f"{API_PREFIX}/system/plugins/docs/reload", headers=headers)
+    answer = client.post(f"{API_PREFIX}/system/plugins/manual/reload", headers=headers)
     assert answer.status_code == 409
-    served = client.get(f"{API_PREFIX}/docs/doc", headers=headers)
+    served = client.get(f"{API_PREFIX}/manual/doc", headers=headers)
     assert served.status_code == 200, served.text
 
 

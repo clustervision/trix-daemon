@@ -40,8 +40,8 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import (PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
-                                   RESERVED_PLUGIN)
+from trixd.common.constants import (API_PREFIX, PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
+                                    RESERVED_PLUGINS)
 from trixd.common.errors import NotFound, PluginRefused
 from trixd.common.settings import current as settings, seconds
 from trixd.core.plugins import binder, manifest as manifests
@@ -237,13 +237,28 @@ def _bind_hooks(manifest, backend) -> dict:
 
 
 @_serialised
+def _daemon_paths(app: FastAPI, known) -> list:
+    """
+    The paths the daemon serves itself; an included router keeps its routes inside it.
+    """
+    paths = []
+    for route in app.router.routes:
+        if known.owner(route):
+            continue
+        inner = getattr(route, "original_router", None)
+        for item in (inner.routes if inner is not None else [route]):
+            if getattr(item, "path", ""):
+                paths.append(item.path)
+    return paths
+
+
 def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     """
     Load or reload one plugin. On a refusal nothing already serving is disturbed.
     """
     known = registry()
-    if name == RESERVED_PLUGIN:
-        reason = f"{RESERVED_PLUGIN} is reserved for the pass-through to Luna"
+    if name in RESERVED_PLUGINS:
+        reason = f"{name} is reserved: the daemon serves {API_PREFIX}/{name} itself"
         known.refuse(name, reason)
         raise PluginRefused(reason)
 
@@ -267,6 +282,8 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         router = binder.build(manifest, backend, models_for_plugin, renders())
 
         taken = known.paths(skip=name)
+        for path in _daemon_paths(app, known):
+            taken.setdefault(path, "the daemon itself")
         clash = [route.path for route in router.routes if route.path in taken]
         if clash:
             raise PluginRefused(

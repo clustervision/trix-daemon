@@ -251,8 +251,12 @@ def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
     from trixd.common.settings import current as settings
     from trixd.core.plugins import scaffold
 
-    with pytest.raises(BadRequest):
-        scaffold.new("luna", settings().plugins.directory)
+    for reserved in ("luna", "auth", "system", "identity", "docs"):
+        with pytest.raises(BadRequest):
+            scaffold.new(reserved, settings().plugins.directory)
+    with pytest.raises(Conflict, match="shipped plugin"):
+        scaffold.new("prometheus", str(settings().plugins.site_directory),
+                     settings().plugins.directory)
     with pytest.raises(BadRequest):
         scaffold.new("Not A Name", settings().plugins.directory)
 
