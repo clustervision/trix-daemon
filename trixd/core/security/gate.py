@@ -30,6 +30,7 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 from fastapi import Header, Request
+from fastapi.routing import APIRoute
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import (ROLE_NONE, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE,
@@ -135,4 +136,30 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
         audit.granted(claims.subject, request.method, _target(request))
         return Caller(claims, who, held)
 
+    # What the published document says about a route this guards.
+    dependency.minimum = minimum
+    dependency.token_kind = token_kind
     return dependency
+
+
+def access_of(route) -> dict:
+    """
+    Who may call a route, as the document shows it: a role and its minimum, a node token,
+    or public when no guard stands in front of it.
+    """
+    for item in getattr(getattr(route, "dependant", None), "dependencies", []):
+        call = getattr(item, "call", None)
+        if hasattr(call, "minimum"):
+            if call.token_kind == TOKEN_KIND_NODE:
+                return {"x-trixd-access": "node", "x-trixd-minimum": ""}
+            return {"x-trixd-access": "role", "x-trixd-minimum": call.minimum}
+    return {"x-trixd-access": "public", "x-trixd-minimum": ""}
+
+
+def stamp(router) -> None:
+    """
+    Put x-trixd-access and x-trixd-minimum on every route of a router that has none yet.
+    """
+    for route in router.routes:
+        if isinstance(route, APIRoute) and "x-trixd-access" not in (route.openapi_extra or {}):
+            route.openapi_extra = {**(route.openapi_extra or {}), **access_of(route)}

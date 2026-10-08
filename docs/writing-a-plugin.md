@@ -61,6 +61,13 @@ Two things to know before you rely on it:
 
 ## The two files
 
+`docs/manifest.schema.json` is the manifest format as a JSON Schema. An editor with a
+YAML language server checks a manifest as it is typed when its first line is
+`# yaml-language-server: $schema=<path to docs/manifest.schema.json>`. The API every
+shipped plugin serves, with the role each route needs, is in `docs/openapi.json`.
+After changing a manifest or a route, run `python tools/build_schemas.py`: a unit test
+fails while the two documents and the code disagree.
+
 A plugin is a directory holding `manifest.yaml` and a backend module. A single
 Python script also loads, if it defines a class named `Plugin` with an `endpoints`
 list of the same entries a manifest has (and optionally `name`, `schemas` and

@@ -113,6 +113,9 @@ render once, start the background timers, and only then open the listeners.
 | `trixd/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
+| `docs/openapi.json` | The whole API with every shipped plugin, and who may call each route (`x-trixd-access`, `x-trixd-minimum`). |
+| `docs/manifest.schema.json` | The plugin manifest format, as a JSON Schema. |
+| `tools/build_schemas.py` | Writes both from the code; a test fails when they drift. |
 | `setup.py` | The package itself; see Building and publishing. |
 
 ## Run it on a workstation

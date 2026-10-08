@@ -38,7 +38,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import PluginRefused
 from trixd.core.plugins.manifest import Endpoint, Manifest
-from trixd.core.security.gate import Caller, guard
+from trixd.core.security.gate import Caller, guard, stamp
 
 LOGGER = trixlog.get("binder")
 
@@ -163,6 +163,9 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",
                 summary=endpoint.summary or f"{verb} {endpoint.path}",
+                openapi_extra=({"x-trixd-access": "forward", "x-trixd-minimum": ""}
+                               if endpoint.forward else None),
             )
             LOGGER.debug("bound %s %s/%s", verb, router.prefix, endpoint.route_path)
+    stamp(router)
     return router

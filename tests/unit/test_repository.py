@@ -44,7 +44,9 @@ from trixd.common.constants import DAEMON_RELEASE
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = "This code is part of the TrinityX software suite"
 # Files that are their own kind of text: the licence itself, plain READMEs, git's own.
-NO_HEADER = re.compile(r"(^|/)(LICENSE\.txt|README|\.gitattributes)$")
+# Files that are their own kind of text, and the JSON tools/build_schemas.py writes,
+# which carries its licence in its own fields since JSON has no comments.
+NO_HEADER = re.compile(r"(^|/)(LICENSE\.txt|README|\.gitattributes)$|^docs/.*\.json$")
 
 
 def _tracked() -> list:
@@ -129,3 +131,61 @@ def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
     required = re.findall(r"^Requires-Dist: (.+)$", metadata.decode("utf-8"), re.M)
     normal = {re.sub(r"[\s()]", "", item) for item in required}
     assert normal == set(pins), (normal, pins)
+
+
+def _shape(document: dict) -> dict:
+    """
+    What the API promises, without the formatting a library version may change: each path
+    and verb, its summary, who may call it, whether it takes a body, and its parameters.
+    """
+    shape = {}
+    for path, operations in document["paths"].items():
+        for verb, operation in operations.items():
+            shape[f"{verb.upper()} {path}"] = {
+                "summary": operation.get("summary", ""),
+                "access": operation.get("x-trixd-access", ""),
+                "minimum": operation.get("x-trixd-minimum", ""),
+                "body": "requestBody" in operation,
+                "parameters": sorted(item["name"] for item in operation.get("parameters", [])),
+            }
+    return shape
+
+
+def test_the_published_schemas_match_the_code(tmp_path):
+    """
+    docs/openapi.json and docs/manifest.schema.json are what the code builds. When this
+    fails, run python tools/build_schemas.py and commit what it writes.
+    """
+    import json
+
+    built = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_schemas.py"),
+                            str(tmp_path)], capture_output=True, text=True, cwd=ROOT)
+    assert built.returncode == 0, built.stderr[-500:]
+    for name in ("openapi.json", "manifest.schema.json"):
+        with open(os.path.join(ROOT, "docs", name), encoding="utf-8") as handle:
+            committed = json.load(handle)
+        with open(tmp_path / name, encoding="utf-8") as handle:
+            fresh = json.load(handle)
+        if name == "openapi.json":
+            assert _shape(committed) == _shape(fresh), "run python tools/build_schemas.py"
+        else:
+            assert committed == fresh, "run python tools/build_schemas.py"
+
+
+def test_every_published_route_says_who_may_call_it():
+    """
+    Every operation in docs/openapi.json carries its access, and a role route its minimum.
+    """
+    import json
+
+    with open(os.path.join(ROOT, "docs", "openapi.json"), encoding="utf-8") as handle:
+        shape = _shape(json.load(handle))
+    assert shape, "an empty document"
+    for operation, facts in shape.items():
+        assert facts["access"] in ("public", "role", "node", "forward"), operation
+        if facts["access"] == "role":
+            assert facts["minimum"] in ("none", "reader", "operator", "manager", "rootus"), operation
+    public = sorted(op for op, facts in shape.items() if facts["access"] == "public")
+    assert public == ["GET /api/v1/prometheus/renders/targets", "GET /api/v1/system/health",
+                      "GET /api/v1/system/version", "POST /api/v1/auth/node/{node}",
+                      "POST /api/v1/auth/token"], public
