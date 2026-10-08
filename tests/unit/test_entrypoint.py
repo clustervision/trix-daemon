@@ -35,9 +35,9 @@ import stat
 
 import pytest
 
-from trix import server
-from trix.common import settings as configuration
-from trix.common.constants import DAEMON_VERSION
+from trixd import server
+from trixd.common import settings as configuration
+from trixd.common.constants import DAEMON_VERSION
 
 
 def _settings(**api) -> configuration.Settings:
@@ -124,13 +124,13 @@ def test_keygen_writes_a_keypair_once(tmp_path, capsys):
     """
     Under EdDSA it writes the pair, private 0600, and refuses to overwrite it.
     """
-    private = tmp_path / "keys" / "trix.ed25519"
+    private = tmp_path / "keys" / "trixd.ed25519"
     ini = tmp_path / "trixd.ini"
     ini.write_text(f"[LOGGER]\nLOGFILE =\n[TOKENS]\nALGORITHM = EdDSA\nPRIVATE_KEY = {private}\n"
-                   f"KEY_ID = trix-1\n", encoding="utf-8")
+                   f"KEY_ID = trixd-1\n", encoding="utf-8")
     assert server.main(["--config", str(ini), "keygen"]) == 0
     said = capsys.readouterr().out
-    assert f"wrote {private}" in said and "trix-1.pub" in said
+    assert f"wrote {private}" in said and "trixd-1.pub" in said
     if os.name == "posix":
         assert stat.S_IMODE(os.stat(private).st_mode) == 0o600
     before = private.read_bytes()
@@ -145,5 +145,5 @@ def test_the_plugin_command_wants_new_and_a_name(rig, capsys):
     config = configuration.current().config_file
     assert server.main(["--config", config, "plugin"]) == 1
     assert server.main(["--config", config, "plugin", "old", "x"]) == 1
-    assert "usage: trix-daemon plugin new <name>" in capsys.readouterr().out
+    assert "usage: trixd plugin new <name>" in capsys.readouterr().out
     assert server.main(["--config", config, "plugin", "new", "luna"]) == 1, "reserved name"

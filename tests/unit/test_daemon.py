@@ -37,15 +37,15 @@ from datetime import datetime, timedelta, timezone
 import jwt
 import pytest
 
-import trix
+import trixd
 
 from tests.conftest import SHARED_SECRET
-from trix.common import settings as configuration
-from trix.common.constants import API_PREFIX, MINIMUMS, RESERVED_PLUGIN
-from trix.common.errors import PluginRefused, Unauthenticated
-from trix.core.plugins import loader
-from trix.core.plugins.manifest import parse
-from trix.core.security import tokens
+from trixd.common import settings as configuration
+from trixd.common.constants import API_PREFIX, MINIMUMS, RESERVED_PLUGIN
+from trixd.common.errors import PluginRefused, Unauthenticated
+from trixd.core.plugins import loader
+from trixd.core.plugins.manifest import parse
+from trixd.core.security import tokens
 
 
 def _serves(app, path: str) -> bool:
@@ -156,7 +156,7 @@ def test_the_keypair_algorithm_still_works(keypair_rig):
     minted = tokens.mint("tester")
     header = jwt.get_unverified_header(minted)
     assert header["alg"] == "EdDSA"
-    assert header["kid"] == "trix-test"
+    assert header["kid"] == "trixd-test"
     assert tokens.verify(minted).subject == "tester"
 
 
@@ -187,7 +187,7 @@ def test_every_user_endpoint_declares_a_minimum_role():
 
     import yaml
 
-    manifests = glob.glob(os.path.join(os.path.dirname(trix.__file__), "plugins", "*",
+    manifests = glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
                                        "manifest.yaml"))
     assert len(manifests) == 5, manifests
     for path in manifests:
@@ -203,8 +203,8 @@ def test_the_published_document_matches_the_route_table(rig):
     """
     Enumerate one, assert the other.
     """
-    from trix.api.v1 import auth, identity, system
-    from trix.core.luna import proxy
+    from trixd.api.v1 import auth, identity, system
+    from trixd.core.luna import proxy
 
     document = rig.openapi()
     published = set(document["paths"])
@@ -354,7 +354,7 @@ def test_the_sources_are_the_four_on_the_board(rig):
     """
     import pathlib
 
-    root = pathlib.Path(trix.__file__).parent / "core" / "security" / "sources"
+    root = pathlib.Path(trixd.__file__).parent / "core" / "security" / "sources"
     found = {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
     assert found == {"local", "pam", "ldap", "oidc"}, found
 
@@ -365,7 +365,7 @@ def test_no_source_authenticates_without_checking_the_password(rig):
     """
     import pathlib
 
-    root = pathlib.Path(trix.__file__).parent / "core" / "security" / "sources"
+    root = pathlib.Path(trixd.__file__).parent / "core" / "security" / "sources"
     for name in ("local", "pam", "ldap", "oidc"):
         body = (root / f"{name}.py").read_text(encoding="utf-8")
         block = body.split("def authenticate")[1].split("\n    def ")[0]
@@ -382,9 +382,9 @@ def _local_user(name: str, password: str) -> None:
     """
     A user whose password the local source holds.
     """
-    from trix.core.security import principals
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.core.security import principals
+    from trixd.db import engine as database
+    from trixd.db import models
 
     handle = database.session()
     try:
@@ -399,8 +399,8 @@ def test_a_source_that_cannot_work_is_skipped(rig, monkeypatch):
     """
     A missing library must not stop a local principal from logging in.
     """
-    from trix.core.security import chain
-    from trix.db import engine as database
+    from trixd.core.security import chain
+    from trixd.db import engine as database
 
     _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["ldap", "local"])
@@ -417,8 +417,8 @@ def test_a_refusal_stops_the_chain(rig, monkeypatch):
     """
     A source that knows the name and refuses it is the end of the walk.
     """
-    from trix.core.security import chain
-    from trix.db import engine as database
+    from trixd.core.security import chain
+    from trixd.db import engine as database
 
     _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["local", "pam"])
@@ -435,8 +435,8 @@ def test_an_unknown_source_name_is_skipped(rig, monkeypatch):
     """
     A typo in the chain is logged, not a crash and not an open door.
     """
-    from trix.core.security import chain
-    from trix.db import engine as database
+    from trixd.core.security import chain
+    from trixd.db import engine as database
 
     _local_user("alice", "secret")
     monkeypatch.setattr(configuration.current().auth, "chain", ["nosuchsource"])
@@ -453,7 +453,7 @@ def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypa
     """
     Luna never issues one anonymously, and the token it mints works on Luna too.
     """
-    from trix.api.v1 import auth as auth_routes
+    from trixd.api.v1 import auth as auth_routes
 
     class Stub:
         """
@@ -489,7 +489,7 @@ def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, clie
     """
     With the cluster flag set, only the recorded measurement opens the door.
     """
-    from trix.api.v1 import auth as auth_routes
+    from trixd.api.v1 import auth as auth_routes
 
     class Stub:
         """
@@ -521,7 +521,7 @@ def test_the_service_command_comes_from_the_ini(rig, monkeypatch):
     """
     A container has no systemd, so the binary must be a setting, not a constant.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     seen = []
 
@@ -546,8 +546,8 @@ def test_the_audit_trail_records_a_login_and_a_refusal(rig, client):
     """
     The table was created and never written. Both outcomes belong in it.
     """
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.db import engine as database
+    from trixd.db import models
 
     client.post(f"{API_PREFIX}/auth/token",
                 json={"username": "tester", "password": "secret"})
@@ -569,8 +569,8 @@ def test_a_refused_request_is_audited(rig, client, token):
     """
     A refusal that leaves no trace answers the wrong question later.
     """
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.db import engine as database
+    from trixd.db import models
 
     node_token = tokens.mint("node001", kind="node", node="node001")
     client.get(f"{API_PREFIX}/directory/users", headers={"x-access-tokens": node_token})
@@ -589,8 +589,8 @@ def test_an_identity_write_leaves_its_audit_row(rig, client, headers):
     """
     A second session here blocks on the request's own write lock and the row is lost.
     """
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.db import engine as database
+    from trixd.db import models
 
     # put_user flushes before it audits, so the request holds the write lock:
     # a second session here waits out the busy timeout and loses the row.
@@ -696,8 +696,8 @@ def test_a_refusal_is_in_the_audit_trail(rig, client, headers):
     """
     Who asked, what for, and what they held, or the trail is decoration.
     """
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.db import engine as database
+    from trixd.db import models
 
     pat = _principal(client, headers, "pat")
     client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=pat)
@@ -729,7 +729,7 @@ def test_the_oidc_source_lets_the_chain_continue(rig):
     """
     Named before it is built: it must never claim a name, or nobody could log in.
     """
-    from trix.core.security.sources import oidc
+    from trixd.core.security.sources import oidc
 
     source = oidc.Source()
     assert source.authenticate("tester", "secret")[0] is None
@@ -771,7 +771,7 @@ def test_the_ladder_is_ordered_and_unknown_sits_at_the_bottom(rig):
     """
     none, operator, manager, in that order; a role nobody declared ranks as none.
     """
-    from trix.core.security import access
+    from trixd.core.security import access
 
     assert access.rank("none") < access.rank("operator") < access.rank("manager")
     assert access.rank("manager") < access.rank("rootus")
@@ -786,8 +786,8 @@ def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch
     """
     The status route: an action answers at once with an id, and the caller polls it.
     """
-    from trix.core import tasks
-    from trix.plugins.services import backend as services
+    from trixd.core import tasks
+    from trixd.plugins.services import backend as services
 
     monkeypatch.setattr(services, "run_task", lambda action, unit: f"{action} {unit} ok")
     tasks.register("services", services.run_task)
@@ -818,8 +818,8 @@ def test_a_failing_action_is_recorded_as_failed(rig, client, headers, monkeypatc
     """
     The worker must write down a failure, or a caller polls forever.
     """
-    from trix.common.errors import BackendFailure
-    from trix.core import tasks
+    from trixd.common.errors import BackendFailure
+    from trixd.core import tasks
 
     def boom(action, unit):
         """
@@ -867,7 +867,7 @@ def test_a_requeued_task_finds_its_handler(rig):
     """
     Starting the worker before the plugins register fails the work it recovers.
     """
-    from trix.core import lifespan
+    from trixd.core import lifespan
 
     source = inspect.getsource(lifespan.start)
     assert source.index("loader.load_all") < source.index("tasks.start()"), \
@@ -878,7 +878,7 @@ def test_the_pass_through_recognises_a_node_rename(rig):
     """
     A POST to the node with newnodename or group, answered 2xx, is what a hook must see.
     """
-    from trix.core.luna import hooks
+    from trixd.core.luna import hooks
 
     body = b'{"config": {"node": {"node001": {"newnodename": "node002", "comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", body, 204) == {
@@ -906,9 +906,9 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
     Luna's 204 comes back untouched and the change is on the queue once the answer has left.
     """
     from types import SimpleNamespace
-    from trix.core.luna import proxy
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.core.luna import proxy
+    from trixd.db import engine as database
+    from trixd.db import models
 
     def luna_says(method, url, **kwargs):
         """
@@ -934,7 +934,7 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.
     """
-    from trix.core.luna import hooks
+    from trixd.core.luna import hooks
 
     plugin = tmp_path / "plugins" / "watcher"
     plugin.mkdir()
@@ -972,9 +972,9 @@ def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
     """
     A reconcile woken beside the hook could retire a file the hook was about to move.
     """
-    from trix.core import tasks
-    from trix.core.luna import hooks
-    from trix.core.plugins.registry import current as registry
+    from trixd.core import tasks
+    from trixd.core.luna import hooks
+    from trixd.core.plugins.registry import current as registry
 
     plugin = tmp_path / "plugins" / "orderly"
     plugin.mkdir()
@@ -1006,8 +1006,8 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
     A change inside the coalescing window is rendered when the window closes, never dropped.
     """
     import time as clock
-    from trix.core.plugins.manifest import Render
-    from trix.core.render.engine import current as renders
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
 
     seen, state = [], {"value": 1}
 
@@ -1031,8 +1031,8 @@ def test_a_source_missing_its_library_says_so(rig, monkeypatch):
     """
     A library a real source needs is not a source the ini made up, and the log tells them apart.
     """
-    from trix.core.security import chain
-    from trix.db import engine as database
+    from trixd.core.security import chain
+    from trixd.db import engine as database
 
     real = chain._source
 
@@ -1063,9 +1063,9 @@ def test_the_cache_is_cleared_after_the_change_is_committed(rig, client, headers
     """
     Cleared before the commit, a request in between caches the old row for a minute.
     """
-    from trix.core.security import principals
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.core.security import principals
+    from trixd.db import engine as database
+    from trixd.db import models
 
     client.put(f"{API_PREFIX}/identity/users/sealed", json={"password": "pw"},
                headers=headers)
@@ -1121,8 +1121,8 @@ def test_the_ini_account_signs_in_from_trixd_ini_alone(rig, client, monkeypatch)
     rootus is checked against trixd.ini, whatever the chain lists, leaves no row, and a
     new password in the ini applies at once.
     """
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.db import engine as database
+    from trixd.db import models
 
     monkeypatch.setattr(configuration.current().auth, "chain", ["pam"])
     login = {"username": "tester", "password": "secret"}
@@ -1160,7 +1160,7 @@ def test_pam_refuses_a_system_account_at_sign_in(rig):
     """
     from types import SimpleNamespace
 
-    from trix.core.security.sources import pam as pam_source
+    from trixd.core.security.sources import pam as pam_source
 
     source = pam_source.Source.__new__(pam_source.Source)
     source.service = "login"
@@ -1185,10 +1185,10 @@ def test_settings_that_name_a_command_need_rootus(rig, client, headers):
     """
     A manager changes rules and settings; the command run as root is rootus alone.
     """
-    from trix.core.plugins import manifest as manifests
+    from trixd.core.plugins import manifest as manifests
 
     for plugin in ("prometheus", "slurm"):
-        path = os.path.join(os.path.dirname(trix.__file__), "plugins", plugin, "manifest.yaml")
+        path = os.path.join(os.path.dirname(trixd.__file__), "plugins", plugin, "manifest.yaml")
         parsed = manifests.parse(manifests.read_yaml(path))
         patched = [e for e in parsed.endpoints if e.path == "config" and "PATCH" in e.methods]
         assert [e.minimum for e in patched] == ["rootus"], plugin
@@ -1231,7 +1231,7 @@ def test_a_refused_reload_keeps_the_serving_plugins_renders(rig, client, headers
     """
     The routes stay and so do the renders behind them: a broken manifest moves nothing.
     """
-    from trix.common.settings import current as settings
+    from trixd.common.settings import current as settings
 
     _render_plugin(settings().plugins.directory)
     assert loader.load(rig, "docs").state == "loaded"
@@ -1247,7 +1247,7 @@ def test_without_a_certificate_the_plain_listener_still_opens(tmp_path):
     """
     Hypercorn opens insecure_bind only beside TLS, so without one it has to be the bind.
     """
-    from trix.server import build_config
+    from trixd.server import build_config
 
     ini = tmp_path / "trixd.ini"
     ini.write_text("[API]\nBIND = 0.0.0.0:8050\nINSECURE_BIND = 127.0.0.1:8051\n",

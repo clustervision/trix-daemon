@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Test suite for trix-daemon.
+Test suite for trixd.
 """
 
 __author__      = "Sumit Sharma"

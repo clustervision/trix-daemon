@@ -47,9 +47,9 @@ import yaml
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
-from trix.common import settings as configuration  # noqa: E402
-from trix.db import engine as database  # noqa: E402
-from trix.plugins.prometheus import backend as prometheus  # noqa: E402
+from trixd.common import settings as configuration  # noqa: E402
+from trixd.db import engine as database  # noqa: E402
+from trixd.plugins.prometheus import backend as prometheus  # noqa: E402
 
 GROUPS: int = 8
 
@@ -115,12 +115,12 @@ def main(count: int, parts: int) -> None:
     """
     Build the estate, then time each piece of work and print one line each.
     """
-    scratch = tempfile.mkdtemp(prefix="trix-perf-")
+    scratch = tempfile.mkdtemp(prefix="trixd-perf-")
     try:
         ini = os.path.join(scratch, "trixd.ini")
         with open(ini, "w", encoding="utf-8") as handle:
             handle.write(f"[LOGGER]\nLEVEL = error\nLOGFILE =\n"
-                         f"[DATABASE]\nURL = sqlite:///{scratch}/trix.db\n")
+                         f"[DATABASE]\nURL = sqlite:///{scratch}/trixd.db\n")
         configuration.set_current(configuration.load(ini))
         database.start(configuration.current().database.url)
 

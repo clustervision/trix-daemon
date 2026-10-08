@@ -39,7 +39,7 @@ import zipfile
 
 import pytest
 
-from trix.common.constants import DAEMON_RELEASE
+from trixd.common.constants import DAEMON_RELEASE
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = "This code is part of the TrinityX software suite"
@@ -104,11 +104,11 @@ def test_the_version_is_the_release_line_and_the_commit_time():
 
 def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
     """
-    Every tracked file under trix/ is in the wheel, under the name the pipeline expects,
+    Every tracked file under trixd/ is in the wheel, under the name the pipeline expects,
     with the dependencies requirements.txt pins.
     """
     pytest.importorskip("setuptools")
-    tracked = [name for name in _tracked() if name.startswith("trix/")]
+    tracked = [name for name in _tracked() if name.startswith("trixd/")]
     built = subprocess.run([sys.executable, "-m", "pip", "wheel", "--no-deps",
                             "--no-build-isolation", "-q", "-w", str(tmp_path), ROOT],
                            capture_output=True, text=True)
@@ -117,7 +117,7 @@ def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
 
     wheels = glob.glob(str(tmp_path / "*.whl"))
     assert len(wheels) == 1, wheels
-    assert re.fullmatch(rf"trix_daemon-{re.escape(DAEMON_RELEASE)}\.\d+-py3-none-any\.whl",
+    assert re.fullmatch(rf"trixd-{re.escape(DAEMON_RELEASE)}\.\d+-py3-none-any\.whl",
                         os.path.basename(wheels[0])), wheels[0]
     with zipfile.ZipFile(wheels[0]) as wheel:
         names = set(wheel.namelist())

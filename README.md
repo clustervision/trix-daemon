@@ -16,13 +16,13 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>
 -->
 
-# trix-daemon
+# trixd
 
 The TrinityX control-plane daemon for everything that is not a physical node.
 Short name: trixd.
 
 A TrinityX cluster has a controller that runs **Luna** (luna2-daemon), which owns the
-physical estate: nodes, groups, images, networks, boot and hardware. trix-daemon is
+physical estate: nodes, groups, images, networks, boot and hardware. trixd is
 Luna's peer on the same controller and takes the rest: the cluster's users and
 groups, the Prometheus monitoring configuration, starting and stopping services,
 and configuration files such as slurm's and genders' that are computed from Luna's
@@ -33,7 +33,7 @@ It reaches Luna only through Luna's HTTP API, by object name, and Luna is not
 changed for it. Neither imports the other.
 
 **The rule that comes before the others: render on change, never on boot.** A
-booting node must never depend on trix-daemon being up. Nothing this daemon serves
+booting node must never depend on trixd being up. Nothing this daemon serves
 sits on the boot path.
 
 ## Words used here
@@ -54,7 +54,7 @@ sits on the boot path.
 | pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged |
 | Luna hook | what a plugin does after a node is renamed or deleted through the pass-through (`luna_hooks` in its manifest) |
 | node token | a token a booted node gets for itself, confined to that node (Luna's "provision" scope) |
-| service token | a short-lived token one controller's trix-daemon gives the other's, for replication |
+| service token | a short-lived token one controller's trixd gives the other's, for replication |
 | replication | how the two controllers of an HA pair keep `principal` and `declaration` the same |
 | obol | the command-line tool that manages users in the cluster's 389ds LDAP directory |
 | OOD | Open OnDemand, the cluster's web portal, whose TrinityX apps call these APIs |
@@ -64,31 +64,31 @@ sits on the boot path.
 
 **A plugin route**, for example `PATCH /api/v1/prometheus/rules`:
 
-1. `trix/server.py` serves the app built by `trix/app.py` on both listeners.
-2. The route was built from the plugin's manifest by `trix/core/plugins/binder.py`.
-3. Its gate, `trix/core/security/gate.py`, verifies the token
+1. `trixd/server.py` serves the app built by `trixd/app.py` on both listeners.
+2. The route was built from the plugin's manifest by `trixd/core/plugins/binder.py`.
+3. Its gate, `trixd/core/security/gate.py`, verifies the token
    (`core/security/tokens.py`), resolves the caller (`core/security/principals.py`,
    which asks the sources in `core/security/sources/` through `chain.py`), compares
    their role with the route's minimum (`core/security/access.py`) and writes the
    decision to the audit trail (`core/security/audit.py`).
 4. The body is validated against the manifest's schema, then the backend method in
-   `trix/plugins/prometheus/backend.py` runs.
-5. A return value becomes a JSON 200. A `TrixError` from `trix/common/errors.py`
+   `trixd/plugins/prometheus/backend.py` runs.
+5. A return value becomes a JSON 200. A `TrixdError` from `trixd/common/errors.py`
    becomes its own status (400, 401, 403, 404, 409, 502 or 503), a body that fails
    its schema is a 422, and anything else is a 500, with the detail in the log.
 
 **A call to Luna**, for example renaming a node:
 
-1. `trix/core/luna/proxy.py` forwards `/api/v1/luna/config/node/node001` to Luna as
+1. `trixd/core/luna/proxy.py` forwards `/api/v1/luna/config/node/node001` to Luna as
    `/config/node/node001`, with the method, query, headers and body as sent, less
    the connection headers, and returns Luna's answer unchanged. Luna decides who may.
-2. After the answer has left, `trix/core/luna/hooks.py` looks at what was asked. A
-   successful rename, group move or delete is queued as a task (`trix/core/tasks.py`).
+2. After the answer has left, `trixd/core/luna/hooks.py` looks at what was asked. A
+   successful rename, group move or delete is queued as a task (`trixd/core/tasks.py`).
 3. The task worker runs every plugin's `luna_hooks` handler for it; the prometheus
    plugin moves the node's rule file and rewrites it to the new name and group.
-4. Then the renders that read Luna's nodes wake (`trix/core/render/engine.py`).
+4. Then the renders that read Luna's nodes wake (`trixd/core/render/engine.py`).
 
-**Startup** (`trix/core/lifespan.py`): read and check `trixd.ini`, open the database
+**Startup** (`trixd/core/lifespan.py`): read and check `trixd.ini`, open the database
 and bring its schema to the newest Alembic revision, load the signing key, load the
 plugins, start the task worker, read Luna's table hashes as a baseline, run every
 render once, start the background timers, and only then open the listeners.
@@ -97,19 +97,19 @@ render once, start the background timers, and only then open the listeners.
 
 | Path | What lives there |
 |---|---|
-| `trix/app.py` | Builds the application. Reads no configuration. |
-| `trix/server.py` | The entry point: read the ini, serve TLS and plain together. |
-| `trix/common/` | Settings, constants, typed errors, logging. |
-| `trix/core/security/` | Keys, tokens, the sign-in sources and chain, the role gate, the audit trail. |
-| `trix/core/plugins/` | Manifest, loader, registry, router binder, route swap, scaffold. |
-| `trix/core/render/` | The render engine and the Luna table-hash trigger. |
-| `trix/core/replication/` | Keeping two controllers' tables the same. |
-| `trix/core/luna/` | The Luna client, the pass-through and its hooks. |
-| `trix/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
-| `trix/db/` | Engine, models and the Alembic migrations. |
-| `trix/api/v1/` | The daemon's own routes: auth, identity, system. |
-| `trix/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
-| `trix/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
+| `trixd/app.py` | Builds the application. Reads no configuration. |
+| `trixd/server.py` | The entry point: read the ini, serve TLS and plain together. |
+| `trixd/common/` | Settings, constants, typed errors, logging. |
+| `trixd/core/security/` | Keys, tokens, the sign-in sources and chain, the role gate, the audit trail. |
+| `trixd/core/plugins/` | Manifest, loader, registry, router binder, route swap, scaffold. |
+| `trixd/core/render/` | The render engine and the Luna table-hash trigger. |
+| `trixd/core/replication/` | Keeping two controllers' tables the same. |
+| `trixd/core/luna/` | The Luna client, the pass-through and its hooks. |
+| `trixd/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
+| `trixd/db/` | Engine, models and the Alembic migrations. |
+| `trixd/api/v1/` | The daemon's own routes: auth, identity, system. |
+| `trixd/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
+| `trixd/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
 | `setup.py` | The package itself; see Building and publishing. |
@@ -132,15 +132,15 @@ becomes part of the value.
 [API]
 ; No CERTFILE and KEYFILE, so only the plain listener opens.
 INSECURE_BIND = 127.0.0.1:8051
-USERNAME = trix
-PASSWORD = trix
+USERNAME = trixd
+PASSWORD = trixd
 
 [TOKENS]
 ; Any 32 hexadecimal characters, for a workstation.
 SECRET_KEY = 004f2af45d3a4e161a7dd2d17fdae47f
 
 [DATABASE]
-URL = sqlite:///dev/trix.db
+URL = sqlite:///dev/trixd.db
 
 [LOGGER]
 LOGFILE =
@@ -153,7 +153,7 @@ CHAIN = local
 LUNA_HASHES = 0s
 
 [PLUGINS]
-DIRECTORY = trix/plugins
+DIRECTORY = trixd/plugins
 SITE_DIRECTORY = dev/plugins
 ENABLED = services, genders
 ```
@@ -161,10 +161,10 @@ ENABLED = services, genders
 Then:
 
 ```
-python -m trix.server --config dev/trixd.ini
+python -m trixd.server --config dev/trixd.ini
 curl -s http://127.0.0.1:8051/api/v1/system/health
 TOKEN=$(curl -s -X POST http://127.0.0.1:8051/api/v1/auth/token \
-        -H 'Content-Type: application/json' -d '{"username":"trix","password":"trix"}' \
+        -H 'Content-Type: application/json' -d '{"username":"trixd","password":"trixd"}' \
         | python -c 'import sys, json; print(json.load(sys.stdin)["token"])')
 curl -s http://127.0.0.1:8051/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
 ```
@@ -177,10 +177,10 @@ render that could not run answers 404 with the reason.
 ## On a controller
 
 ```
-/trinity/local/python/bin/python3 -m trix.server --config /trinity/local/trix/etc/trixd.ini
+/trinity/local/python/bin/python3 -m trixd.server --config /trinity/local/trixd/etc/trixd.ini
 ```
 
-The unit `trix-daemon` runs that. `systemctl reload trix-daemon` reloads the plugins
+The unit `trixd` runs that. `systemctl reload trixd` reloads the plugins
 from disk without a restart; a change to `trixd.ini` needs a restart.
 
 | Port | Protocol | Notes |
@@ -193,15 +193,15 @@ which is why the plain listener stays on the loopback unless a site opens it.
 
 ## trixd.ini
 
-The daemon reads `/trinity/local/trix/etc/trixd.ini`, or the path given with
-`--config` or in `TRIX_CONFIG`. It lives outside the installed package, so an upgrade
-never replaces it. The shipped sample, `trix/config/trixd.ini`, explains each key. A
+The daemon reads `/trinity/local/trixd/etc/trixd.ini`, or the path given with
+`--config` or in `TRIXD_CONFIG`. It lives outside the installed package, so an upgrade
+never replaces it. The shipped sample, `trixd/config/trixd.ini`, explains each key. A
 missing file, an unknown algorithm or an unreadable duration stops the daemon with
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
-package, and `SITE_DIRECTORY` (`/trinity/local/trix/plugins`), a site's own, which an
+package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
 what `ENABLED` lists, by default all five. slurm and genders write the same blocks
 luna2-daemon's node hook still writes, from the same generator and node list, so the two
@@ -210,7 +210,7 @@ agree; once that hook stops, they are the only writers.
 Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
 the command line, the alertx CLI, the On Demand apps and the node image. Each names
 where the daemon answers and the ini account. Where each goes, and who can read it,
-is the installer's business: the trix-daemon role for trinityx-combined, which is
+is the installer's business: the trixd role for trinityx-combined, which is
 kept outside this repository until it lands there.
 
 ## Who may do what
@@ -250,7 +250,7 @@ the installer writes that secret into `trixd.ini`, from the value `luna.ini` is
 built from.
 
 Luna knows a caller by the token's `id` alone, and reads a missing one as its
-administrator, so trix-daemon always sets it:
+administrator, so trixd always sets it:
 
 | Token | `id` | At Luna |
 |---|---|---|
@@ -264,12 +264,12 @@ here decides nothing there. Luna's own roles do.
 
 `[TOKENS] ALGORITHM = EdDSA` switches to a keypair, so a daemon that can verify a
 token cannot mint one. Luna cannot verify EdDSA yet. Generate the keypair with
-`python -m trix.server keygen --config <path>`.
+`python -m trixd.server keygen --config <path>`.
 
 ## Changes made through the route to Luna
 
 `/api/v1/luna/xyz` reaches Luna as `/xyz`, and Luna enforces its own access. Once
-Luna has answered, trix-daemon acts on what changed: a node renamed or moved to
+Luna has answered, trixd acts on what changed: a node renamed or moved to
 another group (`POST config/node/<name>` with `newnodename` or `group`) or deleted
 (`GET config/node/<name>/_delete`) is handed to every plugin that declared it. The
 prometheus plugin, for one, makes the node's hardware rule file carry the name and
@@ -278,7 +278,7 @@ group Luna now holds, whether or not Luna's own hook moved it.
 A change made at Luna directly, not through this route, is picked up by comparing
 Luna's table hashes every `[TRIGGERS] LUNA_HASHES`. Luna answers that only on the
 HA master, so on a single controller such a change reaches the rule files when
-trix-daemon next starts, or when the next node change passes through it.
+trixd next starts, or when the next node change passes through it.
 
 ## Writing a plugin
 
@@ -305,7 +305,7 @@ class Backend:
         return {"message": f"hello {who}"}
 ```
 
-`python -m trix.server plugin new hello --config <path>` writes a working one into
+`python -m trixd.server plugin new hello --config <path>` writes a working one into
 `SITE_DIRECTORY`, and rootus plugs it in without a restart; add it to `ENABLED` so a
 restart keeps it:
 
@@ -348,7 +348,7 @@ End to end, against a running daemon and a real Luna:
 
 | Script | Where it runs | What it needs |
 |---|---|---|
-| `tests/e2e/on-the-controller.sh` | on the controller | the daemon's `trixd.ini`, naming the account `trix` with password `trix` |
+| `tests/e2e/on-the-controller.sh` | on the controller | the daemon's `trixd.ini`, naming the account `trixd` with password `trixd` |
 | `tests/e2e/over-http.py <host>` | anywhere that reaches 8050 and 8051 | the same account, and port 8051 opened beyond the loopback |
 | `tests/e2e/node-rename.sh <node>` | on a development controller only | it renames a node at Luna and back |
 
@@ -368,11 +368,11 @@ old setuptools, which is why the package is declared in `setup.py` and not in
 | `main` | `.../trinityx/16.1/trix/noarch/pip/stable/daemon` (`LOCATION`) | `trix_stream: stable` |
 
 A build's version is the release line and the commit's time, for example
-`trix_daemon-1.0.1791360000-py3-none-any.whl`. The pipeline points
-`trix_daemon-1.0-py3-none-any.whl` at the newest build and keeps the last five. The
+`trixd-1.0.1791360000-py3-none-any.whl`. The pipeline points
+`trixd-1.0-py3-none-any.whl` at the newest build and keeps the last five. The
 installer installs that name with `pip --upgrade`, so a controller takes the newest
 build on its next run, and `GET /api/v1/system/version` says which one it is running.
 
 To build as the pipeline does: `python setup.py sdist bdist_wheel`, and `dist/` holds
-both files. The release line is `DAEMON_RELEASE` in `trix/common/constants.py`.
+both files. The release line is `DAEMON_RELEASE` in `trixd/common/constants.py`.
 Starting a new one means changing it and the installer's `trixd_pip` together.

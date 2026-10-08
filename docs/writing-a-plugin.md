@@ -16,7 +16,7 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <https://www.gnu.org/licenses/>
 -->
 
-# Writing a plugin for trix-daemon
+# Writing a plugin for trixd
 
 A plugin declares the endpoints it wants. The daemon serves exactly those, and
 builds the permission check, the request validation and the published schema from
@@ -31,11 +31,11 @@ README's "Words used here".
 ## Start from something that loads
 
 ```
-/trinity/local/python/bin/python3 -m trix.server plugin new hello --config /trinity/local/trix/etc/trixd.ini
+/trinity/local/python/bin/python3 -m trixd.server plugin new hello --config /trinity/local/trixd/etc/trixd.ini
 ```
 
 That writes `manifest.yaml`, `backend.py`, `__init__.py` and a README into the
-site's plugins directory, `[PLUGINS] SITE_DIRECTORY` (`/trinity/local/trix/plugins` on
+site's plugins directory, `[PLUGINS] SITE_DIRECTORY` (`/trinity/local/trixd/plugins` on
 a controller). It loads as it stands, so the first thing you do is see it work and then
 edit it into shape.
 
@@ -99,7 +99,7 @@ method has annotated parameters and return type, and a docstring that opens and
 closes on its own line.
 
 ```python
-from trix.common.errors import NotFound
+from trixd.common.errors import NotFound
 
 PLUGIN: str = "hello"
 
@@ -122,11 +122,11 @@ A handler is given only the arguments it declares:
 
 - a path variable, under its own name;
 - `body`, the validated request body as a dict;
-- `caller`, who is asking: a `trix.core.security.gate.Caller`, with `.name`,
+- `caller`, who is asking: a `trixd.core.security.gate.Caller`, with `.name`,
   `.role`, `.kind` (`user`, `node` or `service`) and `.rootus`.
 
 What the handler returns becomes a JSON 200. To answer anything else, raise one of
-the errors in `trix/common/errors.py` (`BadRequest` 400, `NotFound` 404,
+the errors in `trixd/common/errors.py` (`BadRequest` 400, `NotFound` 404,
 `BackendFailure` 502, `ServiceUnavailable` 503 and the rest); any other exception
 becomes a 500, with the detail in the log.
 
@@ -206,17 +206,17 @@ hooks may already have done part of the work.
 Only calls made through the pass-through are seen this way. A change made at Luna
 directly reaches a plugin through its renders, when Luna's table hashes show it:
 on an HA master within `[TRIGGERS] LUNA_HASHES`, and on a single controller only
-when trix-daemon next starts.
+when trixd next starts.
 
 ## Shelling out
 
-Every subprocess goes through `trix.utils.shell`: an argument list, never a shell
+Every subprocess goes through `trixd.utils.shell`: an argument list, never a shell
 string, always a timeout, and the exit code returned. A name that arrives in a
 request is one argument and can never become a command. The value after
 `--password` and similar flags is hidden in the log.
 
 ```python
-from trix.utils import shell
+from trixd.utils import shell
 
 result = shell.run(["obol", "-J", "user", "show", name], timeout=20)
 if not result.ok:
@@ -229,7 +229,7 @@ A plugin's settings go in the `declaration` table, keyed by plugin, kind and nam
 as a document. It is copied to the other controller of an HA pair.
 
 ```python
-from trix.utils import declarations
+from trixd.utils import declarations
 
 settings = declarations.read(PLUGIN, "settings", "", {"interval": "60s"})
 declarations.write(PLUGIN, "settings", "", body)
@@ -264,7 +264,7 @@ once more when that window closes, so the last one is never lost. Renders run on
 at a time. A render that fails keeps its previous output and records the error,
 which `/api/v1/system/health` reports.
 
-Writing files is the producer's own job. Write through `trix.utils.files.write` or
+Writing files is the producer's own job. Write through `trixd.utils.files.write` or
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a
 half-written file; and produce the same bytes from the same inputs, so two
 controllers agree without talking to each other.
@@ -277,7 +277,7 @@ Luna hooks, and it runs one task at a time; a task left unfinished by a restart 
 run again at the next start.
 
 ```python
-from trix.core import tasks
+from trixd.core import tasks
 
 
 def run_task(task: str, param: str) -> str:

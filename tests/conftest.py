@@ -35,13 +35,13 @@ import shutil
 import pytest
 from fastapi.testclient import TestClient
 
-from trix.app import create_app
-from trix.common import settings as configuration
-from trix.core.lifespan import start
-from trix.core.security import keys
+from trixd.app import create_app
+from trixd.common import settings as configuration
+from trixd.core.lifespan import start
+from trixd.core.security import keys
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
-                             "trix", "plugins")
+                             "trixd", "plugins")
 
 
 # What the installer writes into the shared vault file: 32 hexadecimal characters.
@@ -67,9 +67,9 @@ def build(tmp_path, algorithm: str = "HS256"):
         "USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n"
         f"[TOKENS]\nALGORITHM = {algorithm}\nSECRET_KEY =\n"
         f"SECRET_FILE = {secret}\n"
-        f'PRIVATE_KEY = {tmp_path / "trix.ed25519"}\nKEY_ID = trix-test\n'
-        f"TRUST = {trust}\nISSUER = trix-daemon\n"
-        f'[DATABASE]\nURL = sqlite:///{tmp_path / "trix.db"}\n'
+        f'PRIVATE_KEY = {tmp_path / "trixd.ed25519"}\nKEY_ID = trixd-test\n'
+        f"TRUST = {trust}\nISSUER = trixd\n"
+        f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
         "[TRIGGERS]\nLUNA_HASHES = 0s\n"
         f"[PLUGINS]\nDIRECTORY = {plugins}\nSITE_DIRECTORY = {tmp_path / 'site-plugins'}\n"

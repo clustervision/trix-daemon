@@ -40,14 +40,14 @@ import requests
 
 from tests.unit.test_plugins import Ran
 from tests.unit.test_replication import _peer
-from trix.common import settings as configuration
-from trix.common.errors import BackendFailure, BadRequest, NotFound, ServiceUnavailable
-from trix.core.luna.client import LunaClient
-from trix.core.render import triggers
-from trix.core.replication import sweep as replication
-from trix.core.replication import tables
-from trix.db import engine as database
-from trix.db import models
+from trixd.common import settings as configuration
+from trixd.common.errors import BackendFailure, BadRequest, NotFound, ServiceUnavailable
+from trixd.core.luna.client import LunaClient
+from trixd.core.render import triggers
+from trixd.core.replication import sweep as replication
+from trixd.core.replication import tables
+from trixd.db import engine as database
+from trixd.db import models
 
 
 class Answer:
@@ -414,7 +414,7 @@ def _pam(monkeypatch, accounts: dict, password: str = "right"):
     """
     The PAM source on a stand-in passwd database and PAM stack.
     """
-    from trix.core.security.sources import pam as pam_source
+    from trixd.core.security.sources import pam as pam_source
 
     def getpwnam(name):
         """
@@ -486,7 +486,7 @@ def _ldap(monkeypatch):
     """
     import ldap3
 
-    from trix.core.security.sources import ldap as ldap_source
+    from trixd.core.security.sources import ldap as ldap_source
 
     auth = configuration.current().auth
     monkeypatch.setattr(auth, "ldap_uri", "ldaps://directory.cluster")
@@ -540,7 +540,7 @@ def test_ldap_without_a_uri_or_base_refuses_to_start(rig):
     """
     The chain skips a source that cannot work; this is how it learns that.
     """
-    from trix.core.security.sources import ldap as ldap_source
+    from trixd.core.security.sources import ldap as ldap_source
 
     with pytest.raises(ValueError, match="URI and BASE"):
         ldap_source.Source()
@@ -551,7 +551,7 @@ def _obol(monkeypatch, existing: set) -> list:
     obol, standing in: show answers for the names in existing, add and delete change
     it, and every call is recorded.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     calls = []
 
@@ -579,7 +579,7 @@ def test_a_new_user_reaches_obol_as_flags(rig, monkeypatch):
     """
     Only the fields sent, a list joined with commas, and the name from the body.
     """
-    from trix.plugins.directory.backend import Backend
+    from trixd.plugins.directory.backend import Backend
 
     calls = _obol(monkeypatch, set())
     Backend().create_user({"username": "dave", "uid": 1600, "groups": ["hpc", "gpu"],
@@ -592,7 +592,7 @@ def test_the_directory_refuses_what_obol_would_get_wrong(rig, monkeypatch):
     """
     No name, a name taken, an empty change and a missing record are all refused first.
     """
-    from trix.plugins.directory.backend import Backend
+    from trixd.plugins.directory.backend import Backend
 
     _obol(monkeypatch, {"carol", "hpc"})
     with pytest.raises(BadRequest, match="username is required"):
@@ -617,7 +617,7 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
     """
     modify with the changed fields, delete by name, and the group's members as users.
     """
-    from trix.plugins.directory.backend import Backend
+    from trixd.plugins.directory.backend import Backend
 
     calls = _obol(monkeypatch, {"carol", "hpc", "dave"})
     Backend().update_user("carol", {"shell": "/bin/zsh"})
@@ -639,7 +639,7 @@ def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) 
     """
     The slurm plugin on a stand-in generator package, Luna and scontrol.
     """
-    from trix.plugins.slurm import backend as slurm
+    from trixd.plugins.slurm import backend as slurm
 
     seen = {}
 
@@ -668,7 +668,7 @@ def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch):
     """
     Sorted node and group pairs, the three files, then scontrol reconfigure.
     """
-    from trix.plugins.slurm.backend import Backend
+    from trixd.plugins.slurm.backend import Backend
 
     seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": None}})
     answer = Backend().render_config()
@@ -683,7 +683,7 @@ def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeyp
     """
     No nodes is not an error; a failing generator is; a failing reconfigure is reported.
     """
-    from trix.plugins.slurm.backend import Backend
+    from trixd.plugins.slurm.backend import Backend
 
     seen = _slurm(monkeypatch, {})
     assert Backend().render_config() == {"nodes": 0, "files": []}
@@ -701,7 +701,7 @@ def test_slurm_without_its_generator_says_so(rig, monkeypatch):
     """
     A controller without slurm's package gets a named failure, not an ImportError.
     """
-    from trix.plugins.slurm import backend as slurm
+    from trixd.plugins.slurm import backend as slurm
 
     monkeypatch.setitem(sys.modules, "trinityx_config_slurm", None)
     monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: {"n": {}}))
@@ -716,8 +716,8 @@ def _gated() -> "TestClient":
     from fastapi import Depends, FastAPI
     from fastapi.testclient import TestClient
 
-    from trix.common import errors
-    from trix.core.security.gate import guard
+    from trixd.common import errors
+    from trixd.core.security.gate import guard
 
     application = FastAPI()
     errors.register(application)
@@ -750,7 +750,7 @@ def test_a_node_token_is_good_for_its_own_node_only(rig):
     """
     node001's token opens node001's route, by short name or FQDN, and no other node's.
     """
-    from trix.core.security import tokens
+    from trixd.core.security import tokens
 
     client = _gated()
     own = {"x-access-tokens": tokens.mint("node001", kind="node", node="node001")}
@@ -765,7 +765,7 @@ def test_a_node_route_takes_no_user_token_and_a_user_route_no_node_token(rig, to
     """
     The two kinds never stand in for each other, rootus included.
     """
-    from trix.core.security import tokens
+    from trixd.core.security import tokens
 
     client = _gated()
     as_rootus = client.patch("/hw-rules/node001", headers={"x-access-tokens": token})
@@ -790,7 +790,7 @@ def test_a_subject_nobody_knows_is_refused_and_the_peer_is_not(rig):
     A signed token for a name no source resolves is 401; the peer's service token,
     which names no user, passes a manager route.
     """
-    from trix.core.security import tokens
+    from trixd.core.security import tokens
 
     client = _gated()
     ghost = {"x-access-tokens": tokens.mint("ghost-of-nobody")}
@@ -804,7 +804,7 @@ def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     """
     is-active and is-enabled for each catalogued unit, and unknown when they are silent.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     def systemctl(argv, **kwargs):
         """
@@ -827,7 +827,7 @@ def test_a_queued_service_action_runs_the_configured_command(rig, monkeypatch):
     """
     The worker runs COMMAND action unit, and a failure carries what the command said.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     ran = []
     monkeypatch.setattr(services.shell, "run",
@@ -843,13 +843,13 @@ def test_genders_says_why_it_wrote_nothing(rig, monkeypatch):
     """
     No nodes is nothing to do; no managed block, or no package, is a named failure.
     """
-    from trix.plugins.genders import backend as genders
+    from trixd.plugins.genders import backend as genders
 
-    monkeypatch.setattr("trix.plugins.slurm.backend.luna",
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
                         lambda: SimpleNamespace(nodes=lambda: {}))
     assert genders.Backend().render_genders() == {"nodes": 0, "file": "/etc/genders"}
 
-    monkeypatch.setattr("trix.plugins.slurm.backend.luna",
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
                         lambda: SimpleNamespace(nodes=lambda: {"node001": {"group": "a"}}))
     package = ModuleType("trinityx_config_genders")
     package.Generate = lambda: SimpleNamespace(Genders=lambda nodes: False)

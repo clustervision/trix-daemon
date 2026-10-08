@@ -38,14 +38,14 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
-from trix.common import logging as trixlog
-from trix.common import settings as configuration
-from trix.common.errors import BackendFailure
-from trix.core import tasks
-from trix.core.security import keys
-from trix.db import engine as database
-from trix.db import models
-from trix.utils import files, shell
+from trixd.common import logging as trixlog
+from trixd.common import settings as configuration
+from trixd.common.errors import BackendFailure
+from trixd.core import tasks
+from trixd.core.security import keys
+from trixd.db import engine as database
+from trixd.db import models
+from trixd.utils import files, shell
 
 POSIX = os.name == "posix"
 
@@ -110,7 +110,7 @@ def test_a_missing_program_is_named():
     Not a FileNotFoundError traceback, but which program is missing.
     """
     with pytest.raises(BackendFailure, match="is not installed"):
-        shell.run(["trix-no-such-program-anywhere"])
+        shell.run(["trixd-no-such-program-anywhere"])
 
 
 def test_a_command_that_hangs_is_stopped():
@@ -253,7 +253,7 @@ def test_a_generated_private_key_is_never_readable_by_others(tmp_path):
     """
     0600 from the moment it exists, and the public half beside it.
     """
-    private = tmp_path / "keys" / "trix.ed25519"
+    private = tmp_path / "keys" / "trixd.ed25519"
     public = keys.generate(str(private))
     assert os.path.isfile(public)
     assert keys.read_private(str(private)) is not None
@@ -277,9 +277,9 @@ def test_a_missing_private_key_says_who_makes_it(tmp_path):
     """
     The daemon never makes its own key; the message points at the installer.
     """
-    from trix.common.errors import TrixError
+    from trixd.common.errors import TrixdError
 
-    with pytest.raises(TrixError, match="installer"):
+    with pytest.raises(TrixdError, match="installer"):
         keys.read_private(str(tmp_path / "absent.ed25519"))
 
 
@@ -289,11 +289,11 @@ def test_logging_survives_a_log_file_it_cannot_write(tmp_path):
     """
     blocker = tmp_path / "plain"
     blocker.write_text("", encoding="utf-8")
-    logger = trixlog.setup("debug", str(blocker / "trix.log"))
+    logger = trixlog.setup("debug", str(blocker / "trixd.log"))
     try:
         assert logger.level == logging.DEBUG
         assert len(logger.handlers) == 1, "only the console handler"
-        logger = trixlog.setup("loud", str(tmp_path / "logs" / "trix.log"))
+        logger = trixlog.setup("loud", str(tmp_path / "logs" / "trixd.log"))
         assert logger.level == logging.INFO, "an unknown level falls back to info"
         assert len(logger.handlers) == 2
     finally:

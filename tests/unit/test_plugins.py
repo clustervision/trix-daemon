@@ -33,8 +33,8 @@ import os
 
 import pytest
 
-from trix.common.constants import API_PREFIX
-from trix.common.errors import BadRequest, NotFound
+from trixd.common.constants import API_PREFIX
+from trixd.common.errors import BadRequest, NotFound
 
 
 class Ran:
@@ -56,7 +56,7 @@ def test_the_directory_renames_the_389ds_member_attribute(rig, monkeypatch):
     """
     The users application reads member; 389ds calls it uniqueMember.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
     monkeypatch.setattr(directory.shell, "run_json",
@@ -72,7 +72,7 @@ def test_the_directory_shape_the_ood_application_will_meet(rig, monkeypatch):
     Pinned deliberately. Luna wraps a record in config and keys it by name; this
     answers the record, so repointing the app takes two unwraps out of it.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
     monkeypatch.setattr(directory.shell, "run_json",
@@ -88,7 +88,7 @@ def test_a_missing_directory_user_is_a_404(rig, monkeypatch):
     """
     obol answering non-zero is a missing user, not an empty one.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("", 1, "no such"))
     with pytest.raises(NotFound):
@@ -99,7 +99,7 @@ def test_obol_is_never_given_a_shell_string(rig, monkeypatch):
     """
     Every call is an argument list, so a name with a space cannot become a command.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     seen = []
     monkeypatch.setattr(directory.shell, "run",
@@ -119,7 +119,7 @@ def test_a_service_outside_the_catalogue_is_refused(rig):
     """
     An endpoint that took any unit name would restart anything on the controller.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     with pytest.raises(NotFound):
         services.Backend().status("sshd")
@@ -129,7 +129,7 @@ def test_an_unknown_service_action_is_refused(rig):
     """
     The verb list is closed, so a typo cannot reach the command line.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     with pytest.raises(BadRequest):
         services.Backend().act("slurmctld", "obliterate")
@@ -139,7 +139,7 @@ def test_the_service_catalogue_round_trips(rig):
     """
     What is written is what comes back, through the declaration store.
     """
-    from trix.plugins.services import backend as services
+    from trixd.plugins.services import backend as services
 
     backend = services.Backend()
     backend.catalogue(body={"services": {"demo": "demo.service"}})
@@ -151,8 +151,8 @@ def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch):
     The whole node list goes to the generator in one call, and a file without the
     managed block is reported as such rather than as a generic failure.
     """
-    from trix.common.errors import BackendFailure
-    from trix.plugins.genders import backend as genders
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.genders import backend as genders
 
     nodes = [{"name": "node001", "group": "compute"}, {"name": "node002", "group": "compute"}]
     given = []
@@ -183,7 +183,7 @@ def test_the_prometheus_targets_render_is_service_discovery(rig, monkeypatch):
     """
     http_sd reads this, so it must be a list of target and label objects.
     """
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     class Luna:
         """
@@ -222,8 +222,8 @@ def test_the_scaffold_writes_a_plugin_that_loads(rig, tmp_path, client, headers)
     """
     The guide says start from something that works, so it has to actually work.
     """
-    from trix.common.settings import current as settings
-    from trix.core.plugins import loader, scaffold
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader, scaffold
 
     written = scaffold.new("hello", settings().plugins.directory)
     assert any(path.endswith("manifest.yaml") for path in written)
@@ -247,9 +247,9 @@ def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
     """
     luna is the pass-through, and a name that is not a path segment is not a name.
     """
-    from trix.common.errors import Conflict
-    from trix.common.settings import current as settings
-    from trix.core.plugins import scaffold
+    from trixd.common.errors import Conflict
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import scaffold
 
     with pytest.raises(BadRequest):
         scaffold.new("luna", settings().plugins.directory)
@@ -266,7 +266,7 @@ def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
     The metric the exporter emits, the labels Luna selects on, and Luna's alert and group.
     """
     from types import SimpleNamespace
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     class Luna:
         """
@@ -341,7 +341,7 @@ def _prometheus_rig(tmp_path, monkeypatch, nodes):
     A prometheus backend writing to tmp_path, with Luna answering these nodes and no systemctl.
     """
     from types import SimpleNamespace
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     class Luna:
         """
@@ -429,7 +429,7 @@ def test_relabel_touches_only_equality_matchers_on_node_labels():
     """
     A regex matcher, a negation and any other label keep their text to the character.
     """
-    from trix.plugins.prometheus.backend import _relabel
+    from trixd.plugins.prometheus.backend import _relabel
 
     expr = ('absent(lshw_device{hostname="node001.cluster",hostname!~"node001.*",'
             'luna_group="a",description="hostname=\\"node001.cluster\\""})')
@@ -492,7 +492,7 @@ def test_two_repairs_may_meet_on_one_file(rig, tmp_path, monkeypatch):
     """
     The worker and a render can reach the same file; the one that finds it gone carries on.
     """
-    from trix.plugins.prometheus.backend import _discard
+    from trixd.plugins.prometheus.backend import _discard
 
     backend = _prometheus_rig(tmp_path, monkeypatch, {})
     _discard(str(tmp_path / "never-there.rules"))
@@ -504,7 +504,7 @@ def test_an_emptied_rule_group_empties_its_file(rig, tmp_path, monkeypatch):
     """
     Taking every service group out leaves the service file empty, not as it was.
     """
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     backend = _prometheus_rig(tmp_path, monkeypatch, {})
     service = os.path.join(str(tmp_path), prometheus.SERVICE_RULES)
@@ -519,7 +519,7 @@ def test_a_directory_change_names_the_user_in_the_path_only(rig, client, headers
     """
     Changing a shell needs no username in the body: the path already names the user.
     """
-    from trix.plugins.directory import backend as directory
+    from trixd.plugins.directory import backend as directory
 
     monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("{}"))
     monkeypatch.setattr(directory.shell, "run_json", lambda *a, **k: {"uid": "carol"})
@@ -534,7 +534,7 @@ def test_a_manager_sets_several_nodes_hardware_rules_in_one_call(rig, tmp_path, 
     know refused by name, and Prometheus reloaded once for the lot.
     """
     from types import SimpleNamespace
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     known = {"node001": {"hostname": "node001.cluster", "group": "compute"},
              "node002": {"hostname": "node002.cluster", "group": "compute"}}
@@ -570,7 +570,7 @@ def test_a_node_name_that_could_leave_the_rules_directory_is_refused(rig, tmp_pa
     """
     The name ends up in a file name, so anything but a plain host name is a 400.
     """
-    from trix.common.errors import BadRequest
+    from trixd.common.errors import BadRequest
 
     backend = _prometheus_rig(tmp_path, monkeypatch, {})
     with pytest.raises(BadRequest):
@@ -581,7 +581,7 @@ def test_the_hardware_rules_route_admits_a_manager_and_not_an_operator(rig, clie
     """
     Regenerating rules or switching a node's alerts off is a change, so it needs manager.
     """
-    from trix.core.plugins import manifest as manifests
+    from trixd.core.plugins import manifest as manifests
 
     path = os.path.join(os.path.dirname(prometheus_module_file()), "manifest.yaml")
     parsed = manifests.parse(manifests.read_yaml(path))
@@ -593,7 +593,7 @@ def prometheus_module_file() -> str:
     """
     Where the shipped prometheus plugin lives.
     """
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
     return prometheus.__file__
 
 
@@ -602,8 +602,8 @@ def test_a_site_plugin_lives_outside_the_package_and_loads(rig, client, headers)
     A plugin in SITE_DIRECTORY loads beside the shipped ones, and an upgrade, which only
     replaces the package, never touches it.
     """
-    from trix.common.settings import current as settings
-    from trix.core.plugins import loader, scaffold
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader, scaffold
 
     site = settings().plugins.site_directory
     scaffold.new("hello", site)
@@ -616,8 +616,8 @@ def test_a_site_plugin_cannot_take_a_shipped_name(rig):
     """
     A site copy of services would replace shipped code unseen, so the shipped one wins.
     """
-    from trix.common.settings import current as settings
-    from trix.core.plugins import loader, scaffold
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader, scaffold
 
     site = settings().plugins.site_directory
     os.makedirs(site, exist_ok=True)
@@ -627,10 +627,10 @@ def test_a_site_plugin_cannot_take_a_shipped_name(rig):
 
 def test_the_scaffold_command_writes_into_the_site_directory(rig, tmp_path, capsys):
     """
-    What `trix.server plugin new` writes has to survive the next upgrade.
+    What `trixd.server plugin new` writes has to survive the next upgrade.
     """
-    from trix import server
-    from trix.common.settings import current as settings
+    from trixd import server
+    from trixd.common.settings import current as settings
 
     config = settings().config_file
     assert server.main(["--config", config, "plugin", "new", "kept"]) == 0
@@ -644,7 +644,7 @@ def test_a_reconcile_with_nothing_to_change_reads_no_file(rig, tmp_path, monkeyp
     At a thousand nodes the parse is the whole cost, so an unchanged file under an
     unchanged node is not read again; a node that moved still is, and is repaired.
     """
-    from trix.plugins.prometheus import backend as prometheus
+    from trixd.plugins.prometheus import backend as prometheus
 
     nodes = {"node001": {"hostname": "node001.cluster", "group": "compute"},
              "node002": {"hostname": "node002.cluster", "group": "compute"}}

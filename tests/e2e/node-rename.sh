@@ -16,7 +16,7 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-# Rename one node through trix-daemon's pass-through and back, and check that its
+# Rename one node through trixd's pass-through and back, and check that its
 # hardware rule file follows: the filename and every selector inside it, whatever
 # Luna's own hook did or did not do to the file first.
 #
@@ -29,7 +29,7 @@ NODE=${1:?usage: node-rename.sh <node> [temporary-name]}
 TEMP=${2:-${NODE}r}
 PLAIN=${PLAIN:-http://localhost:8051}
 RULES=${RULES:-/trinity/local/etc/prometheus_server/rules}
-PY=${PY:-$(systemctl show trix-daemon -p ExecStart --value 2>/dev/null |
+PY=${PY:-$(systemctl show trixd -p ExecStart --value 2>/dev/null |
            grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}
 PY=${PY:-$(command -v python3)}
 FAIL=0
@@ -38,7 +38,7 @@ check() { [ "$2" = "$3" ] && say PASS "$1" || say FAIL "$1 (got $2, wanted $3)";
 jq_() { $PY -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 J='Content-Type: application/json'
 
-T=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"trix","password":"trix"}' | jq_ "d['token']")
+T=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"trixd","password":"trixd"}' | jq_ "d['token']")
 [ -n "$T" ] || { echo "no token from $PLAIN"; exit 1; }
 H="x-access-tokens: $T"
 record() { curl -sk $PLAIN/api/v1/luna/config/node/$1 -H "$H" | jq_ "d['config']['node']['$1']['$2']"; }

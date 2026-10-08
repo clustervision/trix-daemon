@@ -14,7 +14,7 @@ files on disk, and checks that a plugin reload leaves the daemon's process runni
 From anywhere that can reach the two ports; the plain one, 8051, is on the loopback
 by default and has to be opened for this. Covers the API, the pass-through, the hot
 swap, the queue, the roles and the replication documents, and nothing that needs a
-shell. Both sign in as the ini account trix with password trix, so they belong on a
+shell. Both sign in as the ini account trixd with password trixd, so they belong on a
 test controller.
 
 Both leave the store as they found it. Neither is run by pytest: they need a

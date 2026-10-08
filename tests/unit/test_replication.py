@@ -32,10 +32,10 @@ __status__      = "Production"
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
-from trix.common.constants import API_PREFIX
-from trix.core.replication import tables
-from trix.db import engine as database
-from trix.db import models
+from trixd.common.constants import API_PREFIX
+from trixd.core.replication import tables
+from trixd.db import engine as database
+from trixd.db import models
 
 
 def _peer(tmp_path, name="peer.db"):
@@ -177,8 +177,8 @@ def test_a_peer_daemon_reaches_the_replication_endpoints(client):
     """
     The sweep presents a service token, which names the other daemon and no principal.
     """
-    from trix.common.constants import TOKEN_HEADER
-    from trix.core.security import tokens
+    from trixd.common.constants import TOKEN_HEADER
+    from trixd.core.security import tokens
 
     peer = {TOKEN_HEADER: tokens.service_token()}
     for path in ("hashes", "table/principal"):
@@ -199,7 +199,7 @@ def test_a_single_controller_runs_no_sweep(rig):
     """
     With no peers there is nothing to reconcile with, and no thread.
     """
-    from trix.core.replication.sweep import current as sweep
+    from trixd.core.replication.sweep import current as sweep
     assert sweep().start() is False
 
 
@@ -208,7 +208,7 @@ def test_one_table_carries_the_whole_of_rbac(rig):
     A user, a password, a role, as the whiteboard drew it: no groups, flags or modes. The
     rest is bookkeeping so the row and its deletion reach the peer.
     """
-    from trix.db import models
+    from trixd.db import models
 
     columns = {c.name for c in models.Principal.__table__.columns}
     assert columns == {"id", "name", "password_digest", "enabled", "role", "deleted",
@@ -222,7 +222,7 @@ def test_the_declaration_carries_no_permissions(rig):
     """
     What a caller may do is decided per route, never per document.
     """
-    from trix.db import models
+    from trixd.db import models
 
     columns = {c.name for c in models.Declaration.__table__.columns}
     assert not {"owners", "usergroups", "access"} & columns, columns
@@ -232,9 +232,9 @@ def test_every_replicated_column_reaches_the_document(rig):
     """
     A column the export leaves out never crosses to the peer, silently.
     """
-    from trix.core.replication import tables
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
 
     handle = database.session()
     try:
@@ -264,9 +264,9 @@ def test_a_role_survives_the_round_trip(rig):
     """
     The role is the whole of RBAC, and it crosses as a document or not at all.
     """
-    from trix.core.replication import tables
-    from trix.db import engine as database
-    from trix.db import models
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
 
     handle = database.session()
     try:
@@ -304,7 +304,7 @@ def test_a_deletion_reaches_the_peer_instead_of_coming_back(rig, client, headers
     """
     A deleted user stays as a marker with a newer version, so the peer drops them too.
     """
-    from trix.common.constants import API_PREFIX
+    from trixd.common.constants import API_PREFIX
 
     client.put(f"{API_PREFIX}/identity/users/bob", json={"role": "manager"}, headers=headers)
     handle = database.session()
@@ -329,7 +329,7 @@ def test_a_declaration_from_the_peer_wakes_the_renders_that_read_it(rig, tmp_pat
     """
     A plugin's settings arriving by replication render here, as a change made here would.
     """
-    from trix.core.render.engine import current as renders
+    from trixd.core.render.engine import current as renders
 
     woken = []
     monkeypatch.setattr(renders(), "notify", lambda changed="": woken.append(changed) or [])

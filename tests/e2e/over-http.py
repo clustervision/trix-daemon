@@ -30,7 +30,7 @@ if len(sys.argv) < 2:
 HOST = sys.argv[1]
 PLAIN = f"http://{HOST}:8051/api/v1"
 TLS = f"https://{HOST}:8050/api/v1"
-ADMIN = ("trix", "trix")
+ADMIN = ("trixd", "trixd")
 
 RELAXED = ssl.create_default_context()
 RELAXED.check_hostname = False

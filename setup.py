@@ -18,13 +18,13 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Builds the trix-daemon pip package.
+Builds the trixd pip package.
 
 Every field is declared here, not in pyproject.toml: the shared pip pipeline runs
 "python setup.py sdist bdist_wheel" on setuptools 57, which does not read a
 pyproject [project] table and would build a package called UNKNOWN.
 
-The version is the release line, DAEMON_RELEASE in trix/common/constants.py,
+The version is the release line, DAEMON_RELEASE in trixd/common/constants.py,
 plus the commit's time, as luna2-daemon's is its release plus a time: every build is newer than the one before it, so "pip install
 --upgrade" takes it, and the pipeline's pruning, which sorts by name, keeps the
 newest. It is the commit's time rather than the clock's so that pip, which runs
@@ -54,7 +54,7 @@ def release() -> str:
     The release line, read rather than imported: importing the package needs its
     dependencies, which a build does not have.
     """
-    with open(os.path.join(HERE, "trix", "common", "constants.py"), encoding="utf-8") as handle:
+    with open(os.path.join(HERE, "trixd", "common", "constants.py"), encoding="utf-8") as handle:
         return re.search(r'^DAEMON_RELEASE: str = "([^"]+)"', handle.read(), re.M).group(1)
 
 
@@ -103,7 +103,7 @@ def readme() -> str:
 
 
 setup(
-    name="trix-daemon",
+    name="trixd",
     version=f"{release()}.{build_number()}",
     description="TrinityX control-plane daemon for everything that is not a physical node",
     long_description=readme(),
@@ -114,7 +114,7 @@ setup(
     maintainer_email="support@clustervision.com",
     url="https://gitlab.taurusgroup.one/clustervision/trix-daemon",
     license="GPL-3.0-or-later",
-    keywords=["trinityx", "trix", "daemon", "clustervision"],
+    keywords=["trinityx", "trixd", "daemon", "clustervision"],
     classifiers=[
         "Development Status :: 3 - Alpha",
         "Intended Audience :: System Administrators",
@@ -125,10 +125,10 @@ setup(
     python_requires=">=3.10",
     install_requires=requirements(),
     # Namespace packages too: the migrations directories hold modules but no __init__.py.
-    packages=find_namespace_packages(include=["trix", "trix.*"], exclude=["*.__pycache__"]),
-    package_data={"trix": ["config/*.ini", "config/*.service", "config/*.yaml",
+    packages=find_namespace_packages(include=["trixd", "trixd.*"], exclude=["*.__pycache__"]),
+    package_data={"trixd": ["config/*.ini", "config/*.service", "config/*.yaml",
                            "plugins/*/manifest.yaml", "core/security/sources/README",
                            "db/migrations/script.py.mako"]},
-    entry_points={"console_scripts": ["trix-daemon = trix.server:main"]},
+    entry_points={"console_scripts": ["trixd = trixd.server:main"]},
     zip_safe=False,
 )

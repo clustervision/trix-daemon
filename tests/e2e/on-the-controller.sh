@@ -16,13 +16,13 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-# End to end against a running trix-daemon and a real Luna. Every check prints
+# End to end against a running trixd and a real Luna. Every check prints
 # PASS or FAIL and the script exits non-zero if any failed.
 
 PLAIN=${PLAIN:-http://localhost:8051}
 TLS=${TLS:-https://localhost:8050}
 # The interpreter the unit actually runs, so this works wherever it is installed.
-PY=${PY:-$(systemctl show trix-daemon -p ExecStart --value 2>/dev/null |
+PY=${PY:-$(systemctl show trixd -p ExecStart --value 2>/dev/null |
            grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}
 PY=${PY:-$(command -v python3)}
 FAIL=0
@@ -42,36 +42,36 @@ check "the docs page renders"          "$(code $PLAIN/api/v1/docs)" 200
 echo "=== 2. authentication ==="
 check "no token is 401"                "$(code $PLAIN/api/v1/system/plugins)" 401
 check "a bad token is 401"             "$(code $PLAIN/api/v1/system/plugins -H 'x-access-tokens: rubbish')" 401
-BAD='{"username":"trix","password":"no"}'
+BAD='{"username":"trixd","password":"no"}'
 check "wrong password is 401"          "$(code -X POST $PLAIN/api/v1/auth/token -H 'Content-Type: application/json' -d "$BAD")" 401
 T=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H 'Content-Type: application/json' \
-      -d '{"username":"trix","password":"trix"}' | jq_ "d['token']")
+      -d '{"username":"trixd","password":"trixd"}' | jq_ "d['token']")
 [ -n "$T" ] && say PASS "a token is minted" || say FAIL "no token minted"
 H="x-access-tokens: $T"
 check "the token is accepted"          "$(code $PLAIN/api/v1/system/plugins -H "$H")" 200
 check "bearer works too"               "$(code $PLAIN/api/v1/system/plugins -H "Authorization: Bearer $T")" 200
 
 echo "=== 3. the same token at Luna ==="
-LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/trix/etc/trixd.ini | sed 's/.*= *//')
-check "trix token works on Luna"       "$(code https://$LUNA/config/node -H "$H")" 200
+LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/trixd/etc/trixd.ini | sed 's/.*= *//')
+check "trixd token works on Luna"       "$(code https://$LUNA/config/node -H "$H")" 200
 check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H "$H")" 200
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
 
 echo "=== 4. plugins ==="
 LOADED=$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "sum(1 for p in d['plugins'] if p['state']=='loaded')")
-WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trix/etc/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
+WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/etc/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
 check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
 check "luna is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/luna/reload -H "$H")" 409
 
 echo "=== 5. hot unplug and plug ==="
-PID1=$(systemctl show trix-daemon -p MainPID --value)
+PID1=$(systemctl show trixd -p MainPID --value)
 curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/services/disable -H "$H"
 check "routes gone after unplug"       "$(code $PLAIN/api/v1/services/catalogue -H "$H")" 404
 curl -sk -o /dev/null -X POST $PLAIN/api/v1/system/plugins/services/reload -H "$H"
 check "routes back after re-plug"      "$(code $PLAIN/api/v1/services/catalogue -H "$H")" 200
-PID2=$(systemctl show trix-daemon -p MainPID --value)
+PID2=$(systemctl show trixd -p MainPID --value)
 check "the daemon never restarted"     "$PID1" "$PID2"
 
 echo "=== 6. renders ==="
@@ -125,20 +125,20 @@ check "whoami says not rootus"         "$(echo "$WHO" | jq_ "d['rootus']")" Fals
 echo "=== 10. the audit trail ==="
 GRANTS=$($PY -c "
 import sqlite3
-c=sqlite3.connect('/trinity/local/trix/var/trix.db')
+c=sqlite3.connect('/trinity/local/trixd/var/trixd.db')
 print(c.execute(\"select count(*) from audit where outcome='granted'\").fetchone()[0])")
 REFUSALS=$($PY -c "
 import sqlite3
-c=sqlite3.connect('/trinity/local/trix/var/trix.db')
+c=sqlite3.connect('/trinity/local/trixd/var/trixd.db')
 print(c.execute(\"select count(*) from audit where outcome='refused'\").fetchone()[0])")
 [ "${GRANTS:-0}" -gt 0 ] && say PASS "$GRANTS grants recorded" || say FAIL "no grants recorded"
 [ "${REFUSALS:-0}" -gt 0 ] && say PASS "$REFUSALS refusals recorded" || say FAIL "no refusals recorded"
 
 echo "=== 11. node tokens ==="
 check "anonymous node token refused"   "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{}')" 401
-CRED='{"username":"trix","password":"trix"}'
+CRED='{"username":"trixd","password":"trixd"}'
 check "node token on a credential"     "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d "$CRED")" 201
-NT=$(curl -sk -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{"username":"trix","password":"trix"}' | jq_ "d['token']")
+NT=$(curl -sk -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{"username":"trixd","password":"trixd"}' | jq_ "d['token']")
 check "a node token is not a user one" "$(code $PLAIN/api/v1/identity/users -H "x-access-tokens: $NT")" 403
 
 echo "=== 12. replication endpoints ==="

@@ -36,8 +36,8 @@ from alembic.migration import MigrationContext
 from alembic.script import ScriptDirectory
 from sqlalchemy import create_engine, inspect, text
 
-from trix.db import engine as database
-from trix.db import models
+from trixd.db import engine as database
+from trixd.db import models
 
 
 def _config(url: str) -> Config:
