@@ -45,7 +45,7 @@ from trixd.common.constants import API_PREFIX, LUNA_PLUGIN, MINIMUMS, RESERVED_P
 from trixd.common.errors import PluginRefused, Unauthenticated
 from trixd.core.plugins import loader
 from trixd.core.plugins.manifest import parse
-from trixd.core.security import tokens
+from trixd.core.security import audit, tokens
 
 
 def _serves(app, path: str) -> bool:
@@ -572,6 +572,7 @@ def test_the_audit_trail_records_a_login_and_a_refusal(rig, client):
     client.post(f"{API_PREFIX}/auth/token",
                 json={"username": "tester", "password": "wrong"})
 
+    audit.flush()
     handle = database.session()
     try:
         rows = handle.query(models.Audit).order_by(models.Audit.id).all()
@@ -593,6 +594,7 @@ def test_a_refused_request_is_audited(rig, client, token):
     node_token = tokens.mint("node001", kind="node", node="node001")
     client.get(f"{API_PREFIX}/directory/users", headers={"x-access-tokens": node_token})
 
+    audit.flush()
     handle = database.session()
     try:
         refusals = handle.query(models.Audit).filter(
@@ -613,6 +615,7 @@ def test_an_identity_write_leaves_its_audit_row(rig, client, headers):
     # put_user flushes before it audits, so the request holds the write lock:
     # a second session here waits out the busy timeout and loses the row.
     client.put(f"{API_PREFIX}/identity/users/audited", json={}, headers=headers)
+    audit.flush()
     handle = database.session()
     try:
         rows = handle.query(models.Audit).filter(
@@ -752,6 +755,7 @@ def test_a_refusal_is_in_the_audit_trail(rig, client, headers):
 
     pat = _principal(client, headers, "pat")
     client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=pat)
+    audit.flush()
     handle = database.session()
     try:
         rows = handle.query(models.Audit).filter(models.Audit.principal == "pat",
@@ -1306,3 +1310,81 @@ def test_without_a_certificate_the_plain_listener_still_opens(tmp_path):
     served = build_config(configuration.load(str(ini)))
     assert served.bind == ["127.0.0.1:8051"]
     assert not served.ssl_enabled
+
+
+def test_a_reader_reads_the_audit_trail_and_none_does_not(rig, client, headers):
+    """
+    The read-only user sees who did what; a token with no role does not.
+    """
+    rita = _principal(client, headers, "rita", "reader")
+    nina = _principal(client, headers, "nina")
+    client.get(f"{API_PREFIX}/services/catalogue", headers=nina)
+    trail = client.get(f"{API_PREFIX}/system/audit", headers=rita)
+    assert trail.status_code == 200, trail.text
+    rows = trail.json()["audit"]
+    assert rows and rows[0]["at"] >= rows[-1]["at"], "newest first"
+    assert any(row["principal"] == "nina" and row["outcome"] == "refused" for row in rows)
+    assert client.get(f"{API_PREFIX}/system/audit", headers=nina).status_code == 403
+
+
+def test_the_audit_trail_filters_by_who_outcome_and_time(rig, client, headers):
+    """
+    Each filter narrows the answer, and a time that is not ISO 8601 is a 400.
+    """
+    nina = _principal(client, headers, "nina")
+    client.get(f"{API_PREFIX}/services/catalogue", headers=nina)
+    only = client.get(f"{API_PREFIX}/system/audit", params={"principal": "nina",
+                      "outcome": "refused", "limit": 5}, headers=headers).json()["audit"]
+    assert only and all(r["principal"] == "nina" and r["outcome"] == "refused" for r in only)
+    later = client.get(f"{API_PREFIX}/system/audit", params={"since": "2999-01-01T00:00:00Z"},
+                       headers=headers).json()["audit"]
+    assert later == []
+    assert client.get(f"{API_PREFIX}/system/audit", params={"since": "yesterday"},
+                      headers=headers).status_code == 400
+    assert client.get(f"{API_PREFIX}/system/audit", params={"outcome": "maybe"},
+                      headers=headers).status_code == 422
+
+
+def test_audit_rows_are_written_in_batches_and_none_is_lost(rig):
+    """
+    A burst of rows lands in the table once the writer has flushed, every one of them.
+    """
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    audit.start()
+    for number in range(1200):
+        audit.granted("burst", "GET", f"/x/{number}")
+    assert audit.flush(10.0)
+    handle = database.session()
+    try:
+        assert handle.query(models.Audit).filter(models.Audit.principal == "burst").count() == 1200
+    finally:
+        handle.close()
+
+
+def test_old_audit_rows_are_pruned(rig, monkeypatch):
+    """
+    Rows older than [AUDIT] KEEP go; recent ones stay.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    old = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(days=100)
+    handle = database.session()
+    try:
+        handle.add_all([models.Audit(principal="old", action="GET", at=old),
+                        models.Audit(principal="new", action="GET")])
+        handle.commit()
+    finally:
+        handle.close()
+    assert configuration.current().audit.keep == 90 * 86400
+    assert audit.prune() >= 1
+    handle = database.session()
+    try:
+        left = {row.principal for row in handle.query(models.Audit).all()}
+    finally:
+        handle.close()
+    assert "old" not in left and "new" in left

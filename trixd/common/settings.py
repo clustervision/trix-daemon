@@ -157,6 +157,13 @@ class TriggerSettings(BaseModel):
     luna_hashes: int = 60
 
 
+class AuditSettings(BaseModel):
+    """
+    How long the audit trail keeps a row.
+    """
+    keep: int = 90 * 86400
+
+
 class PluginSettings(BaseModel):
     """
     Where plugins live, and which of them to load.
@@ -182,6 +189,7 @@ class Settings(BaseModel):
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
     triggers: TriggerSettings = Field(default_factory=TriggerSettings)
+    audit: AuditSettings = Field(default_factory=AuditSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
 
 
@@ -300,6 +308,7 @@ def load(path: str = "") -> Settings:
         ca_file=get("REPLICATION", "CA_FILE", data.replication.ca_file))
     data.triggers = TriggerSettings(
         luna_hashes=duration("TRIGGERS", "LUNA_HASHES", "60s"))
+    data.audit = AuditSettings(keep=duration("AUDIT", "KEEP", "90d"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
         site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),

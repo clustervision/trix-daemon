@@ -29,20 +29,23 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from fastapi import APIRouter, Depends, Request
+from datetime import datetime
+
+from fastapi import APIRouter, Depends, Query, Request
 
 from pydantic import BaseModel
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    PLUGIN_STATE_LOADED, ROLE_READER, ROLE_ROOTUS)
-from trixd.common.errors import NotFound, PluginRefused
+from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
 from trixd.core.render.triggers import current as luna_hashes
+from trixd.core.security import audit
 from trixd.core.security.gate import Caller, guard
 from trixd.db import engine as database
 
@@ -91,6 +94,20 @@ def plugins(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
     Every plugin, its state, its digest and why it was refused.
     """
     return {"plugins": registry().listing()}
+
+
+@router.get("/audit", summary="Who did what here, newest first")
+def audit_trail(principal: str = "", outcome: str = Query("", pattern="^(|granted|refused)$"),
+                since: str = "", limit: int = Query(100, ge=1, le=audit.READ_LIMIT),
+                caller: Caller = Depends(guard(ROLE_READER))) -> dict:
+    """
+    The audit trail, filtered by who, outcome and an ISO 8601 start time.
+    """
+    try:
+        start = datetime.fromisoformat(since.replace("Z", "+00:00")).replace(tzinfo=None)             if since else None
+    except ValueError:
+        raise BadRequest(f"{since} is not an ISO 8601 time") from None
+    return {"audit": audit.read(principal, outcome, start, limit)}
 
 
 @router.post("/plugins/{name}/reload", summary="Plug a plugin in, or reload it in place")

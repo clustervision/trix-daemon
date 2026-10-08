@@ -41,7 +41,7 @@ from trixd.core.plugins import loader
 from trixd.core.render.engine import current as renders
 from trixd.core.render.triggers import current as luna_hashes
 from trixd.core.replication.sweep import current as sweep
-from trixd.core.security import keys
+from trixd.core.security import audit, keys
 from trixd.db import engine as database
 
 LOGGER = trixlog.get("lifespan")
@@ -55,6 +55,7 @@ def start(app: FastAPI) -> None:
     database.start(config.database.url)
     keys.set_current(keys.KeyRing(config.tokens).load())
 
+    audit.start()
     states = loader.load_all(app)
     LOGGER.info("plugins: %s", ", ".join(f"{k}={v}" for k, v in states.items()) or "none")
 
@@ -80,6 +81,7 @@ def stop(app: FastAPI) -> None:
     """
     luna_hashes().shutdown()
     sweep().shutdown()
+    audit.shutdown()
     LOGGER.info("shutting down")
 
 
