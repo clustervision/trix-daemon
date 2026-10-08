@@ -236,7 +236,6 @@ def _bind_hooks(manifest, backend) -> dict:
     return hooks
 
 
-@_serialised
 def _daemon_paths(app: FastAPI, known) -> list:
     """
     The paths the daemon serves itself; an included router keeps its routes inside it.
@@ -252,6 +251,7 @@ def _daemon_paths(app: FastAPI, known) -> list:
     return paths
 
 
+@_serialised
 def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     """
     Load or reload one plugin. On a refusal nothing already serving is disturbed.

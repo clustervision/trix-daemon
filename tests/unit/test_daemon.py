@@ -1384,3 +1384,11 @@ def test_old_audit_rows_are_pruned(rig, monkeypatch):
     finally:
         handle.close()
     assert "old" not in left and "new" in left
+
+
+def test_loading_unloading_and_loading_all_are_serialised():
+    """
+    Two reloads at once must not interleave: each of the three takes the loader's lock.
+    """
+    for function in (loader.load, loader.unload, loader.load_all):
+        assert getattr(function, "__wrapped__", None) is not None, function.__name__
