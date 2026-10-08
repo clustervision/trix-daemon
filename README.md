@@ -256,6 +256,9 @@ plus rootus, which is the ini account and never a role a user can be given.
 | manager | that, and change configuration: rules, settings, a node's hardware rules, the service catalogue |
 | rootus | everything, and alone: users and roles, the cluster directory, plugin control, replication, notify, and plugin settings that name a command or a path run as root |
 
+rootus is the administrator. There is no separate admin role: whoever administers
+trixd does it as the ini account.
+
 Every user route names its minimum, and the gate compares it with the caller's role
 before the handler runs. A refusal is a 403 that says both, as in
 `this needs manager; you hold operator`, and goes to the audit trail. The other
