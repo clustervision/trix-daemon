@@ -81,6 +81,8 @@ def build_config(config):
     served.accesslog = "-"
     served.errorlog = "-"
     served.graceful_timeout = 10
+    # Hypercorn closes an idle connection after 5s, racing a client about to reuse it.
+    served.keep_alive_timeout = 75
     return served
 
 

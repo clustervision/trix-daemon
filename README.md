@@ -405,16 +405,22 @@ Timing at scale, with Luna stood in for (the files, database and plugin code are
 python tests/perf/thousand_nodes.py 1000 8
 ```
 
-End to end, against a running daemon and a real Luna:
+End to end, a real daemon over HTTP, about 1,500 cases generated mostly from
+`docs/openapi.json` (see `tests/e2e/README`):
+
+```
+TRIXD_E2E=local python -m pytest tests/e2e                    # a trixd started here, against a stand-in Luna
+TRIXD_E2E_URL=http://<controller>:8051 python -m pytest tests/e2e
+TRIXD_E2E=local python -m pytest tests/e2e -m stress -s       # sustained reads and a boot storm
+```
 
 | Script | Where it runs | What it needs |
 |---|---|---|
 | `tests/e2e/on-the-controller.sh` | on the controller | the daemon's `trixd.ini`, naming the account `trixd` with password `trixd` |
-| `tests/e2e/over-http.py <host>` | anywhere that reaches 8050 and 8051 | the same account, and port 8051 opened beyond the loopback |
 | `tests/e2e/node-rename.sh <node>` | on a development controller only | it renames a node at Luna and back |
 
-The suites sign in with that test account, so they belong on a test controller,
-never on a customer's.
+The suites sign in with a test account, so they belong on a test controller, never on
+a customer's.
 
 ## Building and publishing
 
