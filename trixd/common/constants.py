@@ -76,9 +76,10 @@ TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
 
 # The ladder, lowest first. A principal with no role holds a token and nothing more.
 ROLE_NONE: str = "none"
+ROLE_READER: str = "reader"
 ROLE_OPERATOR: str = "operator"
 ROLE_MANAGER: str = "manager"
-ROLES: tuple = (ROLE_NONE, ROLE_OPERATOR, ROLE_MANAGER)
+ROLES: tuple = (ROLE_NONE, ROLE_READER, ROLE_OPERATOR, ROLE_MANAGER)
 
 # What only the account the ini names may do, as luna2-daemon reserves its rootus
 # families. A route may declare it; a principal can never be given it.

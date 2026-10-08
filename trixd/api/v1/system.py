@@ -35,7 +35,7 @@ from pydantic import BaseModel
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   PLUGIN_STATE_LOADED, ROLE_NONE, ROLE_ROOTUS)
+                                   PLUGIN_STATE_LOADED, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import NotFound, PluginRefused
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
@@ -86,7 +86,7 @@ def version() -> dict:
 
 
 @router.get("/plugins", summary="Every plugin, its state and why")
-def plugins(caller: Caller = Depends(guard(ROLE_NONE))) -> dict:
+def plugins(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
     """
     Every plugin, its state, its digest and why it was refused.
     """

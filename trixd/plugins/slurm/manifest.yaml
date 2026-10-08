@@ -31,7 +31,7 @@ schemas:
 endpoints:
   - path: config
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: config
     summary: Where this plugin writes and what it runs afterwards
 
@@ -45,7 +45,7 @@ endpoints:
 
   - path: renders/config
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: render_config
     render:
       inputs: [luna.node, luna.group]

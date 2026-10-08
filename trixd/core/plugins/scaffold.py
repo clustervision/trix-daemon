@@ -47,7 +47,7 @@ schemas:
 endpoints:
   - path: ""
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: show
     summary: What this plugin currently holds
   - path: setting

@@ -44,7 +44,7 @@ schemas:
 endpoints:
   - path: config
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: config
     summary: Where this plugin writes, and what it reloads
 
@@ -58,7 +58,7 @@ endpoints:
 
   - path: rules
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: rules
     summary: The generic and service alert rules
 
@@ -71,7 +71,7 @@ endpoints:
 
   - path: settings
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: settings
     summary: The settings hardware rules are generated from
 
@@ -84,7 +84,7 @@ endpoints:
 
   - path: hw-rules/<node>
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: get_hw_rules
     summary: The hardware rules held for one node
 
@@ -114,7 +114,7 @@ endpoints:
 
   - path: renders/rule-files
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: render_rule_files
     render:
       inputs: [settings, rules, luna.node]

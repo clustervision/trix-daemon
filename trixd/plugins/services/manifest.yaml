@@ -28,13 +28,13 @@ schemas:
 endpoints:
   - path: ""
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: list_services
     summary: Every service this daemon is allowed to control
 
   - path: catalogue
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: catalogue
     summary: Which names map to which systemd units
 
@@ -47,7 +47,7 @@ endpoints:
 
   - path: <name>
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: status
     summary: Whether one service is running
 
@@ -58,6 +58,6 @@ endpoints:
     summary: Start, stop, restart or reload one service
   - path: status/<request_id>
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: request
     summary: Where one queued action got to

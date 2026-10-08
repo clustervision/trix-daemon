@@ -215,9 +215,13 @@ kept outside this repository until it lands there.
 
 ## Who may do what
 
+The ladder is `none < reader < operator < manager`, the same names luna2-daemon uses,
+plus rootus, which is the ini account and never a role a user can be given.
+
 | Role | May |
 |---|---|
-| none | read, apart from the routes kept for rootus |
+| none | sign in and ask who it is (`GET /api/v1/auth/whoami`), nothing else |
+| reader | read everything apart from the routes kept for rootus: the read-only user, for an auditor or anyone who only needs to see |
 | operator | that, and act: start, stop, restart, reload or query a catalogued service |
 | manager | that, and change configuration: rules, settings, a node's hardware rules, the service catalogue |
 | rootus | everything, and alone: users and roles, the cluster directory, plugin control, replication, notify, and plugin settings that name a command or a path run as root |
@@ -226,6 +230,29 @@ Every user route names its minimum, and the gate compares it with the caller's r
 before the handler runs. A refusal is a 403 that says both, as in
 `this needs manager; you hold operator`, and goes to the audit trail. The other
 controller's service token passes every check.
+
+The whole decision is these lines. The position on the ladder is the rank:
+
+```python
+# trixd/common/constants.py
+ROLES: tuple = (ROLE_NONE, ROLE_READER, ROLE_OPERATOR, ROLE_MANAGER)
+MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
+
+# trixd/core/security/access.py
+def rank(role: str) -> int:
+    return MINIMUMS.index(role) if role in MINIMUMS else 0
+
+def permits(who, minimum: str, kind: str = "") -> tuple:
+    if kind == TOKEN_KIND_SERVICE:                # the other controller
+        return True, TOKEN_KIND_SERVICE
+    held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
+    if who is not None and is_rootus(who.name):   # the trixd.ini account
+        return True, held
+    return rank(held) >= rank(minimum), held
+```
+
+The gate, `trixd/core/security/gate.py`, calls `permits` once per request, after the
+token is verified and the caller is resolved. An unknown role ranks as none.
 
 Users are managed by rootus with `GET /api/v1/identity/users`,
 `PUT /api/v1/identity/users/<name>` (create, or change the role, password or whether
@@ -239,7 +266,8 @@ Anyone else is tried against the sources in `[AUTH] CHAIN` in order, and the fir
 that knows the name decides: `local` (a stored password), `pam` (the controller's
 own accounts, which through sssd include the cluster directory; system accounts are
 refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone who
-signs in through PAM or LDAP gets a row on first sign-in, with role none.
+signs in through PAM or LDAP gets a row on first sign-in, with role none, and can
+read nothing until rootus gives them a role.
 
 ## Tokens, here and at Luna
 
@@ -292,7 +320,7 @@ backend: backend
 endpoints:
   - path: greet/<who>
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: greet
 ```
 

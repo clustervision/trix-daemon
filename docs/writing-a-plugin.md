@@ -154,14 +154,14 @@ the reload endpoint answers 409 with the reason.
 
 ## Permissions
 
-Every user holds one role on a ladder, `none < operator < manager`, and every user
+Every user holds one role on a ladder, `none < reader < operator < manager`, and every user
 endpoint declares the lowest role it admits. The gate compares the two and nothing
 else. A path that is read at one level and changed at another is two endpoints:
 
 ```yaml
   - path: rules
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: rules
   - path: rules
     methods: [PATCH]
@@ -170,13 +170,14 @@ else. A path that is read at one level and changed at another is two endpoints:
     schema: rules
 ```
 
-As a rule, a read admits `none`, a `POST` under `.../actions/...` admits
+As a rule, a read admits `reader`, a `POST` under `.../actions/...` admits
 `operator`, and a change of configuration needs `manager`. A setting that names a
 command the daemon runs, or a path it writes, needs `rootus`: the daemon runs as
 root. The ini account is rootus, and a route with `minimum: rootus` admits it
 alone, apart from the other controller's service token, which passes every check.
 Everyone else holds what the `principal` table says, and a user with no row is
-`none`. rootus gives a user a role:
+`none`, which may sign in and read nothing. A unit test refuses a shipped plugin
+whose read admits `none`. rootus gives a user a role:
 
 ```
 curl -X PUT http://127.0.0.1:8051/api/v1/identity/users/harry \
@@ -244,7 +245,7 @@ poll from what it last produced.
 ```yaml
   - path: renders/targets
     methods: [GET]
-    minimum: none
+    minimum: reader
     render:
       inputs:   [luna.node, luna.network]
       coalesce: 2s

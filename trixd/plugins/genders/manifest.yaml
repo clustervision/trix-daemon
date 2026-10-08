@@ -23,13 +23,13 @@ description: >
 endpoints:
   - path: config
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: config
     summary: Where this plugin writes, which the generator fixes
 
   - path: renders/genders
     methods: [GET]
-    minimum: none
+    minimum: reader
     handler: render_genders
     render:
       inputs: [luna.node, luna.group]

@@ -645,15 +645,48 @@ def _principal(client, headers, name, role=None):
     return _as(client, name, "pw")
 
 
-def test_no_role_may_look_and_not_change(rig, client, headers):
+def test_no_role_holds_a_token_and_nothing_more(rig, client, headers):
     """
-    The bottom of the ladder holds a token and reads, which is what an opened app needs.
+    The bottom of the ladder may ask who it is, and may not even read.
     """
-    rita = _principal(client, headers, "rita")
+    nina = _principal(client, headers, "nina")
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=nina).json()["role"] == "none"
+    refused = client.get(f"{API_PREFIX}/services/catalogue", headers=nina)
+    assert refused.status_code == 403, refused.text
+    assert "reader" in refused.text and "none" in refused.text
+    assert client.get(f"{API_PREFIX}/system/plugins", headers=nina).status_code == 403
+
+
+def test_a_reader_may_look_and_not_change(rig, client, headers):
+    """
+    Read-only access, for an auditor or anyone who only needs to see: every read, no change.
+    """
+    rita = _principal(client, headers, "rita", "reader")
     assert client.get(f"{API_PREFIX}/services/catalogue", headers=rita).status_code == 200
+    assert client.get(f"{API_PREFIX}/system/plugins", headers=rita).status_code == 200
     refused = client.patch(f"{API_PREFIX}/services/catalogue", json={}, headers=rita)
     assert refused.status_code == 403, refused.text
-    assert "manager" in refused.text and "none" in refused.text
+    assert "manager" in refused.text and "reader" in refused.text
+    acted = client.post(f"{API_PREFIX}/services/nothing/actions/restart", headers=rita)
+    assert acted.status_code == 403, acted.text
+
+
+def test_every_read_route_admits_a_reader_and_refuses_none(rig):
+    """
+    No shipped plugin leaves a read open to a token with no role.
+    """
+    import glob
+
+    from trixd.core.plugins.manifest import parse, read_yaml
+
+    for path in glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                       "manifest.yaml")):
+        for endpoint in parse(read_yaml(path)).endpoints:
+            if endpoint.public or endpoint.token == "node":
+                continue
+            assert endpoint.minimum != "none", f"{path}: {endpoint.path} admits no role"
+            if endpoint.methods == ["GET"]:
+                assert endpoint.minimum in ("reader", "rootus"), f"{path}: {endpoint.path}"
 
 
 def test_an_operator_may_operate_and_not_configure(rig, client, headers):
