@@ -51,9 +51,12 @@ H="x-access-tokens: $T"
 check "the token is accepted"          "$(code $PLAIN/api/v1/system/plugins -H "$H")" 200
 check "bearer works too"               "$(code $PLAIN/api/v1/system/plugins -H "Authorization: Bearer $T")" 200
 
-echo "=== 3. the same token at Luna ==="
-LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/luna/daemon/config/luna.ini | sed 's/.*= *//')
-check "trixd token works on Luna"       "$(code https://$LUNA/config/node -H "$H")" 200
+echo "=== 3. the same token at Luna, found from Luna's own luna.ini ==="
+LUNA_INI=/trinity/local/luna/daemon/config/luna.ini
+API=$(sed -n '/^\[API\]/,/^\[/p' $LUNA_INI)
+LUNA=$(echo "$API" | grep -m1 "^ENDPOINT" | sed 's/.*= *//')
+SCHEME=$(echo "$API" | grep -m1 "^PROTOCOL" | sed 's/.*= *//')
+check "trixd token works on Luna"       "$(code $SCHEME://$LUNA/config/node -H "$H")" 200
 check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H "$H")" 200
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
@@ -64,6 +67,8 @@ WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/etc/trixd.ini | gre
 check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
 check "auth is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/auth/reload -H "$H")" 409
+check "trixd.ini has no [LUNA]"        "$(grep -c '^\[LUNA\]' /trinity/local/trixd/etc/trixd.ini)" 0
+check "the luna plugin is loaded"      "$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "[p['state'] for p in d['plugins'] if p['name']=='luna'][0]")" loaded
 
 echo "=== 5. hot unplug and plug ==="
 PID1=$(systemctl show trixd -p MainPID --value)
@@ -100,11 +105,16 @@ echo "=== 8. identity and RBAC ==="
 J='Content-Type: application/json'
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2enone -H "$H" -H "$J" -d '{"password":"pw"}'
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"password":"pw","role":"operator"}'
+curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2ereader -H "$H" -H "$J" -d '{"password":"pw","role":"reader"}'
+RT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2ereader","password":"pw"}' | jq_ "d['token']")
+RH="x-access-tokens: $RT"
 NT0=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2enone","password":"pw"}' | jq_ "d['token']")
 OT=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H "$J" -d '{"username":"e2eop","password":"pw"}' | jq_ "d['token']")
 NH="x-access-tokens: $NT0"; OH="x-access-tokens: $OT"
 [ -n "$NT0" ] && [ -n "$OT" ] && say PASS "both principals can log in" || say FAIL "a principal cannot log in"
-check "no role may look"               "$(code $PLAIN/api/v1/prometheus/config -H "$NH")" 200
+check "no role may not even look"     "$(code $PLAIN/api/v1/prometheus/config -H "$NH")" 403
+check "a reader may look"              "$(code $PLAIN/api/v1/prometheus/config -H "$RH")" 200
+check "a reader may not change"        "$(code -X PATCH $PLAIN/api/v1/prometheus/hw-rules -H "$RH" -H "$J" -d '{"nodes":[]}')" 403
 check "no role may not change"         "$(code -X PATCH $PLAIN/api/v1/prometheus/hw-rules -H "$NH" -H "$J" -d '{"nodes":[]}')" 403
 check "no role may not operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$NH")" 403
 check "an operator may operate"        "$(code -X POST $PLAIN/api/v1/services/slurmctld/actions/status -H "$OH")" 200
@@ -113,7 +123,7 @@ check "rootus is never refused"        "$(code -X PATCH $PLAIN/api/v1/prometheus
 check "a bad role is refused"          "$(code -X PUT $PLAIN/api/v1/identity/users/e2eking -H "$H" -H "$J" -d '{"role":"king"}')" 400
 curl -sk -o /dev/null -X PUT $PLAIN/api/v1/identity/users/e2eop -H "$H" -H "$J" -d '{"role":"manager"}'
 check "promoted, the same token changes" "$(code -X PATCH $PLAIN/api/v1/prometheus/hw-rules -H "$OH" -H "$J" -d '{"nodes":[]}')" 200
-check "a personal token is nobody at Luna" "$(code https://$LUNA/config/osuser -H "$NH")" 401
+check "a personal token is nobody at Luna" "$(code $SCHEME://$LUNA/config/osuser -H "$NH")" 401
 check "nor through the pass-through"   "$(code $PLAIN/api/v1/luna/config/node -H "$OH")" 401
 
 echo "=== 9. whoami ==="
@@ -122,17 +132,12 @@ check "whoami names the principal"     "$(echo "$WHO" | jq_ "d['principal']")" e
 check "whoami reports the role"        "$(echo "$WHO" | jq_ "d['role']")" manager
 check "whoami says not rootus"         "$(echo "$WHO" | jq_ "d['rootus']")" False
 
-echo "=== 10. the audit trail ==="
-GRANTS=$($PY -c "
-import sqlite3
-c=sqlite3.connect('/trinity/local/trixd/var/trixd.db')
-print(c.execute(\"select count(*) from audit where outcome='granted'\").fetchone()[0])")
-REFUSALS=$($PY -c "
-import sqlite3
-c=sqlite3.connect('/trinity/local/trixd/var/trixd.db')
-print(c.execute(\"select count(*) from audit where outcome='refused'\").fetchone()[0])")
-[ "${GRANTS:-0}" -gt 0 ] && say PASS "$GRANTS grants recorded" || say FAIL "no grants recorded"
-[ "${REFUSALS:-0}" -gt 0 ] && say PASS "$REFUSALS refusals recorded" || say FAIL "no refusals recorded"
+echo "=== 10. the audit trail, as a reader reads it ==="
+GRANTS=$(curl -sk "$PLAIN/api/v1/system/audit?outcome=granted&limit=5" -H "$RH" | jq_ "len(d['audit'])")
+REFUSALS=$(curl -sk "$PLAIN/api/v1/system/audit?outcome=refused&limit=5" -H "$RH" | jq_ "len(d['audit'])")
+[ "${GRANTS:-0}" -gt 0 ] && say PASS "grants recorded" || say FAIL "no grants recorded"
+[ "${REFUSALS:-0}" -gt 0 ] && say PASS "refusals recorded" || say FAIL "no refusals recorded"
+check "no role may not read the trail" "$(code $PLAIN/api/v1/system/audit -H "$NH")" 403
 
 echo "=== 11. node tokens ==="
 check "anonymous node token refused"   "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{}')" 401
@@ -151,6 +156,7 @@ check "health reports the triggers"    "$(echo "$HEALTH" | jq_ "'luna_hashes' in
 echo "=== 13. tidy up ==="
 curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2eop -H "$H"
 curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2enone -H "$H"
+curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2ereader -H "$H"
 say PASS "removed the test principals"
 
 echo

@@ -21,3 +21,33 @@ include:
   - project: 'ClusterVision/gitlab-cicd-pipelines'
     file: '/pip-package-pipeline.yml'
     ref: 'main'
+
+# Tests run beside the build; nothing is published unless every one passes.
+unit-and-e2e:
+  stage: build
+  image: python:3.10-slim
+  script:
+    - pip install -q -r requirements.txt pytest httpx setuptools wheel
+    - python -m pytest -q -p no:cacheprovider
+    - TRIXD_E2E=local python -m pytest tests/e2e -q -p no:cacheprovider
+
+# The same suites on each EL release, on the luna2-python trixd runs on there.
+.platform:
+  stage: build
+  script:
+    - bash tests/platforms/inside.sh "$CI_PROJECT_DIR"
+
+platform-el8:
+  extends: .platform
+  image: quay.io/rockylinux/rockylinux:8.4
+
+platform-el9:
+  extends: .platform
+  image: docker.io/rockylinux/rockylinux:9
+
+platform-el10:
+  extends: .platform
+  image: docker.io/rockylinux/rockylinux:10
+
+publish-job:
+  needs: ["build-job", "unit-and-e2e", "platform-el8", "platform-el9", "platform-el10"]
