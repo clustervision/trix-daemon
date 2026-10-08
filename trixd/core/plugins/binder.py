@@ -43,6 +43,30 @@ from trixd.core.security.gate import Caller, guard
 LOGGER = trixlog.get("binder")
 
 BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
+# What the binder hands a handler besides the path variables.
+SUPPLIED: tuple = ("body", "caller", "request")
+
+
+def signature_problems(handler, endpoint: Endpoint) -> list:
+    """
+    What the binder could not give this handler: a path variable it does not take, or an
+    argument with no default that nothing supplies. Each would be a 500 at the first call.
+    """
+    try:
+        accepted = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return []
+    if any(item.kind == inspect.Parameter.VAR_KEYWORD for item in accepted.values()):
+        return []
+    problems = [f"{endpoint.handler} does not take the path variable {name}"
+                for name in endpoint.variables if name not in accepted]
+    known = set(endpoint.variables) | set(SUPPLIED)
+    for name, item in accepted.items():
+        if item.kind == inspect.Parameter.VAR_POSITIONAL or name in known:
+            continue
+        if item.default is inspect.Parameter.empty:
+            problems.append(f"{endpoint.handler} needs {name}, which nothing supplies")
+    return problems
 
 
 def _call(handler, supplied: dict):
@@ -125,6 +149,9 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 raise PluginRefused(
                     f'{endpoint.path or "/"} names handler {endpoint.handler}, '
                     f"which {manifest.backend} does not have")
+            problems = signature_problems(handler, endpoint)
+            if problems:
+                raise PluginRefused(f'{endpoint.path or "/"}: {problems[0]}')
 
         body_model = models.get(endpoint.body_schema) if endpoint.body_schema else None
         for verb in endpoint.methods:

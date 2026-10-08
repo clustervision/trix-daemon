@@ -297,6 +297,10 @@ The caller polls whatever route you declare for it; the services plugin uses
 
 ## Before you call it done
 
+- `trixd plugin check <directory>` prints `would load`. It needs no running daemon and
+  no `trixd.ini`, so it fits a pipeline: it parses the manifest, imports the backend,
+  and checks every handler and hook exists and takes the path variables its route has.
+  It exits 1 and lists every problem otherwise.
 - It loads, and unplugs and plugs back with the daemon running.
 - Every user endpoint declares a minimum role, and the unit tests read every
   shipped manifest to assert it.

@@ -177,6 +177,20 @@ def plugin_new(name: str, config_file: str = "") -> int:
     return 0
 
 
+def plugin_check(path: str) -> int:
+    """
+    Check one plugin directory and print every problem, or that it would load.
+    """
+    from trixd.core.plugins.check import check
+
+    problems = check(path)
+    for problem in problems:
+        print(f"{path}: {problem}")
+    if not problems:
+        print(f"{path}: would load")
+    return 1 if problems else 0
+
+
 def main(argv: list = None) -> int:
     """
     Command line for the unit and for the installer.
@@ -188,9 +202,13 @@ def main(argv: list = None) -> int:
                         choices=("serve", "keygen", "plugin"),
                         help="serve the API, write the keypair, or scaffold a plugin")
     parser.add_argument("subcommand", nargs="?", default="",
-                        help="for plugin: new")
-    parser.add_argument("name", nargs="?", default="", help="the plugin name")
+                        help="for plugin: new or check")
+    parser.add_argument("name", nargs="?", default="",
+                        help="the plugin name, or for check a plugin directory")
     args = parser.parse_args(argv)
+    if args.command == "plugin" and args.subcommand == "check" and os.path.isdir(args.name):
+        # A directory needs no trixd.ini: an author or a pipeline checks before installing.
+        return plugin_check(args.name)
     try:
         configuration.load(args.config)
     except ValueError as error:
@@ -201,8 +219,17 @@ def main(argv: list = None) -> int:
     if args.command == "keygen":
         return keygen(args.config)
     if args.command == "plugin":
+        if args.subcommand == "check" and args.name:
+            from trixd.core.plugins import loader
+
+            configuration.set_current(configuration.load(args.config))
+            found = loader.discover().get(args.name, "")
+            if not found:
+                print(f"no plugin named {args.name}")
+                return 1
+            return plugin_check(found)
         if args.subcommand != "new" or not args.name:
-            print(f"usage: {DAEMON_NAME} plugin new <name>")
+            print(f"usage: {DAEMON_NAME} plugin new <name> | plugin check <name or directory>")
             return 1
         return plugin_new(args.name, args.config)
     return serve(args.config)

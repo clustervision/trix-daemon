@@ -1392,3 +1392,87 @@ def test_loading_unloading_and_loading_all_are_serialised():
     """
     for function in (loader.load, loader.unload, loader.load_all):
         assert getattr(function, "__wrapped__", None) is not None, function.__name__
+
+
+def _broken_plugin(root) -> str:
+    """
+    A plugin with five things wrong, each a different kind.
+    """
+    path = root / "broken"
+    path.mkdir(parents=True)
+    (path / "__init__.py").write_text("", encoding="utf-8")
+    (path / "backend.py").write_text(
+        "class Backend:\n"
+        "    def show(self, name):\n        return {}\n"
+        "    def change(self, body=None, extra=None):\n        return {}\n"
+        "    def picky(self, wanted):\n        return {}\n", encoding="utf-8")
+    (path / "manifest.yaml").write_text(
+        "plugin: broken\nbackend: backend\nluna_hooks:\n  node.delete: gone\nendpoints:\n"
+        "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
+        "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
+        "  - path: missing\n    methods: [GET]\n    minimum: reader\n    handler: absent\n"
+        "  - path: picky\n    methods: [GET]\n    minimum: reader\n    handler: picky\n",
+        encoding="utf-8")
+    return str(path)
+
+
+def test_every_shipped_plugin_passes_the_check(rig):
+    """
+    What ships would load: the check is the gate a new plugin passes too.
+    """
+    import glob
+
+    from trixd.core.plugins.check import check
+
+    shipped = sorted(os.path.dirname(path) for path in glob.glob(
+        os.path.join(os.path.dirname(trixd.__file__), "plugins", "*", "manifest.yaml")))
+    assert len(shipped) == 6
+    for path in shipped:
+        assert check(path) == [], path
+
+
+def test_the_check_lists_every_problem_at_once(rig, tmp_path):
+    """
+    An author sees all of them in one run, not one per reload.
+    """
+    from trixd.core.plugins.check import check
+
+    problems = check(_broken_plugin(tmp_path))
+    text = "\n".join(problems)
+    assert "GET item/<node> is declared twice" in text
+    assert "does not take the path variable node" in text
+    assert "names handler absent" in text
+    assert "picky needs wanted, which nothing supplies" in text
+    assert "node.delete names handler gone" in text
+
+
+def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tmp_path):
+    """
+    Refused when it is plugged in, with the reason, rather than a 500 at the first call.
+    """
+    site = tmp_path / "site-plugins" / "mismatch"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("", encoding="utf-8")
+    (site / "backend.py").write_text(
+        "class Backend:\n    def show(self, name):\n        return {}\n", encoding="utf-8")
+    (site / "manifest.yaml").write_text(
+        "plugin: mismatch\nbackend: backend\nendpoints:\n  - path: item/<node>\n"
+        "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
+    with pytest.raises(PluginRefused, match="does not take the path variable node"):
+        loader.load(rig, "mismatch", str(site))
+
+
+def test_the_check_command_needs_no_daemon_and_says_why(rig, tmp_path, capsys):
+    """
+    A directory is checked with no trixd.ini at all; a name is found the way the daemon finds it.
+    """
+    from trixd import server
+
+    good = os.path.join(os.path.dirname(trixd.__file__), "plugins", "services")
+    assert server.main(["plugin", "check", good]) == 0
+    assert "would load" in capsys.readouterr().out
+    assert server.main(["plugin", "check", _broken_plugin(tmp_path)]) == 1
+    assert "declared twice" in capsys.readouterr().out
+    config = configuration.current().config_file
+    assert server.main(["--config", config, "plugin", "check", "services"]) == 0
+    assert server.main(["--config", config, "plugin", "check", "nosuch"]) == 1
