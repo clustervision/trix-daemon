@@ -31,8 +31,10 @@ __status__      = "Production"
 
 import glob
 import os
-import time
 import re
+import shutil
+import threading
+import time
 
 import requests
 import urllib3
@@ -52,7 +54,7 @@ PLUGIN: str = "prometheus"
 
 DEFAULT_CONFIG: dict = {
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
-    "prometheus_url": "http://localhost:9090",
+    "prometheus_url": "https://localhost:9090",
     "reload_command": "systemctl reload prometheus-server",
 }
 
@@ -106,6 +108,8 @@ class Backend:
         # reconcile with nothing to change reads no file: at a thousand nodes, the parse is
         # the whole cost.
         self.seen: dict = {}
+        # Where Prometheus really answered, when that differs from the configured scheme.
+        self.prometheus_url: str = ""
 
     # ---------------------------------------------------------------- config
 
@@ -138,7 +142,7 @@ class Backend:
         if body:
             stored = declarations.write(PLUGIN, "rules", "", body)
             self._write_rule_documents(stored)
-            self.reload()
+            self.reload_or_fail("rules written")
             return stored
         return declarations.read(PLUGIN, "rules", "", {"groups": []})
 
@@ -172,7 +176,10 @@ class Backend:
         node asks for this itself after boot, with a token scoped to itself.
         """
         written = self._write_hw_rules(node, body or {})
-        self.reload()
+        # A node that rebooted unchanged costs no write and no reload: a boot storm of
+        # thousands of nodes reloads Prometheus only for the ones that changed.
+        if written["changed"]:
+            self.reload_or_fail(f"rules written for {node}")
         return written
 
     def set_hw_rules(self, body: dict = None) -> dict:
@@ -192,16 +199,43 @@ class Backend:
                 results.append({"node": node, "ok": True, **self._write_hw_rules(node, entry)})
             except TrixdError as error:
                 results.append({"node": node, "ok": False, "message": error.message})
-        # One reload for the lot, not one per node.
-        if any(item["ok"] for item in results):
-            self.reload()
+        # One reload for the lot, not one per node, and none when nothing changed.
+        changed = [item["node"] for item in results if item.get("changed")]
+        if changed:
+            self.reload_or_fail(f"rules written for {len(changed)} node(s)")
         return {"nodes": results}
+
+    def list_hw_rules(self, request=None) -> dict:
+        """
+        Every node's hardware rules, or those of ?nodes=a,b, as Luna's export answers them;
+        ?detail=no leaves the documents out. A node asked for and not held says so.
+        """
+        query = request.query_params if request is not None else {}
+        asked = [name for name in str(query.get("nodes", "")).split(",") if name]
+        detail = str(query.get("detail", "yes")).lower() not in ("0", "no", "false")
+        pattern = os.path.join(self._rules_dir(), HW_RULES.format(host="*"))
+        held = {_hw_host(path): path for path in sorted(glob.glob(pattern))}
+        answer = []
+        for host in (asked or sorted(held)):
+            path = held.get(host) or next((held[h] for h in held if _names_node(h, host)), "")
+            if not path:
+                answer.append({"node": host, "exists": False})
+                continue
+            document = _read_yaml(path)
+            rules = [rule for group in document.get("groups", [])
+                     for rule in group.get("rules", [])]
+            entry = {"node": host, "exists": True, "rules": len(rules)}
+            if detail:
+                entry["document"] = document
+            answer.append(entry)
+        return {"nodes": answer}
 
     def _write_hw_rules(self, node: str, body: dict) -> dict:
         """
         Write one node's rule file, generated afresh when asked or when there is none.
         """
         paths = self._hw_paths(node)
+        before = _read_yaml(paths[0]) if paths else None
         if paths and not body.get("force"):
             path, document = paths[0], _read_yaml(paths[0])
         else:
@@ -217,10 +251,24 @@ class Backend:
                 if body.get("disabled") is not None:
                     labels["disabled"] = bool(body["disabled"])
 
+        count = sum(len(group.get("rules", [])) for group in document.get("groups", []))
+        if before is not None and document == before and paths[0] == path:
+            return {"hostname": _hw_host(path), "rules": count, "changed": False}
+        if os.path.isfile(path):
+            self._keep_copy(path)
         files.write_yaml(path, document)
         LOGGER.info("hardware rules written for %s at %s", node, path)
-        return {"hostname": _hw_host(path), "rules": sum(len(group.get("rules", []))
-                                                         for group in document.get("groups", []))}
+        return {"hostname": _hw_host(path), "rules": count, "changed": True}
+
+    def _keep_copy(self, path: str) -> str:
+        """
+        A copy of a rule file under backup/ before it is overwritten, as Luna keeps one.
+        """
+        backup = os.path.join(self._rules_dir(), "backup")
+        os.makedirs(backup, exist_ok=True)
+        kept = os.path.join(backup, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
+        shutil.copy2(path, kept)
+        return kept
 
     def repair_hw_rules(self, node: str, was: str = "") -> dict:
         """
@@ -335,19 +383,42 @@ class Backend:
         """
         The hardware exporter's series for this host, one label set per component.
         """
-        url = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         query = (f'count({HW_METRIC}{{class=~"{HW_CLASSES}", hostname="{host}", '
                  f'description!~"Virt|virt|USB", product!~"Virt.*"}}) '
                  f'by ({",".join(COMPONENT_LABELS)})')
-        try:
-            answer = requests.get(f"{url}/api/v1/query", params={"query": query},
-                                  timeout=20, verify=False)
-        except requests.RequestException as error:
-            raise BackendFailure(f"Prometheus is not answering: {error}") from None
-        if answer.status_code >= 400:
-            raise BackendFailure(f"Prometheus answered {answer.status_code}")
+        answer = self._query(query)
         result = ((answer.json() or {}).get("data") or {}).get("result") or []
         return [dict(item.get("metric") or {}) for item in result]
+
+    def _query(self, query: str):
+        """
+        One instant query. TrinityX serves Prometheus over TLS; a site that does not is
+        found on the first call and remembered, so a scheme mismatch never stops the rules.
+        """
+        configured = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
+        url = self.prometheus_url or configured
+        for attempt in (1, 2):
+            try:
+                answer = requests.get(f"{url}/api/v1/query", params={"query": query},
+                                      timeout=20, verify=False)
+            except requests.exceptions.SSLError as error:
+                if attempt == 1:
+                    url = _other_scheme(url)
+                    continue
+                raise BackendFailure(f"Prometheus is not answering: {error}") from None
+            except requests.RequestException as error:
+                raise BackendFailure(f"Prometheus is not answering: {error}") from None
+            if answer.status_code == 400 and "HTTPS server" in answer.text and attempt == 1:
+                url = _other_scheme(url)
+                continue
+            break
+        if answer.status_code >= 400:
+            raise BackendFailure(f"Prometheus answered {answer.status_code} at {url}")
+        if url != (self.prometheus_url or configured):
+            LOGGER.warning("Prometheus answers on %s, not %s; using that from now on",
+                           url, configured)
+            self.prometheus_url = url
+        return answer
 
     # --------------------------------------------------------------- renders
 
@@ -468,15 +539,88 @@ class Backend:
         with open(path, "r", encoding="utf-8") as handle:
             return yaml.safe_load(handle) or {}
 
-    def reload(self) -> bool:
+    def _reload_now(self) -> tuple:
         """
-        Tell Prometheus to re-read what we wrote.
+        Tell Prometheus to re-read what we wrote, once.
         """
         command = self._config().get("reload_command", DEFAULT_CONFIG["reload_command"])
         result = shell.run(command.split(), timeout=30)
         if not result.ok:
             LOGGER.error("reload failed: %s", result.err or result.out)
-        return result.ok
+        return result.ok, result.err or result.out
+
+    def reload(self) -> bool:
+        """
+        A reload that callers at the same moment share; each gets the outcome of one that
+        started after its own write.
+        """
+        return RELOADS.run(self._reload_now)[0]
+
+    def reload_or_fail(self, what: str) -> None:
+        """
+        Reload, and say so in the answer when Prometheus did not take it.
+        """
+        ok, message = RELOADS.run(self._reload_now)
+        if not ok:
+            raise BackendFailure(f"{what}, but Prometheus did not reload: {message}")
+
+
+class SharedReload:
+    """
+    One reload serves every caller waiting for it. A caller takes a ticket after its write;
+    a reload covers every ticket taken before it started, so nobody is answered by a
+    reload that ran before their file was on disk.
+    """
+
+    def __init__(self) -> None:
+        """
+        No ticket taken, no reload run.
+        """
+        self.condition = threading.Condition()
+        self.issued = 0
+        self.covered = 0
+        self.running = False
+        self.outcome: tuple = (True, "")
+        self.runs = 0
+
+    def run(self, reload) -> tuple:
+        """
+        Wait for, or run, a reload that covers this caller, and answer its outcome.
+        """
+        with self.condition:
+            self.issued += 1
+            ticket = self.issued
+            while self.covered < ticket:
+                if self.running:
+                    self.condition.wait()
+                    continue
+                self.running = True
+                covers = self.issued
+                self.condition.release()
+                try:
+                    outcome = reload()
+                except Exception as error:
+                    outcome = (False, str(error))
+                finally:
+                    self.condition.acquire()
+                self.running = False
+                self.covered = covers
+                self.outcome = outcome
+                self.runs += 1
+                self.condition.notify_all()
+            return self.outcome
+
+
+RELOADS: SharedReload = SharedReload()
+
+
+def _other_scheme(url: str) -> str:
+    """
+    The same address over the other scheme.
+    """
+    if url.startswith("https://"):
+        return "http://" + url[len("https://"):]
+    return "https://" + url.split("://", 1)[-1]
 
 
 def _hw_host(path: str) -> str:

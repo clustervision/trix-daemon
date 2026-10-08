@@ -308,7 +308,7 @@ def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
     backend.config(body={"rules_directory": str(tmp_path)})
 
     answer = backend.import_hw_rules("node001", {"force": True})
-    assert answer == {"hostname": "node001.cluster", "rules": 2}
+    assert answer == {"hostname": "node001.cluster", "rules": 2, "changed": True}
     assert 'hostname="node001.cluster"' in asked["query"]
     assert "by (hostname,luna_group,class,description,product,vendor,serial)" in asked["query"]
 
@@ -705,3 +705,210 @@ def test_unplugging_the_luna_plugin_removes_the_route_to_luna(rig, client, heade
     assert client.get(f"{API_PREFIX}/luna/config/node", headers=headers).status_code == 404
     assert client.post(f"{API_PREFIX}/system/plugins/luna/reload",
                        headers=headers).status_code == 200
+
+
+def _hw_backend(tmp_path, monkeypatch, reload_ok=True):
+    """
+    A prometheus backend over tmp_path with one node, Prometheus answering one DIMM, and a
+    reload that is counted.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    class Luna:
+        """
+        One node.
+        """
+
+        def node(self, name):
+            """
+            Its record.
+            """
+            return {"hostname": "node001.cluster", "group": "compute"}
+
+    def query(url, params=None, **_):
+        """
+        One component.
+        """
+        result = [{"metric": {"hostname": "node001.cluster", "luna_group": "compute",
+                              "class": "memory", "description": "DIMM", "product": "P",
+                              "vendor": "V", "serial": "S1"}}]
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": result}})
+
+    reloads = []
+
+    def reload(argv, **kwargs):
+        """
+        systemctl reload prometheus-server, counted.
+        """
+        reloads.append(argv)
+        return SimpleNamespace(ok=reload_ok, out="", err="" if reload_ok else "unit failed")
+
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    monkeypatch.setattr(prometheus.shell, "run", reload)
+    monkeypatch.setattr(prometheus, "RELOADS", prometheus.SharedReload())
+    backend = prometheus.Backend()
+    backend.config(body={"rules_directory": str(tmp_path)})
+    return backend, reloads
+
+
+def test_prometheus_is_asked_over_https_by_default(rig):
+    """
+    TrinityX serves Prometheus over TLS, so that is the default address.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    assert prometheus.DEFAULT_CONFIG["prometheus_url"] == "https://localhost:9090"
+
+
+def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
+    """
+    https against a plain Prometheus, or http against a TLS one, is retried once on the
+    other scheme, and that scheme is kept.
+    """
+    from types import SimpleNamespace
+
+    import requests
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    asked = []
+
+    def plain_only(url, **_):
+        """
+        A Prometheus without TLS.
+        """
+        asked.append(url)
+        if url.startswith("https://"):
+            raise requests.exceptions.SSLError("wrong version number")
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", plain_only)
+    backend._query("up")
+    backend._query("up")
+    assert asked[0].startswith("https://") and asked[1].startswith("http://")
+    assert asked[2].startswith("http://"), "the working scheme is remembered"
+
+    backend.prometheus_url = ""
+    backend.config(body={"prometheus_url": "http://localhost:9090"})
+    asked.clear()
+
+    def tls_only(url, **_):
+        """
+        A TLS Prometheus asked over http, as on a TrinityX controller.
+        """
+        asked.append(url)
+        if url.startswith("http://"):
+            return SimpleNamespace(status_code=400,
+                                   text="Client sent an HTTP request to an HTTPS server.")
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", tls_only)
+    backend._query("up")
+    assert asked == [asked[0], asked[1]] and asked[1].startswith("https://")
+
+
+def test_a_node_that_rebooted_unchanged_costs_no_write_and_no_reload(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    The boot-storm case: the node hook asks again after every boot, and nothing changed.
+    """
+    backend, reloads = _hw_backend(tmp_path, monkeypatch)
+    first = backend.import_hw_rules("node001", {"force": False})
+    assert first["changed"] is True and len(reloads) == 1
+    path = tmp_path / "trix.hw.node001.cluster.rules"
+    stamp = path.stat().st_mtime_ns
+    for _ in range(50):
+        again = backend.import_hw_rules("node001", {"force": False})
+        assert again["changed"] is False
+    assert len(reloads) == 1, "no reload for an unchanged node"
+    assert path.stat().st_mtime_ns == stamp, "the file was not rewritten"
+
+
+def test_a_changed_rule_file_is_backed_up_before_it_is_overwritten(rig, tmp_path, monkeypatch):
+    """
+    As Luna does: the old file goes to backup/ with a timestamp, then the new one is written.
+    """
+    backend, reloads = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    answer = backend.set_hw_rules({"nodes": [{"node": "node001", "nhc": False}]})
+    assert answer["nodes"][0]["changed"] is True
+    kept = list((tmp_path / "backup").glob("trix.hw.node001.cluster.rules.*"))
+    assert len(kept) == 1
+    assert "nhc: true" in kept[0].read_text(encoding="utf-8")
+    assert len(reloads) == 2
+
+
+def test_a_failed_reload_is_a_502_that_says_so(rig, tmp_path, monkeypatch):
+    """
+    Luna fails the import when Prometheus does not reload; so does trixd, with the reason.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch, reload_ok=False)
+    with pytest.raises(BackendFailure, match="did not reload: unit failed") as raised:
+        backend.import_hw_rules("node001", {})
+    assert raised.value.status_code == 502
+    with pytest.raises(BackendFailure, match="1 node"):
+        backend.set_hw_rules({"nodes": [{"node": "node001", "disabled": True}]})
+
+
+def test_callers_at_the_same_moment_share_one_reload(rig):
+    """
+    Thirty callers at once are served by a handful of reloads, never one each, and none is
+    answered by a reload that started before it asked.
+    """
+    import threading
+    import time
+
+    from trixd.plugins.prometheus.backend import SharedReload
+
+    shared = SharedReload()
+    started = []
+
+    def slow_reload():
+        """
+        A reload that takes a moment, as systemctl does.
+        """
+        started.append(time.monotonic())
+        time.sleep(0.2)
+        return True, ""
+
+    answers = []
+    asked = {}
+
+    def caller(number):
+        """
+        One writer asking for a reload.
+        """
+        asked[number] = time.monotonic()
+        answers.append(shared.run(slow_reload))
+
+    threads = [threading.Thread(target=caller, args=(n,)) for n in range(30)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    assert len(answers) == 30 and all(ok for ok, _ in answers)
+    assert shared.runs <= 3, f"{shared.runs} reloads for 30 callers"
+    assert started[-1] >= max(asked.values()) - 0.2 or shared.runs >= 2
+
+
+def test_the_hardware_rules_of_every_node_can_be_listed(rig, tmp_path, monkeypatch):
+    """
+    Luna's export as a route: all nodes, some by name, counts only, and a missing one named.
+    """
+    from types import SimpleNamespace
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    every = backend.list_hw_rules(SimpleNamespace(query_params={}))["nodes"]
+    assert every[0]["node"] == "node001.cluster" and every[0]["exists"] is True
+    assert every[0]["rules"] == 1 and "document" in every[0]
+    some = backend.list_hw_rules(SimpleNamespace(
+        query_params={"nodes": "node001,node999", "detail": "no"}))["nodes"]
+    assert some[0]["exists"] is True and "document" not in some[0]
+    assert some[1] == {"node": "node999", "exists": False}

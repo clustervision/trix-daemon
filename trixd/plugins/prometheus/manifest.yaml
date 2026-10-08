@@ -96,6 +96,12 @@ endpoints:
     summary: A node asks for its own hardware rules to be generated
 
   - path: hw-rules
+    methods: [GET]
+    minimum: reader
+    handler: list_hw_rules
+    summary: Every node's hardware rules, or those of ?nodes=a,b; ?detail=no for counts only
+
+  - path: hw-rules
     methods: [PATCH]
     minimum: manager
     handler: set_hw_rules
