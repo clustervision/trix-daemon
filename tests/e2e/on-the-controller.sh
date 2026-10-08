@@ -52,7 +52,7 @@ check "the token is accepted"          "$(code $PLAIN/api/v1/system/plugins -H "
 check "bearer works too"               "$(code $PLAIN/api/v1/system/plugins -H "Authorization: Bearer $T")" 200
 
 echo "=== 3. the same token at Luna ==="
-LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/trixd/etc/trixd.ini | sed 's/.*= *//')
+LUNA=$(grep -m1 "^ENDPOINT" /trinity/local/luna/daemon/config/luna.ini | sed 's/.*= *//')
 check "trixd token works on Luna"       "$(code https://$LUNA/config/node -H "$H")" 200
 check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H "$H")" 200
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
@@ -63,7 +63,7 @@ LOADED=$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "sum(1 for p in d['
 WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/etc/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
 check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
-check "luna is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/luna/reload -H "$H")" 409
+check "auth is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/auth/reload -H "$H")" 409
 
 echo "=== 5. hot unplug and plug ==="
 PID1=$(systemctl show trixd -p MainPID --value)

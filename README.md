@@ -79,8 +79,9 @@ sits on the boot path.
 
 **A call to Luna**, for example renaming a node:
 
-1. `trixd/core/luna/proxy.py` forwards `/api/v1/luna/config/node/node001` to Luna as
-   `/config/node/node001`, with the method, query, headers and body as sent, less
+1. The luna plugin, `trixd/plugins/luna/backend.py`, forwards
+   `/api/v1/luna/config/node/node001` to Luna as `/config/node/node001`, at the address
+   Luna's own `luna.ini` names, with the method, query, headers and body as sent, less
    the connection headers, and returns Luna's answer unchanged. Luna decides who may.
 2. After the answer has left, `trixd/core/luna/hooks.py` looks at what was asked. A
    successful rename, group move or delete is queued as a task (`trixd/core/tasks.py`).
@@ -104,11 +105,11 @@ render once, start the background timers, and only then open the listeners.
 | `trixd/core/plugins/` | Manifest, loader, registry, router binder, route swap, scaffold. |
 | `trixd/core/render/` | The render engine and the Luna table-hash trigger. |
 | `trixd/core/replication/` | Keeping two controllers' tables the same. |
-| `trixd/core/luna/` | The Luna client, the pass-through and its hooks. |
+| `trixd/core/luna/` | The Luna client, the reader for Luna's own `luna.ini`, and the hooks a change through the luna plugin runs. |
 | `trixd/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
 | `trixd/db/` | Engine, models and the Alembic migrations. |
 | `trixd/api/v1/` | The daemon's own routes: auth, identity, system. |
-| `trixd/plugins/` | The plugins that ship: directory, prometheus, services, slurm, genders. |
+| `trixd/plugins/` | The plugins that ship: luna (the route to Luna), directory, prometheus, services, slurm, genders. |
 | `trixd/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
@@ -125,7 +126,22 @@ pip install -e .
 mkdir -p dev
 ```
 
-Write `dev/trixd.ini`. Comments go on lines of their own: a comment after a value
+trixd reads Luna's address and the token secret from Luna's own `luna.ini`. On a
+workstation there is no Luna, so write a small one, `dev/luna.ini`, and point at it:
+
+```ini
+[API]
+ENDPOINT = localhost:7050
+PROTOCOL = https
+; Any 32 hexadecimal characters, for a workstation.
+SECRET_KEY = 004f2af45d3a4e161a7dd2d17fdae47f
+```
+
+```
+export TRIXD_LUNA_INI=dev/luna.ini
+```
+
+Then write `dev/trixd.ini`. Comments go on lines of their own: a comment after a value
 becomes part of the value.
 
 ```ini
@@ -134,10 +150,6 @@ becomes part of the value.
 INSECURE_BIND = 127.0.0.1:8051
 USERNAME = trixd
 PASSWORD = trixd
-
-[TOKENS]
-; Any 32 hexadecimal characters, for a workstation.
-SECRET_KEY = 004f2af45d3a4e161a7dd2d17fdae47f
 
 [DATABASE]
 URL = sqlite:///dev/trixd.db
@@ -200,10 +212,17 @@ missing file, an unknown algorithm or an unreadable duration stops the daemon wi
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
+**Nothing about Luna is in `trixd.ini`.** Where Luna answers, its protocol, whether
+its certificate is checked, and the token secret both daemons share are read from
+Luna's own `luna.ini` (`/trinity/local/luna/daemon/config/luna.ini`), and read again
+when it changes. An engineer changes Luna in one place and trixd follows. A `trixd.ini`
+that still has a `[LUNA]` section or a `[TOKENS] SECRET_KEY` starts as before, with a
+warning that names them as ignored.
+
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
 package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
-what `ENABLED` lists, by default all five. slurm and genders write the same blocks
+what `ENABLED` lists, by default all six. slurm and genders write the same blocks
 luna2-daemon's node hook still writes, from the same generator and node list, so the two
 agree; once that hook stops, they are the only writers.
 
@@ -273,9 +292,12 @@ read nothing until rootus gives them a role.
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with
 `{"token": "..."}`, valid for `[API] EXPIRY`. Tokens are HS256 over the secret Luna
-signs with too, so either daemon verifies a token the other minted. On a controller
-the installer writes that secret into `trixd.ini`, from the value `luna.ini` is
-built from.
+signs with too, so either daemon verifies a token the other minted. trixd reads that
+secret from Luna's `luna.ini`, so there is one copy of it.
+
+trixd's own calls to Luna, the ones its plugins make to read nodes and groups, carry a
+token trixd signs itself with that secret, as Luna's administrator, `id` 0. No Luna
+password is stored for trixd anywhere, and no sign-in call goes to Luna.
 
 Luna knows a caller by the token's `id` alone, and reads a missing one as its
 administrator, so trixd always sets it:

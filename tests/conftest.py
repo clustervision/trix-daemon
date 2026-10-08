@@ -38,6 +38,7 @@ from fastapi.testclient import TestClient
 from trixd.app import create_app
 from trixd.common import settings as configuration
 from trixd.core.lifespan import start
+from trixd.core.luna.config import LUNA_INI_ENV
 from trixd.core.security import keys
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -57,23 +58,26 @@ def build(tmp_path, algorithm: str = "HS256"):
         shutil.copytree(PLUGIN_SOURCE, plugins)
     trust = tmp_path / "trust.d"
     trust.mkdir(exist_ok=True)
-    secret = tmp_path / "secret.key"
-    secret.write_text(SHARED_SECRET, encoding="utf-8")
+    # Luna's own luna.ini, which trixd reads for Luna's address and the shared secret.
+    luna_ini = tmp_path / "luna.ini"
+    luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = https\n"
+                        f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",
+                        encoding="utf-8")
+    os.environ[LUNA_INI_ENV] = str(luna_ini)
 
     ini = tmp_path / "trixd.ini"
     ini.write_text(
         "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
         "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
         "USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n"
-        f"[TOKENS]\nALGORITHM = {algorithm}\nSECRET_KEY =\n"
-        f"SECRET_FILE = {secret}\n"
+        f"[TOKENS]\nALGORITHM = {algorithm}\n"
         f'PRIVATE_KEY = {tmp_path / "trixd.ed25519"}\nKEY_ID = trixd-test\n'
         f"TRUST = {trust}\nISSUER = trixd\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
         "[TRIGGERS]\nLUNA_HASHES = 0s\n"
         f"[PLUGINS]\nDIRECTORY = {plugins}\nSITE_DIRECTORY = {tmp_path / 'site-plugins'}\n"
-        "ENABLED = directory, services\n",
+        "ENABLED = luna, directory, services\n",
         encoding="utf-8")
 
     config = configuration.set_current(configuration.load(str(ini)))

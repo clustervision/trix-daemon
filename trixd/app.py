@@ -35,7 +35,6 @@ from trixd.api.v1 import auth, identity, system
 from trixd.common import errors
 from trixd.common.constants import API_PREFIX, DAEMON_NAME, DAEMON_VERSION
 from trixd.core.lifespan import lifespan
-from trixd.core.luna import proxy
 
 
 def create_app(with_lifespan: bool = True) -> FastAPI:
@@ -55,7 +54,6 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(identity.router)
     app.include_router(system.router)
-    app.include_router(proxy.router)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:

@@ -31,7 +31,7 @@ __status__      = "Production"
 
 import inspect
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from pydantic import BaseModel
 
 from trixd.common import logging as trixlog
@@ -55,29 +55,46 @@ def _call(handler, supplied: dict):
     return handler(**{key: value for key, value in supplied.items() if key in accepted})
 
 
+def _arguments(kwargs: dict) -> dict:
+    """
+    What the backend is handed: path variables, the body as a dict, the caller, and the
+    request itself for a handler that asks for it.
+    """
+    caller = kwargs.pop("caller", None)
+    body = kwargs.pop("body", None)
+    supplied = dict(kwargs)
+    if body is not None:
+        supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
+    supplied["caller"] = caller
+    return supplied
+
+
 def _endpoint_function(handler, endpoint: Endpoint, body_model):
     """
     Build a path operation whose signature FastAPI can introspect.
     """
-
-    def operation(**kwargs):
-        """
-        The path operation FastAPI calls, which hands the backend its arguments.
-        """
-        caller = kwargs.pop("caller", None)
-        body = kwargs.pop("body", None)
-        supplied = dict(kwargs)
-        if body is not None:
-            supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
-        supplied["caller"] = caller
-        return _call(handler, supplied)
+    if inspect.iscoroutinefunction(handler):
+        async def operation(**kwargs):
+            """
+            The path operation FastAPI awaits, for a handler that is itself async.
+            """
+            return await _call(handler, _arguments(kwargs))
+    else:
+        def operation(**kwargs):
+            """
+            The path operation FastAPI calls, which hands the backend its arguments.
+            """
+            return _call(handler, _arguments(kwargs))
 
     parameters = [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, annotation=str)
                   for name in endpoint.variables]
+    if "request" in inspect.signature(handler).parameters:
+        parameters.append(inspect.Parameter("request", inspect.Parameter.KEYWORD_ONLY,
+                                            annotation=Request))
     if body_model is not None:
         parameters.append(inspect.Parameter("body", inspect.Parameter.KEYWORD_ONLY,
                                             annotation=body_model))
-    if not endpoint.public:
+    if not endpoint.public and not endpoint.forward:
         parameters.append(inspect.Parameter(
             "caller", inspect.Parameter.KEYWORD_ONLY, annotation=Caller,
             default=Depends(guard(endpoint.minimum, endpoint.token))))

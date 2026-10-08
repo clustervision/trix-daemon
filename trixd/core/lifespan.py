@@ -52,6 +52,10 @@ def start(app: FastAPI) -> None:
     Everything that must be true before the first request is accepted.
     """
     config = settings()
+    if config.ignored:
+        LOGGER.warning("trixd.ini still names %s, which trixd no longer reads: Luna's "
+                       "address, protocol and secret come from Luna's own luna.ini",
+                       ", ".join(config.ignored))
     database.start(config.database.url)
     keys.set_current(keys.KeyRing(config.tokens).load())
 

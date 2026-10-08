@@ -117,37 +117,40 @@ def _luna(*answers) -> tuple:
     return client, client.session
 
 
-def test_the_luna_token_is_fetched_once_and_reused(rig):
+def test_trixd_signs_its_own_luna_token_and_reuses_it(rig):
     """
-    One sign-in, then every request carries the same token.
+    No sign-in at Luna: trixd signs a token with luna.ini's secret, as Luna's administrator.
     """
-    client, session = _luna(Answer(body={"token": "t1"}), Answer(body={"a": 1}),
-                            Answer(body={"b": 2}))
+    import jwt
+
+    from tests.conftest import SHARED_SECRET
+
+    client, session = _luna(Answer(body={"a": 1}), Answer(body={"b": 2}))
     assert client.get("config/a") == {"a": 1}
     assert client.get("/config/b") == {"b": 2}
-    methods = [call[0] for call in session.calls]
-    assert methods == ["POST", "GET", "GET"]
-    assert session.calls[0][1].endswith("/token")
-    assert session.calls[2][1].endswith("/config/b"), "a leading slash is not doubled"
-    assert all(call[2]["headers"]["x-access-tokens"] == "t1" for call in session.calls[1:])
+    assert [call[0] for call in session.calls] == ["GET", "GET"], "nothing was posted to /token"
+    assert session.calls[0][1] == "https://luna.test:7050/config/a", "luna.ini's address"
+    assert session.calls[1][1].endswith("/config/b"), "a leading slash is not doubled"
+    sent = {call[2]["headers"]["x-access-tokens"] for call in session.calls}
+    assert len(sent) == 1, "one token for both calls"
+    claims = jwt.decode(sent.pop(), SHARED_SECRET, algorithms=["HS256"])
+    assert claims["id"] == 0
 
 
-def test_an_expired_luna_token_is_renewed_once(rig):
+def test_a_refused_luna_token_is_signed_again_once(rig):
     """
-    A 401 clears the token, signs in again and repeats the request.
+    A 401 drops the token, signs a fresh one and repeats the request once.
     """
-    client, session = _luna(Answer(body={"token": "old"}), Answer(401),
-                            Answer(body={"token": "new"}), Answer(body={"ok": True}))
+    client, session = _luna(Answer(401), Answer(body={"ok": True}))
     assert client.get("config/node") == {"ok": True}
-    assert session.calls[-1][2]["headers"]["x-access-tokens"] == "new"
+    assert len(session.calls) == 2
 
 
 def test_luna_answers_are_decoded_by_status(rig):
     """
     404 is nothing there, an empty body is None, text stays text, 500 is unavailable.
     """
-    client, _ = _luna(Answer(body={"token": "t"}), Answer(404), Answer(200),
-                      Answer(200, text="plain words"), Answer(500))
+    client, _ = _luna(Answer(404), Answer(200), Answer(200, text="plain words"), Answer(500))
     assert client.get("config/node/x") is None
     assert client.get("config/empty") is None
     assert client.get("config/text") == "plain words"
@@ -155,25 +158,24 @@ def test_luna_answers_are_decoded_by_status(rig):
         client.get("config/broken")
 
 
-def test_luna_being_away_is_a_503_not_a_traceback(rig):
+def test_luna_being_away_is_a_503_not_a_traceback(rig, tmp_path, monkeypatch):
     """
-    A refused connection, refused credentials and a missing token are all unavailable.
+    A refused connection, a timeout, and a luna.ini with no secret are all unavailable.
     """
     client, _ = _luna(requests.ConnectionError("refused"))
     with pytest.raises(ServiceUnavailable, match="not answering"):
         client.get("config/node")
 
-    client, _ = _luna(Answer(401))
-    with pytest.raises(ServiceUnavailable, match="refused our credentials"):
-        client.get("config/node")
-
-    client, _ = _luna(Answer(body={"no": "token"}))
-    with pytest.raises(ServiceUnavailable, match="no token"):
-        client.get("config/node")
-
-    client, _ = _luna(Answer(body={"token": "t"}), requests.Timeout("slow"))
+    client, _ = _luna(requests.Timeout("slow"))
     with pytest.raises(ServiceUnavailable, match="not answering"):
         client.post("config/node/x", {"a": 1})
+
+    bare = tmp_path / "bare-luna.ini"
+    bare.write_text("[API]\nENDPOINT = luna.test:7050\n", encoding="utf-8")
+    monkeypatch.setenv("TRIXD_LUNA_INI", str(bare))
+    client, _ = _luna(Answer(body={}))
+    with pytest.raises(ServiceUnavailable, match="no token for Luna"):
+        client.get("config/node")
 
 
 def test_lunas_envelopes_are_unwrapped(rig):
@@ -181,7 +183,6 @@ def test_lunas_envelopes_are_unwrapped(rig):
     Each helper answers the objects themselves, and an empty answer is an empty dict.
     """
     client, _ = _luna(
-        Answer(body={"token": "t"}),
         Answer(body={"config": {"node": {"node001": {"group": "compute"}}}}),
         Answer(body={"config": {"node": {"node001": {"group": "compute"}}}}),
         Answer(body={"config": {"cluster": {"security": True}}}),
@@ -196,6 +197,36 @@ def test_lunas_envelopes_are_unwrapped(rig):
     assert client.networks() == {"cluster": {}}
     assert client.table_hashes() == {"node": "abc"}
     assert client.nodes() == {}
+
+
+def test_trixd_follows_luna_ini_when_it_changes(rig, tmp_path, monkeypatch):
+    """
+    A protocol, address or secret changed in luna.ini is what trixd uses next; an empty
+    secret, as a fresh Luna install ships, does not replace a good one.
+    """
+    import os
+    import time
+
+    from trixd.core.luna import config as luna_config
+
+    path = tmp_path / "moving-luna.ini"
+    path.write_text("[API]\nENDPOINT = one:7050\nPROTOCOL = https\nSECRET_KEY = " + "a" * 32
+                    + "\n", encoding="utf-8")
+    monkeypatch.setenv("TRIXD_LUNA_INI", str(path))
+    config = luna_config.current()
+    assert (config.base, config.secret) == ("https://one:7050", "a" * 32)
+
+    path.write_text("[API]\nENDPOINT = two:7050\nPROTOCOL = http\nSECRET_KEY = " + "b" * 32
+                    + "\n", encoding="utf-8")
+    later = time.time() + 5
+    os.utime(path, (later, later))
+    assert (config.base, config.secret) == ("http://two:7050", "b" * 32)
+
+    path.write_text("[API]\nENDPOINT = two:7050\nPROTOCOL = gopher\nSECRET_KEY =\n",
+                    encoding="utf-8")
+    os.utime(path, (later + 5, later + 5))
+    assert config.protocol == "https", "an unknown protocol falls back to https"
+    assert config.secret == "b" * 32, "an empty secret never replaces a good one"
 
 
 class FakeLuna:

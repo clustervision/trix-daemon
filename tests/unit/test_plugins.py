@@ -245,18 +245,20 @@ def test_the_scaffold_writes_a_plugin_that_loads(rig, tmp_path, client, headers)
 
 def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
     """
-    luna is the pass-through, and a name that is not a path segment is not a name.
+    The daemon's own prefixes are reserved, a shipped plugin's name is taken, and a name
+    that is not a path segment is not a name.
     """
     from trixd.common.errors import Conflict
     from trixd.common.settings import current as settings
     from trixd.core.plugins import scaffold
 
-    for reserved in ("luna", "auth", "system", "identity", "docs"):
+    for reserved in ("auth", "system", "identity", "docs"):
         with pytest.raises(BadRequest):
             scaffold.new(reserved, settings().plugins.directory)
-    with pytest.raises(Conflict, match="shipped plugin"):
-        scaffold.new("prometheus", str(settings().plugins.site_directory),
-                     settings().plugins.directory)
+    for shipped in ("luna", "prometheus"):
+        with pytest.raises(Conflict, match="shipped plugin"):
+            scaffold.new(shipped, str(settings().plugins.site_directory),
+                         settings().plugins.directory)
     with pytest.raises(BadRequest):
         scaffold.new("Not A Name", settings().plugins.directory)
 
@@ -668,3 +670,38 @@ def test_a_reconcile_with_nothing_to_change_reads_no_file(rig, tmp_path, monkeyp
     nodes["node002"]["group"] = "gpu"
     assert backend.render_rule_files()["repaired"] == ["trix.hw.node002.cluster.rules"]
     assert 'luna_group="gpu"' in (tmp_path / "trix.hw.node002.cluster.rules").read_text()
+
+
+def test_the_luna_plugin_forwards_as_sent_and_luna_decides(rig, client, monkeypatch):
+    """
+    No token check here: the caller's own header goes to the Luna luna.ini names.
+    """
+    from types import SimpleNamespace
+
+    seen = {}
+
+    def luna(method, url, **kwargs):
+        """
+        Luna, answering whatever it was sent.
+        """
+        seen.update(method=method, url=url, headers=kwargs["headers"])
+        return SimpleNamespace(content=b'{"ok": true}', status_code=200,
+                               headers={"content-type": "application/json"})
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", luna)
+    answer = client.get(f"{API_PREFIX}/luna/config/node?a=1&a=2",
+                        headers={"x-access-tokens": "a-token-only-luna-judges"})
+    assert answer.status_code == 200 and answer.json() == {"ok": True}
+    assert seen["url"] == "https://luna.test:7050/config/node?a=1&a=2"
+    assert seen["headers"]["x-access-tokens"] == "a-token-only-luna-judges"
+
+
+def test_unplugging_the_luna_plugin_removes_the_route_to_luna(rig, client, headers):
+    """
+    The pass-through is a plugin like any other: unplugged, /api/v1/luna is gone.
+    """
+    assert client.post(f"{API_PREFIX}/system/plugins/luna/disable",
+                       headers=headers).status_code == 200
+    assert client.get(f"{API_PREFIX}/luna/config/node", headers=headers).status_code == 404
+    assert client.post(f"{API_PREFIX}/system/plugins/luna/reload",
+                       headers=headers).status_code == 200

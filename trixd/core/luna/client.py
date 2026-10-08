@@ -30,16 +30,21 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import threading
+import time
 
 import requests
 import urllib3
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import TOKEN_HEADER
-from trixd.common.errors import ServiceUnavailable
-from trixd.common.settings import current as settings
+from trixd.common.errors import ServiceUnavailable, Unauthenticated
+from trixd.core.luna import config as luna_config
+from trixd.core.security import tokens
 
 LOGGER = trixlog.get("luna")
+
+# How long trixd's own token for Luna lives; it is signed again a minute before.
+TOKEN_LIFETIME: int = 300
 
 urllib3.disable_warnings()
 
@@ -56,55 +61,46 @@ class LunaClient:
         self.session = requests.Session()
         self.lock = threading.Lock()
         self.token: str = ""
+        self.renew_at: float = 0.0
 
     @property
     def base(self) -> str:
         """
-        The address Luna answers on, with its protocol.
+        The address Luna answers on, with its protocol, as Luna's own luna.ini says.
         """
-        config = settings().luna
-        return f"{config.protocol}://{config.endpoint}"
+        return luna_config.current().base
 
     def _authenticate(self) -> str:
         """
-        Fetch a token from Luna, which still wants a username and a password from
-        trixd.ini. TRIX-2085 replaces that with a service principal, only here.
+        A token trixd signs itself with the secret luna.ini holds: no Luna password is
+        stored anywhere for trixd, and nothing goes over the wire to get one.
         """
-        config = settings().luna
         try:
-            answer = self.session.post(
-                f"{self.base}/token",
-                json={"username": config.username, "password": config.password},
-                timeout=config.timeout, verify=config.verify_certificate)
-        except requests.RequestException as error:
-            raise ServiceUnavailable(f"Luna is not answering: {error}") from None
-        if answer.status_code >= 400:
-            raise ServiceUnavailable(f"Luna refused our credentials: {answer.status_code}")
-        token = (answer.json() or {}).get("token", "")
-        if not token:
-            raise ServiceUnavailable("Luna returned no token")
-        return token
+            return tokens.for_luna(TOKEN_LIFETIME)
+        except Unauthenticated as error:
+            raise ServiceUnavailable(f"no token for Luna: {error.message}") from None
 
     def _headers(self) -> dict:
         """
         The token header Luna expects, fetched if we hold none.
         """
         with self.lock:
-            if not self.token:
+            if not self.token or time.monotonic() > self.renew_at:
                 self.token = self._authenticate()
+                self.renew_at = time.monotonic() + TOKEN_LIFETIME - 60
             return {TOKEN_HEADER: self.token}
 
     def request(self, method: str, uri: str, payload=None, params: dict = None):
         """
         One call to Luna, refreshing the token once if it has expired.
         """
-        config = settings().luna
-        url = f'{self.base}/{uri.lstrip("/")}'
+        config = luna_config.current()
+        url = f'{config.base}/{uri.lstrip("/")}'
         for attempt in (1, 2):
             try:
                 answer = self.session.request(
                     method, url, headers=self._headers(), json=payload, params=params,
-                    timeout=config.timeout, verify=config.verify_certificate)
+                    timeout=luna_config.TIMEOUT, verify=config.verify)
             except requests.RequestException as error:
                 raise ServiceUnavailable(f"Luna is not answering: {error}") from None
             if answer.status_code in (401, 403) and attempt == 1:

@@ -189,12 +189,12 @@ def test_every_user_endpoint_declares_a_minimum_role():
 
     manifests = glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
                                        "manifest.yaml"))
-    assert len(manifests) == 5, manifests
+    assert len(manifests) == 6, manifests
     for path in manifests:
         with open(path, encoding="utf-8") as handle:
             document = yaml.safe_load(handle)
         for endpoint in document["endpoints"]:
-            if endpoint.get("public") or endpoint.get("token") == "node":
+            if endpoint.get("public") or endpoint.get("forward") or endpoint.get("token") == "node":
                 continue
             assert endpoint.get("minimum") in MINIMUMS, f"{path}: {endpoint['path']}"
 
@@ -204,14 +204,13 @@ def test_the_published_document_matches_the_route_table(rig):
     Enumerate one, assert the other.
     """
     from trixd.api.v1 import auth, identity, system
-    from trixd.core.luna import proxy
 
     document = rig.openapi()
     published = set(document["paths"])
     # The daemon's own routers sit in the table as one entry each, so they are listed
     # from the routers themselves; plugin routes are swapped in one by one.
     routes = list(rig.router.routes)
-    for module in (auth, identity, system, proxy):
+    for module in (auth, identity, system):
         routes += module.router.routes
     # The document shows {path} where the route says {path:path}.
     registered = {re.sub(r"\{(\w+):\w+\}", r"{\1}", route.path) for route in routes
@@ -961,7 +960,7 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
     Luna's 204 comes back untouched and the change is on the queue once the answer has left.
     """
     from types import SimpleNamespace
-    from trixd.core.luna import proxy
+
     from trixd.db import engine as database
     from trixd.db import models
 
@@ -971,7 +970,7 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
         """
         return SimpleNamespace(content=b"", status_code=204, headers={})
 
-    monkeypatch.setattr(proxy.requests, "request", luna_says)
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", luna_says)
     answer = client.post(f"{API_PREFIX}/luna/config/node/node001",
                          json={"config": {"node": {"node001": {"newnodename": "node002"}}}},
                          headers=headers)
@@ -1251,16 +1250,27 @@ def test_settings_that_name_a_command_need_rootus(rig, client, headers):
 
 def test_a_bare_duration_is_seconds_except_the_token_expiry(tmp_path):
     """
-    TIMEOUT = 20 is twenty seconds; EXPIRY = 2 is two hours, as luna.ini reads it.
+    CACHE = 20 is twenty seconds; EXPIRY = 2 is two hours, as luna.ini reads it.
     """
     ini = tmp_path / "trixd.ini"
-    ini.write_text("[API]\nEXPIRY = 2\n[LUNA]\nTIMEOUT = 20\n", encoding="utf-8")
+    ini.write_text("[API]\nEXPIRY = 2\n[AUTH]\nCACHE = 20\n", encoding="utf-8")
     loaded = configuration.load(str(ini))
     assert loaded.api.expiry == 7200
-    assert loaded.luna.timeout == 20
-    ini.write_text("[LUNA]\nTIMEOUT = soon\n", encoding="utf-8")
-    with pytest.raises(ValueError, match="TIMEOUT"):
+    assert loaded.auth.cache == 20
+    ini.write_text("[AUTH]\nCACHE = soon\n", encoding="utf-8")
+    with pytest.raises(ValueError, match="CACHE"):
         configuration.load(str(ini))
+
+
+def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
+    """
+    A trixd.ini written before trixd read luna.ini still loads, and says what it ignores.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[TOKENS]\nSECRET_KEY = x\nSECRET_FILE = /nowhere\n"
+                   "[LUNA]\nENDPOINT = a:7050\n", encoding="utf-8")
+    loaded = configuration.load(str(ini))
+    assert loaded.ignored == ["[LUNA]", "[TOKENS] SECRET_KEY", "[TOKENS] SECRET_FILE"]
 
 
 def _render_plugin(directory: str, handler: str = "about") -> None:

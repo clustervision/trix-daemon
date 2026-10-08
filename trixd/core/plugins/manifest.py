@@ -41,7 +41,8 @@ from trixd.common.constants import (HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND
                                    TOKEN_KIND_USER)
 from trixd.common.errors import PluginRefused
 
-PATH_VARIABLE = re.compile(r"<([a-zA-Z_][a-zA-Z0-9_]*)>")
+# <name> is one path segment; <path:name> is the rest of the path, slashes and all.
+PATH_VARIABLE = re.compile(r"<(?:(path):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
 
 TYPES: dict = {
     "string": str,
@@ -86,20 +87,24 @@ class Endpoint(BaseModel):
     # No token at all. Only for a consumer that cannot present one, which today
     # means Prometheus service discovery. Every use has to be argued for.
     public: bool = False
+    # The daemon checks nothing: the request goes on as sent and the service behind it
+    # decides, as Luna does behind /api/v1/luna. Only the luna plugin needs it.
+    forward: bool = False
 
     @property
     def variables(self) -> list:
         """
         Every path variable this endpoint declares.
         """
-        return PATH_VARIABLE.findall(self.path)
+        return [name for _, name in PATH_VARIABLE.findall(self.path)]
 
     @property
     def route_path(self) -> str:
         """
         The manifest writes <name>; Starlette wants {name}.
         """
-        return PATH_VARIABLE.sub(r"{\1}", self.path).strip("/")
+        return PATH_VARIABLE.sub(lambda found: "{" + found.group(2) + (
+            ":path}" if found.group(1) else "}"), self.path).strip("/")
 
 
 class Manifest(BaseModel):
@@ -147,7 +152,7 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(f'{endpoint.path or "/"} declares an unknown token kind')
         if endpoint.render is None and not endpoint.handler:
             raise PluginRefused(f'{endpoint.path or "/"} names no handler')
-        if (not endpoint.public and endpoint.token == TOKEN_KIND_USER
+        if (not endpoint.public and not endpoint.forward and endpoint.token == TOKEN_KIND_USER
                 and endpoint.minimum not in MINIMUMS):
             raise PluginRefused(
                 f'{endpoint.path or "/"} must declare a minimum role from '

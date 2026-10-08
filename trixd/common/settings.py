@@ -85,8 +85,6 @@ class TokenSettings(BaseModel):
     What tokens are signed with, and by which algorithm.
     """
     algorithm: str = DEFAULT_TOKEN_ALGORITHM
-    secret_key: str = ""
-    secret_file: str = "/trinity/local/etc/ssl/secret.key"
     private_key: str = "/trinity/local/etc/ssl/trixd.ed25519"
     key_id: str = "trixd-1"
     trust: str = "/trinity/local/etc/ssl/trust.d"
@@ -98,18 +96,6 @@ class TokenSettings(BaseModel):
         Whether tokens are signed with a secret both daemons hold.
         """
         return self.algorithm == TOKEN_ALGORITHM_SHARED
-
-
-class LunaSettings(BaseModel):
-    """
-    How to reach Luna, and as whom.
-    """
-    endpoint: str = "controller.cluster:7050"
-    protocol: str = "http"
-    verify_certificate: bool = False
-    username: str = ""
-    password: str = ""
-    timeout: int = 20
 
 
 class DatabaseSettings(BaseModel):
@@ -183,7 +169,6 @@ class Settings(BaseModel):
     logger: LoggerSettings = Field(default_factory=LoggerSettings)
     api: ApiSettings = Field(default_factory=ApiSettings)
     tokens: TokenSettings = Field(default_factory=TokenSettings)
-    luna: LunaSettings = Field(default_factory=LunaSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
@@ -191,6 +176,8 @@ class Settings(BaseModel):
     triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
+    # Settings trixd.ini still names that are no longer read, to say so at startup.
+    ignored: list = Field(default_factory=list)
 
 
 def _csv(value: str) -> list:
@@ -212,18 +199,6 @@ def _algorithm(value: str) -> str:
             return known
     raise ValueError(f"[TOKENS] ALGORITHM is {wanted}, which is not one of "
                      f"{', '.join(TOKEN_ALGORITHMS)}")
-
-
-def _secret(inline: str, path: str) -> str:
-    """
-    The shared secret: what the ini states, else the vault file luna.ini is built from.
-    """
-    if inline:
-        return inline.strip()
-    if path and os.path.isfile(path):
-        with open(path, "r", encoding="utf-8") as handle:
-            return handle.read().strip()
-    return ""
 
 
 def _bool(value: str) -> bool:
@@ -273,22 +248,18 @@ def load(path: str = "") -> Settings:
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""))
-    secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
-        secret_key=_secret(get("TOKENS", "SECRET_KEY", ""), secret_file),
-        secret_file=secret_file,
         private_key=get("TOKENS", "PRIVATE_KEY", data.tokens.private_key),
         key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
         trust=get("TOKENS", "TRUST", data.tokens.trust),
         issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
-    data.luna = LunaSettings(
-        endpoint=get("LUNA", "ENDPOINT", data.luna.endpoint),
-        protocol=get("LUNA", "PROTOCOL", data.luna.protocol),
-        verify_certificate=_bool(get("LUNA", "VERIFY_CERTIFICATE", "no")),
-        username=get("LUNA", "USERNAME", ""),
-        password=get("LUNA", "PASSWORD", ""),
-        timeout=duration("LUNA", "TIMEOUT", "20s"))
+    # Luna's address, protocol and secret come from Luna's own luna.ini, never from here.
+    ignored = ["[LUNA]"] if parser.has_section("LUNA") else []
+    for key in ("SECRET_KEY", "SECRET_FILE"):
+        if parser.has_section("TOKENS") and parser.has_option("TOKENS", key):
+            ignored.append(f"[TOKENS] {key}")
+    data.ignored = ignored
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
