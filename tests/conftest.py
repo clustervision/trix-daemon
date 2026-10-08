@@ -89,6 +89,15 @@ def build(tmp_path, algorithm: str = "HS256"):
     return application
 
 
+@pytest.fixture(autouse=True)
+def _own_luna_ini(monkeypatch):
+    """
+    Each test sees only the luna.ini it writes: the environment is put back afterwards.
+    """
+    monkeypatch.delenv(LUNA_INI_ENV, raising=False)
+    yield
+
+
 @pytest.fixture()
 def rig(tmp_path):
     """

@@ -146,7 +146,8 @@ becomes part of the value.
 
 ```ini
 [API]
-; No CERTFILE and KEYFILE, so only the plain listener opens.
+; No BIND, so only the plain listener on the loopback opens and no certificate is needed.
+BIND =
 INSECURE_BIND = 127.0.0.1:8051
 USERNAME = trixd
 PASSWORD = trixd
@@ -195,13 +196,20 @@ render that could not run answers 404 with the reason.
 The unit `trixd` runs that. `systemctl reload trixd` reloads the plugins
 from disk without a restart; a change to `trixd.ini` needs a restart.
 
-| Port | Protocol | Notes |
-|---|---|---|
-| 8050 | HTTPS | `BIND`; opens only with `CERTFILE` and `KEYFILE`, the cluster certificate pair |
-| 8051 | HTTP | `INSECURE_BIND`; the loopback by default |
+| Port | Setting | When Luna's `luna.ini` says `https` | When it says `http` |
+|---|---|---|---|
+| 8050 | `BIND` | HTTPS on `CERTFILE` and `KEYFILE`, the cluster pair; a missing one stops the start, by name | plain HTTP, no certificate |
+| 8051 | `INSECURE_BIND` | plain HTTP, the loopback by default | plain HTTP, the loopback by default |
+
+The protocol is the one `all.yml` chose for Luna (`luna_protocol`), read from Luna's own
+`luna.ini`, as Luna's 7050 follows it. Clients always use 8050; only the scheme changes,
+and they take it from their own ini. There is no redirect between the two: a client on
+the wrong scheme is a misconfiguration to fix, not to hide. The replication link to the
+other controller follows the same protocol.
 
 A token crossing the cluster network in clear text is readable by anything on it,
-which is why the plain listener stays on the loopback unless a site opens it.
+which is why the plain listener stays on the loopback unless a site opens it, and why
+https is the default.
 
 ## trixd.ini
 

@@ -48,26 +48,32 @@ def build_config(config):
     """
     from hypercorn.config import Config
 
+    from trixd.core.luna import config as luna_config
+
     served = Config()
     served.bind = []
     served.insecure_bind = []
+    bind, plain = config.api.bind, config.api.insecure_bind
+    # BIND follows the protocol all.yml chose for Luna, read from luna.ini, as Luna's 7050 does.
+    protocol = luna_config.current().protocol
 
-    tls = bool(config.api.certfile and config.api.keyfile)
-    if tls:
-        for path in (config.api.certfile, config.api.keyfile):
-            if not os.path.isfile(path):
-                raise SystemExit(f"{path} is missing; check CERTFILE and KEYFILE in trixd.ini")
-        served.bind = [config.api.bind] if config.api.bind else []
+    if bind and protocol == "https":
+        for setting, path in (("CERTFILE", config.api.certfile), ("KEYFILE", config.api.keyfile)):
+            if not path or not os.path.isfile(path):
+                raise SystemExit(f"luna.ini says https, so BIND {bind} needs [API] {setting}; "
+                                 f"{path or 'it is empty'} is not a file")
+        served.bind = [bind]
         served.certfile = config.api.certfile
         served.keyfile = config.api.keyfile
-        if config.api.insecure_bind:
-            served.insecure_bind = [config.api.insecure_bind]
-    elif config.api.insecure_bind:
-        # Hypercorn opens insecure_bind only beside a TLS listener; without one, the
-        # plain listener has to be the bind itself.
-        served.bind = [config.api.insecure_bind]
-        LOGGER.warning("no CERTFILE and KEYFILE: serving plain HTTP on %s only",
-                       config.api.insecure_bind)
+        if plain:
+            served.insecure_bind = [plain]
+    else:
+        # Hypercorn opens insecure_bind only beside a TLS listener, so without TLS every
+        # plain listener is a bind.
+        served.bind = [item for item in (bind, plain) if item]
+        if bind:
+            LOGGER.warning("luna.ini says http: serving plain HTTP on %s, as Luna does on 7050",
+                           ", ".join(served.bind))
     if not served.bind:
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 

@@ -59,10 +59,21 @@ def _pair(tmp_path) -> tuple:
     return str(cert), str(key)
 
 
-def test_tls_and_the_plain_listener_open_together(tmp_path):
+def _luna_says(tmp_path, monkeypatch, protocol: str) -> None:
     """
-    With a certificate pair, BIND is TLS and INSECURE_BIND opens beside it.
+    Luna's luna.ini, naming the protocol all.yml chose.
     """
+    luna_ini = tmp_path / f"luna-{protocol}.ini"
+    luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = {protocol}\n"
+                        f"SECRET_KEY = {'c' * 32}\n", encoding="utf-8")
+    monkeypatch.setenv("TRIXD_LUNA_INI", str(luna_ini))
+
+
+def test_https_serves_tls_on_bind_and_plain_on_the_loopback(tmp_path, monkeypatch):
+    """
+    Luna on https: BIND is TLS on the cluster pair and INSECURE_BIND opens beside it.
+    """
+    _luna_says(tmp_path, monkeypatch, "https")
     cert, key = _pair(tmp_path)
     served = server.build_config(_settings(bind="0.0.0.0:8050", insecure_bind="127.0.0.1:8051",
                                            certfile=cert, keyfile=key))
@@ -72,22 +83,54 @@ def test_tls_and_the_plain_listener_open_together(tmp_path):
     assert served.workers == 1, "one process: the plugin registry is in memory"
 
 
-def test_a_named_certificate_that_is_missing_stops_the_start(tmp_path):
+def test_http_serves_plain_on_both_with_no_certificate(tmp_path, monkeypatch):
     """
-    Better a named stop than a daemon that quietly serves no TLS.
+    Luna on http, as a customer may choose in all.yml: 8050 and 8051 both plain, no pair.
     """
+    _luna_says(tmp_path, monkeypatch, "http")
+    served = server.build_config(_settings(bind="0.0.0.0:8050", insecure_bind="127.0.0.1:8051"))
+    assert served.bind == ["0.0.0.0:8050", "127.0.0.1:8051"]
+    assert served.insecure_bind == []
+    assert not served.ssl_enabled
+
+
+def test_https_without_its_certificate_stops_the_start_by_name(tmp_path, monkeypatch):
+    """
+    Better a named stop than a daemon that quietly serves no TLS where https was chosen.
+    """
+    _luna_says(tmp_path, monkeypatch, "https")
     cert, _ = _pair(tmp_path)
-    with pytest.raises(SystemExit, match="is missing"):
+    with pytest.raises(SystemExit, match=r"needs \[API\] KEYFILE"):
         server.build_config(_settings(bind="0.0.0.0:8050", certfile=cert,
                                       keyfile=str(tmp_path / "absent.key")))
-
-
-def test_no_listener_at_all_stops_the_start():
-    """
-    Neither BIND with a pair nor INSECURE_BIND leaves nothing to serve.
-    """
-    with pytest.raises(SystemExit, match="neither BIND nor INSECURE_BIND"):
+    with pytest.raises(SystemExit, match=r"needs \[API\] CERTFILE"):
         server.build_config(_settings(bind="0.0.0.0:8050"))
+
+
+def test_no_listener_at_all_stops_the_start(tmp_path, monkeypatch):
+    """
+    Neither BIND nor INSECURE_BIND leaves nothing to serve.
+    """
+    _luna_says(tmp_path, monkeypatch, "http")
+    with pytest.raises(SystemExit, match="neither BIND nor INSECURE_BIND"):
+        server.build_config(_settings())
+
+
+def test_replication_follows_the_protocol_too(tmp_path, monkeypatch):
+    """
+    The peer serves what this controller serves, so the sweep asks it the same way.
+    """
+    from types import SimpleNamespace
+
+    from trixd.core.replication import sweep as replication
+
+    _luna_says(tmp_path, monkeypatch, "http")
+    seen = {}
+    monkeypatch.setattr(replication.tokens, "service_token", lambda: "t")
+    monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: (
+        seen.setdefault("url", url), SimpleNamespace(status_code=200, json=lambda: {}))[1])
+    replication.Sweep()._get("peer.cluster:8050", "hashes")
+    assert seen["url"].startswith("http://peer.cluster:8050/")
 
 
 def test_a_bad_trixd_ini_is_reported_by_name_with_exit_code_2(tmp_path, capsys):

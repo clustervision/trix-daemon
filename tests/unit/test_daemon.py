@@ -1308,20 +1308,6 @@ def test_a_refused_reload_keeps_the_serving_plugins_renders(rig, client, headers
     assert served.status_code == 200, served.text
 
 
-def test_without_a_certificate_the_plain_listener_still_opens(tmp_path):
-    """
-    Hypercorn opens insecure_bind only beside TLS, so without one it has to be the bind.
-    """
-    from trixd.server import build_config
-
-    ini = tmp_path / "trixd.ini"
-    ini.write_text("[API]\nBIND = 0.0.0.0:8050\nINSECURE_BIND = 127.0.0.1:8051\n",
-                   encoding="utf-8")
-    served = build_config(configuration.load(str(ini)))
-    assert served.bind == ["127.0.0.1:8051"]
-    assert not served.ssl_enabled
-
-
 def test_a_reader_reads_the_audit_trail_and_none_does_not(rig, client, headers):
     """
     The read-only user sees who did what; a token with no role does not.
