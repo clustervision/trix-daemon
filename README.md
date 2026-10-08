@@ -422,6 +422,26 @@ TRIXD_E2E=local python -m pytest tests/e2e -m stress -s       # sustained reads 
 The suites sign in with a test account, so they belong on a test controller, never on
 a customer's.
 
+On each EL release, in containers, on the luna2-python trixd runs on there (podman or
+docker, and the internet):
+
+```
+bash tests/platforms/run-matrix.sh
+```
+
+| Release | Python | SQLite | glibc | Unit | End to end |
+|---|---|---|---|---|---|
+| Rocky 8.4 | 3.10.12 | 3.26.0 | 2.28 | pass | pass |
+| Rocky 8.10 | 3.10.12 | 3.26.0 | 2.28 | pass | pass |
+| Rocky 9.0 | 3.10.12 | 3.34.1 | 2.34 | pass | pass |
+| Rocky 9.8 | 3.10.12 | 3.34.1 | 2.34 | pass | pass |
+| Rocky 10.2 | 3.10.12 | 3.46.1 | 2.39 | pass | pass |
+| AlmaLinux 10.2 | 3.10.12 | 3.46.1 | 2.39 | pass | pass |
+
+SQLite is the operating system's, and it is 3.26.0 on every el8 release, so 8.4 stands
+for 8.0 as well. The pipeline runs the el8, el9 and el10 jobs on every push and publishes
+nothing unless they and the unit and end-to-end suites pass.
+
 ## Building and publishing
 
 `.gitlab-ci.yml` includes the shared pip pipeline from `ClusterVision/gitlab-cicd-pipelines`.
