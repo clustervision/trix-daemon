@@ -281,8 +281,8 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         router = binder.build(manifest, backend, models_for_plugin, renders())
 
         taken = known.paths(skip=name)
-        for path in _daemon_paths(app, known):
-            taken.setdefault(path, "the daemon itself")
+        for daemon_path in _daemon_paths(app, known):
+            taken.setdefault(daemon_path, "the daemon itself")
         clash = [route.path for route in router.routes if route.path in taken]
         if clash:
             raise PluginRefused(

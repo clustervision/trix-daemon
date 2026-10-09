@@ -234,6 +234,17 @@ def test_every_reserved_name_is_refused(rig):
     assert not listed & set(RESERVED_PLUGINS), "a refused reserved name is not a plugin"
 
 
+def test_a_loaded_plugin_says_where_it_was_loaded_from(rig):
+    """
+    The plugin list names each plugin's own directory, not a path from the clash check.
+    """
+    from trixd.core.plugins.registry import current as registry
+
+    for name in ("luna", "directory", "services"):
+        origin = registry().get(name).origin
+        assert os.path.basename(origin.rstrip("/\\")) == name, (name, origin)
+
+
 def test_a_plugin_route_on_a_daemon_path_is_refused(rig, tmp_path, monkeypatch):
     """
     Defence in depth: even without the reserved list, a route the daemon serves is taken.
