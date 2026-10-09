@@ -45,7 +45,7 @@ sits on the boot path.
 | ini account | the account `[API] USERNAME` and `PASSWORD` in `trixd.ini` name |
 | rootus | what the ini account is: it passes every check. It is never stored as a user |
 | principal | a stored user: a name, a password (or none, if PAM or LDAP checks it) and a role |
-| role | `none`, `operator` or `manager`, lowest first; a user with no row holds `none` |
+| role | `none`, `reader`, `operator` or `manager`, lowest first; a user with no row holds `none` |
 | minimum | the lowest role a route admits, written in the route's manifest entry |
 | plugin | a directory with a `manifest.yaml` and a backend class; it adds routes under `/api/v1/<plugin>/` |
 | manifest | a plugin's declaration of its routes, their minimums, schemas and renders |
@@ -242,11 +242,11 @@ what `ENABLED` lists, by default all six. slurm and genders write the same block
 luna2-daemon's node hook still writes, from the same generator and node list, so the two
 agree; once that hook stops, they are the only writers.
 
-Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`:
-the command line, the alertx CLI, the On Demand apps and the node image. Each names
-where the daemon answers and the ini account. Where each goes, and who can read it,
-is the installer's business: the trixd role for trinityx-combined, which is
-kept outside this repository until it lands there.
+Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`,
+except for the Luna CLI: the luna2 utilities, the alertx CLI, the On Demand apps and the
+node image. Each names where the daemon answers and the ini account. Where each goes,
+and who can read it, is the installer's business: the `trinity/trixd` role in
+trinityx-combined.
 
 ## Who may do what
 
