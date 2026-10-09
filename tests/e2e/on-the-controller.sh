@@ -65,8 +65,8 @@ check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
 
-echo "=== 4. the layout, as Luna's: the daemon link, utils and a site's plugins ==="
-check "nothing else beside daemon"     "$(ls /trinity/local/trixd | grep -vxE 'daemon|utils|plugins' | wc -l)" 0
+echo "=== 4. the layout, as Luna's: only the daemon link ==="
+check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd | grep -vxE 'daemon|plugins' | wc -l)" 0
 check "daemon links into the shared python" "$(readlink /trinity/local/trixd/daemon | grep -c '^/trinity/local/python/')" 1
 
 echo "=== 4b. plugins ==="

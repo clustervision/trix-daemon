@@ -222,9 +222,9 @@ only `daemon`, a link into the shared Python, as `/trinity/local/luna` does, and
 configuration and the database (`daemon/var/trixd.db`) live inside it. Unlike `luna.ini`,
 `trixd.ini` is never in the wheel: the wheel ships `trixd.ini.sample`, which explains each
 key, so pip writes only the sample and an upgrade leaves the site's `trixd.ini` and its
-database as they were. Beside `daemon` there is `utils/config`, the utilities' client
-`trixd.ini`, as Luna has `utils`, and `plugins` only when a site writes a plugin of its own.
-A missing file, an unknown algorithm or an unreadable duration stops the daemon with
+database as they were. A `plugins` folder appears beside `daemon` only when a site writes
+a plugin of its own. Unlike Luna's tree there is no `utils`: no tool reads a `trixd.ini`
+from there. A missing file, an unknown algorithm or an unreadable duration stops the daemon with
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
@@ -242,11 +242,11 @@ what `ENABLED` lists, by default all six. slurm and genders write the same block
 luna2-daemon's node hook still writes, from the same generator and node list, so the two
 agree; once that hook stops, they are the only writers.
 
-Clients get a `trixd.ini` of their own wherever the installer writes a `luna.ini`,
-except for the Luna CLI: the luna2 utilities, the alertx CLI, the On Demand apps and the
-node image. Each names where the daemon answers and the ini account. Where each goes,
-and who can read it, is the installer's business: the `trinity/trixd` role in
-trinityx-combined.
+Clients get a `trixd.ini` of their own beside the `luna.ini` the installer writes for
+the alertx CLI, the On Demand apps and the node image. The Luna CLI and the luna2
+utilities get none: they talk to Luna only. Each names where the daemon answers and the
+ini account. Where each goes, and who can read it, is the installer's business: the
+`trinity/trixd` role in trinityx-combined.
 
 ## Who may do what
 
