@@ -48,8 +48,13 @@ def test_health_version_and_the_published_document(stack):
     version = stack.call("GET", "/system/version").json()["version"]
     assert version["trixd"].startswith("1.") and version["api"] == 1
     document = stack.document()
-    assert document["info"]["title"] == "TrinityX trixd"
+    assert document["info"]["title"] == "TrinityX Daemon (trixd)"
     assert any(path.startswith("/api/v1/luna/") for path in document["paths"])
+    page = stack.call("GET", "/docs")
+    assert page.status_code == 200 and "https://cdn" not in page.text
+    bundle = stack.call("GET", "/docs/static/vendor/swagger-ui/swagger-ui-bundle.js")
+    assert bundle.status_code == 200
+    assert "GNU GENERAL PUBLIC LICENSE" in stack.call("GET", "/system/license").text
 
 
 @pytest.mark.parametrize("role", ["none", "reader", "operator", "manager", "rootus"])

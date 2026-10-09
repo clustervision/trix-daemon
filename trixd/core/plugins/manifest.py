@@ -33,7 +33,7 @@ import hashlib
 import json
 import re
 from datetime import date
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
@@ -43,6 +43,11 @@ from trixd.common.errors import PluginRefused
 
 # <name> is one path segment; <path:name> is the rest of the path, slashes and all.
 PATH_VARIABLE = re.compile(r"<(?:(path):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
+
+# What a declared query parameter may be; the document shows it and FastAPI checks it.
+QUERY_TYPES: dict = {"string": str, "integer": int, "boolean": bool}
+# Names the binder hands a handler itself, so a query parameter cannot take them.
+RESERVED_ARGUMENTS: tuple = ("body", "caller", "request")
 
 TYPES: dict = {
     "string": str,
@@ -65,6 +70,30 @@ class Render(BaseModel):
     inputs: list = Field(default_factory=list)
     coalesce: str = "2s"
     serve: str = ""
+
+
+class Doc(BaseModel):
+    """
+    A path variable or query parameter, as the published document explains it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = ""
+    example: Any = None
+    type: str = "string"
+
+
+class Answer(BaseModel):
+    """
+    What a successful call returns, as the published document shows it.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    description: str = ""
+    example: Any = None
+    media_type: str = "application/json"
 
 
 class Endpoint(BaseModel):
@@ -90,6 +119,14 @@ class Endpoint(BaseModel):
     # The daemon checks nothing: the request goes on as sent and the service behind it
     # decides, as Luna does behind /api/v1/luna. Only the luna plugin needs it.
     forward: bool = False
+    # What /api/v1/docs shows beyond the summary: what the route does, what to send, what
+    # comes back, and the refusals its own work can answer.
+    description: str = ""
+    params: dict[str, Doc] = Field(default_factory=dict)
+    query: dict[str, Doc] = Field(default_factory=dict)
+    request_example: Any = None
+    response: Optional[Answer] = None
+    errors: dict[int, str] = Field(default_factory=dict)
 
     @property
     def variables(self) -> list:
@@ -160,6 +197,7 @@ def parse(document: dict) -> Manifest:
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+        _check_docs(endpoint)
     for event, handler in manifest.luna_hooks.items():
         if event not in LUNA_HOOKS:
             raise PluginRefused(f"{event} is not a change at Luna the daemon notices; "
@@ -167,6 +205,26 @@ def parse(document: dict) -> Manifest:
         if not handler or not isinstance(handler, str):
             raise PluginRefused(f"{event} names no handler")
     return manifest
+
+
+def _check_docs(endpoint: Endpoint) -> None:
+    """
+    Refuse documentation that the document could not show truthfully.
+    """
+    where = endpoint.path or "/"
+    unknown = [name for name in endpoint.params if name not in endpoint.variables]
+    if unknown:
+        raise PluginRefused(f"{where} documents {', '.join(unknown)}, which its path does not have")
+    for name, item in endpoint.query.items():
+        if (not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name) or name in RESERVED_ARGUMENTS
+                or name in endpoint.variables):
+            raise PluginRefused(f"{where} declares query parameter {name}, which it cannot take")
+        if item.type not in QUERY_TYPES:
+            raise PluginRefused(f"{where} query parameter {name} is {item.type}; "
+                                f"one of {', '.join(QUERY_TYPES)}")
+    bad = [str(status) for status in endpoint.errors if not 400 <= status < 600]
+    if bad:
+        raise PluginRefused(f"{where} documents {', '.join(bad)} as errors; 400 to 599 only")
 
 
 def build_models(manifest: Manifest) -> dict:
@@ -185,6 +243,10 @@ def build_models(manifest: Manifest) -> dict:
             constraints = {}
             if rule.get("pattern"):
                 constraints["pattern"] = rule["pattern"]
+            if rule.get("description"):
+                constraints["description"] = str(rule["description"])
+            if "example" in rule:
+                constraints["examples"] = [rule["example"]]
             if rule.get("optional"):
                 spec[field] = (Optional[kind], Field(default=None, **constraints))
             else:

@@ -1,0 +1,120 @@
+/*
+ * This code is part of the TrinityX software suite
+ * Copyright (C) 2026  ClusterVision Solutions b.v.
+ *
+ * This program is free software: you can redistribute it and/or modify
+ * it under the terms of the GNU General Public License as published by
+ * the Free Software Foundation, either version 3 of the License, or
+ * (at your option) any later version.
+ *
+ * This program is distributed in the hope that it will be useful,
+ * but WITHOUT ANY WARRANTY; without even the implied warranty of
+ * MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+ * GNU General Public License for more details.
+ *
+ * You should have received a copy of the GNU General Public License
+ * along with this program.  If not, see <https://www.gnu.org/licenses/>
+ */
+
+/* The TrinityX look for /api/v1/docs: the OOD portal's gradient bar, then Swagger UI. */
+
+:root {
+    --trixd-ink: #1c2230;
+    --trixd-muted: #5b6372;
+    --trixd-indigo: #4a54f1;
+    --trixd-line: #e3e5ee;
+}
+
+body {
+    margin: 0;
+    background: #f6f7fb;
+    font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif;
+}
+
+.trixd-bar {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 12px 24px;
+    color: #ffffff;
+    background: linear-gradient(to right, #4a54f1 0%, #4a54f1 10%, #7d4dbb 25%,
+                                #c63d7b 45%, #e95f4a 65%, #f3a133 85%, #f8c325 100%);
+}
+
+.trixd-bar img {
+    width: 40px;
+    height: 40px;
+}
+
+.trixd-bar .name {
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.trixd-bar .short {
+    font-weight: 400;
+    opacity: 0.9;
+}
+
+.trixd-bar .links {
+    margin-left: auto;
+    display: flex;
+    gap: 18px;
+    font-size: 14px;
+}
+
+.trixd-bar a {
+    color: #ffffff;
+    text-decoration: none;
+    opacity: 0.92;
+}
+
+.trixd-bar a:hover {
+    opacity: 1;
+    text-decoration: underline;
+}
+
+.swagger-ui .info {
+    margin: 28px 0 16px;
+}
+
+.swagger-ui .info .title {
+    color: var(--trixd-ink);
+}
+
+.swagger-ui .info a,
+.swagger-ui .markdown a {
+    color: var(--trixd-indigo);
+}
+
+.swagger-ui .btn.authorize {
+    color: var(--trixd-indigo);
+    border-color: var(--trixd-indigo);
+}
+
+.swagger-ui .btn.authorize svg {
+    fill: var(--trixd-indigo);
+}
+
+.swagger-ui .scheme-container {
+    background: #ffffff;
+    box-shadow: 0 1px 2px rgba(28, 34, 48, 0.08);
+}
+
+.swagger-ui .opblock-tag {
+    border-bottom-color: var(--trixd-line);
+}
+
+.swagger-ui .opblock .opblock-summary-description {
+    color: var(--trixd-muted);
+}
+
+@media (max-width: 640px) {
+    .trixd-bar {
+        padding: 10px 16px;
+    }
+
+    .trixd-bar .links {
+        display: none;
+    }
+}

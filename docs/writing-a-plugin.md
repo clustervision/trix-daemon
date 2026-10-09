@@ -81,7 +81,7 @@ list of the same entries a manifest has (and optionally `name`, `schemas` and
 | `plugin` | the name, which must match the directory | yes |
 | `backend` | the module holding the `Backend` class, default `backend` | no |
 | `description` | one or two lines, for whoever reads the manifest | no |
-| `schemas` | request bodies, each a set of fields with a type, built once at load | no |
+| `schemas` | request bodies, each a set of fields with a type, built once at load; a field may carry a `description` and an `example`, which the docs page shows | no |
 | `endpoints` | what to serve | yes |
 | `luna_hooks` | node changes made through the pass-through that the plugin acts on | no |
 
@@ -91,13 +91,20 @@ Each endpoint:
 |---|---|---|
 | `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
 | `methods` | any of `GET`, `POST`, `PATCH`, `DELETE` | no, default `[GET]` |
-| `minimum` | the lowest role admitted: `none`, `operator`, `manager`, or `rootus` for the ini account only | yes, unless `public` or `token: node` |
+| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, unless `public`, `forward` or `token: node` |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`; the body is validated against it before the handler runs | no; only POST and PATCH carry a body |
 | `token` | `user`, or `node` to accept only that node's own token | no |
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
+| `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
 | `summary` | one line for the published document | no |
+| `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
+| `params` | each path variable: `description` and `example` | no |
+| `query` | each query parameter the handler reads: `type` (`string`, `integer`, `boolean`), `description`, `example` | no |
+| `request_example` | an example body | no |
+| `response` | what a success answers: `description`, `example`, and `media_type` when it is not JSON | no |
+| `errors` | status: when this route's own work answers it, such as `404` or `502`; 401 and 403 are added for you | no |
 
 ### backend.py
 
@@ -302,6 +309,38 @@ identifier = tasks.submit(PLUGIN, action, param, caller.name)
 The caller polls whatever route you declare for it; the services plugin uses
 `status/<request_id>`.
 
+## Documenting a route
+
+Whoever reaches `/api/v1/docs` should be able to call the route from what it says there:
+what it does, what to send, what comes back, and what can go wrong. Who may call it, and
+the 401 and 403 its gate can answer, are added from `minimum` and `token` for you. Take
+the examples from a real call, not from memory.
+
+```yaml
+  - path: hw-rules
+    methods: [GET]
+    minimum: reader
+    handler: list_hw_rules
+    summary: Every node's hardware rules, or some nodes'
+    description: |
+      What trixd holds for every node, or for the nodes named in `nodes`. A node asked
+      for and not held is listed with `exists: false`.
+    query:
+      nodes: {description: "Comma-separated node names; leave it out for every node held", example: "node001,node999"}
+      detail: {description: "no, false or 0 leaves out each rule file and keeps the count", example: "no"}
+    response:
+      description: One entry per node
+      example:
+        nodes:
+          - {node: node001.cluster, exists: true, rules: 8}
+          - {node: node999, exists: false}
+```
+
+A `query` entry becomes a real parameter: the page shows it, FastAPI checks its type, and a
+handler that takes an argument of that name receives it. A manifest that documents a path
+variable its path does not have, or a query name the binder uses itself (`body`, `caller`,
+`request`), is refused.
+
 ## Before you call it done
 
 - `trixd plugin check <directory>` prints `would load`. It needs no running daemon and
@@ -314,3 +353,5 @@ The caller polls whatever route you declare for it; the services plugin uses
 - No path collides with another plugin's.
 - The backend has a test that does not need a controller: stub `shell` and Luna.
 - Nothing has a mutable default.
+- Every route reads well at `/api/v1/docs`: a description, each path variable explained
+  with an example, an example body, an example answer, and the errors its own work gives.

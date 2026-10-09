@@ -1,0 +1,236 @@
+#!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+"""
+The published API: the document, what it says about access and errors, and the page that
+shows it, with Swagger UI served from the package so it works without internet.
+"""
+
+__author__      = "Sumit Sharma"
+__copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
+__license__     = "GPL"
+__version__     = "1.0"
+__maintainer__  = "Sumit Sharma"
+__email__       = "sumit.sharma@clustervision.com"
+__status__      = "Production"
+
+import html
+import os
+
+from fastapi import APIRouter, FastAPI, Request
+from fastapi.responses import HTMLResponse, JSONResponse
+from fastapi.staticfiles import StaticFiles
+
+from trixd.common.constants import API_PREFIX, DAEMON_VERSION
+from trixd.core.luna.config import current as luna_config
+
+TITLE: str = "TrinityX Daemon (trixd)"
+SWAGGER_UI: str = "5.32.15"
+STATIC_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
+    os.path.abspath(__file__)))), "static")
+STATIC_URL: str = f"{API_PREFIX}/docs/static"
+OPENAPI_URL: str = f"{API_PREFIX}/openapi.json"
+LICENSE_URL: str = f"{API_PREFIX}/system/license"
+# Replaced per request by Luna's address on the host the reader came in on.
+LUNA: str = "{luna}"
+PUBLISHED_LUNA: str = "https://<controller>:7050"
+
+DESCRIPTION: str = """\
+**trixd** is the TrinityX daemon for everything that is not a physical node: the \
+cluster's users and groups, the Prometheus monitoring configuration, starting and \
+stopping services, and the slurm and genders files computed from Luna's node list. \
+Every route below says what it does, what to send, what comes back, and who may call it.
+
+**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: \
+nodes, groups, images, networks and boot. It answers at {luna}, and \
+[{luna}/version]({luna}/version) says which version it runs. A request to \
+`/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides \
+who may.
+
+### Signing in
+1. `POST /api/v1/auth/token` with `{"username": "...", "password": "..."}` answers \
+`201` and `{"token": "..."}`, valid for an hour unless `trixd.ini` says otherwise.
+2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as \
+`Authorization: Bearer <token>`.
+3. On this page: **Authorize**, paste the token into either field, and every \
+**Try it out** sends it.
+
+### Who may call what
+A user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a \
+lowest role, shown as **Access** under its description. **rootus**, the account \
+`trixd.ini` names, is the administrator and passes every check. `none` may only ask who \
+it is, with `GET /api/v1/auth/whoami`.
+
+### Ports
+**8050** speaks the protocol Luna's `luna.ini` names, https or http. **8051** is plain \
+HTTP on every address, for nodes; a password or token sent there crosses the network in \
+clear text.
+
+### Errors
+A refusal or a failure answers its status and `{"message": "..."}` saying why: 400 a \
+request that cannot be acted on, 401 no token or a bad one, 403 a role below the \
+route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its \
+schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd \
+failed, 503 not available on this controller.
+"""
+
+ACCESS: dict = {
+    "none": "any signed-in user",
+    "reader": "reader or above: reader, operator, manager and rootus",
+    "operator": "operator or above: operator, manager and rootus",
+    "manager": "manager or above: manager and rootus",
+    "rootus": "rootus only: the account trixd.ini names, and the other controller of a pair",
+}
+ERROR_SCHEMA: dict = {"title": "Error", "type": "object", "required": ["message"],
+                      "properties": {"message": {"type": "string"}}}
+REFUSALS: dict = {
+    "role": {"401": ("No token, or one that is not valid", "a valid token is missing"),
+             "403": ("The caller's role is below this route's minimum",
+                     "this needs manager; you hold reader")},
+    "node": {"401": ("No token, or one that is not valid", "a valid token is missing"),
+             "403": ("Not a node token, or a token for another node",
+                     "token is not valid for this node")},
+}
+
+PAGE: str = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{title}</title>
+<link rel="icon" href="{static}/favicon.ico">
+<link rel="stylesheet" href="{static}/vendor/swagger-ui/swagger-ui.css?v={swagger}">
+<link rel="stylesheet" href="{static}/trixd.css?v={version}">
+</head>
+<body>
+<header class="trixd-bar">
+<img src="{static}/logo.png" alt="TrinityX">
+<span class="name">TrinityX Daemon <span class="short">(trixd)</span></span>
+<nav class="links"><a href="{openapi}">openapi.json</a><a href="{license}">Licence</a></nav>
+</header>
+<div id="swagger-ui"></div>
+<script src="{static}/vendor/swagger-ui/swagger-ui-bundle.js?v={swagger}"></script>
+<script>
+window.ui = SwaggerUIBundle({{url: "{openapi}", dom_id: "#swagger-ui", deepLinking: true,
+  displayRequestDuration: true, docExpansion: "list", defaultModelsExpandDepth: 0,
+  presets: [SwaggerUIBundle.presets.apis], layout: "BaseLayout"}});
+</script>
+</body>
+</html>
+"""
+
+router = APIRouter(prefix=API_PREFIX)
+
+
+def luna_link(request: Request) -> str:
+    """
+    Luna on the host the reader reached this page by: it runs on the same controller, and
+    the name luna.ini gives it may not resolve where the reader sits.
+    """
+    config = luna_config()
+    port = config.endpoint.rpartition(":")[2] or "7050"
+    host = request.url.hostname or "localhost"
+    if ":" in host:
+        host = f"[{host}]"
+    return f"{config.protocol}://{host}:{port}"
+
+
+@router.get("/docs", include_in_schema=False)
+def page() -> HTMLResponse:
+    """
+    The API, browsable, in the TrinityX look.
+    """
+    return HTMLResponse(PAGE.format(title=html.escape(TITLE), static=STATIC_URL,
+                                    swagger=SWAGGER_UI, version=html.escape(DAEMON_VERSION),
+                                    openapi=OPENAPI_URL, license=LICENSE_URL))
+
+
+@router.get("/openapi.json", include_in_schema=False)
+def document(request: Request) -> JSONResponse:
+    """
+    The document, with Luna's address and the licence as this reader reaches them.
+    """
+    built = request.app.openapi()
+    info = dict(built["info"])
+    info["description"] = info.get("description", "").replace(LUNA, luna_link(request))
+    info["license"] = {**info.get("license", {}),
+                       "url": str(request.base_url).rstrip("/") + LICENSE_URL}
+    return JSONResponse({**built, "info": info})
+
+
+def access_line(operation: dict) -> str:
+    """
+    Who may call an operation, in words, from what the gate stamped on it.
+    """
+    access = operation.get("x-trixd-access", "")
+    if access == "public":
+        return "public, no token"
+    if access == "node":
+        return ("a node token for the node in the path, from "
+                "`POST /api/v1/auth/node/{node}`")
+    if access == "forward":
+        return "decided by Luna: send a token Luna accepts, as you would to Luna"
+    return ACCESS.get(operation.get("x-trixd-minimum", ""), "")
+
+
+def finish(document: dict) -> dict:
+    """
+    What every operation says beyond its own declaration: who may call it, the refusals
+    its gate can answer, and the token a forwarded call carries on.
+    """
+    # FastAPI takes only an absolute licence URL; served copies get this host's in front.
+    document["info"].setdefault("license", {})["url"] = LICENSE_URL
+    document.setdefault("components", {}).setdefault("schemas", {})["Error"] = ERROR_SCHEMA
+    error = {"$ref": "#/components/schemas/Error"}
+    for operations in document.get("paths", {}).values():
+        for operation in operations.values():
+            line = access_line(operation)
+            if line:
+                text = operation.get("description", "").rstrip()
+                operation["description"] = (f"{text}\n\n**Access:** {line}" if text
+                                            else f"**Access:** {line}")
+            responses = operation.setdefault("responses", {})
+            for status, (meaning, message) in REFUSALS.get(
+                    operation.get("x-trixd-access", ""), {}).items():
+                responses.setdefault(status, {
+                    "description": meaning,
+                    "content": {"application/json": {"schema": error,
+                                                     "example": {"message": message}}}})
+            if operation.get("x-trixd-access") == "forward":
+                operation["security"] = [{"token": []}, {"bearer": []}]
+    return document
+
+
+def install(app: FastAPI) -> None:
+    """
+    Serve the page, its files and the document, and finish the document once per build.
+    """
+    app.mount(STATIC_URL, StaticFiles(directory=STATIC_DIR), name="docs-static")
+    app.include_router(router)
+    build = app.openapi
+
+    def openapi() -> dict:
+        """
+        FastAPI's document, finished the first time after each build.
+        """
+        fresh = app.openapi_schema is None
+        built = build()
+        return finish(built) if fresh else built
+
+    app.openapi = openapi

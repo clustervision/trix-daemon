@@ -15,6 +15,20 @@
       "items": {
         "additionalProperties": false,
         "properties": {
+          "description": {
+            "description": "Markdown for /api/v1/docs: what the route does, what to send and what comes back",
+            "type": "string"
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "status: when this route's own work answers it",
+            "propertyNames": {
+              "pattern": "^[45][0-9][0-9]$"
+            },
+            "type": "object"
+          },
           "forward": {
             "default": false,
             "description": "the daemon checks nothing; the service behind decides",
@@ -48,6 +62,28 @@
               "rootus"
             ]
           },
+          "params": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "example": {},
+                "type": {
+                  "default": "string",
+                  "enum": [
+                    "string",
+                    "integer",
+                    "boolean"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "description": "each path variable: what it is and an example",
+            "type": "object"
+          },
           "path": {
             "description": "under /api/v1/<plugin>; <name> is a segment, <path:name> the rest of the path",
             "type": "string"
@@ -56,6 +92,28 @@
             "default": false,
             "description": "no token at all; argue for every use",
             "type": "boolean"
+          },
+          "query": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "example": {},
+                "type": {
+                  "default": "string",
+                  "enum": [
+                    "string",
+                    "integer",
+                    "boolean"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "description": "query parameters the route reads",
+            "type": "object"
           },
           "render": {
             "additionalProperties": false,
@@ -78,6 +136,24 @@
                   "",
                   "json"
                 ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_example": {
+            "description": "an example body, shown on /api/v1/docs"
+          },
+          "response": {
+            "additionalProperties": false,
+            "description": "what a successful call answers",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "example": {},
+              "media_type": {
+                "default": "application/json",
                 "type": "string"
               }
             },
@@ -125,7 +201,7 @@
       "additionalProperties": {
         "type": "object"
       },
-      "description": "request bodies by name: field -> {type, optional, items}",
+      "description": "request bodies by name: field -> {type, optional, items, pattern, description, example}",
       "type": "object"
     }
   },

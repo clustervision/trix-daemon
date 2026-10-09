@@ -30,14 +30,15 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import inspect
+from typing import Optional
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request
 from pydantic import BaseModel
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import PluginRefused
-from trixd.core.plugins.manifest import Endpoint, Manifest
+from trixd.core.plugins.manifest import QUERY_TYPES, Endpoint, Manifest
 from trixd.core.security.gate import Caller, guard, stamp
 
 LOGGER = trixlog.get("binder")
@@ -60,7 +61,7 @@ def signature_problems(handler, endpoint: Endpoint) -> list:
         return []
     problems = [f"{endpoint.handler} does not take the path variable {name}"
                 for name in endpoint.variables if name not in accepted]
-    known = set(endpoint.variables) | set(SUPPLIED)
+    known = set(endpoint.variables) | set(SUPPLIED) | set(endpoint.query)
     for name, item in accepted.items():
         if item.kind == inspect.Parameter.VAR_POSITIONAL or name in known:
             continue
@@ -93,6 +94,47 @@ def _arguments(kwargs: dict) -> dict:
     return supplied
 
 
+def _examples(value) -> dict:
+    """
+    One example, in the shape Swagger UI lists.
+    """
+    return {"example": {"value": value}} if value is not None else None
+
+
+def _documented(endpoint: Endpoint) -> list:
+    """
+    The path variables, described, and the query parameters the manifest declares, so the
+    document shows what to send. A handler that reads the query itself still can.
+    """
+    parameters = []
+    for name in endpoint.variables:
+        doc = endpoint.params.get(name)
+        parameters.append(inspect.Parameter(
+            name, inspect.Parameter.KEYWORD_ONLY, annotation=str,
+            default=Path(description=doc.description if doc else None,
+                         openapi_examples=_examples(doc.example) if doc else None)))
+    for name, doc in endpoint.query.items():
+        parameters.append(inspect.Parameter(
+            name, inspect.Parameter.KEYWORD_ONLY, annotation=Optional[QUERY_TYPES[doc.type]],
+            default=Query(None, description=doc.description or None,
+                          openapi_examples=_examples(doc.example))))
+    return parameters
+
+
+def _responses(endpoint: Endpoint) -> dict:
+    """
+    What a call answers, as the manifest documents it: the success, and its own refusals.
+    """
+    answers = {}
+    if endpoint.response is not None and endpoint.response.example is not None:
+        answers[200] = {"content": {endpoint.response.media_type:
+                                    {"example": endpoint.response.example}}}
+    for status, meaning in endpoint.errors.items():
+        answers[status] = {"description": meaning, "content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}}}}
+    return answers
+
+
 def _endpoint_function(handler, endpoint: Endpoint, body_model):
     """
     Build a path operation whose signature FastAPI can introspect.
@@ -110,14 +152,15 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model):
             """
             return _call(handler, _arguments(kwargs))
 
-    parameters = [inspect.Parameter(name, inspect.Parameter.KEYWORD_ONLY, annotation=str)
-                  for name in endpoint.variables]
+    parameters = _documented(endpoint)
     if "request" in inspect.signature(handler).parameters:
         parameters.append(inspect.Parameter("request", inspect.Parameter.KEYWORD_ONLY,
                                             annotation=Request))
     if body_model is not None:
-        parameters.append(inspect.Parameter("body", inspect.Parameter.KEYWORD_ONLY,
-                                            annotation=body_model))
+        example = _examples(endpoint.request_example)
+        parameters.append(inspect.Parameter(
+            "body", inspect.Parameter.KEYWORD_ONLY, annotation=body_model,
+            **({"default": Body(..., openapi_examples=example)} if example else {})))
     if not endpoint.public and not endpoint.forward:
         parameters.append(inspect.Parameter(
             "caller", inspect.Parameter.KEYWORD_ONLY, annotation=Caller,
@@ -163,6 +206,11 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",
                 summary=endpoint.summary or f"{verb} {endpoint.path}",
+                description=endpoint.description or endpoint.summary or None,
+                response_description=(endpoint.response.description
+                                      if endpoint.response and endpoint.response.description
+                                      else "Successful Response"),
+                responses=_responses(endpoint) or None,
                 openapi_extra=({"x-trixd-access": "forward", "x-trixd-minimum": ""}
                                if endpoint.forward else None),
             )

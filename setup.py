@@ -128,7 +128,9 @@ setup(
     packages=find_namespace_packages(include=["trixd", "trixd.*"], exclude=["*.__pycache__"]),
     package_data={"trixd": ["config/*.sample", "config/*.service", "config/*.yaml",
                            "plugins/*/manifest.yaml", "core/security/sources/README",
-                           "db/migrations/script.py.mako"]},
+                           "db/migrations/script.py.mako", "LICENSE.txt",
+                           "static/*.css", "static/*.png", "static/*.ico",
+                           "static/vendor/swagger-ui/*"]},
     entry_points={"console_scripts": ["trixd = trixd.server:main"]},
     zip_safe=False,
 )

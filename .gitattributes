@@ -1,2 +1,5 @@
 # Every file is committed and checked out with LF, whatever the host sets.
 * text=auto eol=lf
+# Images are bytes, whatever the host's line-ending setting.
+*.png binary
+*.ico binary

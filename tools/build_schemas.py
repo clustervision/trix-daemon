@@ -81,6 +81,10 @@ def openapi_document() -> dict:
             database.engine().dispose()
     # The release line, not the build: the document describes the API, not one wheel.
     document["info"]["version"] = DAEMON_RELEASE
+    # A served copy names Luna on the reader's host; the published one cannot know it.
+    from trixd.api.v1 import docs
+    document["info"]["description"] = document["info"]["description"].replace(
+        docs.LUNA, docs.PUBLISHED_LUNA)
     return document
 
 

@@ -1,0 +1,9 @@
+Swagger UI 5.32.15, from the npm package swagger-ui-dist, unchanged.
+
+https://registry.npmjs.org/swagger-ui-dist/-/swagger-ui-dist-5.32.15.tgz
+sha1 0bbaa62695104dbf2db06ad9bbbaaa127d830614
+
+Apache-2.0: LICENSE and NOTICE are the package's own, and swagger-ui-bundle.js.LICENSE.txt
+lists the licences of what the bundle includes. Shipped so /api/v1/docs works where the
+browser has no internet. To move to another release, replace the five files from that
+release's package and change the version here and in trixd/api/v1/docs.py.

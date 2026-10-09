@@ -51,6 +51,15 @@ def manifest_schema() -> dict:
                       "description": "served from the last result; empty writes files only"},
         },
     }
+    doc = {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "description": {"type": "string"},
+            "example": {},
+            "type": {"enum": ["string", "integer", "boolean"], "default": "string"},
+        },
+    }
     endpoint = {
         "type": "object",
         "additionalProperties": False,
@@ -72,6 +81,22 @@ def manifest_schema() -> dict:
                        "description": "no token at all; argue for every use"},
             "forward": {"type": "boolean", "default": False,
                         "description": "the daemon checks nothing; the service behind decides"},
+            "description": {"type": "string",
+                            "description": "Markdown for /api/v1/docs: what the route does, "
+                                           "what to send and what comes back"},
+            "params": {"type": "object", "additionalProperties": doc,
+                       "description": "each path variable: what it is and an example"},
+            "query": {"type": "object", "additionalProperties": doc,
+                      "description": "query parameters the route reads"},
+            "request_example": {"description": "an example body, shown on /api/v1/docs"},
+            "response": {"type": "object", "additionalProperties": False,
+                         "properties": {"description": {"type": "string"}, "example": {},
+                                        "media_type": {"type": "string",
+                                                       "default": "application/json"}},
+                         "description": "what a successful call answers"},
+            "errors": {"type": "object", "propertyNames": {"pattern": "^[45][0-9][0-9]$"},
+                       "additionalProperties": {"type": "string"},
+                       "description": "status: when this route's own work answers it"},
         },
     }
     return {
@@ -89,7 +114,8 @@ def manifest_schema() -> dict:
             "description": {"type": "string"},
             "schemas": {"type": "object",
                         "additionalProperties": {"type": "object"},
-                        "description": "request bodies by name: field -> {type, optional, items}"},
+                        "description": "request bodies by name: field -> {type, optional, items, "
+                                       "pattern, description, example}"},
             "endpoints": {"type": "array", "items": endpoint},
             "luna_hooks": {"type": "object",
                            "propertyNames": {"enum": list(LUNA_HOOKS)},

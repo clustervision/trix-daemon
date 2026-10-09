@@ -108,7 +108,8 @@ render once, start the background timers, and only then open the listeners.
 | `trixd/core/luna/` | The Luna client, the reader for Luna's own `luna.ini`, and the hooks a change through the luna plugin runs. |
 | `trixd/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
 | `trixd/db/` | Engine, models and the Alembic migrations. |
-| `trixd/api/v1/` | The daemon's own routes: auth, identity, system. |
+| `trixd/api/v1/` | The daemon's own routes: auth, identity, system, and `docs.py`, the docs page and the document it shows. |
+| `trixd/static/` | What the docs page loads: the TrinityX look, logo and icon, and Swagger UI 5.32.15, so it works without internet. |
 | `trixd/plugins/` | The plugins that ship: luna (the route to Luna), directory, prometheus, services, slurm, genders. |
 | `trixd/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
@@ -186,7 +187,9 @@ curl -s http://127.0.0.1:8051/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
 ```
 
 A token goes in the `x-access-tokens` header, or as `Authorization: Bearer <token>`.
-`http://127.0.0.1:8051/api/v1/docs` lists every route. Without Luna, obol or
+`http://127.0.0.1:8051/api/v1/docs` lists every route, with what it does, what to send,
+what comes back and who may call it; **Authorize** there takes a token for **Try it out**.
+The page loads nothing from the internet, and its licence link opens `LICENSE.txt`. Without Luna, obol or
 Prometheus the plugins still load: a route whose work needs one answers 503, and a
 render that could not run answers 404 with the reason.
 

@@ -29,8 +29,9 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from fastapi import Header, Request
+from fastapi import Request, Security
 from fastapi.routing import APIRoute
+from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import (ROLE_NONE, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE,
@@ -42,6 +43,13 @@ from trixd.db import engine
 LOGGER = trixlog.get("gate")
 
 NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
+# The two headers a token may come in, declared as schemes so the document offers one
+# Authorize for both. Neither refuses on its own: the gate decides.
+TOKEN_HEADER = APIKeyHeader(
+    name="x-access-tokens", scheme_name="token", auto_error=False,
+    description="The token from POST /api/v1/auth/token, as Luna takes it.")
+BEARER = HTTPBearer(scheme_name="bearer", auto_error=False,
+                    description="The same token, as Authorization: Bearer <token>.")
 
 
 class Caller:
@@ -67,15 +75,13 @@ class Caller:
         return f"<Caller {self.name} kind={self.kind}>"
 
 
-def _present(x_access_tokens: str, authorization: str) -> str:
+def _present(x_access_tokens: str, bearer: HTTPAuthorizationCredentials) -> str:
     """
     The token, from either header a client may use.
     """
     if x_access_tokens:
         return x_access_tokens
-    if authorization and authorization.lower().startswith("bearer "):
-        return authorization[7:].strip()
-    return ""
+    return bearer.credentials.strip() if bearer is not None else ""
 
 
 def _target(request: Request) -> str:
@@ -91,12 +97,12 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
     """
 
     def dependency(request: Request,
-                   x_access_tokens: str = Header(default=None),
-                   authorization: str = Header(default=None)) -> Caller:
+                   x_access_tokens: str = Security(TOKEN_HEADER),
+                   bearer: HTTPAuthorizationCredentials = Security(BEARER)) -> Caller:
         """
         The check FastAPI runs before the handler.
         """
-        claims = tokens.verify(_present(x_access_tokens, authorization))
+        claims = tokens.verify(_present(x_access_tokens, bearer))
 
         if token_kind == TOKEN_KIND_NODE:
             if claims.kind != TOKEN_KIND_NODE:

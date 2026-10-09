@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from fastapi import FastAPI
 
-from trixd.api.v1 import auth, identity, system
+from trixd.api.v1 import auth, docs, identity, system
 from trixd.common import errors
 from trixd.common.constants import API_PREFIX, DAEMON_NAME, DAEMON_VERSION
 from trixd.core.lifespan import lifespan
@@ -42,14 +42,14 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     """
     Build the daemon. Plugin routes are added later, at load time.
     """
+    # The page and the document are served by docs.install, from files in the package.
     app = FastAPI(
-        title="TrinityX trixd",
-        description="Everything in TrinityX that is not a physical node.",
+        title=docs.TITLE,
+        description=docs.DESCRIPTION,
         version=DAEMON_VERSION,
-        license_info={"name": "GPL-3.0-or-later",
-                      "url": "https://www.gnu.org/licenses/gpl-3.0.html"},
-        openapi_url=f"{API_PREFIX}/openapi.json",
-        docs_url=f"{API_PREFIX}/docs",
+        license_info={"name": "GPL-3.0-or-later"},
+        openapi_url=None,
+        docs_url=None,
         redoc_url=None,
         lifespan=lifespan if with_lifespan else None,
     )
@@ -59,6 +59,7 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
     app.include_router(auth.router)
     app.include_router(identity.router)
     app.include_router(system.router)
+    docs.install(app)
 
     @app.get("/", include_in_schema=False)
     def root() -> dict:

@@ -47,6 +47,8 @@ HEADER = "This code is part of the TrinityX software suite"
 # Files that are their own kind of text, and the JSON tools/build_schemas.py writes,
 # which carries its licence in its own fields since JSON has no comments.
 NO_HEADER = re.compile(r"(^|/)(LICENSE\.txt|README|\.gitattributes)$|^docs/.*\.json$")
+# Shipped as their authors made them: Swagger UI, unchanged, and images, which are bytes.
+AS_IS = re.compile(r"^trixd/static/vendor/|\.(png|ico)$")
 
 
 def _tracked() -> list:
@@ -75,7 +77,7 @@ def test_every_tracked_file_is_plain_ascii():
     in every terminal and editor, and the house style is plain text.
     """
     offending = []
-    for name in _tracked():
+    for name in [item for item in _tracked() if not AS_IS.search(item)]:
         for number, line in enumerate(_read(name).decode("utf-8").splitlines(), 1):
             if any(ord(char) > 127 for char in line):
                 offending.append(f"{name}:{number}")
@@ -86,7 +88,7 @@ def test_every_tracked_file_carries_the_licence_header():
     """
     The GPL notice at the top of every file but the licence and the plain READMEs.
     """
-    missing = [name for name in _tracked() if not NO_HEADER.search(name)
+    missing = [name for name in _tracked() if not NO_HEADER.search(name) and not AS_IS.search(name)
                and HEADER not in _read(name).decode("utf-8")[:2000]]
     assert not missing, missing
 
@@ -187,5 +189,6 @@ def test_every_published_route_says_who_may_call_it():
             assert facts["minimum"] in ("none", "reader", "operator", "manager", "rootus"), operation
     public = sorted(op for op, facts in shape.items() if facts["access"] == "public")
     assert public == ["GET /api/v1/prometheus/renders/targets", "GET /api/v1/system/health",
-                      "GET /api/v1/system/version", "POST /api/v1/auth/node/{node}",
+                      "GET /api/v1/system/license", "GET /api/v1/system/version",
+                      "POST /api/v1/auth/node/{node}",
                       "POST /api/v1/auth/token"], public

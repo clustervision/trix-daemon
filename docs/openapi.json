@@ -375,6 +375,18 @@
         "title": "DirectoryUser_Change",
         "type": "object"
       },
+      "Error": {
+        "properties": {
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "message"
+        ],
+        "title": "Error",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -460,6 +472,10 @@
                 "type": "null"
               }
             ],
+            "description": "Whether this node's hardware alerts are switched off",
+            "examples": [
+              false
+            ],
             "title": "Disabled"
           },
           "force": {
@@ -470,6 +486,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "Generate the file afresh from what Prometheus reports now, replacing the one held",
+            "examples": [
+              false
             ],
             "title": "Force"
           },
@@ -482,6 +502,10 @@
                 "type": "null"
               }
             ],
+            "description": "Whether this node's hardware alerts count for its health check",
+            "examples": [
+              true
+            ],
             "title": "Nhc"
           }
         },
@@ -491,6 +515,15 @@
       "PrometheusHw_Rules_Many": {
         "properties": {
           "nodes": {
+            "description": "One entry per node, naming node and any of force, nhc and disabled",
+            "examples": [
+              [
+                {
+                  "disabled": true,
+                  "node": "node001"
+                }
+              ]
+            ],
             "items": {
               "additionalProperties": true,
               "type": "object"
@@ -706,22 +739,35 @@
         "title": "ValidationError",
         "type": "object"
       }
+    },
+    "securitySchemes": {
+      "bearer": {
+        "description": "The same token, as Authorization: Bearer <token>.",
+        "scheme": "bearer",
+        "type": "http"
+      },
+      "token": {
+        "description": "The token from POST /api/v1/auth/token, as Luna takes it.",
+        "in": "header",
+        "name": "x-access-tokens",
+        "type": "apiKey"
+      }
     }
   },
   "info": {
-    "description": "Everything in TrinityX that is not a physical node.",
+    "description": "**trixd** is the TrinityX daemon for everything that is not a physical node: the cluster's users and groups, the Prometheus monitoring configuration, starting and stopping services, and the slurm and genders files computed from Luna's node list. Every route below says what it does, what to send, what comes back, and who may call it.\n\n**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: nodes, groups, images, networks and boot. It answers at https://<controller>:7050, and [https://<controller>:7050/version](https://<controller>:7050/version) says which version it runs. A request to `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides who may.\n\n### Signing in\n1. `POST /api/v1/auth/token` with `{\"username\": \"...\", \"password\": \"...\"}` answers `201` and `{\"token\": \"...\"}`, valid for an hour unless `trixd.ini` says otherwise.\n2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as `Authorization: Bearer <token>`.\n3. On this page: **Authorize**, paste the token into either field, and every **Try it out** sends it.\n\n### Who may call what\nA user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a lowest role, shown as **Access** under its description. **rootus**, the account `trixd.ini` names, is the administrator and passes every check. `none` may only ask who it is, with `GET /api/v1/auth/whoami`.\n\n### Ports\n**8050** speaks the protocol Luna's `luna.ini` names, https or http. **8051** is plain HTTP on every address, for nodes; a password or token sent there crosses the network in clear text.\n\n### Errors\nA refusal or a failure answers its status and `{\"message\": \"...\"}` saying why: 400 a request that cannot be acted on, 401 no token or a bad one, 403 a role below the route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd failed, 503 not available on this controller.\n",
     "license": {
       "name": "GPL-3.0-or-later",
-      "url": "https://www.gnu.org/licenses/gpl-3.0.html"
+      "url": "/api/v1/system/license"
     },
-    "title": "TrinityX trixd",
+    "title": "TrinityX Daemon (trixd)",
     "version": "1.0"
   },
   "openapi": "3.1.0",
   "paths": {
     "/api/v1/auth/node/{node}": {
       "post": {
-        "description": "A node token, on the same terms Luna issues one: the measurement when the cluster\nenforces security, a credential when it does not. Never on the node name alone.",
+        "description": "A node token, on the same terms Luna issues one: the measurement when the cluster\nenforces security, a credential when it does not. Never on the node name alone.\n\n**Access:** public, no token",
         "operationId": "issue_node_api_v1_auth_node__node__post",
         "parameters": [
           {
@@ -776,7 +822,7 @@
     },
     "/api/v1/auth/token": {
       "post": {
-        "description": "Resolve the caller through the chain, then sign a token naming them.",
+        "description": "Resolve the caller through the chain, then sign a token naming them.\n\n**Access:** public, no token",
         "operationId": "issue_api_v1_auth_token_post",
         "requestBody": {
           "content": {
@@ -820,28 +866,8 @@
     },
     "/api/v1/auth/whoami": {
       "get": {
-        "description": "Who the token names and where they sit on the ladder.",
+        "description": "Who the token names and where they sit on the ladder.\n\n**Access:** any signed-in user",
         "operationId": "whoami_api_v1_auth_whoami_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -855,17 +881,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "What this token says about its bearer",
         "tags": [
           "auth"
@@ -876,28 +926,8 @@
     },
     "/api/v1/directory/groups": {
       "get": {
-        "description": "Every group in the directory",
+        "description": "Every group in the directory\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_list_groups_get_api_v1_directory_groups_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -907,17 +937,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Every group in the directory",
         "tags": [
           "directory"
@@ -926,28 +980,8 @@
         "x-trixd-minimum": "rootus"
       },
       "post": {
-        "description": "Create a group",
+        "description": "Create a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_create_group_post_api_v1_directory_groups_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -967,6 +1001,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -978,6 +1038,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Create a group",
         "tags": [
           "directory"
@@ -988,7 +1056,7 @@
     },
     "/api/v1/directory/groups/{name}": {
       "delete": {
-        "description": "Delete a group",
+        "description": "Delete a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_delete_group_delete_api_v1_directory_groups__name__delete",
         "parameters": [
           {
@@ -999,24 +1067,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -1027,6 +1077,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -1039,6 +1115,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Delete a group",
         "tags": [
           "directory"
@@ -1047,7 +1131,7 @@
         "x-trixd-minimum": "rootus"
       },
       "get": {
-        "description": "One group",
+        "description": "One group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_get_group_get_api_v1_directory_groups__name__get",
         "parameters": [
           {
@@ -1058,24 +1142,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -1086,6 +1152,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -1098,6 +1190,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "One group",
         "tags": [
           "directory"
@@ -1106,7 +1206,7 @@
         "x-trixd-minimum": "rootus"
       },
       "patch": {
-        "description": "Update a group",
+        "description": "Update a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_update_group_patch_api_v1_directory_groups__name__patch",
         "parameters": [
           {
@@ -1115,24 +1215,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -1156,6 +1238,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1167,6 +1275,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Update a group",
         "tags": [
           "directory"
@@ -1177,28 +1293,8 @@
     },
     "/api/v1/directory/users": {
       "get": {
-        "description": "Every user in the directory",
+        "description": "Every user in the directory\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_list_users_get_api_v1_directory_users_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -1208,17 +1304,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Every user in the directory",
         "tags": [
           "directory"
@@ -1227,28 +1347,8 @@
         "x-trixd-minimum": "rootus"
       },
       "post": {
-        "description": "Create a user",
+        "description": "Create a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_create_user_post_api_v1_directory_users_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -1268,6 +1368,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1279,6 +1405,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Create a user",
         "tags": [
           "directory"
@@ -1289,7 +1423,7 @@
     },
     "/api/v1/directory/users/{name}": {
       "delete": {
-        "description": "Delete a user",
+        "description": "Delete a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_delete_user_delete_api_v1_directory_users__name__delete",
         "parameters": [
           {
@@ -1300,24 +1434,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -1328,6 +1444,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -1340,6 +1482,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Delete a user",
         "tags": [
           "directory"
@@ -1348,7 +1498,7 @@
         "x-trixd-minimum": "rootus"
       },
       "get": {
-        "description": "One user",
+        "description": "One user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_get_user_get_api_v1_directory_users__name__get",
         "parameters": [
           {
@@ -1359,24 +1509,6 @@
               "title": "Name",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -1387,6 +1519,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -1399,6 +1557,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "One user",
         "tags": [
           "directory"
@@ -1407,7 +1573,7 @@
         "x-trixd-minimum": "rootus"
       },
       "patch": {
-        "description": "Update a user",
+        "description": "Update a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_update_user_patch_api_v1_directory_users__name__patch",
         "parameters": [
           {
@@ -1416,24 +1582,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -1457,6 +1605,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1468,6 +1642,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Update a user",
         "tags": [
           "directory"
@@ -1478,28 +1660,8 @@
     },
     "/api/v1/genders/config": {
       "get": {
-        "description": "Where this plugin writes, which the generator fixes",
+        "description": "Where this plugin writes, which the generator fixes\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_config_get_api_v1_genders_config_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -1509,17 +1671,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where this plugin writes, which the generator fixes",
         "tags": [
           "genders"
@@ -1530,28 +1716,8 @@
     },
     "/api/v1/genders/renders/genders": {
       "get": {
-        "description": "What the last render wrote",
+        "description": "What the last render wrote\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_render_genders_get_api_v1_genders_renders_genders_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -1561,17 +1727,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "What the last render wrote",
         "tags": [
           "genders"
@@ -1582,28 +1772,8 @@
     },
     "/api/v1/identity/users": {
       "get": {
-        "description": "The ini account first, then every live row; anyone without a row is none.",
+        "description": "The ini account first, then every live row; anyone without a row is none.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "list_users_api_v1_identity_users_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -1617,17 +1787,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Every user and the role each holds",
         "tags": [
           "identity"
@@ -1638,7 +1832,7 @@
     },
     "/api/v1/identity/users/{name}": {
       "delete": {
-        "description": "The role and any password here go at once. A local user can no longer sign in; a\nPAM or LDAP user still can, and holds role none.",
+        "description": "The role and any password here go at once. A local user can no longer sign in; a\nPAM or LDAP user still can, and holds role none.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "delete_user_api_v1_identity_users__name__delete",
         "parameters": [
           {
@@ -1647,24 +1841,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -1682,6 +1858,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1693,6 +1895,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Remove a user, and with it their role",
         "tags": [
           "identity"
@@ -1701,7 +1911,7 @@
         "x-trixd-minimum": "rootus"
       },
       "put": {
-        "description": "Creates the user when it is new, and changes only what the body names when it is not.",
+        "description": "Creates the user when it is new, and changes only what the body names when it is not.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "put_user_api_v1_identity_users__name__put",
         "parameters": [
           {
@@ -1710,24 +1920,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -1755,6 +1947,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1766,6 +1984,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Give a user a role, a password, or both",
         "tags": [
           "identity"
@@ -1776,7 +2002,7 @@
     },
     "/api/v1/luna/{rest}": {
       "delete": {
-        "description": "Forward to Luna, unchanged",
+        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_delete_api_v1_luna__rest__delete",
         "parameters": [
           {
@@ -1809,6 +2035,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Forward to Luna, unchanged",
         "tags": [
           "luna"
@@ -1817,7 +2051,7 @@
         "x-trixd-minimum": ""
       },
       "get": {
-        "description": "Forward to Luna, unchanged",
+        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_get_api_v1_luna__rest__get",
         "parameters": [
           {
@@ -1850,6 +2084,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Forward to Luna, unchanged",
         "tags": [
           "luna"
@@ -1858,7 +2100,7 @@
         "x-trixd-minimum": ""
       },
       "patch": {
-        "description": "Forward to Luna, unchanged",
+        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_patch_api_v1_luna__rest__patch",
         "parameters": [
           {
@@ -1891,6 +2133,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Forward to Luna, unchanged",
         "tags": [
           "luna"
@@ -1899,7 +2149,7 @@
         "x-trixd-minimum": ""
       },
       "post": {
-        "description": "Forward to Luna, unchanged",
+        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_post_api_v1_luna__rest__post",
         "parameters": [
           {
@@ -1932,6 +2182,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Forward to Luna, unchanged",
         "tags": [
           "luna"
@@ -1942,28 +2200,8 @@
     },
     "/api/v1/prometheus/config": {
       "get": {
-        "description": "Where this plugin writes, and what it reloads",
+        "description": "Where this plugin writes, and what it reloads\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_config_get_api_v1_prometheus_config_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -1973,17 +2211,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where this plugin writes, and what it reloads",
         "tags": [
           "prometheus"
@@ -1992,28 +2254,8 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Where this plugin writes, and what it reloads",
+        "description": "Where this plugin writes, and what it reloads\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "prometheus_config_patch_api_v1_prometheus_config_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2033,6 +2275,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2044,6 +2312,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where this plugin writes, and what it reloads",
         "tags": [
           "prometheus"
@@ -2054,25 +2330,53 @@
     },
     "/api/v1/prometheus/hw-rules": {
       "get": {
-        "description": "Every node's hardware rules, or those of ?nodes=a,b; ?detail=no for counts only",
+        "description": "What trixd holds for every node, or for the nodes named in `nodes`, in the shape\nLuna's own hardware-rules export answers, so alertx reads either. Each entry carries\nthe node, whether a rule file is held, the number of rules and, unless `detail=no`,\nthe rule file itself as `document`, as `GET /api/v1/prometheus/hw-rules/{node}`\nanswers it. A node asked for and not held is listed with `exists: false`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_list_hw_rules_get_api_v1_prometheus_hw_rules_get",
         "parameters": [
           {
-            "in": "header",
-            "name": "x-access-tokens",
+            "description": "Comma-separated node names; leave it out for every node held",
+            "examples": {
+              "example": {
+                "value": "node001,node999"
+              }
+            },
+            "in": "query",
+            "name": "nodes",
             "required": false,
             "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "Comma-separated node names; leave it out for every node held",
+              "title": "Nodes"
             }
           },
           {
-            "in": "header",
-            "name": "authorization",
+            "description": "no, false or 0 leaves out each rule file and keeps the count",
+            "examples": {
+              "example": {
+                "value": "no"
+              }
+            },
+            "in": "query",
+            "name": "detail",
             "required": false,
             "schema": {
-              "title": "Authorization",
-              "type": "string"
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "no, false or 0 leaves out each rule file and keeps the count",
+              "title": "Detail"
             }
           }
         ],
@@ -2080,10 +2384,49 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "nodes": [
+                    {
+                      "exists": true,
+                      "node": "node001.cluster",
+                      "rules": 8
+                    },
+                    {
+                      "exists": false,
+                      "node": "node999"
+                    }
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "One entry per node"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -2096,7 +2439,15 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Every node's hardware rules, or those of ?nodes=a,b; ?detail=no for counts only",
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Every node's hardware rules, or some nodes'",
         "tags": [
           "prometheus"
         ],
@@ -2104,31 +2455,27 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Regenerate, or switch the alerts of, several nodes' hardware rules",
+        "description": "Several nodes in one call, as alertx's save-nodes sends it. Each entry names a `node`\nand any of `force`, `nhc` and `disabled`, which mean what they mean for one node in\n`PATCH /api/v1/prometheus/hw-rules/{node}`.\n\nEach node gets its own answer: `ok: false` with a `message` for a node Luna does not\nknow, or whose file could not be written, without stopping the others. Prometheus is\nreloaded once for the lot, and not at all when nothing changed.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_set_hw_rules_patch_api_v1_prometheus_hw_rules_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "nodes": [
+                      {
+                        "disabled": true,
+                        "node": "node001"
+                      },
+                      {
+                        "force": true,
+                        "node": "node002"
+                      }
+                    ]
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/PrometheusHw_Rules_Many"
               }
@@ -2140,10 +2487,62 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "nodes": [
+                    {
+                      "changed": true,
+                      "hostname": "node001.cluster",
+                      "node": "node001",
+                      "ok": true,
+                      "rules": 8
+                    },
+                    {
+                      "message": "not a node Luna knows",
+                      "node": "node002",
+                      "ok": false
+                    }
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "One answer per node, in the order sent"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "An entry does not name a node"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -2154,8 +2553,26 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Rule files were written, but Prometheus did not take the reload"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Regenerate, or switch the alerts of, several nodes' hardware rules",
         "tags": [
           "prometheus"
@@ -2166,33 +2583,22 @@
     },
     "/api/v1/prometheus/hw-rules/{node}": {
       "get": {
-        "description": "The hardware rules held for one node",
+        "description": "The Prometheus rule file trixd holds for one node, as YAML loads it: one group,\n`trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported\nwhen the file was generated. An alert fires when its part stops being reported, so a\nmissing DIMM, disk or card is noticed.\n\nEach rule's labels say how its alert counts: `nhc`, whether it counts for the node's\nhealth check, and `disabled`, whether it fires at all. A manager changes them with\n`PATCH /api/v1/prometheus/hw-rules`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_get_hw_rules_get_api_v1_prometheus_hw_rules__node__get",
         "parameters": [
           {
+            "description": "The node, by its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
             "in": "path",
             "name": "node",
             "required": true,
             "schema": {
+              "description": "The node, by its short name or full hostname",
               "title": "Node",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -2201,10 +2607,68 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "groups": [
+                    {
+                      "name": "trinityx_hw",
+                      "rules": [
+                        {
+                          "alert": "MissingHardwareComponent",
+                          "annotations": {
+                            "description": "Hardware component {{ $labels.class }} with {{ $labels.product }} {{ $labels.vendor }} {{ $labels.serial }} is missing."
+                          },
+                          "expr": "absent(lshw_device{hostname=\"node001.cluster\",luna_group=\"compute-group\",class=\"memory\",description=\"System Memory\"})",
+                          "labels": {
+                            "category": "hardware",
+                            "disabled": false,
+                            "nhc": true,
+                            "severity": "warning"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The node's rule file"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No rule file is held for that node yet. It is written when the node asks after boot, or when a manager regenerates it"
           },
           "422": {
             "content": {
@@ -2217,7 +2681,15 @@
             "description": "Validation Error"
           }
         },
-        "summary": "The hardware rules held for one node",
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The hardware rule file held for one node",
         "tags": [
           "prometheus"
         ],
@@ -2225,33 +2697,22 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "A node asks for its own hardware rules to be generated",
+        "description": "Called by the node itself after boot, by alertx's hook, with a node token for that\nnode from `POST /api/v1/auth/node/{node}`. trixd asks Prometheus which parts `lshw`\nreports for the node and writes one alert for each.\n\nA node that already has a rule file keeps it, so a reboot writes nothing and reloads\nnothing; send `force: true` to generate the file afresh. `nhc` and `disabled`, when\nsent, are set on every rule. Prometheus is reloaded only when the file changed, so a\nthousand nodes booting at once cost a handful of reloads.\n\n**Access:** a node token for the node in the path, from `POST /api/v1/auth/node/{node}`",
         "operationId": "prometheus_import_hw_rules_patch_api_v1_prometheus_hw_rules__node__patch",
         "parameters": [
           {
+            "description": "The node the token is for: its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
             "in": "path",
             "name": "node",
             "required": true,
             "schema": {
+              "description": "The node the token is for: its short name or full hostname",
               "title": "Node",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -2259,6 +2720,13 @@
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "force": false
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/PrometheusHw_Rules"
               }
@@ -2270,10 +2738,41 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "changed": false,
+                  "hostname": "node001.cluster",
+                  "rules": 8
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "What was written, and whether anything changed"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "token is not valid for this node"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not a node token, or a token for another node"
           },
           "422": {
             "content": {
@@ -2284,9 +2783,27 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Prometheus did not answer, holds no hardware data for the node yet, or did not take the reload"
           }
         },
-        "summary": "A node asks for its own hardware rules to be generated",
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "A node has its own hardware rule file written",
         "tags": [
           "prometheus"
         ],
@@ -2296,7 +2813,7 @@
     },
     "/api/v1/prometheus/renders/targets": {
       "get": {
-        "description": "Service discovery targets, served from the render",
+        "description": "Service discovery targets, served from the render\n\n**Access:** public, no token",
         "operationId": "prometheus_render_targets_get_api_v1_prometheus_renders_targets_get",
         "responses": {
           "200": {
@@ -2318,28 +2835,8 @@
     },
     "/api/v1/prometheus/rules": {
       "get": {
-        "description": "The generic and service alert rules",
+        "description": "The generic and service alert rules\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_rules_get_api_v1_prometheus_rules_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -2349,17 +2846,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "The generic and service alert rules",
         "tags": [
           "prometheus"
@@ -2368,28 +2889,8 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "The generic and service alert rules",
+        "description": "The generic and service alert rules\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_rules_patch_api_v1_prometheus_rules_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2409,6 +2910,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2420,6 +2947,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "The generic and service alert rules",
         "tags": [
           "prometheus"
@@ -2430,28 +2965,8 @@
     },
     "/api/v1/prometheus/settings": {
       "get": {
-        "description": "The settings hardware rules are generated from",
+        "description": "The settings hardware rules are generated from\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_settings_get_api_v1_prometheus_settings_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -2461,17 +2976,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "The settings hardware rules are generated from",
         "tags": [
           "prometheus"
@@ -2480,28 +3019,8 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "The settings hardware rules are generated from",
+        "description": "The settings hardware rules are generated from\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_settings_patch_api_v1_prometheus_settings_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2521,6 +3040,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2532,6 +3077,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "The settings hardware rules are generated from",
         "tags": [
           "prometheus"
@@ -2542,28 +3095,8 @@
     },
     "/api/v1/services": {
       "get": {
-        "description": "Every service this daemon is allowed to control",
+        "description": "Every service this daemon is allowed to control\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_list_services_get_api_v1_services_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -2573,17 +3106,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Every service this daemon is allowed to control",
         "tags": [
           "services"
@@ -2594,28 +3151,8 @@
     },
     "/api/v1/services/catalogue": {
       "get": {
-        "description": "Which names map to which systemd units",
+        "description": "Which names map to which systemd units\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_catalogue_get_api_v1_services_catalogue_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -2625,17 +3162,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Which names map to which systemd units",
         "tags": [
           "services"
@@ -2644,28 +3205,8 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Which names map to which systemd units",
+        "description": "Which names map to which systemd units\n\n**Access:** manager or above: manager and rootus",
         "operationId": "services_catalogue_patch_api_v1_services_catalogue_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2685,6 +3226,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2696,6 +3263,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Which names map to which systemd units",
         "tags": [
           "services"
@@ -2706,7 +3281,7 @@
     },
     "/api/v1/services/status/{request_id}": {
       "get": {
-        "description": "Where one queued action got to",
+        "description": "Where one queued action got to\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_request_get_api_v1_services_status__request_id__get",
         "parameters": [
           {
@@ -2717,24 +3292,6 @@
               "title": "Request Id",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -2745,6 +3302,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -2757,6 +3340,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where one queued action got to",
         "tags": [
           "services"
@@ -2767,7 +3358,7 @@
     },
     "/api/v1/services/{name}": {
       "get": {
-        "description": "Whether one service is running",
+        "description": "Whether one service is running\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_status_get_api_v1_services__name__get",
         "parameters": [
           {
@@ -2776,24 +3367,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -2807,6 +3380,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -2818,6 +3417,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Whether one service is running",
         "tags": [
           "services"
@@ -2828,7 +3435,7 @@
     },
     "/api/v1/services/{name}/actions/{action}": {
       "post": {
-        "description": "Start, stop, restart or reload one service",
+        "description": "Start, stop, restart or reload one service\n\n**Access:** operator or above: operator, manager and rootus",
         "operationId": "services_act_post_api_v1_services__name__actions__action__post",
         "parameters": [
           {
@@ -2848,24 +3455,6 @@
               "title": "Action",
               "type": "string"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -2876,6 +3465,32 @@
               }
             },
             "description": "Successful Response"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           },
           "422": {
             "content": {
@@ -2888,6 +3503,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Start, stop, restart or reload one service",
         "tags": [
           "services"
@@ -2898,28 +3521,8 @@
     },
     "/api/v1/slurm/config": {
       "get": {
-        "description": "Where this plugin writes and what it runs afterwards",
+        "description": "Where this plugin writes and what it runs afterwards\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_config_get_api_v1_slurm_config_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -2929,17 +3532,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where this plugin writes and what it runs afterwards",
         "tags": [
           "slurm"
@@ -2948,28 +3575,8 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Where this plugin writes and what it runs afterwards",
+        "description": "Where this plugin writes and what it runs afterwards\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "slurm_config_patch_api_v1_slurm_config_patch",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -2989,6 +3596,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3000,6 +3633,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Where this plugin writes and what it runs afterwards",
         "tags": [
           "slurm"
@@ -3010,28 +3651,8 @@
     },
     "/api/v1/slurm/renders/config": {
       "get": {
-        "description": "What the last render wrote",
+        "description": "What the last render wrote\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_render_config_get_api_v1_slurm_renders_config_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -3041,17 +3662,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "What the last render wrote",
         "tags": [
           "slurm"
@@ -3062,7 +3707,7 @@
     },
     "/api/v1/system/audit": {
       "get": {
-        "description": "The audit trail, filtered by who, outcome and an ISO 8601 start time.",
+        "description": "The audit trail, filtered by who, outcome and an ISO 8601 start time.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "audit_trail_api_v1_system_audit_get",
         "parameters": [
           {
@@ -3107,24 +3752,6 @@
               "title": "Limit",
               "type": "integer"
             }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
           }
         ],
         "responses": {
@@ -3140,6 +3767,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3151,6 +3804,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Who did what here, newest first",
         "tags": [
           "system"
@@ -3161,7 +3822,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "Unauthenticated on purpose: a health check that needs a token is not one.\nSo it carries states and times, never an error text: that stays in the log.",
+        "description": "Unauthenticated on purpose: a health check that needs a token is not one.\nSo it carries states and times, never an error text: that stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -3185,30 +3846,34 @@
         "x-trixd-minimum": ""
       }
     },
+    "/api/v1/system/license": {
+      "get": {
+        "description": "The GNU General Public License, version 3, as the package ships it.\n\n**Access:** public, no token",
+        "operationId": "license_text_api_v1_system_license_get",
+        "responses": {
+          "200": {
+            "content": {
+              "text/plain": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Successful Response"
+          }
+        },
+        "summary": "The licence trixd is distributed under",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "public",
+        "x-trixd-minimum": ""
+      }
+    },
     "/api/v1/system/notify": {
       "post": {
-        "description": "Wake the renders that read this kind of object, or every render when none is named.\nNothing calls it on its own; it is there for an operator or a script to nudge.",
+        "description": "Wake the renders that read this kind of object, or every render when none is named.\nNothing calls it on its own; it is there for an operator or a script to nudge.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "notify_api_v1_system_notify_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -3232,6 +3897,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3243,6 +3934,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "A Luna object changed",
         "tags": [
           "system"
@@ -3253,28 +3952,8 @@
     },
     "/api/v1/system/plugins": {
       "get": {
-        "description": "Every plugin, its state, its digest and why it was refused.",
+        "description": "Every plugin, its state, its digest and why it was refused.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "plugins_api_v1_system_plugins_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -3288,17 +3967,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Every plugin, its state and why",
         "tags": [
           "system"
@@ -3309,7 +4012,7 @@
     },
     "/api/v1/system/plugins/{name}/disable": {
       "post": {
-        "description": "Its paths stop resolving from the next request, and a restart agrees.",
+        "description": "Its paths stop resolving from the next request, and a restart agrees.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "disable_plugin_api_v1_system_plugins__name__disable_post",
         "parameters": [
           {
@@ -3318,24 +4021,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -3353,6 +4038,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3364,6 +4075,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Unplug a plugin",
         "tags": [
           "system"
@@ -3374,7 +4093,7 @@
     },
     "/api/v1/system/plugins/{name}/reload": {
       "post": {
-        "description": "Discover, validate and swap. Nothing changes if the plugin is refused.",
+        "description": "Discover, validate and swap. Nothing changes if the plugin is refused.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "reload_plugin_api_v1_system_plugins__name__reload_post",
         "parameters": [
           {
@@ -3383,24 +4102,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -3418,6 +4119,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3429,6 +4156,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Plug a plugin in, or reload it in place",
         "tags": [
           "system"
@@ -3439,28 +4174,8 @@
     },
     "/api/v1/system/replication/hashes": {
       "get": {
-        "description": "What a peer compares against before copying anything.",
+        "description": "What a peer compares against before copying anything.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_hashes_api_v1_system_replication_hashes_get",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -3474,17 +4189,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "One hash per replicated table",
         "tags": [
           "system"
@@ -3495,28 +4234,8 @@
     },
     "/api/v1/system/replication/sweep": {
       "post": {
-        "description": "The same pass the timer makes, run on demand.",
+        "description": "The same pass the timer makes, run on demand.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_sweep_api_v1_system_replication_sweep_post",
-        "parameters": [
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
-              "type": "string"
-            }
-          }
-        ],
         "responses": {
           "200": {
             "content": {
@@ -3530,17 +4249,41 @@
             },
             "description": "Successful Response"
           },
-          "422": {
+          "401": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "Reconcile with every peer now",
         "tags": [
           "system"
@@ -3551,7 +4294,7 @@
     },
     "/api/v1/system/replication/table/{name}": {
       "get": {
-        "description": "Addressed by name rather than by identifier, because identifiers are local.",
+        "description": "Addressed by name rather than by identifier, because identifiers are local.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_table_api_v1_system_replication_table__name__get",
         "parameters": [
           {
@@ -3560,24 +4303,6 @@
             "required": true,
             "schema": {
               "title": "Name",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "x-access-tokens",
-            "required": false,
-            "schema": {
-              "title": "X-Access-Tokens",
-              "type": "string"
-            }
-          },
-          {
-            "in": "header",
-            "name": "authorization",
-            "required": false,
-            "schema": {
-              "title": "Authorization",
               "type": "string"
             }
           }
@@ -3595,6 +4320,32 @@
             },
             "description": "Successful Response"
           },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -3606,6 +4357,14 @@
             "description": "Validation Error"
           }
         },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
         "summary": "One replicated table as documents",
         "tags": [
           "system"
@@ -3616,7 +4375,7 @@
     },
     "/api/v1/system/version": {
       "get": {
-        "description": "What is running here, for a client that has to ask.",
+        "description": "What is running here, for a client that has to ask.\n\n**Access:** public, no token",
         "operationId": "version_api_v1_system_version_get",
         "responses": {
           "200": {
