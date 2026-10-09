@@ -48,9 +48,17 @@
                 "type": "null"
               }
             ],
+            "description": "The group number; obol's default when left out",
+            "examples": [
+              1053
+            ],
             "title": "Gid"
           },
           "groupname": {
+            "description": "The group name",
+            "examples": [
+              "research"
+            ],
             "pattern": "^[a-zA-Z_][a-zA-Z0-9_.-]*$",
             "title": "Groupname",
             "type": "string"
@@ -66,6 +74,12 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The users in the group",
+            "examples": [
+              [
+                "alice"
+              ]
             ],
             "title": "Members"
           }
@@ -87,6 +101,10 @@
                 "type": "null"
               }
             ],
+            "description": "The group number",
+            "examples": [
+              1053
+            ],
             "title": "Gid"
           },
           "members": {
@@ -100,6 +118,13 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The users in the group; replaces the list",
+            "examples": [
+              [
+                "admin",
+                "alice"
+              ]
             ],
             "title": "Members"
           }
@@ -118,6 +143,10 @@
                 "type": "null"
               }
             ],
+            "description": "Days until the account expires",
+            "examples": [
+              365
+            ],
             "title": "Expiry"
           },
           "gid": {
@@ -129,6 +158,10 @@
                 "type": "null"
               }
             ],
+            "description": "The primary group number",
+            "examples": [
+              1052
+            ],
             "title": "Gid"
           },
           "givenname": {
@@ -139,6 +172,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The given name",
+            "examples": [
+              "Alice"
             ],
             "title": "Givenname"
           },
@@ -154,6 +191,12 @@
                 "type": "null"
               }
             ],
+            "description": "The groups the user joins",
+            "examples": [
+              [
+                "admins"
+              ]
+            ],
             "title": "Groups"
           },
           "home": {
@@ -164,6 +207,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The home directory",
+            "examples": [
+              "/trinity/home/alice"
             ],
             "title": "Home"
           },
@@ -176,6 +223,10 @@
                 "type": "null"
               }
             ],
+            "description": "An e-mail address",
+            "examples": [
+              "alice@example.com"
+            ],
             "title": "Mail"
           },
           "password": {
@@ -186,6 +237,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The password to set",
+            "examples": [
+              "a long passphrase"
             ],
             "title": "Password"
           },
@@ -198,6 +253,10 @@
                 "type": "null"
               }
             ],
+            "description": "A telephone number",
+            "examples": [
+              "+31 20 000 0000"
+            ],
             "title": "Phone"
           },
           "shell": {
@@ -208,6 +267,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The login shell",
+            "examples": [
+              "/bin/bash"
             ],
             "title": "Shell"
           },
@@ -220,6 +283,10 @@
                 "type": "null"
               }
             ],
+            "description": "The surname, LDAP's sn",
+            "examples": [
+              "Smith"
+            ],
             "title": "Surname"
           },
           "uid": {
@@ -231,9 +298,17 @@
                 "type": "null"
               }
             ],
+            "description": "The user number; obol's default when left out",
+            "examples": [
+              1052
+            ],
             "title": "Uid"
           },
           "username": {
+            "description": "The login name",
+            "examples": [
+              "alice"
+            ],
             "pattern": "^[a-zA-Z_][a-zA-Z0-9_.-]*$",
             "title": "Username",
             "type": "string"
@@ -256,6 +331,10 @@
                 "type": "null"
               }
             ],
+            "description": "Days until the account expires",
+            "examples": [
+              365
+            ],
             "title": "Expiry"
           },
           "gid": {
@@ -267,6 +346,10 @@
                 "type": "null"
               }
             ],
+            "description": "The primary group number",
+            "examples": [
+              1052
+            ],
             "title": "Gid"
           },
           "givenname": {
@@ -277,6 +360,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The given name",
+            "examples": [
+              "Alice"
             ],
             "title": "Givenname"
           },
@@ -292,6 +379,12 @@
                 "type": "null"
               }
             ],
+            "description": "The groups the user is in; replaces the list",
+            "examples": [
+              [
+                "admins"
+              ]
+            ],
             "title": "Groups"
           },
           "home": {
@@ -302,6 +395,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The home directory",
+            "examples": [
+              "/trinity/home/alice"
             ],
             "title": "Home"
           },
@@ -314,6 +411,10 @@
                 "type": "null"
               }
             ],
+            "description": "An e-mail address",
+            "examples": [
+              "alice@example.com"
+            ],
             "title": "Mail"
           },
           "password": {
@@ -324,6 +425,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The password to set",
+            "examples": [
+              "a long passphrase"
             ],
             "title": "Password"
           },
@@ -336,6 +441,10 @@
                 "type": "null"
               }
             ],
+            "description": "A telephone number",
+            "examples": [
+              "+31 20 000 0000"
+            ],
             "title": "Phone"
           },
           "shell": {
@@ -346,6 +455,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The login shell",
+            "examples": [
+              "/bin/bash"
             ],
             "title": "Shell"
           },
@@ -358,6 +471,10 @@
                 "type": "null"
               }
             ],
+            "description": "The surname, LDAP's sn",
+            "examples": [
+              "Smith"
+            ],
             "title": "Surname"
           },
           "uid": {
@@ -368,6 +485,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The user number; obol's default when left out",
+            "examples": [
+              1052
             ],
             "title": "Uid"
           }
@@ -433,6 +554,10 @@
                 "type": "null"
               }
             ],
+            "description": "Where Prometheus answers its HTTP API",
+            "examples": [
+              "https://localhost:9090"
+            ],
             "title": "Prometheus Url"
           },
           "reload_command": {
@@ -444,6 +569,10 @@
                 "type": "null"
               }
             ],
+            "description": "Run after a rule file changes, so Prometheus reads it",
+            "examples": [
+              "systemctl reload prometheus-server"
+            ],
             "title": "Reload Command"
           },
           "rules_directory": {
@@ -454,6 +583,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "Where the rule files are written; Prometheus must read this directory",
+            "examples": [
+              "/trinity/local/etc/prometheus_server/rules/"
             ],
             "title": "Rules Directory"
           }
@@ -541,6 +674,7 @@
       "PrometheusRules": {
         "properties": {
           "groups": {
+            "description": "Prometheus rule groups, each a name and its rules",
             "items": {
               "additionalProperties": true,
               "type": "object"
@@ -559,6 +693,15 @@
         "properties": {
           "settings": {
             "additionalProperties": true,
+            "description": "The settings; hw.nhc and hw.disabled start every generated hardware rule",
+            "examples": [
+              {
+                "hw": {
+                  "disabled": false,
+                  "nhc": true
+                }
+              }
+            ],
             "title": "Settings",
             "type": "object"
           }
@@ -573,6 +716,13 @@
         "properties": {
           "services": {
             "additionalProperties": true,
+            "description": "Each service name and the systemd unit it means",
+            "examples": [
+              {
+                "dirsrv": "dirsrv@local",
+                "slurmctld": "slurmctld"
+              }
+            ],
             "title": "Services",
             "type": "object"
           }
@@ -594,6 +744,10 @@
                 "type": "null"
               }
             ],
+            "description": "The slurm file holding the gres block",
+            "examples": [
+              "/etc/slurm/gres.conf"
+            ],
             "title": "Gres File"
           },
           "manager": {
@@ -604,6 +758,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "The name of the managed block in each file",
+            "examples": [
+              "TrinityX"
             ],
             "title": "Manager"
           },
@@ -616,6 +774,10 @@
                 "type": "null"
               }
             ],
+            "description": "The slurm file holding the node block",
+            "examples": [
+              "/etc/slurm/slurm-nodes.conf"
+            ],
             "title": "Nodes File"
           },
           "partitions_file": {
@@ -627,6 +789,10 @@
                 "type": "null"
               }
             ],
+            "description": "The slurm file holding the partition block",
+            "examples": [
+              "/etc/slurm/slurm-partitions.conf"
+            ],
             "title": "Partitions File"
           },
           "reconfigure": {
@@ -637,6 +803,10 @@
               {
                 "type": "null"
               }
+            ],
+            "description": "Run after a write, so slurm reads the files again",
+            "examples": [
+              "/usr/bin/scontrol reconfigure"
             ],
             "title": "Reconfigure"
           }
@@ -767,14 +937,21 @@
   "paths": {
     "/api/v1/auth/node/{node}": {
       "post": {
-        "description": "A node token, on the same terms Luna issues one: the measurement when the cluster\nenforces security, a credential when it does not. Never on the node name alone.\n\n**Access:** public, no token",
+        "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise a username and password. Never on the node name alone.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
         "operationId": "issue_node_api_v1_auth_node__node__post",
         "parameters": [
           {
+            "description": "The node, as Luna names it",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
             "in": "path",
             "name": "node",
             "required": true,
             "schema": {
+              "description": "The node, as Luna names it",
               "title": "Node",
               "type": "string"
             }
@@ -783,6 +960,13 @@
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "tpm_sha256": "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/NodeProof"
               }
@@ -794,12 +978,25 @@
           "201": {
             "content": {
               "application/json": {
+                "example": {
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImtpbmQiOiJ1c2VyIn0.c2lnbmF0dXJl"
+                },
                 "schema": {
                   "$ref": "#/components/schemas/Token"
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "A token for this node alone"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna does not know the node, the measurement does not match, or no valid credential was given"
           },
           "422": {
             "content": {
@@ -812,7 +1009,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Exchange a node measurement for a node-scoped token",
+        "summary": "A node gets a token for itself",
         "tags": [
           "auth"
         ],
@@ -822,11 +1019,19 @@
     },
     "/api/v1/auth/token": {
       "post": {
-        "description": "Resolve the caller through the chain, then sign a token naming them.\n\n**Access:** public, no token",
+        "description": "The ini account is checked against `trixd.ini`; anyone else against the sources in `[AUTH] CHAIN` in order, local, pam and ldap, and the first that knows the name decides.\n\nThe token is valid for `[API] EXPIRY`, an hour by default. Send it on every call as `x-access-tokens: <token>` or `Authorization: Bearer <token>`, or paste it into **Authorize** on this page. Luna accepts it too, as its administrator for the ini account only.\n\n**Access:** public, no token",
         "operationId": "issue_api_v1_auth_token_post",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "password": "a long passphrase",
+                    "username": "alice"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/Credentials"
               }
@@ -838,12 +1043,25 @@
           "201": {
             "content": {
               "application/json": {
+                "example": {
+                  "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJzdWIiOiJhbGljZSIsImtpbmQiOiJ1c2VyIn0.c2lnbmF0dXJl"
+                },
                 "schema": {
                   "$ref": "#/components/schemas/Token"
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The token"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The username or password is incorrect"
           },
           "422": {
             "content": {
@@ -856,7 +1074,7 @@
             "description": "Validation Error"
           }
         },
-        "summary": "Exchange credentials for a token",
+        "summary": "Sign in: exchange a username and password for a token",
         "tags": [
           "auth"
         ],
@@ -866,12 +1084,20 @@
     },
     "/api/v1/auth/whoami": {
       "get": {
-        "description": "Who the token names and where they sit on the ladder.\n\n**Access:** any signed-in user",
+        "description": "Who the token names and how trixd sees them: `kind` is `user`, `node` or `service`; `source` is where the name was checked, `ini`, `local`, `pam`, `ldap`, or `luna` for a token Luna issued; `role` is the role held here; `rootus` is true for the ini account, which passes every check whatever its role. Any signed-in user may ask, role `none` included.\n\n**Access:** any signed-in user",
         "operationId": "whoami_api_v1_auth_whoami_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "issuer": "trixd",
+                  "kind": "user",
+                  "principal": "alice",
+                  "role": "reader",
+                  "rootus": false,
+                  "source": "local"
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Whoami Api V1 Auth Whoami Get",
@@ -879,7 +1105,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Who the token names"
           },
           "401": {
             "content": {
@@ -916,7 +1142,7 @@
             "bearer": []
           }
         ],
-        "summary": "What this token says about its bearer",
+        "summary": "Who this token names, and what they hold here",
         "tags": [
           "auth"
         ],
@@ -926,16 +1152,26 @@
     },
     "/api/v1/directory/groups": {
       "get": {
-        "description": "Every group in the directory\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Every group obol finds in the cluster directory. `member` lists the members by user\nname, whichever attribute the directory keeps them in, so the users application reads\none shape.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_list_groups_get_api_v1_directory_groups_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": [
+                  {
+                    "cn": "admins",
+                    "gidNumber": "1050",
+                    "member": [
+                      "admin",
+                      "alice"
+                    ]
+                  }
+                ],
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Every group"
           },
           "401": {
             "content": {
@@ -972,7 +1208,7 @@
             "bearer": []
           }
         ],
-        "summary": "Every group in the directory",
+        "summary": "Every group in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -980,11 +1216,21 @@
         "x-trixd-minimum": "rootus"
       },
       "post": {
-        "description": "Create a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the group with obol and answers the group as it now stands. Only `groupname`\nis required; `members` lists the users in it.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_create_group_post_api_v1_directory_groups_post",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "groupname": "research",
+                    "members": [
+                      "alice"
+                    ]
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/DirectoryGroup"
               }
@@ -996,10 +1242,27 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "research",
+                  "gidNumber": "1053",
+                  "member": [
+                    "alice"
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The group as created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The group exists already, or no groupname was given"
           },
           "401": {
             "content": {
@@ -1036,6 +1299,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1046,7 +1319,7 @@
             "bearer": []
           }
         ],
-        "summary": "Create a group",
+        "summary": "Create a group in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1056,14 +1329,21 @@
     },
     "/api/v1/directory/groups/{name}": {
       "delete": {
-        "description": "Delete a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Removes the group from the directory with obol. Its members stay as users.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_delete_group_delete_api_v1_directory_groups__name__delete",
         "parameters": [
           {
+            "description": "The group name in the directory",
+            "examples": {
+              "example": {
+                "value": "admins"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The group name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1073,10 +1353,13 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "group research deleted"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "What was done"
           },
           "401": {
             "content": {
@@ -1104,6 +1387,16 @@
             },
             "description": "The caller's role is below this route's minimum"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No group has that name"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1113,6 +1406,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1123,7 +1426,7 @@
             "bearer": []
           }
         ],
-        "summary": "Delete a group",
+        "summary": "Delete a group from the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1131,14 +1434,21 @@
         "x-trixd-minimum": "rootus"
       },
       "get": {
-        "description": "One group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One group: its number and its members by user name.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_get_group_get_api_v1_directory_groups__name__get",
         "parameters": [
           {
+            "description": "The group name in the directory",
+            "examples": {
+              "example": {
+                "value": "admins"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The group name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1148,10 +1458,18 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "admins",
+                  "gidNumber": "1050",
+                  "member": [
+                    "admin",
+                    "alice"
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The group"
           },
           "401": {
             "content": {
@@ -1179,6 +1497,16 @@
             },
             "description": "The caller's role is below this route's minimum"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No group has that name"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1198,7 +1526,7 @@
             "bearer": []
           }
         ],
-        "summary": "One group",
+        "summary": "One group in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1206,14 +1534,21 @@
         "x-trixd-minimum": "rootus"
       },
       "patch": {
-        "description": "Update a group\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Changes only the fields sent: `gid`, or `members`, which replaces the member list.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_update_group_patch_api_v1_directory_groups__name__patch",
         "parameters": [
           {
+            "description": "The group name in the directory",
+            "examples": {
+              "example": {
+                "value": "admins"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The group name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1222,6 +1557,16 @@
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "members": [
+                      "admin",
+                      "alice"
+                    ]
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/DirectoryGroup_Change"
               }
@@ -1233,10 +1578,28 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "admins",
+                  "gidNumber": "1050",
+                  "member": [
+                    "admin",
+                    "alice"
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The group as it now stands"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Nothing to change was sent"
           },
           "401": {
             "content": {
@@ -1263,6 +1626,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No group has that name"
           },
           "422": {
             "content": {
@@ -1273,6 +1646,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1283,7 +1666,7 @@
             "bearer": []
           }
         ],
-        "summary": "Update a group",
+        "summary": "Change a group in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1293,16 +1676,37 @@
     },
     "/api/v1/directory/users": {
       "get": {
-        "description": "Every user in the directory\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Every user obol finds in the cluster directory, as obol shows them: the LDAP\nattributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. rootus only, as\nthe directory is the cluster's user store.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_list_users_get_api_v1_directory_users_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": [
+                  {
+                    "cn": "alice",
+                    "gidNumber": "1052",
+                    "homeDirectory": "/trinity/home/alice",
+                    "loginShell": "/bin/bash",
+                    "memberOf": [
+                      "alice",
+                      "admins"
+                    ],
+                    "shadowExpire": "-1",
+                    "shadowLastChange": "20658",
+                    "shadowMax": "99999",
+                    "shadowMin": "0",
+                    "shadowWarning": "7",
+                    "sn": "alice",
+                    "uid": "alice",
+                    "uidNumber": "1052",
+                    "userPassword": "{PBKDF2-SHA512}..."
+                  }
+                ],
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Every user"
           },
           "401": {
             "content": {
@@ -1339,7 +1743,7 @@
             "bearer": []
           }
         ],
-        "summary": "Every user in the directory",
+        "summary": "Every user in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1347,11 +1751,23 @@
         "x-trixd-minimum": "rootus"
       },
       "post": {
-        "description": "Create a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the user with obol and answers the user as it now stands. Only `username` is\nrequired; anything left out takes obol's defaults. `expiry` is in days, and `groups`\nlists the groups the user joins.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_create_user_post_api_v1_directory_users_post",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "groups": [
+                      "admins"
+                    ],
+                    "password": "a long passphrase",
+                    "shell": "/bin/bash",
+                    "username": "alice"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/DirectoryUser"
               }
@@ -1363,10 +1779,39 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "alice",
+                  "gidNumber": "1052",
+                  "homeDirectory": "/trinity/home/alice",
+                  "loginShell": "/bin/bash",
+                  "memberOf": [
+                    "alice",
+                    "admins"
+                  ],
+                  "shadowExpire": "-1",
+                  "shadowLastChange": "20658",
+                  "shadowMax": "99999",
+                  "shadowMin": "0",
+                  "shadowWarning": "7",
+                  "sn": "alice",
+                  "uid": "alice",
+                  "uidNumber": "1052",
+                  "userPassword": "{PBKDF2-SHA512}..."
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The user as created"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The user exists already, or no username was given"
           },
           "401": {
             "content": {
@@ -1403,6 +1848,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1413,7 +1868,7 @@
             "bearer": []
           }
         ],
-        "summary": "Create a user",
+        "summary": "Create a user in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1423,14 +1878,21 @@
     },
     "/api/v1/directory/users/{name}": {
       "delete": {
-        "description": "Delete a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Removes the user from the directory with obol.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_delete_user_delete_api_v1_directory_users__name__delete",
         "parameters": [
           {
+            "description": "The user name in the directory",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The user name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1440,10 +1902,13 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "message": "user alice deleted"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "What was done"
           },
           "401": {
             "content": {
@@ -1471,6 +1936,16 @@
             },
             "description": "The caller's role is below this route's minimum"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No user has that name"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1480,6 +1955,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1490,7 +1975,7 @@
             "bearer": []
           }
         ],
-        "summary": "Delete a user",
+        "summary": "Delete a user from the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1498,14 +1983,21 @@
         "x-trixd-minimum": "rootus"
       },
       "get": {
-        "description": "One user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One user, as obol shows them: the LDAP attributes, with `memberOf` listing their\ngroups.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_get_user_get_api_v1_directory_users__name__get",
         "parameters": [
           {
+            "description": "The user name in the directory",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The user name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1515,10 +2007,29 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "alice",
+                  "gidNumber": "1052",
+                  "homeDirectory": "/trinity/home/alice",
+                  "loginShell": "/bin/bash",
+                  "memberOf": [
+                    "alice",
+                    "admins"
+                  ],
+                  "shadowExpire": "-1",
+                  "shadowLastChange": "20658",
+                  "shadowMax": "99999",
+                  "shadowMin": "0",
+                  "shadowWarning": "7",
+                  "sn": "alice",
+                  "uid": "alice",
+                  "uidNumber": "1052",
+                  "userPassword": "{PBKDF2-SHA512}..."
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The user"
           },
           "401": {
             "content": {
@@ -1546,6 +2057,16 @@
             },
             "description": "The caller's role is below this route's minimum"
           },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No user has that name"
+          },
           "422": {
             "content": {
               "application/json": {
@@ -1565,7 +2086,7 @@
             "bearer": []
           }
         ],
-        "summary": "One user",
+        "summary": "One user in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1573,14 +2094,21 @@
         "x-trixd-minimum": "rootus"
       },
       "patch": {
-        "description": "Update a user\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Changes only the fields sent; the name is the one in the path and cannot change.\n`password` sets a new password, `groups` replaces the user's group list, and\n`expiry` is in days.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "directory_update_user_patch_api_v1_directory_users__name__patch",
         "parameters": [
           {
+            "description": "The user name in the directory",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The user name in the directory",
               "title": "Name",
               "type": "string"
             }
@@ -1589,6 +2117,17 @@
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "groups": [
+                      "admins",
+                      "research"
+                    ],
+                    "shell": "/bin/zsh"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/DirectoryUser_Change"
               }
@@ -1600,10 +2139,39 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "cn": "alice",
+                  "gidNumber": "1052",
+                  "homeDirectory": "/trinity/home/alice",
+                  "loginShell": "/bin/bash",
+                  "memberOf": [
+                    "alice",
+                    "admins"
+                  ],
+                  "shadowExpire": "-1",
+                  "shadowLastChange": "20658",
+                  "shadowMax": "99999",
+                  "shadowMin": "0",
+                  "shadowWarning": "7",
+                  "sn": "alice",
+                  "uid": "alice",
+                  "uidNumber": "1052",
+                  "userPassword": "{PBKDF2-SHA512}..."
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The user as it now stands"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Nothing to change was sent"
           },
           "401": {
             "content": {
@@ -1630,6 +2198,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No user has that name"
           },
           "422": {
             "content": {
@@ -1640,6 +2218,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the message carries what it said"
           }
         },
         "security": [
@@ -1650,7 +2238,7 @@
             "bearer": []
           }
         ],
-        "summary": "Update a user",
+        "summary": "Change a user in the cluster directory",
         "tags": [
           "directory"
         ],
@@ -1660,16 +2248,20 @@
     },
     "/api/v1/genders/config": {
       "get": {
-        "description": "Where this plugin writes, which the generator fixes\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The genders file and the name of its managed block. The genders generator fixes\nboth, so there is nothing to change here.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_config_get_api_v1_genders_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "genders_file": "/etc/genders",
+                  "managed_block": "TrinityX"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Where the plugin writes"
           },
           "401": {
             "content": {
@@ -1706,7 +2298,7 @@
             "bearer": []
           }
         ],
-        "summary": "Where this plugin writes, which the generator fixes",
+        "summary": "Where the plugin writes the genders file",
         "tags": [
           "genders"
         ],
@@ -1716,16 +2308,20 @@
     },
     "/api/v1/genders/renders/genders": {
       "get": {
-        "description": "What the last render wrote\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of the genders file: how many nodes it wrote, and where. It renders\nwhen a node or group changes through the luna plugin, at most every two seconds in a\nburst, and on a notify.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_render_genders_get_api_v1_genders_renders_genders_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "file": "/etc/genders",
+                  "nodes": 10
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "What the last render wrote"
           },
           "401": {
             "content": {
@@ -1752,6 +2348,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The render has not run yet, or its last run failed; the message says why"
           }
         },
         "security": [
@@ -1762,7 +2368,7 @@
             "bearer": []
           }
         ],
-        "summary": "What the last render wrote",
+        "summary": "What the last genders render wrote",
         "tags": [
           "genders"
         ],
@@ -1772,12 +2378,28 @@
     },
     "/api/v1/identity/users": {
       "get": {
-        "description": "The ini account first, then every live row; anyone without a row is none.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The ini account first, shown as rootus, then every stored user. `local` says whether trixd holds a password for the user; one who signs in through PAM or LDAP has none here. Anyone without a row holds role `none`.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "list_users_api_v1_identity_users_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "users": [
+                    {
+                      "enabled": true,
+                      "local": false,
+                      "name": "trixd",
+                      "role": "rootus"
+                    },
+                    {
+                      "enabled": true,
+                      "local": true,
+                      "name": "alice",
+                      "role": "reader"
+                    }
+                  ]
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response List Users Api V1 Identity Users Get",
@@ -1785,7 +2407,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Every user"
           },
           "401": {
             "content": {
@@ -1832,14 +2454,21 @@
     },
     "/api/v1/identity/users/{name}": {
       "delete": {
-        "description": "The role and any password here go at once. A local user can no longer sign in; a\nPAM or LDAP user still can, and holds role none.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The user's role and any password here go at once. A local user can no longer sign in; a PAM or LDAP user still can, and holds role `none`. The deletion reaches the other controller of a pair.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "delete_user_api_v1_identity_users__name__delete",
         "parameters": [
           {
+            "description": "The login name",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The login name",
               "title": "Name",
               "type": "string"
             }
@@ -1849,6 +2478,9 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "deleted": "alice"
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Delete User Api V1 Identity Users  Name  Delete",
@@ -1856,7 +2488,17 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Who was removed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not a login name, or the ini account"
           },
           "401": {
             "content": {
@@ -1883,6 +2525,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No user has that name"
           },
           "422": {
             "content": {
@@ -1911,14 +2563,21 @@
         "x-trixd-minimum": "rootus"
       },
       "put": {
-        "description": "Creates the user when it is new, and changes only what the body names when it is not.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the user when the name is new, and changes only what the body names when it is not: `role`, one of none, reader, operator and manager; `password`, kept here for the `local` source; `enabled`, false cutting the user's tokens at once. The change reaches tokens already issued, because the role is looked up on every request, and reaches the other controller of a pair. The ini account is set in `trixd.ini`, not here.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "put_user_api_v1_identity_users__name__put",
         "parameters": [
           {
+            "description": "The login name",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The login name",
               "title": "Name",
               "type": "string"
             }
@@ -1927,6 +2586,14 @@
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "password": "a long passphrase",
+                    "role": "reader"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/UserIn"
               }
@@ -1938,6 +2605,12 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "enabled": true,
+                  "local": true,
+                  "name": "alice",
+                  "role": "reader"
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Put User Api V1 Identity Users  Name  Put",
@@ -1945,7 +2618,17 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The user as it now stands"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not a login name, a role off the ladder, or the ini account"
           },
           "401": {
             "content": {
@@ -2002,14 +2685,21 @@
     },
     "/api/v1/luna/{rest}": {
       "delete": {
-        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
+        "description": "Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the\n`/api/v1/luna` prefix and the connection headers, at the address Luna's own\n`luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a\ntoken Luna accepts, which the ini account's is. What Luna offers is Luna's own API.\n\nA node renamed, moved to another group or deleted through this route also updates\nwhat trixd keeps for it, such as the node's hardware rule file.\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_delete_api_v1_luna__rest__delete",
         "parameters": [
           {
+            "description": "Luna's own path, as you would call it at Luna",
+            "examples": {
+              "example": {
+                "value": "version"
+              }
+            },
             "in": "path",
             "name": "rest",
             "required": true,
             "schema": {
+              "description": "Luna's own path, as you would call it at Luna",
               "title": "Rest",
               "type": "string"
             }
@@ -2019,10 +2709,17 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "version": {
+                    "api": 1,
+                    "commit": "711e3a5---DUMMY---278ad6399b",
+                    "luna": "2.2.0001"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Luna's answer, unchanged"
           },
           "422": {
             "content": {
@@ -2033,6 +2730,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna is not answering"
           }
         },
         "security": [
@@ -2051,14 +2758,21 @@
         "x-trixd-minimum": ""
       },
       "get": {
-        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
+        "description": "Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the\n`/api/v1/luna` prefix and the connection headers, at the address Luna's own\n`luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a\ntoken Luna accepts, which the ini account's is. What Luna offers is Luna's own API.\n\nA node renamed, moved to another group or deleted through this route also updates\nwhat trixd keeps for it, such as the node's hardware rule file.\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_get_api_v1_luna__rest__get",
         "parameters": [
           {
+            "description": "Luna's own path, as you would call it at Luna",
+            "examples": {
+              "example": {
+                "value": "version"
+              }
+            },
             "in": "path",
             "name": "rest",
             "required": true,
             "schema": {
+              "description": "Luna's own path, as you would call it at Luna",
               "title": "Rest",
               "type": "string"
             }
@@ -2068,10 +2782,17 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "version": {
+                    "api": 1,
+                    "commit": "711e3a5---DUMMY---278ad6399b",
+                    "luna": "2.2.0001"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Luna's answer, unchanged"
           },
           "422": {
             "content": {
@@ -2082,6 +2803,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna is not answering"
           }
         },
         "security": [
@@ -2100,14 +2831,21 @@
         "x-trixd-minimum": ""
       },
       "patch": {
-        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
+        "description": "Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the\n`/api/v1/luna` prefix and the connection headers, at the address Luna's own\n`luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a\ntoken Luna accepts, which the ini account's is. What Luna offers is Luna's own API.\n\nA node renamed, moved to another group or deleted through this route also updates\nwhat trixd keeps for it, such as the node's hardware rule file.\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_patch_api_v1_luna__rest__patch",
         "parameters": [
           {
+            "description": "Luna's own path, as you would call it at Luna",
+            "examples": {
+              "example": {
+                "value": "version"
+              }
+            },
             "in": "path",
             "name": "rest",
             "required": true,
             "schema": {
+              "description": "Luna's own path, as you would call it at Luna",
               "title": "Rest",
               "type": "string"
             }
@@ -2117,10 +2855,17 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "version": {
+                    "api": 1,
+                    "commit": "711e3a5---DUMMY---278ad6399b",
+                    "luna": "2.2.0001"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Luna's answer, unchanged"
           },
           "422": {
             "content": {
@@ -2131,6 +2876,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna is not answering"
           }
         },
         "security": [
@@ -2149,14 +2904,21 @@
         "x-trixd-minimum": ""
       },
       "post": {
-        "description": "Forward to Luna, unchanged\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
+        "description": "Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the\n`/api/v1/luna` prefix and the connection headers, at the address Luna's own\n`luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a\ntoken Luna accepts, which the ini account's is. What Luna offers is Luna's own API.\n\nA node renamed, moved to another group or deleted through this route also updates\nwhat trixd keeps for it, such as the node's hardware rule file.\n\n**Access:** decided by Luna: send a token Luna accepts, as you would to Luna",
         "operationId": "luna_forward_post_api_v1_luna__rest__post",
         "parameters": [
           {
+            "description": "Luna's own path, as you would call it at Luna",
+            "examples": {
+              "example": {
+                "value": "version"
+              }
+            },
             "in": "path",
             "name": "rest",
             "required": true,
             "schema": {
+              "description": "Luna's own path, as you would call it at Luna",
               "title": "Rest",
               "type": "string"
             }
@@ -2166,10 +2928,17 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "version": {
+                    "api": 1,
+                    "commit": "711e3a5---DUMMY---278ad6399b",
+                    "luna": "2.2.0001"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Luna's answer, unchanged"
           },
           "422": {
             "content": {
@@ -2180,6 +2949,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna is not answering"
           }
         },
         "security": [
@@ -2200,16 +2979,21 @@
     },
     "/api/v1/prometheus/config": {
       "get": {
-        "description": "Where this plugin writes, and what it reloads\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The three settings the prometheus plugin works with. `rules_directory` is where it\nwrites the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus\nwhich hardware each node reports, and `reload_command` is what it runs after writing a\nrule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the\nother and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_config_get_api_v1_prometheus_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "prometheus_url": "https://localhost:9090",
+                  "reload_command": "systemctl reload prometheus-server",
+                  "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The settings as held"
           },
           "401": {
             "content": {
@@ -2246,7 +3030,7 @@
             "bearer": []
           }
         ],
-        "summary": "Where this plugin writes, and what it reloads",
+        "summary": "Where the plugin writes rule files, reaches Prometheus, and what it reloads",
         "tags": [
           "prometheus"
         ],
@@ -2254,11 +3038,18 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Where this plugin writes, and what it reloads\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Send any of the three settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "prometheus_config_patch_api_v1_prometheus_config_patch",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "prometheus_url": "https://localhost:9090"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/PrometheusConfig"
               }
@@ -2270,10 +3061,15 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "prometheus_url": "https://localhost:9090",
+                  "reload_command": "systemctl reload prometheus-server",
+                  "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "All three settings as now held"
           },
           "401": {
             "content": {
@@ -2320,7 +3116,7 @@
             "bearer": []
           }
         ],
-        "summary": "Where this plugin writes, and what it reloads",
+        "summary": "Change where the plugin writes rule files, reaches Prometheus, or reloads",
         "tags": [
           "prometheus"
         ],
@@ -2813,16 +3609,48 @@
     },
     "/api/v1/prometheus/renders/targets": {
       "get": {
-        "description": "Service discovery targets, served from the render\n\n**Access:** public, no token",
+        "description": "The document Prometheus' `http_sd` polls: one entry per node and exporter, with the\naddress Prometheus scrapes and the labels it attaches. It is answered from the last\nrender, which runs when a node or network changes through the luna plugin, on a\nnotify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,\nbecause service discovery presents no token.\n\nThe exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,\n`slurm_job` 14207 and `lshw` 14208.\n\n**Access:** public, no token",
         "operationId": "prometheus_render_targets_get_api_v1_prometheus_renders_targets_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": [
+                  {
+                    "labels": {
+                      "exporter": "node",
+                      "hostname": "node001.cluster",
+                      "luna_group": "compute-group"
+                    },
+                    "targets": [
+                      "10.141.0.1:14200"
+                    ]
+                  },
+                  {
+                    "labels": {
+                      "exporter": "node",
+                      "hostname": "node002.cluster",
+                      "luna_group": "compute-group"
+                    },
+                    "targets": [
+                      "10.141.0.2:14200"
+                    ]
+                  }
+                ],
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "One entry per node and exporter"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The render has not run yet, or its last run failed; the message says why"
           }
         },
         "summary": "Service discovery targets, served from the render",
@@ -2835,16 +3663,36 @@
     },
     "/api/v1/prometheus/rules": {
       "get": {
-        "description": "The generic and service alert rules\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The generic and service alert rules as one document, in Prometheus' own rule-file\nformat: `groups`, each with a `name` and its `rules`. trixd writes the groups whose\nname starts with `service` to `trix.service.rules` and the others to\n`trix.generic.rules`, both in the rules directory. Empty until a manager sets it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_rules_get_api_v1_prometheus_rules_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "groups": [
+                    {
+                      "name": "trinityx_generic",
+                      "rules": [
+                        {
+                          "alert": "NodeDown",
+                          "annotations": {
+                            "description": "{{ $labels.hostname }} has not answered for five minutes"
+                          },
+                          "expr": "up{exporter=\"node\"} == 0",
+                          "for": "5m",
+                          "labels": {
+                            "severity": "critical"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The rules document as held"
           },
           "401": {
             "content": {
@@ -2889,11 +3737,35 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "The generic and service alert rules\n\n**Access:** manager or above: manager and rootus",
+        "description": "Replace the whole document, so send every group you want to keep. trixd writes the\ntwo rule files from it, leaves a file alone when it already says the same, writes an\nemptied file so a group taken out stops firing, and reloads Prometheus.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_rules_patch_api_v1_prometheus_rules_patch",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "groups": [
+                      {
+                        "name": "trinityx_generic",
+                        "rules": [
+                          {
+                            "alert": "NodeDown",
+                            "annotations": {
+                              "description": "{{ $labels.hostname }} has not answered for five minutes"
+                            },
+                            "expr": "up{exporter=\"node\"} == 0",
+                            "for": "5m",
+                            "labels": {
+                              "severity": "critical"
+                            }
+                          }
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/PrometheusRules"
               }
@@ -2905,10 +3777,30 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "groups": [
+                    {
+                      "name": "trinityx_generic",
+                      "rules": [
+                        {
+                          "alert": "NodeDown",
+                          "annotations": {
+                            "description": "{{ $labels.hostname }} has not answered for five minutes"
+                          },
+                          "expr": "up{exporter=\"node\"} == 0",
+                          "for": "5m",
+                          "labels": {
+                            "severity": "critical"
+                          }
+                        }
+                      ]
+                    }
+                  ]
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The rules document as now held"
           },
           "401": {
             "content": {
@@ -2945,6 +3837,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The rule files are written, but Prometheus did not take the reload"
           }
         },
         "security": [
@@ -2955,7 +3857,7 @@
             "bearer": []
           }
         ],
-        "summary": "The generic and service alert rules",
+        "summary": "Replace the generic and service alert rules",
         "tags": [
           "prometheus"
         ],
@@ -2965,16 +3867,24 @@
     },
     "/api/v1/prometheus/settings": {
       "get": {
-        "description": "The settings hardware rules are generated from\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "What newly generated hardware rules start from: `settings.hw.nhc` and\n`settings.hw.disabled` are the labels a rule gets when it is generated, before any\nchange for one node. Until a manager sets them, trixd answers what is in\n`rules_settings.yaml` beside the rules directory.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_settings_get_api_v1_prometheus_settings_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "settings": {
+                    "hw": {
+                      "disabled": false,
+                      "nhc": true
+                    }
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The settings"
           },
           "401": {
             "content": {
@@ -3011,7 +3921,7 @@
             "bearer": []
           }
         ],
-        "summary": "The settings hardware rules are generated from",
+        "summary": "The settings new hardware rules start from",
         "tags": [
           "prometheus"
         ],
@@ -3019,11 +3929,23 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "The settings hardware rules are generated from\n\n**Access:** manager or above: manager and rootus",
+        "description": "Replace the settings; trixd also writes them to `rules_settings.yaml`. Rules already\ngenerated keep their labels until they are generated again, with `force: true`.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_settings_patch_api_v1_prometheus_settings_patch",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "settings": {
+                      "hw": {
+                        "disabled": false,
+                        "nhc": true
+                      }
+                    }
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/PrometheusSettings"
               }
@@ -3035,10 +3957,18 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "settings": {
+                    "hw": {
+                      "disabled": false,
+                      "nhc": true
+                    }
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The settings as now held"
           },
           "401": {
             "content": {
@@ -3085,7 +4015,7 @@
             "bearer": []
           }
         ],
-        "summary": "The settings hardware rules are generated from",
+        "summary": "Replace the settings new hardware rules start from",
         "tags": [
           "prometheus"
         ],
@@ -3095,16 +4025,28 @@
     },
     "/api/v1/services": {
       "get": {
-        "description": "Every service this daemon is allowed to control\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Each service in the catalogue with what systemd says about its unit now: `active` as\n`systemctl is-active` answers it, `enabled` as `systemctl is-enabled` does. Only\ncatalogued services are listed; a manager keeps the catalogue.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_list_services_get_api_v1_services_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "services": {
+                    "prometheus-server": {
+                      "active": "active",
+                      "enabled": "enabled"
+                    },
+                    "slurmctld": {
+                      "active": "active",
+                      "enabled": "enabled"
+                    }
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "Each catalogued service and its state"
           },
           "401": {
             "content": {
@@ -3141,7 +4083,7 @@
             "bearer": []
           }
         ],
-        "summary": "Every service this daemon is allowed to control",
+        "summary": "Every service this daemon may control, and its state",
         "tags": [
           "services"
         ],
@@ -3151,16 +4093,25 @@
     },
     "/api/v1/services/catalogue": {
       "get": {
-        "description": "Which names map to which systemd units\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The services this daemon may act on, each name mapped to the systemd unit it means.\nAn operator can start, stop, restart or reload a catalogued service and nothing else.\nUntil a manager sets it, the shipped catalogue is answered.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_catalogue_get_api_v1_services_catalogue_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "services": {
+                    "dirsrv": "dirsrv@local",
+                    "prometheus-alertmanager": "prometheus-alertmanager",
+                    "prometheus-server": "prometheus-server",
+                    "slurmctld": "slurmctld",
+                    "slurmdbd": "slurmdbd"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The catalogue"
           },
           "401": {
             "content": {
@@ -3205,11 +4156,21 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Which names map to which systemd units\n\n**Access:** manager or above: manager and rootus",
+        "description": "Replace the catalogue, so send every service that should stay. Each name and unit\nmust be a systemd unit name and never start with a dash, so nothing reaches\n`systemctl` as an option.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "services_catalogue_patch_api_v1_services_catalogue_patch",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "services": {
+                      "dirsrv": "dirsrv@local",
+                      "slurmctld": "slurmctld"
+                    }
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/ServicesCatalogue"
               }
@@ -3221,10 +4182,26 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "services": {
+                    "dirsrv": "dirsrv@local",
+                    "slurmctld": "slurmctld"
+                  }
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The catalogue as now held"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A name or unit is not a systemd unit name"
           },
           "401": {
             "content": {
@@ -3271,7 +4248,7 @@
             "bearer": []
           }
         ],
-        "summary": "Which names map to which systemd units",
+        "summary": "Set which names map to which systemd units",
         "tags": [
           "services"
         ],
@@ -3281,14 +4258,21 @@
     },
     "/api/v1/services/status/{request_id}": {
       "get": {
-        "description": "Where one queued action got to\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "One queued action and how far it got: `state` moves from `queued` to `running`, then\nto `done` or `failed`, and `message` carries what `systemctl` said. The same route\nLuna offers at `/service/status`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_request_get_api_v1_services_status__request_id__get",
         "parameters": [
           {
+            "description": "The request_id a queued action answered with",
+            "examples": {
+              "example": {
+                "value": "1791545494-2556175-6ba51d7f"
+              }
+            },
             "in": "path",
             "name": "request_id",
             "required": true,
             "schema": {
+              "description": "The request_id a queued action answered with",
               "title": "Request Id",
               "type": "string"
             }
@@ -3298,10 +4282,20 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "created": "2026-10-09T11:31:34.489690",
+                  "finished": "2026-10-09T11:31:34.597325",
+                  "message": "reload prometheus-server accepted",
+                  "param": "prometheus-server",
+                  "request_id": "1791545494-2556175-6ba51d7f",
+                  "state": "done",
+                  "subsystem": "services",
+                  "task": "reload"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The action and how far it got"
           },
           "401": {
             "content": {
@@ -3328,6 +4322,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No queued action has that id"
           },
           "422": {
             "content": {
@@ -3358,14 +4362,21 @@
     },
     "/api/v1/services/{name}": {
       "get": {
-        "description": "Whether one service is running\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "What systemd says about one catalogued service's unit right now.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_status_get_api_v1_services__name__get",
         "parameters": [
           {
+            "description": "A service name from the catalogue",
+            "examples": {
+              "example": {
+                "value": "slurmctld"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "A service name from the catalogue",
               "title": "Name",
               "type": "string"
             }
@@ -3375,10 +4386,16 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "active": "active",
+                  "enabled": "enabled",
+                  "service": "slurmctld",
+                  "unit": "slurmctld"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The service, its unit and its state"
           },
           "401": {
             "content": {
@@ -3405,6 +4422,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not in the catalogue"
           },
           "422": {
             "content": {
@@ -3435,23 +4462,37 @@
     },
     "/api/v1/services/{name}/actions/{action}": {
       "post": {
-        "description": "Start, stop, restart or reload one service\n\n**Access:** operator or above: operator, manager and rootus",
+        "description": "`start`, `stop`, `restart` and `reload` are queued and answered at once with a\n`request_id`: one worker runs `systemctl`, so a slow unit holds the worker, never the\ncall. Follow it at `GET /api/v1/services/status/{request_id}`; a restart of trixd\nruns again what was left. `status` is answered at once, as\n`GET /api/v1/services/{name}` answers it.\n\n**Access:** operator or above: operator, manager and rootus",
         "operationId": "services_act_post_api_v1_services__name__actions__action__post",
         "parameters": [
           {
+            "description": "A service name from the catalogue",
+            "examples": {
+              "example": {
+                "value": "slurmctld"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "A service name from the catalogue",
               "title": "Name",
               "type": "string"
             }
           },
           {
+            "description": "One of start, stop, restart, reload and status",
+            "examples": {
+              "example": {
+                "value": "restart"
+              }
+            },
             "in": "path",
             "name": "action",
             "required": true,
             "schema": {
+              "description": "One of start, stop, restart, reload and status",
               "title": "Action",
               "type": "string"
             }
@@ -3461,10 +4502,27 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "action": "restart",
+                  "request_id": "1791545494-2556175-6ba51d7f",
+                  "service": "slurmctld",
+                  "state": "queued",
+                  "unit": "slurmctld"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The queued action, or for status the service's state"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The action is not one of start, stop, restart, reload and status"
           },
           "401": {
             "content": {
@@ -3491,6 +4549,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not in the catalogue"
           },
           "422": {
             "content": {
@@ -3511,7 +4579,7 @@
             "bearer": []
           }
         ],
-        "summary": "Start, stop, restart or reload one service",
+        "summary": "Start, stop, restart, reload or query one service",
         "tags": [
           "services"
         ],
@@ -3521,16 +4589,23 @@
     },
     "/api/v1/slurm/config": {
       "get": {
-        "description": "Where this plugin writes and what it runs afterwards\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Where the slurm plugin writes the managed blocks of slurm's node, partition and gres\nfiles, the name of the managed block in each, and the command it runs after writing,\nwhich makes slurm read them again.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_config_get_api_v1_slurm_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "gres_file": "/etc/slurm/gres.conf",
+                  "manager": "TrinityX",
+                  "nodes_file": "/etc/slurm/slurm-nodes.conf",
+                  "partitions_file": "/etc/slurm/slurm-partitions.conf",
+                  "reconfigure": "/usr/bin/scontrol reconfigure"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The settings as held"
           },
           "401": {
             "content": {
@@ -3567,7 +4642,7 @@
             "bearer": []
           }
         ],
-        "summary": "Where this plugin writes and what it runs afterwards",
+        "summary": "Where the plugin writes slurm's files, and what it runs afterwards",
         "tags": [
           "slurm"
         ],
@@ -3575,11 +4650,18 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Where this plugin writes and what it runs afterwards\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Send any of the settings; those left out keep their value, and the next render uses\nthem. rootus only, because the daemon writes these files and runs `reconfigure`, both\nas root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "slurm_config_patch_api_v1_slurm_config_patch",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "reconfigure": "/usr/bin/scontrol reconfigure"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/SlurmConfig"
               }
@@ -3591,10 +4673,17 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "gres_file": "/etc/slurm/gres.conf",
+                  "manager": "TrinityX",
+                  "nodes_file": "/etc/slurm/slurm-nodes.conf",
+                  "partitions_file": "/etc/slurm/slurm-partitions.conf",
+                  "reconfigure": "/usr/bin/scontrol reconfigure"
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "The settings as now held"
           },
           "401": {
             "content": {
@@ -3641,7 +4730,7 @@
             "bearer": []
           }
         ],
-        "summary": "Where this plugin writes and what it runs afterwards",
+        "summary": "Change where the plugin writes slurm's files, or what it runs afterwards",
         "tags": [
           "slurm"
         ],
@@ -3651,16 +4740,25 @@
     },
     "/api/v1/slurm/renders/config": {
       "get": {
-        "description": "What the last render wrote\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_render_config_get_api_v1_slurm_renders_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "files": [
+                    "/etc/slurm/gres.conf",
+                    "/etc/slurm/slurm-nodes.conf",
+                    "/etc/slurm/slurm-partitions.conf"
+                  ],
+                  "nodes": 10,
+                  "reconfigured": true
+                },
                 "schema": {}
               }
             },
-            "description": "Successful Response"
+            "description": "What the last render wrote"
           },
           "401": {
             "content": {
@@ -3687,6 +4785,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The render has not run yet, or its last run failed; the message says why"
           }
         },
         "security": [
@@ -3697,7 +4805,7 @@
             "bearer": []
           }
         ],
-        "summary": "What the last render wrote",
+        "summary": "What the last slurm render wrote",
         "tags": [
           "slurm"
         ],
@@ -3707,46 +4815,74 @@
     },
     "/api/v1/system/audit": {
       "get": {
-        "description": "The audit trail, filtered by who, outcome and an ISO 8601 start time.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The audit trail: every decision the gate made and every change, with who, the verb or action, the object, and the outcome. For a refusal, `detail` says what the route needed and what the caller held. Rows are kept for `[AUDIT] KEEP`, 90 days by default.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "audit_trail_api_v1_system_audit_get",
         "parameters": [
           {
+            "description": "Only this user's rows",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
             "in": "query",
             "name": "principal",
             "required": false,
             "schema": {
               "default": "",
+              "description": "Only this user's rows",
               "title": "Principal",
               "type": "string"
             }
           },
           {
+            "description": "granted or refused; empty for both",
+            "examples": {
+              "example": {
+                "value": "refused"
+              }
+            },
             "in": "query",
             "name": "outcome",
             "required": false,
             "schema": {
               "default": "",
+              "description": "granted or refused; empty for both",
               "pattern": "^(|granted|refused)$",
               "title": "Outcome",
               "type": "string"
             }
           },
           {
+            "description": "Only rows from this ISO 8601 time on",
+            "examples": {
+              "example": {
+                "value": "2026-10-09T00:00:00Z"
+              }
+            },
             "in": "query",
             "name": "since",
             "required": false,
             "schema": {
               "default": "",
+              "description": "Only rows from this ISO 8601 time on",
               "title": "Since",
               "type": "string"
             }
           },
           {
+            "description": "How many rows, 1 to 1000",
+            "examples": {
+              "example": {
+                "value": 100
+              }
+            },
             "in": "query",
             "name": "limit",
             "required": false,
             "schema": {
               "default": 100,
+              "description": "How many rows, 1 to 1000",
               "maximum": 1000,
               "minimum": 1,
               "title": "Limit",
@@ -3758,6 +4894,18 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "audit": [
+                    {
+                      "action": "PATCH",
+                      "at": "2026-10-09T11:37:43.532228+00:00",
+                      "detail": "needs manager, holds reader",
+                      "object": "/api/v1/prometheus/rules",
+                      "outcome": "refused",
+                      "principal": "alice"
+                    }
+                  ]
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Audit Trail Api V1 System Audit Get",
@@ -3765,7 +4913,17 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The rows, newest first"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "since is not an ISO 8601 time"
           },
           "401": {
             "content": {
@@ -3822,12 +4980,38 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "Unauthenticated on purpose: a health check that needs a token is not one.\nSo it carries states and times, never an error text: that stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "daemon": "trixd",
+                  "plugins": 6,
+                  "renders": [
+                    {
+                      "ok": true,
+                      "render": "prometheus/renders/targets",
+                      "rendered_at": 1791545863.87
+                    },
+                    {
+                      "ok": true,
+                      "render": "slurm/renders/config",
+                      "rendered_at": 1791545864.38
+                    }
+                  ],
+                  "status": "ok",
+                  "triggers": {
+                    "luna_hashes": {
+                      "answering": false,
+                      "last_pass": 1791545823.43
+                    },
+                    "replication": {
+                      "at": 1791545526.87
+                    }
+                  }
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Health Api V1 System Health Get",
@@ -3835,7 +5019,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "How trixd is doing"
           }
         },
         "summary": "Whether this daemon is serving, its renders and triggers",
@@ -3848,11 +5032,19 @@
     },
     "/api/v1/system/notify": {
       "post": {
-        "description": "Wake the renders that read this kind of object, or every render when none is named.\nNothing calls it on its own; it is there for an operator or a script to nudge.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "For a change trixd could not notice itself: the renders that read that kind of object run again. `object` is a Luna table such as `node`, `group` or `network`; left empty, every render runs. `rendered` lists the renders that ran now; one that ran inside its two-second window runs again when the window closes. Nothing calls this on its own; it is for an operator or a script.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "notify_api_v1_system_notify_post",
         "requestBody": {
           "content": {
             "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "name": "node001",
+                    "object": "node"
+                  }
+                }
+              },
               "schema": {
                 "$ref": "#/components/schemas/Change"
               }
@@ -3864,6 +5056,14 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "rendered": [
+                    "genders/renders/genders",
+                    "prometheus/renders/rule-files",
+                    "prometheus/renders/targets",
+                    "slurm/renders/config"
+                  ]
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Notify Api V1 System Notify Post",
@@ -3871,7 +5071,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The renders that ran"
           },
           "401": {
             "content": {
@@ -3918,7 +5118,7 @@
             "bearer": []
           }
         ],
-        "summary": "A Luna object changed",
+        "summary": "Tell trixd a Luna object changed",
         "tags": [
           "system"
         ],
@@ -3928,12 +5128,24 @@
     },
     "/api/v1/system/plugins": {
       "get": {
-        "description": "Every plugin, its state, its digest and why it was refused.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Every plugin trixd knows. `state` is `loaded`, `refused` or `disabled`, and `reason` says why a plugin was refused. `digest` is the start of its manifest's hash, which changes when the manifest does; `origin` is the directory it was loaded from; `routes` is how many routes it serves.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "plugins_api_v1_system_plugins_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "plugins": [
+                    {
+                      "digest": "8c1f4be27a90d3e5",
+                      "name": "directory",
+                      "origin": "/trinity/local/python/lib/python3.10/site-packages/trixd/plugins/directory",
+                      "reason": "",
+                      "routes": 10,
+                      "state": "loaded"
+                    }
+                  ]
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Plugins Api V1 System Plugins Get",
@@ -3941,7 +5153,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "Every plugin"
           },
           "401": {
             "content": {
@@ -3988,14 +5200,21 @@
     },
     "/api/v1/system/plugins/{name}/disable": {
       "post": {
-        "description": "Its paths stop resolving from the next request, and a restart agrees.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Its routes stop answering from the next request, and a restart keeps it unplugged until it is reloaded.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "disable_plugin_api_v1_system_plugins__name__disable_post",
         "parameters": [
           {
+            "description": "The plugin's name",
+            "examples": {
+              "example": {
+                "value": "directory"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The plugin's name",
               "title": "Name",
               "type": "string"
             }
@@ -4005,6 +5224,16 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "plugin": {
+                    "digest": "8c1f4be27a90d3e5",
+                    "name": "directory",
+                    "origin": "/trinity/local/python/lib/python3.10/site-packages/trixd/plugins/directory",
+                    "reason": "",
+                    "routes": 0,
+                    "state": "disabled"
+                  }
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Disable Plugin Api V1 System Plugins  Name  Disable Post",
@@ -4012,7 +5241,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The plugin as now unplugged"
           },
           "401": {
             "content": {
@@ -4039,6 +5268,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No plugin has that name"
           },
           "422": {
             "content": {
@@ -4069,14 +5308,21 @@
     },
     "/api/v1/system/plugins/{name}/reload": {
       "post": {
-        "description": "Discover, validate and swap. Nothing changes if the plugin is refused.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Reads the plugin from disk again and swaps its routes in, with no restart: a request already running finishes on the old code, the next one sees the new. It also plugs in a plugin that is not loaded yet, such as a site's new one. When the plugin is refused, nothing changes and the answer is 409 with the reason.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "reload_plugin_api_v1_system_plugins__name__reload_post",
         "parameters": [
           {
+            "description": "The plugin's name",
+            "examples": {
+              "example": {
+                "value": "directory"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "The plugin's name",
               "title": "Name",
               "type": "string"
             }
@@ -4086,6 +5332,16 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "plugin": {
+                    "digest": "8c1f4be27a90d3e5",
+                    "name": "directory",
+                    "origin": "/trinity/local/python/lib/python3.10/site-packages/trixd/plugins/directory",
+                    "reason": "",
+                    "routes": 10,
+                    "state": "loaded"
+                  }
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Reload Plugin Api V1 System Plugins  Name  Reload Post",
@@ -4093,7 +5349,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The plugin as now loaded"
           },
           "401": {
             "content": {
@@ -4120,6 +5376,26 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No plugin has that name"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The plugin was refused; the message says why"
           },
           "422": {
             "content": {
@@ -4150,12 +5426,18 @@
     },
     "/api/v1/system/replication/hashes": {
       "get": {
-        "description": "What a peer compares against before copying anything.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One hash per replicated table, `principal` and `declaration`, which the other controller of a pair compares before copying anything: equal hashes mean there is nothing to copy.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_hashes_api_v1_system_replication_hashes_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "hashes": {
+                    "declaration": "e55ea11cd9f8b8cc609f6eeae589853776487c1e5c01f0ef798e7564d83c8b6f",
+                    "principal": "22e22be985d048fd4994b5cd03e61f56ee19dbdcb40fefc50eae2db45145e61e"
+                  }
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Replication Hashes Api V1 System Replication Hashes Get",
@@ -4163,7 +5445,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "One hash per table"
           },
           "401": {
             "content": {
@@ -4210,12 +5492,15 @@
     },
     "/api/v1/system/replication/sweep": {
       "post": {
-        "description": "The same pass the timer makes, run on demand.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The pass the timer makes every `[REPLICATION] INTERVAL`, run now: for each peer, compare the table hashes and copy what differs. One result per peer, naming the tables that differed and what was copied; an empty list on a single controller, which has no peer.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_sweep_api_v1_system_replication_sweep_post",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "results": []
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Replication Sweep Api V1 System Replication Sweep Post",
@@ -4223,7 +5508,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "One result per peer"
           },
           "401": {
             "content": {
@@ -4270,14 +5555,21 @@
     },
     "/api/v1/system/replication/table/{name}": {
       "get": {
-        "description": "Addressed by name rather than by identifier, because identifiers are local.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One replicated table as the documents the other controller reads: each row keyed by name, with the `version`, `origin` and `updated_at` that decide which copy wins, and a deletion kept as a marker. `principal` rows carry the password digest the peer needs, which is why this is rootus only.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_table_api_v1_system_replication_table__name__get",
         "parameters": [
           {
+            "description": "principal or declaration",
+            "examples": {
+              "example": {
+                "value": "declaration"
+              }
+            },
             "in": "path",
             "name": "name",
             "required": true,
             "schema": {
+              "description": "principal or declaration",
               "title": "Name",
               "type": "string"
             }
@@ -4287,6 +5579,28 @@
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "documents": [
+                    {
+                      "body": {
+                        "genders_file": "/etc/genders",
+                        "manager": "TrinityX"
+                      },
+                      "key": [
+                        "genders",
+                        "config",
+                        ""
+                      ],
+                      "kind": "config",
+                      "name": "",
+                      "origin": "dev2-rocky9-controller1",
+                      "plugin": "genders",
+                      "updated_at": "2026-10-06T09:09:16.177187+00:00",
+                      "version": 53
+                    }
+                  ],
+                  "table": "declaration"
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Replication Table Api V1 System Replication Table  Name  Get",
@@ -4294,7 +5608,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The table's documents"
           },
           "401": {
             "content": {
@@ -4321,6 +5635,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not a replicated table"
           },
           "422": {
             "content": {
@@ -4351,12 +5675,18 @@
     },
     "/api/v1/system/version": {
       "get": {
-        "description": "What is running here, for a client that has to ask.\n\n**Access:** public, no token",
+        "description": "The trixd build running here and the API version, with no token. A build's version is the release line and its commit's time.\n\n**Access:** public, no token",
         "operationId": "version_api_v1_system_version_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
+                "example": {
+                  "version": {
+                    "api": 1,
+                    "trixd": "1.0.1791545294"
+                  }
+                },
                 "schema": {
                   "additionalProperties": true,
                   "title": "Response Version Api V1 System Version Get",
@@ -4364,7 +5694,7 @@
                 }
               }
             },
-            "description": "Successful Response"
+            "description": "The build and the API version"
           }
         },
         "summary": "What is running here",

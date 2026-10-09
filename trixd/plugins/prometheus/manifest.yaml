@@ -26,9 +26,15 @@ luna_hooks:
   node.delete: node_deleted
 schemas:
   rules:
-    groups:   {type: array, items: object}
+    groups:
+      type: array
+      items: object
+      description: Prometheus rule groups, each a name and its rules
   settings:
-    settings: {type: object}
+    settings:
+      type: object
+      description: The settings; hw.nhc and hw.disabled start every generated hardware rule
+      example: {hw: {nhc: true, disabled: false}}
   hw_rules:
     force:
       type: boolean
@@ -53,16 +59,37 @@ schemas:
       description: One entry per node, naming node and any of force, nhc and disabled
       example: [{node: node001, disabled: true}]
   config:
-    rules_directory: {type: string, optional: true}
-    prometheus_url:  {type: string, optional: true}
-    reload_command:  {type: string, optional: true}
+    rules_directory:
+      type: string
+      optional: true
+      description: Where the rule files are written; Prometheus must read this directory
+      example: /trinity/local/etc/prometheus_server/rules/
+    prometheus_url:
+      type: string
+      optional: true
+      description: Where Prometheus answers its HTTP API
+      example: "https://localhost:9090"
+    reload_command:
+      type: string
+      optional: true
+      description: Run after a rule file changes, so Prometheus reads it
+      example: systemctl reload prometheus-server
 
 endpoints:
   - path: config
     methods: [GET]
     minimum: reader
     handler: config
-    summary: Where this plugin writes, and what it reloads
+    summary: Where the plugin writes rule files, reaches Prometheus, and what it reloads
+    description: |
+      The three settings the prometheus plugin works with. `rules_directory` is where it
+      writes the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus
+      which hardware each node reports, and `reload_command` is what it runs after writing a
+      rule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the
+      other and remembers it.
+    response:
+      description: The settings as held
+      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: config
     methods: [PATCH]
@@ -70,33 +97,97 @@ endpoints:
     minimum: rootus
     handler: config
     schema: config
-    summary: Where this plugin writes, and what it reloads
+    summary: Change where the plugin writes rule files, reaches Prometheus, or reloads
+    description: |
+      Send any of the three settings; those left out keep their value. rootus only, because
+      the daemon writes into `rules_directory` and runs `reload_command`, both as root.
+    request_example: {prometheus_url: "https://localhost:9090"}
+    response:
+      description: All three settings as now held
+      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: rules
     methods: [GET]
     minimum: reader
     handler: rules
     summary: The generic and service alert rules
+    description: |
+      The generic and service alert rules as one document, in Prometheus' own rule-file
+      format: `groups`, each with a `name` and its `rules`. trixd writes the groups whose
+      name starts with `service` to `trix.service.rules` and the others to
+      `trix.generic.rules`, both in the rules directory. Empty until a manager sets it.
+    response:
+      description: The rules document as held
+      example:
+        groups:
+          - name: trinityx_generic
+            rules:
+              - alert: NodeDown
+                expr: up{exporter="node"} == 0
+                for: 5m
+                labels: {severity: critical}
+                annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
 
   - path: rules
     methods: [PATCH]
     minimum: manager
     handler: rules
     schema: rules
-    summary: The generic and service alert rules
+    summary: Replace the generic and service alert rules
+    description: |
+      Replace the whole document, so send every group you want to keep. trixd writes the
+      two rule files from it, leaves a file alone when it already says the same, writes an
+      emptied file so a group taken out stops firing, and reloads Prometheus.
+    request_example:
+      groups:
+        - name: trinityx_generic
+          rules:
+            - alert: NodeDown
+              expr: up{exporter="node"} == 0
+              for: 5m
+              labels: {severity: critical}
+              annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    response:
+      description: The rules document as now held
+      example:
+        groups:
+          - name: trinityx_generic
+            rules:
+              - alert: NodeDown
+                expr: up{exporter="node"} == 0
+                for: 5m
+                labels: {severity: critical}
+                annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    errors:
+      502: The rule files are written, but Prometheus did not take the reload
 
   - path: settings
     methods: [GET]
     minimum: reader
     handler: settings
-    summary: The settings hardware rules are generated from
+    summary: The settings new hardware rules start from
+    description: |
+      What newly generated hardware rules start from: `settings.hw.nhc` and
+      `settings.hw.disabled` are the labels a rule gets when it is generated, before any
+      change for one node. Until a manager sets them, trixd answers what is in
+      `rules_settings.yaml` beside the rules directory.
+    response:
+      description: The settings
+      example: {settings: {hw: {nhc: true, disabled: false}}}
 
   - path: settings
     methods: [PATCH]
     minimum: manager
     handler: settings
     schema: settings
-    summary: The settings hardware rules are generated from
+    summary: Replace the settings new hardware rules start from
+    description: |
+      Replace the settings; trixd also writes them to `rules_settings.yaml`. Rules already
+      generated keep their labels until they are generated again, with `force: true`.
+    request_example: {settings: {hw: {nhc: true, disabled: false}}}
+    response:
+      description: The settings as now held
+      example: {settings: {hw: {nhc: true, disabled: false}}}
 
   - path: hw-rules/<node>
     methods: [GET]
@@ -210,6 +301,22 @@ endpoints:
       serve: json
       coalesce: 2s
     summary: Service discovery targets, served from the render
+    description: |
+      The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
+      address Prometheus scrapes and the labels it attaches. It is answered from the last
+      render, which runs when a node or network changes through the luna plugin, on a
+      notify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,
+      because service discovery presents no token.
+
+      The exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,
+      `slurm_job` 14207 and `lshw` 14208.
+    response:
+      description: One entry per node and exporter
+      example:
+        - {targets: ["10.141.0.1:14200"], labels: {exporter: node, hostname: node001.cluster, luna_group: compute-group}}
+        - {targets: ["10.141.0.2:14200"], labels: {exporter: node, hostname: node002.cluster, luna_group: compute-group}}
+    errors:
+      404: The render has not run yet, or its last run failed; the message says why
 
   - path: renders/rule-files
     methods: [GET]

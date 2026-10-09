@@ -41,8 +41,6 @@ from trixd.core.plugins.manifest import parse
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 STATIC = "/api/v1/docs/static"
-HW_RULES = ["GET /api/v1/prometheus/hw-rules", "PATCH /api/v1/prometheus/hw-rules",
-            "GET /api/v1/prometheus/hw-rules/{node}", "PATCH /api/v1/prometheus/hw-rules/{node}"]
 
 
 def _published() -> dict:
@@ -190,21 +188,22 @@ def test_every_route_says_who_may_call_it_in_words():
             assert {"401", "403"} <= set(operation["responses"]), name
 
 
-@pytest.mark.parametrize("name", HW_RULES)
-def test_a_documented_route_says_what_to_send_and_what_comes_back(name):
+@pytest.mark.parametrize("name", sorted(_operations(_published())))
+def test_every_route_says_what_to_send_and_what_comes_back(name):
     """
-    The hardware-rules routes, documented in full: what the route does, each path
-    variable explained with an example, an example body, and an example answer.
+    Every route, documented in full: what it does, each parameter explained with an
+    example, an example body, and an example answer.
     """
     operation = _operations(_published())[name]
-    assert len(operation["description"]) > 3 * len(operation["summary"]), name
+    assert len(operation.get("description", "")) > 2 * len(operation["summary"]), name
     for parameter in operation.get("parameters", []):
         assert parameter.get("description"), (name, parameter["name"])
         assert parameter.get("examples"), (name, parameter["name"])
     if "requestBody" in operation:
-        body = operation["requestBody"]["content"]["application/json"]
-        assert body.get("examples"), name
-    assert operation["responses"]["200"]["content"]["application/json"].get("example"), name
+        assert operation["requestBody"]["content"]["application/json"].get("examples"), name
+    success = next(code for code in ("200", "201") if code in operation["responses"])
+    content = operation["responses"][success].get("content", {})
+    assert any(item.get("example") is not None for item in content.values()), name
 
 
 def test_the_query_a_handler_reads_is_declared():

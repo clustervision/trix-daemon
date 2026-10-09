@@ -32,11 +32,12 @@ __status__      = "Production"
 import re
 from typing import Optional
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel, ConfigDict
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, ROLE_ROOTUS, ROLES
 from trixd.common.errors import BadRequest, NotFound
@@ -54,6 +55,8 @@ WRITE: str = "identity.write"
 
 # A login name as the chain's sources know it; an Active Directory one carries an @.
 NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
+# What the document shows for a user.
+USER_EXAMPLE: dict = {"name": "alice", "role": "reader", "enabled": True, "local": True}
 
 
 class UserIn(BaseModel):
@@ -96,7 +99,14 @@ def _shown(row: models.Principal) -> dict:
             "local": bool(row.password_digest)}
 
 
-@router.get("/users", summary="Every user and the role each holds")
+@router.get("/users", summary="Every user and the role each holds",
+            description=(
+                "The ini account first, shown as rootus, then every stored user. `local` "
+                "says whether trixd holds a password for the user; one who signs in through "
+                "PAM or LDAP has none here. Anyone without a row holds role `none`."),
+            responses=docs.answers({"users": [{"name": "trixd", "role": "rootus",
+                                               "enabled": True, "local": False},
+                                              USER_EXAMPLE]}, "Every user"))
 def list_users(handle: Session = Depends(scoped),
                caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
@@ -112,8 +122,21 @@ def list_users(handle: Session = Depends(scoped),
     return {"users": users}
 
 
-@router.put("/users/{name}", summary="Give a user a role, a password, or both")
-def put_user(name: str, body: UserIn, handle: Session = Depends(scoped),
+@router.put("/users/{name}", summary="Give a user a role, a password, or both",
+            description=(
+                "Creates the user when the name is new, and changes only what the body "
+                "names when it is not: `role`, one of none, reader, operator and manager; "
+                "`password`, kept here for the `local` source; `enabled`, false cutting the "
+                "user's tokens at once. The change reaches tokens already issued, because "
+                "the role is looked up on every request, and reaches the other controller "
+                "of a pair. The ini account is set in `trixd.ini`, not here."),
+            responses=docs.answers(USER_EXAMPLE, "The user as it now stands", errors={
+                400: "Not a login name, a role off the ladder, or the ini account"}))
+def put_user(name: str = Path(description="The login name",
+                              openapi_examples=docs.example("alice")),
+             body: UserIn = Body(openapi_examples=docs.example(
+                 {"role": "reader", "password": "a long passphrase"})),
+             handle: Session = Depends(scoped),
              caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     Creates the user when it is new, and changes only what the body names when it is not.
@@ -137,8 +160,16 @@ def put_user(name: str, body: UserIn, handle: Session = Depends(scoped),
     return _shown(row)
 
 
-@router.delete("/users/{name}", summary="Remove a user, and with it their role")
-def delete_user(name: str, handle: Session = Depends(scoped),
+@router.delete("/users/{name}", summary="Remove a user, and with it their role",
+               description=(
+                   "The user's role and any password here go at once. A local user can no "
+                   "longer sign in; a PAM or LDAP user still can, and holds role `none`. The "
+                   "deletion reaches the other controller of a pair."),
+               responses=docs.answers({"deleted": "alice"}, "Who was removed", errors={
+                   400: "Not a login name, or the ini account", 404: "No user has that name"}))
+def delete_user(name: str = Path(description="The login name",
+                                 openapi_examples=docs.example("alice")),
+                handle: Session = Depends(scoped),
                 caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
     """
     The role and any password here go at once. A local user can no longer sign in; a

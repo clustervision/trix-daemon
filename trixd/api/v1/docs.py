@@ -156,6 +156,29 @@ def document(request: Request) -> JSONResponse:
     return JSONResponse({**built, "info": info})
 
 
+def answers(example=None, description: str = "", errors: dict = None,
+            status: int = 200) -> dict:
+    """
+    A core route's responses for the document: its success with an example, and the
+    refusals its own work can answer. The gate's 401 and 403 are added by finish().
+    """
+    found = {}
+    if example is not None:
+        found[status] = {"description": description or "Successful Response",
+                         "content": {"application/json": {"example": example}}}
+    for code, meaning in (errors or {}).items():
+        found[code] = {"description": meaning, "content": {"application/json": {
+            "schema": {"$ref": "#/components/schemas/Error"}}}}
+    return found
+
+
+def example(value) -> dict:
+    """
+    One example for a parameter or a body, in the shape Swagger UI lists.
+    """
+    return {"example": {"value": value}}
+
+
 def access_line(operation: dict) -> str:
     """
     Who may call an operation, in words, from what the gate stamped on it.

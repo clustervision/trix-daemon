@@ -29,10 +29,11 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
+from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_KIND_NODE
 from trixd.common.errors import Unauthenticated
@@ -46,6 +47,10 @@ from trixd.db.engine import scoped
 LOGGER = trixlog.get("auth")
 
 router = APIRouter(prefix=f"{API_PREFIX}/auth", tags=["auth"])
+# What the document shows: a token's shape, and a measurement as Luna stores one.
+TOKEN_EXAMPLE: dict = {"token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9."
+                                "eyJzdWIiOiJhbGljZSIsImtpbmQiOiJ1c2VyIn0.c2lnbmF0dXJl"}
+MEASUREMENT: str = "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
 
 
 class Credentials(BaseModel):
@@ -76,8 +81,20 @@ class Token(BaseModel):
 
 
 @router.post("/token", response_model=Token, status_code=201,
-             summary="Exchange credentials for a token")
-def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
+             summary="Sign in: exchange a username and password for a token",
+             description=(
+                 "The ini account is checked against `trixd.ini`; anyone else against the "
+                 "sources in `[AUTH] CHAIN` in order, local, pam and ldap, and the first that "
+                 "knows the name decides.\n\n"
+                 "The token is valid for `[API] EXPIRY`, an hour by default. Send it on every "
+                 "call as `x-access-tokens: <token>` or `Authorization: Bearer <token>`, or "
+                 "paste it into **Authorize** on this page. Luna accepts it too, as its "
+                 "administrator for the ini account only."),
+             responses=docs.answers(TOKEN_EXAMPLE, "The token", status=201,
+                                    errors={401: "The username or password is incorrect"}))
+def issue(body: Credentials = Body(openapi_examples=docs.example(
+              {"username": "alice", "password": "a long passphrase"})),
+          handle: Session = Depends(scoped)) -> Token:
     """
     Resolve the caller through the chain, then sign a token naming them.
     """
@@ -92,8 +109,22 @@ def issue(body: Credentials, handle: Session = Depends(scoped)) -> Token:
 
 
 @router.post("/node/{node}", response_model=Token, status_code=201,
-             summary="Exchange a node measurement for a node-scoped token")
-def issue_node(node: str, body: NodeProof) -> Token:
+             summary="A node gets a token for itself",
+             description=(
+                 "How a node signs in after boot, on the terms Luna uses. When the cluster "
+                 "enforces security the node presents its TPM measurement, `tpm_sha256`, "
+                 "which must match what Luna holds for it; otherwise a username and "
+                 "password. Never on the node name alone.\n\n"
+                 "The token is confined to that node: it is accepted only on node routes for "
+                 "the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`."),
+             responses=docs.answers(TOKEN_EXAMPLE, "A token for this node alone",
+                                    status=201, errors={401: (
+                                        "Luna does not know the node, the measurement does "
+                                        "not match, or no valid credential was given")}))
+def issue_node(node: str = Path(description="The node, as Luna names it",
+                                openapi_examples=docs.example("node001")),
+               body: NodeProof = Body(openapi_examples=docs.example({"tpm_sha256": MEASUREMENT}))
+               ) -> Token:
     """
     A node token, on the same terms Luna issues one: the measurement when the cluster
     enforces security, a credential when it does not. Never on the node name alone.
@@ -137,7 +168,16 @@ def _node_token(node: str) -> Token:
                                    expiry=settings().api.expiry, node=node))
 
 
-@router.get("/whoami", summary="What this token says about its bearer")
+@router.get("/whoami", summary="Who this token names, and what they hold here",
+            description=(
+                "Who the token names and how trixd sees them: `kind` is `user`, `node` or "
+                "`service`; `source` is where the name was checked, `ini`, `local`, `pam`, "
+                "`ldap`, or `luna` for a token Luna issued; `role` is the role held here; "
+                "`rootus` is true for the ini account, which passes every check whatever "
+                "its role. Any signed-in user may ask, role `none` included."),
+            responses=docs.answers({"principal": "alice", "kind": "user", "source": "local",
+                                    "role": "reader", "rootus": False, "issuer": "trixd"},
+                                   "Who the token names"))
 def whoami(caller: Caller = Depends(guard())) -> dict:
     """
     Who the token names and where they sit on the ladder.
