@@ -228,6 +228,10 @@ def test_every_reserved_name_is_refused(rig):
     for name in RESERVED_PLUGINS:
         with pytest.raises(PluginRefused, match="is reserved"):
             loader.load(rig, name)
+    from trixd.core.plugins.registry import current as registry
+
+    listed = {entry["name"] for entry in registry().listing()}
+    assert not listed & set(RESERVED_PLUGINS), "a refused reserved name is not a plugin"
 
 
 def test_a_plugin_route_on_a_daemon_path_is_refused(rig, tmp_path, monkeypatch):

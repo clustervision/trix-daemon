@@ -258,9 +258,8 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     """
     known = registry()
     if name in RESERVED_PLUGINS:
-        reason = f"{name} is reserved: the daemon serves {API_PREFIX}/{name} itself"
-        known.refuse(name, reason)
-        raise PluginRefused(reason)
+        # Not a plugin at all, so nothing is recorded: the plugin list stays plugins only.
+        raise PluginRefused(f"{name} is reserved: the daemon serves {API_PREFIX}/{name} itself")
 
     path = path or discover().get(name, "")
     if not path:
