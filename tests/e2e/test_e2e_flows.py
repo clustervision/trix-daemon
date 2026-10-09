@@ -54,7 +54,7 @@ def test_health_version_and_the_published_document(stack):
     assert page.status_code == 200 and "https://cdn" not in page.text
     bundle = stack.call("GET", "/docs/static/vendor/swagger-ui/swagger-ui-bundle.js")
     assert bundle.status_code == 200
-    assert "GNU GENERAL PUBLIC LICENSE" in stack.call("GET", "/system/license").text
+    assert "GNU GENERAL PUBLIC LICENSE" in stack.call("GET", "/docs/static/LICENSE.txt").text
 
 
 @pytest.mark.parametrize("role", ["none", "reader", "operator", "manager", "rootus"])

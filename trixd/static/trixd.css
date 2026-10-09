@@ -16,7 +16,8 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>
  */
 
-/* The TrinityX look for /api/v1/docs: the OOD portal's gradient bar, then Swagger UI. */
+/* The TrinityX look for /api/v1/docs, over Swagger UI's own stylesheet, which comes first. */
+@import url("vendor/swagger-ui/swagger-ui.css?v=5.32.15");
 
 :root {
     --trixd-ink: #1c2230;
@@ -31,47 +32,17 @@ body {
     font-family: "DejaVu Sans", "Segoe UI", Helvetica, Arial, sans-serif;
 }
 
-.trixd-bar {
-    display: flex;
-    align-items: center;
-    gap: 14px;
-    padding: 12px 24px;
+/* The bar: the OOD portal's gradient, the white TrinityX X, and the name. */
+body::before {
+    content: "TrinityX Daemon (trixd)";
+    display: block;
+    padding: 18px 24px 18px 80px;
     color: #ffffff;
-    background: linear-gradient(to right, #4a54f1 0%, #4a54f1 10%, #7d4dbb 25%,
-                                #c63d7b 45%, #e95f4a 65%, #f3a133 85%, #f8c325 100%);
-}
-
-.trixd-bar img {
-    width: 40px;
-    height: 40px;
-}
-
-.trixd-bar .name {
     font-size: 20px;
     font-weight: 700;
-}
-
-.trixd-bar .short {
-    font-weight: 400;
-    opacity: 0.9;
-}
-
-.trixd-bar .links {
-    margin-left: auto;
-    display: flex;
-    gap: 18px;
-    font-size: 14px;
-}
-
-.trixd-bar a {
-    color: #ffffff;
-    text-decoration: none;
-    opacity: 0.92;
-}
-
-.trixd-bar a:hover {
-    opacity: 1;
-    text-decoration: underline;
+    background: url("logo.png") no-repeat 24px center / 40px 40px,
+                linear-gradient(to right, #4a54f1 0%, #4a54f1 10%, #7d4dbb 25%,
+                                #c63d7b 45%, #e95f4a 65%, #f3a133 85%, #f8c325 100%);
 }
 
 .swagger-ui .info {
@@ -110,11 +81,10 @@ body {
 }
 
 @media (max-width: 640px) {
-    .trixd-bar {
-        padding: 10px 16px;
-    }
-
-    .trixd-bar .links {
-        display: none;
+    body::before {
+        padding: 12px 16px 12px 64px;
+        font-size: 17px;
+        background-position: 16px center, 0 0;
+        background-size: 34px 34px, auto;
     }
 }

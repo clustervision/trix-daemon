@@ -189,6 +189,5 @@ def test_every_published_route_says_who_may_call_it():
             assert facts["minimum"] in ("none", "reader", "operator", "manager", "rootus"), operation
     public = sorted(op for op, facts in shape.items() if facts["access"] == "public")
     assert public == ["GET /api/v1/prometheus/renders/targets", "GET /api/v1/system/health",
-                      "GET /api/v1/system/license", "GET /api/v1/system/version",
-                      "POST /api/v1/auth/node/{node}",
+                      "GET /api/v1/system/version", "POST /api/v1/auth/node/{node}",
                       "POST /api/v1/auth/token"], public

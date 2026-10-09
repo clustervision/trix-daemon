@@ -30,10 +30,10 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import html
 import os
 
 from fastapi import APIRouter, FastAPI, Request
+from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -46,7 +46,7 @@ STATIC_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
     os.path.abspath(__file__)))), "static")
 STATIC_URL: str = f"{API_PREFIX}/docs/static"
 OPENAPI_URL: str = f"{API_PREFIX}/openapi.json"
-LICENSE_URL: str = f"{API_PREFIX}/system/license"
+LICENSE_URL: str = f"{STATIC_URL}/LICENSE.txt"
 # Replaced per request by Luna's address on the host the reader came in on.
 LUNA: str = "{luna}"
 PUBLISHED_LUNA: str = "https://<controller>:7050"
@@ -108,32 +108,11 @@ REFUSALS: dict = {
                      "token is not valid for this node")},
 }
 
-PAGE: str = """<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>{title}</title>
-<link rel="icon" href="{static}/favicon.ico">
-<link rel="stylesheet" href="{static}/vendor/swagger-ui/swagger-ui.css?v={swagger}">
-<link rel="stylesheet" href="{static}/trixd.css?v={version}">
-</head>
-<body>
-<header class="trixd-bar">
-<img src="{static}/logo.png" alt="TrinityX">
-<span class="name">TrinityX Daemon <span class="short">(trixd)</span></span>
-<nav class="links"><a href="{openapi}">openapi.json</a><a href="{license}">Licence</a></nav>
-</header>
-<div id="swagger-ui"></div>
-<script src="{static}/vendor/swagger-ui/swagger-ui-bundle.js?v={swagger}"></script>
-<script>
-window.ui = SwaggerUIBundle({{url: "{openapi}", dom_id: "#swagger-ui", deepLinking: true,
-  displayRequestDuration: true, docExpansion: "list", defaultModelsExpandDepth: 0,
-  presets: [SwaggerUIBundle.presets.apis], layout: "BaseLayout"}});
-</script>
-</body>
-</html>
-"""
+# Swagger UI's own settings. validatorUrl None: it would otherwise send the document's
+# address to validator.swagger.io. The Access line says what the raw extensions would.
+SWAGGER_PARAMETERS: dict = {"validatorUrl": None, "showExtensions": False,
+                            "displayRequestDuration": True, "docExpansion": "list",
+                            "defaultModelsExpandDepth": 0}
 
 router = APIRouter(prefix=API_PREFIX)
 
@@ -154,11 +133,14 @@ def luna_link(request: Request) -> str:
 @router.get("/docs", include_in_schema=False)
 def page() -> HTMLResponse:
     """
-    The API, browsable, in the TrinityX look.
+    FastAPI's Swagger page, on files from the package; trixd.css carries the TrinityX look.
     """
-    return HTMLResponse(PAGE.format(title=html.escape(TITLE), static=STATIC_URL,
-                                    swagger=SWAGGER_UI, version=html.escape(DAEMON_VERSION),
-                                    openapi=OPENAPI_URL, license=LICENSE_URL))
+    return get_swagger_ui_html(
+        openapi_url=OPENAPI_URL, title=TITLE,
+        swagger_js_url=f"{STATIC_URL}/vendor/swagger-ui/swagger-ui-bundle.js?v={SWAGGER_UI}",
+        swagger_css_url=f"{STATIC_URL}/trixd.css?v={DAEMON_VERSION}",
+        swagger_favicon_url=f"{STATIC_URL}/favicon.ico",
+        swagger_ui_parameters=SWAGGER_PARAMETERS)
 
 
 @router.get("/openapi.json", include_in_schema=False)

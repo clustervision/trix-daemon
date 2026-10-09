@@ -189,7 +189,8 @@ curl -s http://127.0.0.1:8051/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
 A token goes in the `x-access-tokens` header, or as `Authorization: Bearer <token>`.
 `http://127.0.0.1:8051/api/v1/docs` lists every route, with what it does, what to send,
 what comes back and who may call it; **Authorize** there takes a token for **Try it out**.
-The page loads nothing from the internet, and its licence link opens `LICENSE.txt`. Without Luna, obol or
+The page is FastAPI's own, on Swagger UI files shipped in the package, so it loads nothing
+from the internet; `trixd/static/trixd.css` gives it the TrinityX look. Without Luna, obol or
 Prometheus the plugins still load: a route whose work needs one answers 503, and a
 render that could not run answers 404 with the reason.
 

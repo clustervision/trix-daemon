@@ -29,11 +29,9 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import os
 from datetime import datetime
 
 from fastapi import APIRouter, Depends, Query, Request
-from fastapi.responses import PlainTextResponse
 
 from pydantic import BaseModel
 
@@ -52,9 +50,6 @@ from trixd.core.security.gate import Caller, guard
 from trixd.db import engine as database
 
 LOGGER = trixlog.get("system")
-# Shipped in the package beside this daemon's code, so the installed daemon can show it.
-LICENSE_FILE: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
-    os.path.abspath(__file__)))), "LICENSE.txt")
 
 router = APIRouter(prefix=f"{API_PREFIX}/system", tags=["system"])
 
@@ -91,16 +86,6 @@ def version() -> dict:
     What is running here, for a client that has to ask.
     """
     return {"version": {"trixd": DAEMON_VERSION, "api": 1}}
-
-
-@router.get("/license", summary="The licence trixd is distributed under",
-            response_class=PlainTextResponse)
-def license_text() -> PlainTextResponse:
-    """
-    The GNU General Public License, version 3, as the package ships it.
-    """
-    with open(LICENSE_FILE, encoding="utf-8") as handle:
-        return PlainTextResponse(handle.read())
 
 
 @router.get("/plugins", summary="Every plugin, its state and why")

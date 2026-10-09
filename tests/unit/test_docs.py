@@ -63,15 +63,28 @@ def _operations(document: dict) -> dict:
 
 def test_the_page_needs_no_internet(client):
     """
-    Swagger UI, its stylesheet and the icon come from the daemon, never from a CDN.
+    FastAPI's Swagger page, pointed at files the daemon serves, never at a CDN, and with
+    Swagger's online validator off, so nothing leaves for validator.swagger.io.
     """
     answer = client.get("/api/v1/docs")
     assert answer.status_code == 200
     assert "<title>TrinityX Daemon (trixd)</title>" in answer.text
     assert not re.search(r'(src|href)="https?://', answer.text), "an asset from outside"
-    for asset in ("vendor/swagger-ui/swagger-ui-bundle.js", "vendor/swagger-ui/swagger-ui.css",
-                  "trixd.css", "logo.png", "favicon.ico"):
+    for asset in ("vendor/swagger-ui/swagger-ui-bundle.js", "trixd.css", "favicon.ico"):
         assert f"{STATIC}/{asset}" in answer.text, asset
+    assert '"validatorUrl": null' in answer.text
+    assert '"showExtensions": false' in answer.text
+
+
+def test_the_stylesheet_brings_swagger_and_the_logo():
+    """
+    trixd.css imports Swagger UI's own stylesheet first and draws the bar with the logo.
+    """
+    with open(os.path.join(ROOT, "trixd", "static", "trixd.css"), encoding="utf-8") as handle:
+        css = handle.read()
+    rules = re.sub(r"/\*.*?\*/", "", css, flags=re.S).strip()
+    assert rules.startswith('@import url("vendor/swagger-ui/swagger-ui.css'), rules[:80]
+    assert 'url("logo.png")' in css and "TrinityX Daemon (trixd)" in css
 
 
 @pytest.mark.parametrize("asset, kind", [
@@ -80,6 +93,7 @@ def test_the_page_needs_no_internet(client):
     ("trixd.css", "text/css"),
     ("logo.png", "image/png"),
     ("favicon.ico", "icon"),
+    ("LICENSE.txt", "text/plain"),
 ])
 def test_every_file_the_page_loads_is_served(client, asset, kind):
     """
@@ -93,16 +107,27 @@ def test_every_file_the_page_loads_is_served(client, asset, kind):
 
 def test_the_licence_is_the_one_the_repository_carries(client):
     """
-    The licence link opens our LICENSE.txt, shipped in the package beside the code.
+    The licence link opens our LICENSE.txt, shipped with the page's own files.
     """
     with open(os.path.join(ROOT, "LICENSE.txt"), encoding="utf-8") as handle:
         licence = handle.read()
-    with open(os.path.join(ROOT, "trixd", "LICENSE.txt"), encoding="utf-8") as handle:
-        assert handle.read() == licence, "trixd/LICENSE.txt is a copy of LICENSE.txt"
-    answer = client.get("/api/v1/system/license")
+    with open(os.path.join(ROOT, "trixd", "static", "LICENSE.txt"), encoding="utf-8") as handle:
+        assert handle.read() == licence, "trixd/static/LICENSE.txt is a copy of LICENSE.txt"
+    answer = client.get(f"{STATIC}/LICENSE.txt")
     assert answer.status_code == 200
-    assert answer.headers["content-type"].startswith("text/plain")
-    assert answer.text == licence
+    assert answer.text.replace("\r\n", "\n") == licence.replace("\r\n", "\n")
+
+
+@pytest.mark.parametrize("image", ["logo.png", "favicon.ico"])
+def test_an_image_is_served_byte_for_byte(client, image):
+    """
+    Images are bytes: nothing on the way may treat them as text and change line endings.
+    """
+    with open(os.path.join(ROOT, "trixd", "static", image), "rb") as handle:
+        shipped = handle.read()
+    assert client.get(f"{STATIC}/{image}").content == shipped
+    if image.endswith(".png"):
+        assert shipped.startswith(b"\x89PNG\r\n\x1a\n"), "the PNG signature"
 
 
 def test_the_document_names_luna_on_the_host_the_reader_used(client):
@@ -116,7 +141,7 @@ def test_the_document_names_luna_on_the_host_the_reader_used(client):
     assert f"[{link}]({link})" in info["description"]
     assert "luna.test" not in info["description"]
     assert info["license"] == {"name": "GPL-3.0-or-later",
-                               "url": "http://testserver/api/v1/system/license"}
+                               "url": "http://testserver/api/v1/docs/static/LICENSE.txt"}
 
 
 def test_the_published_document_names_no_controller():
@@ -125,7 +150,7 @@ def test_the_published_document_names_no_controller():
     """
     info = _published()["info"]
     assert "https://<controller>:7050/version" in info["description"]
-    assert info["license"]["url"] == "/api/v1/system/license"
+    assert info["license"]["url"] == "/api/v1/docs/static/LICENSE.txt"
 
 
 def test_one_authorize_for_both_token_headers():
