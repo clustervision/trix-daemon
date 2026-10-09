@@ -14,7 +14,8 @@
 ; You should have received a copy of the GNU General Public License
 ; along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-; Settings for trixd. The installer, trinityx-combined, templates this file.
+; A sample. trixd reads trixd.ini beside it, which the installer writes; the wheel ships
+; only this sample, so an upgrade never replaces a site's trixd.ini.
 
 [LOGGER]
 LEVEL = info
@@ -49,7 +50,7 @@ TRUST = /trinity/local/etc/ssl/trust.d
 ; /trinity/local/luna/daemon/config/luna.ini, so they are changed in one place.
 
 [DATABASE]
-URL = sqlite:////trinity/local/trixd/var/trixd.db
+URL = sqlite:////trinity/local/trixd/daemon/var/trixd.db
 
 [AUTH]
 CHAIN = local, pam

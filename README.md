@@ -193,7 +193,7 @@ render that could not run answers 404 with the reason.
 ## On a controller
 
 ```
-/trinity/local/python/bin/python3 -m trixd.server --config /trinity/local/trixd/etc/trixd.ini
+/trinity/local/python/bin/python3 -m trixd.server --config /trinity/local/trixd/daemon/config/trixd.ini
 ```
 
 The unit `trixd` runs that. `systemctl reload trixd` reloads the plugins
@@ -216,9 +216,14 @@ https is the default.
 
 ## trixd.ini
 
-The daemon reads `/trinity/local/trixd/etc/trixd.ini`, or the path given with
-`--config` or in `TRIXD_CONFIG`. It lives outside the installed package, so an upgrade
-never replaces it. The shipped sample, `trixd/config/trixd.ini`, explains each key. A
+The daemon reads `/trinity/local/trixd/daemon/config/trixd.ini`, or the path given with
+`--config` or in `TRIXD_CONFIG`. The layout follows Luna's: `/trinity/local/trixd` holds
+only `daemon`, a link into the shared Python, as `/trinity/local/luna` does, and the
+configuration and the database (`daemon/var/trixd.db`) live inside it. Unlike `luna.ini`,
+`trixd.ini` is never in the wheel: the wheel ships `trixd.ini.sample`, which explains each
+key, so pip writes only the sample and an upgrade leaves the site's `trixd.ini` and its
+database as they were. A `plugins` folder appears beside `daemon` only when a site writes
+a plugin of its own. A
 missing file, an unknown algorithm or an unreadable duration stops the daemon with
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.

@@ -45,3 +45,21 @@ echo "== $(cat /etc/redhat-release) | python $("$PY" -c 'import platform; print(
      "| sqlite $("$PY" -c 'import sqlite3; print(sqlite3.sqlite_version)') | $(ldd --version | head -1)"
 "$PY" -m pytest -q -p no:cacheprovider
 TRIXD_E2E=local "$PY" -m pytest tests/e2e -q -p no:cacheprovider
+
+# A pip upgrade, a forced reinstall and an uninstall leave the site's trixd.ini and its
+# database inside the package as they were: only the files the wheel ships are replaced.
+WHEELS=$(mktemp -d)
+CI_COMMIT_TIMESTAMP=2026-01-01T00:00:00Z "$PY" -m pip wheel -q --no-deps --no-build-isolation -w "$WHEELS/a" .
+CI_COMMIT_TIMESTAMP=2026-02-01T00:00:00Z "$PY" -m pip wheel -q --no-deps --no-build-isolation -w "$WHEELS/b" .
+"$PY" -m venv --system-site-packages "$WHEELS/venv"
+VPY="$WHEELS/venv/bin/python"
+"$VPY" -m pip -q install --no-deps "$WHEELS"/a/*.whl
+# -I: the installed package, not the checkout in the current directory.
+PKG=$("$VPY" -I -c 'import os, trixd; print(os.path.dirname(trixd.__file__))')
+mkdir -p "$PKG/var" && echo "[API]" > "$PKG/config/trixd.ini" && echo site-db > "$PKG/var/trixd.db"
+"$VPY" -m pip -q install --upgrade --no-deps "$WHEELS"/b/*.whl
+"$VPY" -m pip -q install --force-reinstall --no-deps "$WHEELS"/b/*.whl
+"$VPY" -m pip -q uninstall -y trixd
+test "$(cat "$PKG/config/trixd.ini")" = "[API]" && test "$(cat "$PKG/var/trixd.db")" = site-db
+case "$PKG" in "$WHEELS"/*) ;; *) echo "upgrade check looked at $PKG, not the installed package" >&2; exit 1 ;; esac
+echo "upgrade check: an upgrade, a forced reinstall and an uninstall kept the site's trixd.ini and database"

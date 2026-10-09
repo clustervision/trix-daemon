@@ -61,13 +61,17 @@ check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
 
-echo "=== 4. plugins ==="
+echo "=== 4. the layout, as Luna's: only the daemon link ==="
+check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd | grep -vxE 'daemon|plugins' | wc -l)" 0
+check "daemon links into the shared python" "$(readlink /trinity/local/trixd/daemon | grep -c '^/trinity/local/python/')" 1
+
+echo "=== 4b. plugins ==="
 LOADED=$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "sum(1 for p in d['plugins'] if p['state']=='loaded')")
-WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/etc/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
+WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/daemon/config/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
 check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
 check "auth is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/auth/reload -H "$H")" 409
-check "trixd.ini has no [LUNA]"        "$(grep -c '^\[LUNA\]' /trinity/local/trixd/etc/trixd.ini)" 0
+check "trixd.ini has no [LUNA]"        "$(grep -c '^\[LUNA\]' /trinity/local/trixd/daemon/config/trixd.ini)" 0
 check "the luna plugin is loaded"      "$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "[p['state'] for p in d['plugins'] if p['name']=='luna'][0]")" loaded
 
 echo "=== 5. hot unplug and plug ==="

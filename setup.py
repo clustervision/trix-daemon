@@ -126,7 +126,7 @@ setup(
     install_requires=requirements(),
     # Namespace packages too: the migrations directories hold modules but no __init__.py.
     packages=find_namespace_packages(include=["trixd", "trixd.*"], exclude=["*.__pycache__"]),
-    package_data={"trixd": ["config/*.ini", "config/*.service", "config/*.yaml",
+    package_data={"trixd": ["config/*.sample", "config/*.service", "config/*.yaml",
                            "plugins/*/manifest.yaml", "core/security/sources/README",
                            "db/migrations/script.py.mako"]},
     entry_points={"console_scripts": ["trixd = trixd.server:main"]},

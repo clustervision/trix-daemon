@@ -31,7 +31,7 @@ README's "Words used here".
 ## Start from something that loads
 
 ```
-/trinity/local/python/bin/python3 -m trixd.server plugin new hello --config /trinity/local/trixd/etc/trixd.ini
+/trinity/local/python/bin/python3 -m trixd.server plugin new hello --config /trinity/local/trixd/daemon/config/trixd.ini
 ```
 
 That writes `manifest.yaml`, `backend.py`, `__init__.py` and a README into the

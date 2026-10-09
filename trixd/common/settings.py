@@ -38,7 +38,8 @@ from pydantic import BaseModel, Field
 from trixd.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHARED,
                                    TOKEN_ALGORITHMS)
 
-DEFAULT_CONFIG: str = "/trinity/local/trixd/etc/trixd.ini"
+# Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
+DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
 _FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400}
@@ -102,7 +103,7 @@ class DatabaseSettings(BaseModel):
     """
     Where the store lives.
     """
-    url: str = "sqlite:////trinity/local/trixd/var/trixd.db"
+    url: str = "sqlite:////trinity/local/trixd/daemon/var/trixd.db"
 
 
 class AuthSettings(BaseModel):
