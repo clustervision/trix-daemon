@@ -25,6 +25,7 @@ TLS=${TLS:-https://localhost:8050}
 PY=${PY:-$(systemctl show trixd -p ExecStart --value 2>/dev/null |
            grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}
 PY=${PY:-$(command -v python3)}
+INI=${INI:-/trinity/local/trixd/daemon/config/trixd.ini}
 FAIL=0
 
 say() { printf "  %-6s %s\n" "$1" "$2"; [ "$1" = "FAIL" ] && FAIL=$((FAIL+1)); return 0; }
@@ -39,13 +40,16 @@ check "health needs no token"          "$(code $PLAIN/api/v1/system/health)" 200
 check "the document is published"      "$(code $PLAIN/api/v1/openapi.json)" 200
 check "the docs page renders"          "$(code $PLAIN/api/v1/docs)" 200
 
-echo "=== 2. authentication ==="
+echo "=== 2. authentication, as the account trixd.ini names ==="
+ini_api() { sed -n '/^\[API\]/,/^\[/p' "$INI" | grep -m1 "^$1 *=" | sed 's/^[^=]*= *//'; }
+body() { $PY -c 'import json,sys; print(json.dumps({"username": sys.argv[1], "password": sys.argv[2]}))' "$1" "$2"; }
+ACCOUNT=$(ini_api USERNAME)
 check "no token is 401"                "$(code $PLAIN/api/v1/system/plugins)" 401
 check "a bad token is 401"             "$(code $PLAIN/api/v1/system/plugins -H 'x-access-tokens: rubbish')" 401
-BAD='{"username":"trixd","password":"no"}'
+BAD=$(body "$ACCOUNT" no)
 check "wrong password is 401"          "$(code -X POST $PLAIN/api/v1/auth/token -H 'Content-Type: application/json' -d "$BAD")" 401
 T=$(curl -sk -X POST $PLAIN/api/v1/auth/token -H 'Content-Type: application/json' \
-      -d '{"username":"trixd","password":"trixd"}' | jq_ "d['token']")
+      -d "$(body "$ACCOUNT" "$(ini_api PASSWORD)")" | jq_ "d['token']")
 [ -n "$T" ] && say PASS "a token is minted" || say FAIL "no token minted"
 H="x-access-tokens: $T"
 check "the token is accepted"          "$(code $PLAIN/api/v1/system/plugins -H "$H")" 200
@@ -61,17 +65,17 @@ check "the pass-through reaches Luna"  "$(code $PLAIN/api/v1/luna/config/node -H
 NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['node'])")
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
 
-echo "=== 4. the layout, as Luna's: only the daemon link ==="
-check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd | grep -vxE 'daemon|plugins' | wc -l)" 0
+echo "=== 4. the layout, as Luna's: the daemon link, utils and a site's plugins ==="
+check "nothing else beside daemon"     "$(ls /trinity/local/trixd | grep -vxE 'daemon|utils|plugins' | wc -l)" 0
 check "daemon links into the shared python" "$(readlink /trinity/local/trixd/daemon | grep -c '^/trinity/local/python/')" 1
 
 echo "=== 4b. plugins ==="
 LOADED=$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "sum(1 for p in d['plugins'] if p['state']=='loaded')")
-WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' /trinity/local/trixd/daemon/config/trixd.ini | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
+WANTED=$(sed -n '/^\[PLUGINS\]/,/^\[/p' "$INI" | grep -m1 '^ENABLED' | sed 's/.*= *//' | tr ',' '\n' | grep -c .)
 check "every enabled plugin loaded"    "$LOADED" "$WANTED"
 check "an unknown plugin is 404"       "$(code -X POST $PLAIN/api/v1/system/plugins/nosuch/reload -H "$H")" 404
 check "auth is reserved"               "$(code -X POST $PLAIN/api/v1/system/plugins/auth/reload -H "$H")" 409
-check "trixd.ini has no [LUNA]"        "$(grep -c '^\[LUNA\]' /trinity/local/trixd/daemon/config/trixd.ini)" 0
+check "trixd.ini has no [LUNA]"        "$(grep -c '^\[LUNA\]' "$INI")" 0
 check "the luna plugin is loaded"      "$(curl -sk $PLAIN/api/v1/system/plugins -H "$H" | jq_ "[p['state'] for p in d['plugins'] if p['name']=='luna'][0]")" loaded
 
 echo "=== 5. hot unplug and plug ==="
@@ -145,9 +149,9 @@ check "no role may not read the trail" "$(code $PLAIN/api/v1/system/audit -H "$N
 
 echo "=== 11. node tokens ==="
 check "anonymous node token refused"   "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{}')" 401
-CRED='{"username":"trixd","password":"trixd"}'
+CRED=$(body "$ACCOUNT" "$(ini_api PASSWORD)")
 check "node token on a credential"     "$(code -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d "$CRED")" 201
-NT=$(curl -sk -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d '{"username":"trixd","password":"trixd"}' | jq_ "d['token']")
+NT=$(curl -sk -X POST $PLAIN/api/v1/auth/node/node001 -H 'Content-Type: application/json' -d "$CRED" | jq_ "d['token']")
 check "a node token is not a user one" "$(code $PLAIN/api/v1/identity/users -H "x-access-tokens: $NT")" 403
 
 echo "=== 12. replication endpoints ==="

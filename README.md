@@ -222,9 +222,9 @@ only `daemon`, a link into the shared Python, as `/trinity/local/luna` does, and
 configuration and the database (`daemon/var/trixd.db`) live inside it. Unlike `luna.ini`,
 `trixd.ini` is never in the wheel: the wheel ships `trixd.ini.sample`, which explains each
 key, so pip writes only the sample and an upgrade leaves the site's `trixd.ini` and its
-database as they were. A `plugins` folder appears beside `daemon` only when a site writes
-a plugin of its own. A
-missing file, an unknown algorithm or an unreadable duration stops the daemon with
+database as they were. Beside `daemon` there is `utils/config`, the utilities' client
+`trixd.ini`, as Luna has `utils`, and `plugins` only when a site writes a plugin of its own.
+A missing file, an unknown algorithm or an unreadable duration stops the daemon with
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
@@ -424,7 +424,7 @@ TRIXD_E2E=local python -m pytest tests/e2e -m stress -s       # sustained reads 
 
 | Script | Where it runs | What it needs |
 |---|---|---|
-| `tests/e2e/on-the-controller.sh` | on the controller | the daemon's `trixd.ini`, naming the account `trixd` with password `trixd` |
+| `tests/e2e/on-the-controller.sh` | on the controller, as root | the daemon's `trixd.ini`, whose account it signs in as |
 | `tests/e2e/node-rename.sh <node>` | on a development controller only | it renames a node at Luna and back |
 
 The suites sign in with a test account, so they belong on a test controller, never on
