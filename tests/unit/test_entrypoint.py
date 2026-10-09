@@ -69,27 +69,29 @@ def _luna_says(tmp_path, monkeypatch, protocol: str) -> None:
     monkeypatch.setenv("TRIXD_LUNA_INI", str(luna_ini))
 
 
-def test_https_serves_tls_on_bind_and_plain_on_the_loopback(tmp_path, monkeypatch):
+def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path, monkeypatch):
     """
-    Luna on https: BIND is TLS on the cluster pair and INSECURE_BIND opens beside it.
+    Luna on https, the shipped binds: TLS on 8050, and plain 8051 open to the nodes.
     """
     _luna_says(tmp_path, monkeypatch, "https")
     cert, key = _pair(tmp_path)
-    served = server.build_config(_settings(bind="0.0.0.0:8050", insecure_bind="127.0.0.1:8051",
+    shipped = configuration.ApiSettings()
+    served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
                                            certfile=cert, keyfile=key))
     assert served.bind == ["0.0.0.0:8050"]
-    assert served.insecure_bind == ["127.0.0.1:8051"]
+    assert served.insecure_bind == ["0.0.0.0:8051"]
     assert (served.certfile, served.keyfile) == (cert, key)
     assert served.workers == 1, "one process: the plugin registry is in memory"
 
 
 def test_http_serves_plain_on_both_with_no_certificate(tmp_path, monkeypatch):
     """
-    Luna on http, as a customer may choose in all.yml: 8050 and 8051 both plain, no pair.
+    Luna on http, as a customer may choose in all.yml: 8050 and 8051 both plain, both open.
     """
     _luna_says(tmp_path, monkeypatch, "http")
-    served = server.build_config(_settings(bind="0.0.0.0:8050", insecure_bind="127.0.0.1:8051"))
-    assert served.bind == ["0.0.0.0:8050", "127.0.0.1:8051"]
+    shipped = configuration.ApiSettings()
+    served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind))
+    assert served.bind == ["0.0.0.0:8050", "0.0.0.0:8051"]
     assert served.insecure_bind == []
     assert not served.ssl_enabled
 

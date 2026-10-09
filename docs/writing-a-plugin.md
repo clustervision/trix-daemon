@@ -40,8 +40,8 @@ a controller). It loads as it stands, so the first thing you do is see it work a
 edit it into shape.
 
 Plug it in without restarting the daemon. Plugin control needs rootus, so get a
-token for the ini account first; on a controller the plain listener is on the
-loopback:
+token for the ini account first; on the controller the plain listener answers on the
+loopback too:
 
 ```
 TOKEN=$(curl -s -X POST http://127.0.0.1:8051/api/v1/auth/token \

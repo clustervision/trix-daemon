@@ -73,7 +73,7 @@ class ApiSettings(BaseModel):
     The two listeners, the certificate and the ini account.
     """
     bind: str = "0.0.0.0:8050"
-    insecure_bind: str = "127.0.0.1:8051"
+    insecure_bind: str = "0.0.0.0:8051"
     certfile: str = ""
     keyfile: str = ""
     expiry: int = 3600

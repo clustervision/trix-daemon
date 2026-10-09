@@ -24,14 +24,15 @@ LOGFILE = /var/log/trixd/trixd.log
 
 [API]
 BIND = 0.0.0.0:8050
-INSECURE_BIND = 127.0.0.1:8051
+INSECURE_BIND = 0.0.0.0:8051
 CERTFILE =
 KEYFILE =
 EXPIRY = 1h
 USERNAME = trixd
 PASSWORD = trixd
 ; BIND carries TLS on CERTFILE and KEYFILE: the cluster pair Luna also serves.
-; INSECURE_BIND is plain HTTP, on the loopback: clear text is readable by anything.
+; INSECURE_BIND is plain HTTP on every address, for nodes; it is clear text on the network.
+; 127.0.0.1:8051 keeps it on the controller alone.
 
 [TOKENS]
 ALGORITHM = HS256

@@ -202,7 +202,7 @@ from disk without a restart; a change to `trixd.ini` needs a restart.
 | Port | Setting | When Luna's `luna.ini` says `https` | When it says `http` |
 |---|---|---|---|
 | 8050 | `BIND` | HTTPS on `CERTFILE` and `KEYFILE`, the cluster pair; a missing one stops the start, by name | plain HTTP, no certificate |
-| 8051 | `INSECURE_BIND` | plain HTTP, the loopback by default | plain HTTP, the loopback by default |
+| 8051 | `INSECURE_BIND` | plain HTTP, on every address | plain HTTP, on every address |
 
 The protocol is the one `all.yml` chose for Luna (`luna_protocol`), read from Luna's own
 `luna.ini`, as Luna's 7050 follows it. Clients always use 8050; only the scheme changes,
@@ -210,9 +210,10 @@ and they take it from their own ini. There is no redirect between the two: a cli
 the wrong scheme is a misconfiguration to fix, not to hide. The replication link to the
 other controller follows the same protocol.
 
-A token crossing the cluster network in clear text is readable by anything on it,
-which is why the plain listener stays on the loopback unless a site opens it, and why
-https is the default.
+Both ports answer on every address, because nodes call trixd too. 8051 is clear text:
+a password or token sent to it is readable on the network it crosses, so anything that
+can use https on 8050 should. A site that wants 8051 on the controller alone sets
+`INSECURE_BIND = 127.0.0.1:8051`.
 
 ## trixd.ini
 
