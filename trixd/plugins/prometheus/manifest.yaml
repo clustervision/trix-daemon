@@ -1,0 +1,328 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: prometheus
+backend: backend
+description: >
+  The whole Prometheus surface as one plugin: service discovery targets, the
+  generic and service rule files, the per-node hardware rules and the settings
+  they are generated from. One plugin means one writer of the configuration.
+
+luna_hooks:
+  node.update: node_updated
+  node.delete: node_deleted
+schemas:
+  rules:
+    groups:
+      type: array
+      items: object
+      description: Prometheus rule groups, each a name and its rules
+  settings:
+    settings:
+      type: object
+      description: The settings; hw.nhc and hw.disabled start every generated hardware rule
+      example: {hw: {nhc: true, disabled: false}}
+  hw_rules:
+    force:
+      type: boolean
+      optional: true
+      description: Generate the file afresh from what Prometheus reports now, replacing the one held
+      example: false
+    nhc:
+      type: boolean
+      optional: true
+      description: Whether this node's hardware alerts count for its health check
+      example: true
+    disabled:
+      type: boolean
+      optional: true
+      description: Whether this node's hardware alerts are switched off
+      example: false
+  # Each entry: node, and any of force, nhc and disabled as above.
+  hw_rules_many:
+    nodes:
+      type: array
+      items: object
+      description: One entry per node, naming node and any of force, nhc and disabled
+      example: [{node: node001, disabled: true}]
+  config:
+    rules_directory:
+      type: string
+      optional: true
+      description: Where the rule files are written; Prometheus must read this directory
+      example: /trinity/local/etc/prometheus_server/rules/
+    prometheus_url:
+      type: string
+      optional: true
+      description: Where Prometheus answers its HTTP API
+      example: "https://localhost:9090"
+    reload_command:
+      type: string
+      optional: true
+      description: Run after a rule file changes, so Prometheus reads it
+      example: systemctl reload prometheus-server
+
+endpoints:
+  - path: config
+    methods: [GET]
+    minimum: reader
+    handler: config
+    summary: Where the plugin writes rule files, reaches Prometheus, and what it reloads
+    description: |
+      The three settings the prometheus plugin works with. `rules_directory` is where it
+      writes the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus
+      which hardware each node reports, and `reload_command` is what it runs after writing a
+      rule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the
+      other and remembers it.
+    response:
+      description: The settings as held
+      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+
+  - path: config
+    methods: [PATCH]
+    # rootus: these are a path the daemon writes and a command it runs, both as root.
+    minimum: rootus
+    handler: config
+    schema: config
+    summary: Change where the plugin writes rule files, reaches Prometheus, or reloads
+    description: |
+      Send any of the three settings; those left out keep their value. rootus only, because
+      the daemon writes into `rules_directory` and runs `reload_command`, both as root.
+    request_example: {prometheus_url: "https://localhost:9090"}
+    response:
+      description: All three settings as now held
+      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+
+  - path: rules
+    methods: [GET]
+    minimum: reader
+    handler: rules
+    summary: The generic and service alert rules
+    description: |
+      The generic and service alert rules as one document, in Prometheus' own rule-file
+      format: `groups`, each with a `name` and its `rules`. trixd writes the groups whose
+      name starts with `service` to `trix.service.rules` and the others to
+      `trix.generic.rules`, both in the rules directory. Empty until a manager sets it.
+    response:
+      description: The rules document as held
+      example:
+        groups:
+          - name: trinityx_generic
+            rules:
+              - alert: NodeDown
+                expr: up{exporter="node"} == 0
+                for: 5m
+                labels: {severity: critical}
+                annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+
+  - path: rules
+    methods: [PATCH]
+    minimum: manager
+    handler: rules
+    schema: rules
+    summary: Replace the generic and service alert rules
+    description: |
+      Replace the whole document, so send every group you want to keep. trixd writes the
+      two rule files from it, leaves a file alone when it already says the same, writes an
+      emptied file so a group taken out stops firing, and reloads Prometheus.
+    request_example:
+      groups:
+        - name: trinityx_generic
+          rules:
+            - alert: NodeDown
+              expr: up{exporter="node"} == 0
+              for: 5m
+              labels: {severity: critical}
+              annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    response:
+      description: The rules document as now held
+      example:
+        groups:
+          - name: trinityx_generic
+            rules:
+              - alert: NodeDown
+                expr: up{exporter="node"} == 0
+                for: 5m
+                labels: {severity: critical}
+                annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    errors:
+      502: The rule files are written, but Prometheus did not take the reload
+
+  - path: settings
+    methods: [GET]
+    minimum: reader
+    handler: settings
+    summary: The settings new hardware rules start from
+    description: |
+      What newly generated hardware rules start from: `settings.hw.nhc` and
+      `settings.hw.disabled` are the labels a rule gets when it is generated, before any
+      change for one node. Until a manager sets them, trixd answers what is in
+      `rules_settings.yaml` beside the rules directory.
+    response:
+      description: The settings
+      example: {settings: {hw: {nhc: true, disabled: false}}}
+
+  - path: settings
+    methods: [PATCH]
+    minimum: manager
+    handler: settings
+    schema: settings
+    summary: Replace the settings new hardware rules start from
+    description: |
+      Replace the settings; trixd also writes them to `rules_settings.yaml`. Rules already
+      generated keep their labels until they are generated again, with `force: true`.
+    request_example: {settings: {hw: {nhc: true, disabled: false}}}
+    response:
+      description: The settings as now held
+      example: {settings: {hw: {nhc: true, disabled: false}}}
+
+  - path: hw-rules/<node>
+    methods: [GET]
+    minimum: reader
+    handler: get_hw_rules
+    summary: The hardware rule file held for one node
+    description: |
+      The Prometheus rule file trixd holds for one node, as YAML loads it: one group,
+      `trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported
+      when the file was generated. An alert fires when its part stops being reported, so a
+      missing DIMM, disk or card is noticed.
+
+      Each rule's labels say how its alert counts: `nhc`, whether it counts for the node's
+      health check, and `disabled`, whether it fires at all. A manager changes them with
+      `PATCH /api/v1/prometheus/hw-rules`.
+    params:
+      node: {description: "The node, by its short name or full hostname", example: node001}
+    response:
+      description: The node's rule file
+      example:
+        groups:
+          - name: trinityx_hw
+            rules:
+              - alert: MissingHardwareComponent
+                expr: absent(lshw_device{hostname="node001.cluster",luna_group="compute-group",class="memory",description="System Memory"})
+                labels: {severity: warning, category: hardware, nhc: true, disabled: false}
+                annotations:
+                  description: "Hardware component {{ $labels.class }} with {{ $labels.product }} {{ $labels.vendor }} {{ $labels.serial }} is missing."
+    errors:
+      404: No rule file is held for that node yet. It is written when the node asks after boot, or when a manager regenerates it
+
+  - path: hw-rules/<node>
+    methods: [PATCH]
+    token: node
+    handler: import_hw_rules
+    schema: hw_rules
+    summary: A node has its own hardware rule file written
+    description: |
+      Called by the node itself after boot, by alertx's hook, with a node token for that
+      node from `POST /api/v1/auth/node/{node}`. trixd asks Prometheus which parts `lshw`
+      reports for the node and writes one alert for each.
+
+      A node that already has a rule file keeps it, so a reboot writes nothing and reloads
+      nothing; send `force: true` to generate the file afresh. `nhc` and `disabled`, when
+      sent, are set on every rule. Prometheus is reloaded only when the file changed, so a
+      thousand nodes booting at once cost a handful of reloads.
+    params:
+      node: {description: "The node the token is for: its short name or full hostname", example: node001}
+    request_example: {force: false}
+    response:
+      description: What was written, and whether anything changed
+      example: {hostname: node001.cluster, rules: 8, changed: false}
+    errors:
+      502: Prometheus did not answer, holds no hardware data for the node yet, or did not take the reload
+
+  - path: hw-rules
+    methods: [GET]
+    minimum: reader
+    handler: list_hw_rules
+    summary: Every node's hardware rules, or some nodes'
+    description: |
+      What trixd holds for every node, or for the nodes named in `nodes`, in the shape
+      Luna's own hardware-rules export answers, so alertx reads either. Each entry carries
+      the node, whether a rule file is held, the number of rules and, unless `detail=no`,
+      the rule file itself as `document`, as `GET /api/v1/prometheus/hw-rules/{node}`
+      answers it. A node asked for and not held is listed with `exists: false`.
+    query:
+      nodes: {description: "Comma-separated node names; leave it out for every node held", example: "node001,node999"}
+      detail: {description: "no, false or 0 leaves out each rule file and keeps the count", example: "no"}
+    response:
+      description: One entry per node
+      example:
+        nodes:
+          - {node: node001.cluster, exists: true, rules: 8}
+          - {node: node999, exists: false}
+
+  - path: hw-rules
+    methods: [PATCH]
+    minimum: manager
+    handler: set_hw_rules
+    schema: hw_rules_many
+    summary: Regenerate, or switch the alerts of, several nodes' hardware rules
+    description: |
+      Several nodes in one call, as alertx's save-nodes sends it. Each entry names a `node`
+      and any of `force`, `nhc` and `disabled`, which mean what they mean for one node in
+      `PATCH /api/v1/prometheus/hw-rules/{node}`.
+
+      Each node gets its own answer: `ok: false` with a `message` for a node Luna does not
+      know, or whose file could not be written, without stopping the others. Prometheus is
+      reloaded once for the lot, and not at all when nothing changed.
+    request_example:
+      nodes:
+        - {node: node001, disabled: true}
+        - {node: node002, force: true}
+    response:
+      description: One answer per node, in the order sent
+      example:
+        nodes:
+          - {node: node001, ok: true, hostname: node001.cluster, rules: 8, changed: true}
+          - {node: node002, ok: false, message: not a node Luna knows}
+    errors:
+      400: An entry does not name a node
+      502: Rule files were written, but Prometheus did not take the reload
+
+  - path: renders/targets
+    methods: [GET]
+    public: true
+    handler: render_targets
+    render:
+      inputs: [luna.node, luna.network]
+      serve: json
+      coalesce: 2s
+    summary: Service discovery targets, served from the render
+    description: |
+      The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
+      address Prometheus scrapes and the labels it attaches. It is answered from the last
+      render, which runs when a node or network changes through the luna plugin, on a
+      notify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,
+      because service discovery presents no token.
+
+      The exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,
+      `slurm_job` 14207 and `lshw` 14208.
+    response:
+      description: One entry per node and exporter
+      example:
+        - {targets: ["10.141.0.1:14200"], labels: {exporter: node, hostname: node001.cluster, luna_group: compute-group}}
+        - {targets: ["10.141.0.2:14200"], labels: {exporter: node, hostname: node002.cluster, luna_group: compute-group}}
+    errors:
+      404: The render has not run yet, or its last run failed; the message says why
+
+  - path: renders/rule-files
+    methods: [GET]
+    minimum: reader
+    handler: render_rule_files
+    render:
+      inputs: [settings, rules, luna.node]
+    # No serve: this render writes the rule files and answers nothing over HTTP.
+    summary: The rule files on disk

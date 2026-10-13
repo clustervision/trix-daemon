@@ -1,0 +1,125 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: services
+backend: backend
+description: >
+  Generic start, stop, restart, reload and status over systemd. Luna keeps its own
+  private path for restarting the DHCP and DNS it configures, and never calls
+  another daemon to do so.
+
+schemas:
+  catalogue:
+    services:
+      type: object
+      description: Each service name and the systemd unit it means
+      example: {slurmctld: slurmctld, dirsrv: dirsrv@local}
+
+endpoints:
+  - path: ""
+    methods: [GET]
+    minimum: reader
+    handler: list_services
+    summary: Every service this daemon may control, and its state
+    description: |
+      Each service in the catalogue with what systemd says about its unit now: `active` as
+      `systemctl is-active` answers it, `enabled` as `systemctl is-enabled` does. Only
+      catalogued services are listed; a manager keeps the catalogue.
+    response:
+      description: Each catalogued service and its state
+      example: {services: {prometheus-server: {active: active, enabled: enabled}, slurmctld: {active: active, enabled: enabled}}}
+
+  - path: catalogue
+    methods: [GET]
+    minimum: reader
+    handler: catalogue
+    summary: Which names map to which systemd units
+    description: |
+      The services this daemon may act on, each name mapped to the systemd unit it means.
+      An operator can start, stop, restart or reload a catalogued service and nothing else.
+      Until a manager sets it, the shipped catalogue is answered.
+    response:
+      description: The catalogue
+      example: {services: {prometheus-server: prometheus-server, prometheus-alertmanager: prometheus-alertmanager, slurmctld: slurmctld, slurmdbd: slurmdbd, dirsrv: dirsrv@local}}
+
+  - path: catalogue
+    methods: [PATCH]
+    minimum: manager
+    handler: catalogue
+    schema: catalogue
+    summary: Set which names map to which systemd units
+    description: |
+      Replace the catalogue, so send every service that should stay. Each name and unit
+      must be a systemd unit name and never start with a dash, so nothing reaches
+      `systemctl` as an option.
+    request_example: {services: {slurmctld: slurmctld, dirsrv: dirsrv@local}}
+    response:
+      description: The catalogue as now held
+      example: {services: {slurmctld: slurmctld, dirsrv: dirsrv@local}}
+    errors:
+      400: A name or unit is not a systemd unit name
+
+  - path: <name>
+    methods: [GET]
+    minimum: reader
+    handler: status
+    summary: Whether one service is running
+    description: |
+      What systemd says about one catalogued service's unit right now.
+    params:
+      name: {description: "A service name from the catalogue", example: slurmctld}
+    response:
+      description: The service, its unit and its state
+      example: {service: slurmctld, unit: slurmctld, active: active, enabled: enabled}
+    errors:
+      404: The name is not in the catalogue
+
+  - path: <name>/actions/<action>
+    methods: [POST]
+    minimum: operator
+    handler: act
+    summary: Start, stop, restart, reload or query one service
+    description: |
+      `start`, `stop`, `restart` and `reload` are queued and answered at once with a
+      `request_id`: one worker runs `systemctl`, so a slow unit holds the worker, never the
+      call. Follow it at `GET /api/v1/services/status/{request_id}`; a restart of trixd
+      runs again what was left. `status` is answered at once, as
+      `GET /api/v1/services/{name}` answers it.
+    params:
+      name: {description: "A service name from the catalogue", example: slurmctld}
+      action: {description: "One of start, stop, restart, reload and status", example: restart}
+    response:
+      description: The queued action, or for status the service's state
+      example: {service: slurmctld, unit: slurmctld, action: restart, request_id: 1791545494-2556175-6ba51d7f, state: queued}
+    errors:
+      400: The action is not one of start, stop, restart, reload and status
+      404: The name is not in the catalogue
+  - path: status/<request_id>
+    methods: [GET]
+    minimum: reader
+    handler: request
+    summary: Where one queued action got to
+    description: |
+      One queued action and how far it got: `state` moves from `queued` to `running`, then
+      to `done` or `failed`, and `message` carries what `systemctl` said. The same route
+      Luna offers at `/service/status`.
+    params:
+      request_id: {description: "The request_id a queued action answered with", example: 1791545494-2556175-6ba51d7f}
+    response:
+      description: The action and how far it got
+      example: {request_id: 1791545494-2556175-6ba51d7f, subsystem: services, task: reload, param: prometheus-server, state: done, message: reload prometheus-server accepted, created: "2026-10-09T11:31:34.489690", finished: "2026-10-09T11:31:34.597325"}
+    errors:
+      404: No queued action has that id

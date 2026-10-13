@@ -1,0 +1,44 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: luna
+backend: backend
+description: >
+  The one route to Luna: /api/v1/luna/<anything> goes to Luna as it was sent, and Luna
+  decides who may. A node renamed, moved or deleted through it runs the Luna hooks the
+  other plugins declare.
+
+endpoints:
+  - path: <path:rest>
+    methods: [GET, POST, PATCH, DELETE]
+    forward: true
+    handler: forward
+    summary: Forward to Luna, unchanged
+    description: |
+      Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the
+      `/api/v1/luna` prefix and the connection headers, at the address Luna's own
+      `luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a
+      token Luna accepts, which the ini account's is. What Luna offers is Luna's own API.
+
+      A node renamed, moved to another group or deleted through this route also updates
+      what trixd keeps for it, such as the node's hardware rule file.
+    params:
+      rest: {description: "Luna's own path, as you would call it at Luna", example: version}
+    response:
+      description: Luna's answer, unchanged
+      example: {version: {api: 1, commit: 711e3a5---DUMMY---278ad6399b, luna: "2.2.0001"}}
+    errors:
+      503: Luna is not answering

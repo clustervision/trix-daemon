@@ -1,0 +1,98 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: slurm
+backend: backend
+description: >
+  The managed blocks of the slurm node, partition and gres files, rendered from
+  Luna's nodes through the trinityx-config-slurm package. One writer per file.
+
+schemas:
+  config:
+    nodes_file:
+      type: string
+      optional: true
+      description: The slurm file holding the node block
+      example: /etc/slurm/slurm-nodes.conf
+    partitions_file:
+      type: string
+      optional: true
+      description: The slurm file holding the partition block
+      example: /etc/slurm/slurm-partitions.conf
+    gres_file:
+      type: string
+      optional: true
+      description: The slurm file holding the gres block
+      example: /etc/slurm/gres.conf
+    manager:
+      type: string
+      optional: true
+      description: The name of the managed block in each file
+      example: TrinityX
+    reconfigure:
+      type: string
+      optional: true
+      description: Run after a write, so slurm reads the files again
+      example: /usr/bin/scontrol reconfigure
+
+endpoints:
+  - path: config
+    methods: [GET]
+    minimum: reader
+    handler: config
+    summary: Where the plugin writes slurm's files, and what it runs afterwards
+    description: |
+      Where the slurm plugin writes the managed blocks of slurm's node, partition and gres
+      files, the name of the managed block in each, and the command it runs after writing,
+      which makes slurm read them again.
+    response:
+      description: The settings as held
+      example: {nodes_file: /etc/slurm/slurm-nodes.conf, partitions_file: /etc/slurm/slurm-partitions.conf, gres_file: /etc/slurm/gres.conf, manager: TrinityX, reconfigure: /usr/bin/scontrol reconfigure}
+
+  - path: config
+    methods: [PATCH]
+    # rootus: these are paths the daemon writes and a command it runs, both as root.
+    minimum: rootus
+    handler: config
+    schema: config
+    summary: Change where the plugin writes slurm's files, or what it runs afterwards
+    description: |
+      Send any of the settings; those left out keep their value, and the next render uses
+      them. rootus only, because the daemon writes these files and runs `reconfigure`, both
+      as root.
+    request_example: {reconfigure: /usr/bin/scontrol reconfigure}
+    response:
+      description: The settings as now held
+      example: {nodes_file: /etc/slurm/slurm-nodes.conf, partitions_file: /etc/slurm/slurm-partitions.conf, gres_file: /etc/slurm/gres.conf, manager: TrinityX, reconfigure: /usr/bin/scontrol reconfigure}
+
+  - path: renders/config
+    methods: [GET]
+    minimum: reader
+    handler: render_config
+    render:
+      inputs: [luna.node, luna.group]
+      coalesce: 2s
+      serve: json
+    summary: What the last slurm render wrote
+    description: |
+      The last render of slurm's managed blocks: how many nodes it wrote, the files, and
+      whether `reconfigure` ran without error. It renders when a node or group changes
+      through the luna plugin, at most every two seconds in a burst, and on a notify.
+    response:
+      description: What the last render wrote
+      example: {nodes: 10, files: [/etc/slurm/gres.conf, /etc/slurm/slurm-nodes.conf, /etc/slurm/slurm-partitions.conf], reconfigured: true}
+    errors:
+      404: The render has not run yet, or its last run failed; the message says why

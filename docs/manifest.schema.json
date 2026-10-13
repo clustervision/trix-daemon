@@ -1,0 +1,214 @@
+{
+  "$comment": "This code is part of the TrinityX software suite. Copyright (C) 2026 ClusterVision Solutions b.v. GPL-3.0-or-later.",
+  "$id": "https://gitlab.taurusgroup.one/clustervision/trix-daemon/docs/manifest.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "backend": {
+      "default": "backend",
+      "type": "string"
+    },
+    "description": {
+      "type": "string"
+    },
+    "endpoints": {
+      "items": {
+        "additionalProperties": false,
+        "properties": {
+          "description": {
+            "description": "Markdown for /api/v1/docs: what the route does, what to send and what comes back",
+            "type": "string"
+          },
+          "errors": {
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "status: when this route's own work answers it",
+            "propertyNames": {
+              "pattern": "^[45][0-9][0-9]$"
+            },
+            "type": "object"
+          },
+          "forward": {
+            "default": false,
+            "description": "the daemon checks nothing; the service behind decides",
+            "type": "boolean"
+          },
+          "handler": {
+            "description": "the backend method",
+            "type": "string"
+          },
+          "methods": {
+            "default": [
+              "GET"
+            ],
+            "items": {
+              "enum": [
+                "GET",
+                "POST",
+                "PATCH",
+                "DELETE"
+              ]
+            },
+            "type": "array"
+          },
+          "minimum": {
+            "description": "the lowest role this endpoint admits",
+            "enum": [
+              "none",
+              "reader",
+              "operator",
+              "manager",
+              "rootus"
+            ]
+          },
+          "params": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "example": {},
+                "type": {
+                  "default": "string",
+                  "enum": [
+                    "string",
+                    "integer",
+                    "boolean"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "description": "each path variable: what it is and an example",
+            "type": "object"
+          },
+          "path": {
+            "description": "under /api/v1/<plugin>; <name> is a segment, <path:name> the rest of the path",
+            "type": "string"
+          },
+          "public": {
+            "default": false,
+            "description": "no token at all; argue for every use",
+            "type": "boolean"
+          },
+          "query": {
+            "additionalProperties": {
+              "additionalProperties": false,
+              "properties": {
+                "description": {
+                  "type": "string"
+                },
+                "example": {},
+                "type": {
+                  "default": "string",
+                  "enum": [
+                    "string",
+                    "integer",
+                    "boolean"
+                  ]
+                }
+              },
+              "type": "object"
+            },
+            "description": "query parameters the route reads",
+            "type": "object"
+          },
+          "render": {
+            "additionalProperties": false,
+            "properties": {
+              "coalesce": {
+                "description": "how long a burst of changes is gathered, e.g. 2s",
+                "pattern": "^[0-9]+[smhd]?$",
+                "type": "string"
+              },
+              "inputs": {
+                "description": "luna.<table> or a declaration of this plugin",
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              "serve": {
+                "description": "served from the last result; empty writes files only",
+                "enum": [
+                  "",
+                  "json"
+                ],
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "request_example": {
+            "description": "an example body, shown on /api/v1/docs"
+          },
+          "response": {
+            "additionalProperties": false,
+            "description": "what a successful call answers",
+            "properties": {
+              "description": {
+                "type": "string"
+              },
+              "example": {},
+              "media_type": {
+                "default": "application/json",
+                "type": "string"
+              }
+            },
+            "type": "object"
+          },
+          "schema": {
+            "description": "a name under schemas, for the body",
+            "type": "string"
+          },
+          "summary": {
+            "type": "string"
+          },
+          "token": {
+            "default": "user",
+            "enum": [
+              "user",
+              "node"
+            ]
+          }
+        },
+        "required": [
+          "path"
+        ],
+        "type": "object"
+      },
+      "type": "array"
+    },
+    "luna_hooks": {
+      "additionalProperties": {
+        "type": "string"
+      },
+      "propertyNames": {
+        "enum": [
+          "node.update",
+          "node.delete"
+        ]
+      },
+      "type": "object"
+    },
+    "plugin": {
+      "pattern": "^[a-z][a-z0-9-]*$",
+      "type": "string"
+    },
+    "schemas": {
+      "additionalProperties": {
+        "type": "object"
+      },
+      "description": "request bodies by name: field -> {type, optional, items, pattern, description, example}",
+      "type": "object"
+    }
+  },
+  "required": [
+    "plugin",
+    "endpoints"
+  ],
+  "title": "trixd plugin manifest",
+  "type": "object"
+}

@@ -1,0 +1,222 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: directory
+backend: backend
+description: Cluster users and groups, held in 389ds and managed through obol.
+
+schemas:
+  user:
+    username:   {type: string, pattern: "^[a-zA-Z_][a-zA-Z0-9_.-]*$", description: "The login name", example: alice}
+    password:   {type: string, optional: true, description: "The password to set", example: a long passphrase}
+    uid:        {type: integer, optional: true, description: "The user number; obol's default when left out", example: 1052}
+    gid:        {type: integer, optional: true, description: "The primary group number", example: 1052}
+    shell:      {type: string, optional: true, description: "The login shell", example: /bin/bash}
+    home:       {type: string, optional: true, description: "The home directory", example: /trinity/home/alice}
+    mail:       {type: string, optional: true, description: "An e-mail address", example: alice@example.com}
+    phone:      {type: string, optional: true, description: "A telephone number", example: "+31 20 000 0000"}
+    surname:    {type: string, optional: true, description: "The surname, LDAP's sn", example: Smith}
+    givenname:  {type: string, optional: true, description: "The given name", example: Alice}
+    expiry:     {type: integer, optional: true, description: "Days until the account expires", example: 365}
+    groups:     {type: array, items: string, optional: true, description: "The groups the user joins", example: [admins]}
+  # A change names the user in the path, so its body carries no name and every field
+  # is optional.
+  user_change:
+    password:   {type: string, optional: true, description: "The password to set", example: a long passphrase}
+    uid:        {type: integer, optional: true, description: "The user number; obol's default when left out", example: 1052}
+    gid:        {type: integer, optional: true, description: "The primary group number", example: 1052}
+    shell:      {type: string, optional: true, description: "The login shell", example: /bin/bash}
+    home:       {type: string, optional: true, description: "The home directory", example: /trinity/home/alice}
+    mail:       {type: string, optional: true, description: "An e-mail address", example: alice@example.com}
+    phone:      {type: string, optional: true, description: "A telephone number", example: "+31 20 000 0000"}
+    surname:    {type: string, optional: true, description: "The surname, LDAP's sn", example: Smith}
+    givenname:  {type: string, optional: true, description: "The given name", example: Alice}
+    expiry:     {type: integer, optional: true, description: "Days until the account expires", example: 365}
+    groups:     {type: array, items: string, optional: true, description: "The groups the user is in; replaces the list", example: [admins]}
+  group:
+    groupname:  {type: string, pattern: "^[a-zA-Z_][a-zA-Z0-9_.-]*$", description: "The group name", example: research}
+    gid:        {type: integer, optional: true, description: "The group number; obol's default when left out", example: 1053}
+    members:    {type: array, items: string, optional: true, description: "The users in the group", example: [alice]}
+  group_change:
+    gid:        {type: integer, optional: true, description: "The group number", example: 1053}
+    members:    {type: array, items: string, optional: true, description: "The users in the group; replaces the list", example: [admin, alice]}
+
+endpoints:
+  - path: users
+    methods: [GET]
+    minimum: rootus
+    handler: list_users
+    summary: Every user in the cluster directory
+    description: |
+      Every user obol finds in the cluster directory, as obol shows them: the LDAP
+      attributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. rootus only, as
+      the directory is the cluster's user store.
+    response:
+      description: Every user
+      example:
+        - {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+
+  - path: users/<name>
+    methods: [GET]
+    minimum: rootus
+    handler: get_user
+    summary: One user in the cluster directory
+    description: |
+      One user, as obol shows them: the LDAP attributes, with `memberOf` listing their
+      groups.
+    params:
+      name: {description: "The user name in the directory", example: alice}
+    response:
+      description: The user
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+    errors:
+      404: No user has that name
+
+  - path: users
+    methods: [POST]
+    minimum: rootus
+    handler: create_user
+    schema: user
+    summary: Create a user in the cluster directory
+    description: |
+      Creates the user with obol and answers the user as it now stands. Only `username` is
+      required; anything left out takes obol's defaults. `expiry` is in days, and `groups`
+      lists the groups the user joins.
+    request_example: {username: alice, password: "a long passphrase", shell: /bin/bash, groups: [admins]}
+    response:
+      description: The user as created
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+    errors:
+      400: The user exists already, or no username was given
+      502: obol failed; the message carries what it said
+
+  - path: users/<name>
+    methods: [PATCH]
+    minimum: rootus
+    handler: update_user
+    schema: user_change
+    summary: Change a user in the cluster directory
+    description: |
+      Changes only the fields sent; the name is the one in the path and cannot change.
+      `password` sets a new password, `groups` replaces the user's group list, and
+      `expiry` is in days.
+    params:
+      name: {description: "The user name in the directory", example: alice}
+    request_example: {shell: /bin/zsh, groups: [admins, research]}
+    response:
+      description: The user as it now stands
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+    errors:
+      400: Nothing to change was sent
+      404: No user has that name
+      502: obol failed; the message carries what it said
+
+  - path: users/<name>
+    methods: [DELETE]
+    minimum: rootus
+    handler: delete_user
+    summary: Delete a user from the cluster directory
+    description: |
+      Removes the user from the directory with obol.
+    params:
+      name: {description: "The user name in the directory", example: alice}
+    response:
+      description: What was done
+      example: {message: user alice deleted}
+    errors:
+      404: No user has that name
+      502: obol failed; the message carries what it said
+
+  - path: groups
+    methods: [GET]
+    minimum: rootus
+    handler: list_groups
+    summary: Every group in the cluster directory
+    description: |
+      Every group obol finds in the cluster directory. `member` lists the members by user
+      name, whichever attribute the directory keeps them in, so the users application reads
+      one shape.
+    response:
+      description: Every group
+      example:
+        - {cn: admins, gidNumber: "1050", member: [admin, alice]}
+
+  - path: groups/<name>
+    methods: [GET]
+    minimum: rootus
+    handler: get_group
+    summary: One group in the cluster directory
+    description: |
+      One group: its number and its members by user name.
+    params:
+      name: {description: "The group name in the directory", example: admins}
+    response:
+      description: The group
+      example: {cn: admins, gidNumber: "1050", member: [admin, alice]}
+    errors:
+      404: No group has that name
+
+  - path: groups
+    methods: [POST]
+    minimum: rootus
+    handler: create_group
+    schema: group
+    summary: Create a group in the cluster directory
+    description: |
+      Creates the group with obol and answers the group as it now stands. Only `groupname`
+      is required; `members` lists the users in it.
+    request_example: {groupname: research, members: [alice]}
+    response:
+      description: The group as created
+      example: {cn: research, gidNumber: "1053", member: [alice]}
+    errors:
+      400: The group exists already, or no groupname was given
+      502: obol failed; the message carries what it said
+
+  - path: groups/<name>
+    methods: [PATCH]
+    minimum: rootus
+    handler: update_group
+    schema: group_change
+    summary: Change a group in the cluster directory
+    description: |
+      Changes only the fields sent: `gid`, or `members`, which replaces the member list.
+    params:
+      name: {description: "The group name in the directory", example: admins}
+    request_example: {members: [admin, alice]}
+    response:
+      description: The group as it now stands
+      example: {cn: admins, gidNumber: "1050", member: [admin, alice]}
+    errors:
+      400: Nothing to change was sent
+      404: No group has that name
+      502: obol failed; the message carries what it said
+
+  - path: groups/<name>
+    methods: [DELETE]
+    minimum: rootus
+    handler: delete_group
+    summary: Delete a group from the cluster directory
+    description: |
+      Removes the group from the directory with obol. Its members stay as users.
+    params:
+      name: {description: "The group name in the directory", example: admins}
+    response:
+      description: What was done
+      example: {message: group research deleted}
+    errors:
+      404: No group has that name
+      502: obol failed; the message carries what it said

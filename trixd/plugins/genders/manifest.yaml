@@ -1,0 +1,53 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: genders
+backend: backend
+description: >
+  The genders file, rendered from the same node list through the
+  trinityx-config-genders package.
+
+endpoints:
+  - path: config
+    methods: [GET]
+    minimum: reader
+    handler: config
+    summary: Where the plugin writes the genders file
+    description: |
+      The genders file and the name of its managed block. The genders generator fixes
+      both, so there is nothing to change here.
+    response:
+      description: Where the plugin writes
+      example: {genders_file: /etc/genders, managed_block: TrinityX}
+
+  - path: renders/genders
+    methods: [GET]
+    minimum: reader
+    handler: render_genders
+    render:
+      inputs: [luna.node, luna.group]
+      coalesce: 2s
+      serve: json
+    summary: What the last genders render wrote
+    description: |
+      The last render of the genders file: how many nodes it wrote, and where. It renders
+      when a node or group changes through the luna plugin, at most every two seconds in a
+      burst, and on a notify.
+    response:
+      description: What the last render wrote
+      example: {nodes: 10, file: /etc/genders}
+    errors:
+      404: The render has not run yet, or its last run failed; the message says why

@@ -1,0 +1,48 @@
+End to end
+==========
+
+A real trixd over HTTP. Nothing is stubbed inside the daemon: requests go through
+Hypercorn, the gate, the plugins and the database, to a Luna and a Prometheus.
+
+The pytest suite
+----------------
+
+    TRIXD_E2E=local python -m pytest tests/e2e
+
+starts a trixd process here, on free ports, against fakeluna.py: a stand-in for Luna
+and Prometheus that checks tokens as Luna does. Needs nothing but the repository, so a
+pipeline runs it.
+
+    TRIXD_E2E_URL=http://<controller>:8051 python -m pytest tests/e2e
+
+runs the same suite against a controller, signing in as TRIXD_E2E_USER and
+TRIXD_E2E_PASSWORD (trixd and trixd by default). Port 8051 is on the loopback by
+default, so run it on the controller or open the port. The cases that need the shared
+secret read it from TRIXD_E2E_SECRET, or from luna.ini when they run on the controller.
+Every name the suite creates starts with e2e-, and it removes them when it ends.
+
+What it covers, about 1,500 cases, most generated from docs/openapi.json so a new route
+or plugin is covered when it is published:
+
+    test_e2e_access.py   every route as every identity on the ladder, a node token, and
+                         six kinds of bad token
+    test_e2e_inputs.py   odd path values, bodies of the wrong shape, queries out of range:
+                         never a 500
+    test_e2e_plugins.py  every plugin unplugged and plugged back three times, reloads at
+                         once, reserved names, a site plugin dropped in live
+    test_e2e_flows.py    a user's role over its life, the audit trail, a queued service
+                         action, a node's hardware rules after boot, a rename through Luna
+    test_e2e_stress.py   sustained reads and a boot storm; only with -m stress, scaled by
+                         TRIXD_STRESS_NODES, TRIXD_STRESS_THREADS and TRIXD_STRESS_SECONDS
+
+The scripts
+-----------
+
+    bash tests/e2e/on-the-controller.sh
+
+On the controller itself: it reads the store, checks the rule files on disk, and checks
+that a plugin reload leaves the daemon's process running.
+
+    bash tests/e2e/node-rename.sh <node>
+
+On a development controller only: it renames a node at Luna and back.
