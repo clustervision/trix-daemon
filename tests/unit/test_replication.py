@@ -413,12 +413,12 @@ def test_a_dark_peer_stops_being_attempted_after_three_failures(rig, monkeypatch
 
     tried = []
 
-    def refuse(peer, row):
+    def refuse(peer, row, may_sign_in=True):
         """
-        A peer that is not answering.
+        A peer that was reached and refused the connection.
         """
         tried.append(peer)
-        return outbox.QUEUED, "connection refused"
+        return outbox.QUEUED, "connection refused", True
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     original, outbox._send = outbox._send, refuse
@@ -454,7 +454,8 @@ def test_a_call_that_changed_nothing_is_not_replicated(rig, monkeypatch):
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
     original = outbox._send
-    outbox._send = lambda peer, row: (sent.append(peer), (outbox.DONE, ""))[1]
+    outbox._send = lambda peer, row, may_sign_in=True: (sent.append(peer),
+                                                        (outbox.DONE, "", True))[1]
     try:
         for result, expected in (({"changed": False}, "skipped"),
                                  ({"changed": 0}, "skipped"),
@@ -526,3 +527,35 @@ def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
         with pytest.raises(PluginRefused) as refusal:
             manifests.parse({**base, "endpoints": [endpoint]})
         assert because in str(refusal.value), (because, str(refusal.value))
+
+def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
+    """
+    The short timeout is worthless if obtaining the token ignores it. Signing in is a
+    request with the sweep's own thirty-second timeout, so an inline attempt that signs in
+    holds a thread for half a minute against a dark peer - measured at 30s on a live pair,
+    which is the stall the breaker exists to prevent arriving through the back door.
+
+    With nothing held the row waits for the sweep, which can afford to sign in.
+    """
+    from trixd.core.replication import outbox, sweep
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    signed = []
+    monkeypatch.setattr(sweep, "_sign_in",
+                        lambda peer, verify: signed.append(peer) or "token")
+    # Nothing held for this peer, which is the state after any restart.
+    monkeypatch.setattr(sweep, "held_token", lambda peer: "")
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "")
+
+    for _ in range(5):
+        said = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                {"node": "node001"}, None, {"retired": []}, "req", "tester")
+    assert said["peers"] == {"ctrl2": outbox.QUEUED}, said
+    assert signed == [], "the request path signed in at the peer"
+    # Having no token is a fact about us, not about the peer, so it must not be read as
+    # the peer being down: after a restart every peer starts with nothing held.
+    assert not outbox.breaker_open("ctrl2"), "a missing token was blamed on the peer"
+
+    # The sweep may, and does.
+    outbox.drain("ctrl2")
+    assert signed == ["ctrl2"], "the sweep did not sign in to send what was owed"

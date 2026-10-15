@@ -100,6 +100,19 @@ def trust():
     return ca_file if ca_file and os.path.isfile(ca_file) else True
 
 
+def held_token(peer: str) -> str:
+    """
+    The token already held for a peer, or empty when there is none worth using.
+
+    Signing in is what costs time when a peer is dark: it is a request with this module's
+    own thirty-second timeout. A caller on somebody's request path must not pay that, so
+    it asks for what is held and gives up cheaply when the answer is nothing.
+    """
+    with _token_lock:
+        token = _tokens.get(peer, "")
+    return token if _usable(token) else ""
+
+
 def _token(peer: str, verify, renew: bool = False) -> str:
     """
     The token held for a peer, signing in when there is none worth using.

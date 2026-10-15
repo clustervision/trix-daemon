@@ -47,7 +47,7 @@ from sqlalchemy import delete, select
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.settings import current as settings
-from trixd.core.replication.sweep import trust
+from trixd.core.replication.sweep import held_token, trust
 from trixd.core.replication.sweep import _token as peer_token
 from trixd.db import engine as database
 from trixd.db import models
@@ -188,36 +188,52 @@ def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body
         handle.close()
 
 
-def _send(peer: str, row) -> tuple:
+def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     """
-    Offer one action to one peer. Answers (state, message).
+    Offer one action to one peer. Answers (state, message, reached), where reached says
+    whether the peer was actually contacted - having no token to present is not evidence
+    about the peer and must not count towards its breaker.
 
-    The sign-in, the renewal margin and the certificate are the sweep's, unchanged: a
-    second way to authenticate to the same peer is a second thing to get wrong.
+    The renewal margin and the certificate are the sweep's, unchanged: a second way to
+    authenticate to the same peer is a second thing to get wrong.
+
+    `may_sign_in` is false on a caller's request path. Signing in carries the sweep's own
+    thirty-second timeout, so inheriting it would undo this module's short one and hold a
+    thread for half a minute against a dark peer - the stall the breaker exists to stop,
+    arriving through the back door. With nothing held, the row waits for the sweep, which
+    can afford to sign in.
     """
     verify = trust()
+    if not may_sign_in and not held_token(peer):
+        return QUEUED, "no token held for the peer, so the sweep will sign in", False
     held = json.loads(row.payload or "{}")
     envelope = {"plugin": row.plugin, "path": row.path, "method": row.method,
                 "variables": held.get("variables") or {}, "body": held.get("body"),
                 "origin": row.origin, "request_id": row.request_id}
     url = f"{settings().api.protocol}://{peer}{API_PREFIX}/system/replication/apply"
     for attempt in (1, 2):
+        if may_sign_in:
+            token = peer_token(peer, verify, renew=attempt == 2)
+        else:
+            # Held or nothing: never a sign-in on a request path.
+            token = held_token(peer)
+            if not token:
+                return QUEUED, "the held token expired, so the sweep will sign in", False
         try:
             answer = requests.post(url, json=envelope, timeout=TIMEOUT, verify=verify,
-                                   headers={TOKEN_HEADER: peer_token(peer, verify,
-                                                                     renew=attempt == 2)})
+                                   headers={TOKEN_HEADER: token})
         except Exception as error:
-            return QUEUED, str(error)
+            return QUEUED, str(error), True
         if answer.status_code in (401, 403) and attempt == 1:
             continue
         if answer.status_code < 300:
-            return DONE, ""
+            return DONE, "", True
         if answer.status_code >= 500 or answer.status_code in (401, 403):
-            return QUEUED, f"{answer.status_code}: {answer.text[:200]}"
+            return QUEUED, f"{answer.status_code}: {answer.text[:200]}", True
         # Any other 4xx is terminal: the action is malformed, or names an endpoint this
         # peer does not serve. No number of passes fixes a version skew.
-        return FAILED, f"{answer.status_code}: {answer.text[:200]}"
-    return QUEUED, "no answer"
+        return FAILED, f"{answer.status_code}: {answer.text[:200]}", True
+    return QUEUED, "no answer", True
 
 
 def _finish(row_id: int, state: str, message: str) -> None:
@@ -245,7 +261,7 @@ def _finish(row_id: int, state: str, message: str) -> None:
         handle.close()
 
 
-def _attempt(peer: str, row_id: int) -> str:
+def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> str:
     """
     One try at one row, updating the breaker from the outcome.
     """
@@ -254,12 +270,12 @@ def _attempt(peer: str, row_id: int) -> str:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
         if row is None or row.state != QUEUED:
             return DONE if row is not None else FAILED
-        state, message = _send(peer, row)
+        state, message, reached = _send(peer, row, may_sign_in)
     finally:
         handle.close()
     if state == DONE:
         record_success(peer)
-    elif state == QUEUED:
+    elif state == QUEUED and reached:
         record_failure(peer)
     _finish(row_id, state, message)
     return state
@@ -290,7 +306,8 @@ def replicate(plugin: str, path: str, method: str, variables: dict, body,
             if breaker_open(peer):
                 answered[peer] = "peer-down"
                 continue
-            answered[peer] = _attempt(peer, row_id)
+            # Not on a caller's thread: no sign-in, and a short timeout.
+            answered[peer] = _attempt(peer, row_id, may_sign_in=False)
         except Exception as error:
             LOGGER.error("could not write down %s %s for %s: %s", method, path, peer, error)
             answered[peer] = "failed"
