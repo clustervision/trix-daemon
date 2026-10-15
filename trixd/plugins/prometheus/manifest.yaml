@@ -25,6 +25,10 @@ hooks:
   luna.node.update: node_updated
   luna.node.delete: node_deleted
 schemas:
+  hw_rename:
+    was:
+      type: string
+      description: The name the node was called before it was renamed
   rules:
     groups:
       type: array
@@ -242,6 +246,68 @@ endpoints:
       example: {hostname: node001.cluster, rules: 8, changed: false}
     errors:
       502: Prometheus did not answer, holds no hardware data for the node yet, or did not take the reload
+
+  - path: hw-rules/<node>
+    methods: [DELETE]
+    minimum: manager
+    handler: remove_hw_rules
+    summary: Retire the hardware rule files held for a node that is gone
+    description: |
+      For a node that no longer exists. Every rule file naming it is moved under
+      `backup/` in the rules directory, out of the glob Prometheus loads, and Prometheus
+      is reloaded once. Nothing is deleted, so a file retired by mistake can be put back
+      by hand.
+
+      A node that still exists keeps its rules: use this when the node has gone, and
+      `POST /api/v1/prometheus/hw-rules/<node>/actions/repair` when it is still there and
+      its file is wrong.
+    params:
+      node: {description: "The node, by its short name or full hostname", example: node001}
+    response:
+      description: What was retired
+      example: {node: node001, retired: ["trix.hw.node001.cluster.rules"]}
+
+  - path: hw-rules/<node>/actions/repair
+    methods: [POST]
+    minimum: manager
+    handler: repair_hw_rules
+    summary: Make a node's hardware rule files match what is held for it now
+    description: |
+      A node's name and its group are written into every alert expression in its rule
+      file, so a file can disagree with what Luna holds and stop matching anything. This
+      rewrites the file from the node as Luna holds it now and reloads Prometheus, but
+      only when something actually changed.
+
+      A node Luna does not know is skipped and said so, rather than refused. For a node
+      that has been renamed use `actions/rename`, which also needs the previous name.
+    params:
+      node: {description: "The node, by its short name or full hostname", example: node001}
+    response:
+      description: What was moved and what was rewritten
+      example: {node: node001, hostname: node001.cluster, moved: [], rewritten: ["trix.hw.node001.cluster.rules"]}
+
+  - path: hw-rules/<node>/actions/rename
+    methods: [POST]
+    minimum: manager
+    handler: rename_hw_rules
+    schema: hw_rename
+    summary: Carry a renamed node's hardware rule files to its new name
+    description: |
+      For a node Luna has already renamed. The file written under the previous name is
+      carried to the new one and its alert expressions rewritten, and Prometheus is
+      reloaded once.
+
+      `was` is required and is the name the files were written under. Nothing else can
+      find them: Luna holds only the new name, so a file left under the old one would
+      stop matching and never be noticed.
+    params:
+      node: {description: "The node as it is called now", example: node002}
+    request_example: {was: node001}
+    response:
+      description: What was moved and what was rewritten
+      example: {node: node002, hostname: node002.cluster, moved: ["trix.hw.node001.cluster.rules"], rewritten: ["trix.hw.node002.cluster.rules"]}
+    errors:
+      400: was was not given, so the files written under the previous name cannot be found
 
   - path: hw-rules
     methods: [GET]

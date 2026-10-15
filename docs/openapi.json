@@ -594,6 +594,20 @@
         "title": "PrometheusConfig",
         "type": "object"
       },
+      "PrometheusHw_Rename": {
+        "properties": {
+          "was": {
+            "description": "The name the node was called before it was renamed",
+            "title": "Was",
+            "type": "string"
+          }
+        },
+        "required": [
+          "was"
+        ],
+        "title": "PrometheusHw_Rename",
+        "type": "object"
+      },
       "PrometheusHw_Rules": {
         "properties": {
           "disabled": {
@@ -3378,6 +3392,94 @@
       }
     },
     "/api/v1/prometheus/hw-rules/{node}": {
+      "delete": {
+        "description": "For a node that no longer exists. Every rule file naming it is moved under\n`backup/` in the rules directory, out of the glob Prometheus loads, and Prometheus\nis reloaded once. Nothing is deleted, so a file retired by mistake can be put back\nby hand.\n\nA node that still exists keeps its rules: use this when the node has gone, and\n`POST /api/v1/prometheus/hw-rules/<node>/actions/repair` when it is still there and\nits file is wrong.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_hw_rules_delete_api_v1_prometheus_hw_rules__node__delete",
+        "parameters": [
+          {
+            "description": "The node, by its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node, by its short name or full hostname",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "node": "node001",
+                  "retired": [
+                    "trix.hw.node001.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was retired"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Retire the hardware rule files held for a node that is gone",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
       "get": {
         "description": "The Prometheus rule file trixd holds for one node, as YAML loads it: one group,\n`trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported\nwhen the file was generated. An alert fires when its part stops being reported, so a\nmissing DIMM, disk or card is noticed.\n\nEach rule's labels say how its alert counts: `nhc`, whether it counts for the node's\nhealth check, and `disabled`, whether it fires at all. A manager changes them with\n`PATCH /api/v1/prometheus/hw-rules`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_get_hw_rules_get_api_v1_prometheus_hw_rules__node__get",
@@ -3605,6 +3707,219 @@
         ],
         "x-trixd-access": "node",
         "x-trixd-minimum": ""
+      }
+    },
+    "/api/v1/prometheus/hw-rules/{node}/actions/rename": {
+      "post": {
+        "description": "For a node Luna has already renamed. The file written under the previous name is\ncarried to the new one and its alert expressions rewritten, and Prometheus is\nreloaded once.\n\n`was` is required and is the name the files were written under. Nothing else can\nfind them: Luna holds only the new name, so a file left under the old one would\nstop matching and never be noticed.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_rename_hw_rules_post_api_v1_prometheus_hw_rules__node__actions_rename_post",
+        "parameters": [
+          {
+            "description": "The node as it is called now",
+            "examples": {
+              "example": {
+                "value": "node002"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node as it is called now",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "was": "node001"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusHw_Rename"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "hostname": "node002.cluster",
+                  "moved": [
+                    "trix.hw.node001.cluster.rules"
+                  ],
+                  "node": "node002",
+                  "rewritten": [
+                    "trix.hw.node002.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was moved and what was rewritten"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "was was not given, so the files written under the previous name cannot be found"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Carry a renamed node's hardware rule files to its new name",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/hw-rules/{node}/actions/repair": {
+      "post": {
+        "description": "A node's name and its group are written into every alert expression in its rule\nfile, so a file can disagree with what Luna holds and stop matching anything. This\nrewrites the file from the node as Luna holds it now and reloads Prometheus, but\nonly when something actually changed.\n\nA node Luna does not know is skipped and said so, rather than refused. For a node\nthat has been renamed use `actions/rename`, which also needs the previous name.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_repair_hw_rules_post_api_v1_prometheus_hw_rules__node__actions_repair_post",
+        "parameters": [
+          {
+            "description": "The node, by its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node, by its short name or full hostname",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "hostname": "node001.cluster",
+                  "moved": [],
+                  "node": "node001",
+                  "rewritten": [
+                    "trix.hw.node001.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was moved and what was rewritten"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Make a node's hardware rule files match what is held for it now",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/prometheus/renders/targets": {
