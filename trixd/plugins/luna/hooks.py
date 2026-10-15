@@ -42,7 +42,11 @@ LOGGER = trixlog.get("luna.hooks")
 # What this plugin publishes, and the queue those run on. A plugin that wants one of
 # these names it in its manifest; nothing in the daemon holds this list.
 SOURCE: str = "luna"
-PUBLISHES: tuple = ("luna.node.update", "luna.node.delete")
+# The node pair the pass-through recognises itself, and the group pair Luna's own config
+# hooks push. Nothing subscribes to the group events yet; they still wake the renders
+# that read luna.group, which is what regenerates slurm and genders.
+PUBLISHES: tuple = ("luna.node.update", "luna.node.delete",
+                    "luna.group.update", "luna.group.delete")
 
 # The calls the pass-through recognises as a change to a node, by method and path.
 NODE_UPDATE = re.compile(r"^config/node/(?P<name>[^/]+)$")

@@ -18,6 +18,20 @@
         "title": "Change",
         "type": "object"
       },
+      "Changes": {
+        "description": "Several changes in one call, in the order they are to be acted on.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "title": "Changes",
+            "type": "array"
+          }
+        },
+        "title": "Changes",
+        "type": "object"
+      },
       "Credentials": {
         "description": "What a person or a service presents to log in.",
         "properties": {
@@ -5291,6 +5305,123 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/system/bulk": {
+      "post": {
+        "description": "For a caller that must not be held up: the changes are written down and the answer comes at once, with the request id this daemon logs each one under, so a caller's own log can be read against ours. Use this rather than `/system/notify` from anything inside another service's request, such as a hook: notify acts before it answers, and acting reads back from the source, so a source waiting on trixd would be waiting on itself.\n\nEach change is named as `<source>.<object>.<event>` with whatever the source holds about it, exactly as `/system/notify` takes one. Send the whole set in one call: a caller with a hundred changed nodes makes one request, not a hundred.\n\nEvery change is checked before any is queued, so a set is taken whole or refused whole.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "bulk_api_v1_system_bulk_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "changes": [
+                      {
+                        "event": "luna.node.update",
+                        "payload": {
+                          "group": "compute",
+                          "name": "node001"
+                        }
+                      },
+                      {
+                        "event": "luna.node.delete",
+                        "payload": {
+                          "name": "node002"
+                        }
+                      }
+                    ]
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/Changes"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "202": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "queued": [
+                    "1791545863-2051-0f3ab9c1",
+                    "1791545863-2051-7d2e4a06"
+                  ]
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Bulk Api V1 System Bulk Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "One request id per change, in order"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not an event, or nothing publishes it"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Hand trixd a set of changes to act on, and do not wait",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
       }
     },
     "/api/v1/system/health": {

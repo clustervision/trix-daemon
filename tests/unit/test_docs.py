@@ -201,7 +201,9 @@ def test_every_route_says_what_to_send_and_what_comes_back(name):
         assert parameter.get("examples"), (name, parameter["name"])
     if "requestBody" in operation:
         assert operation["requestBody"]["content"]["application/json"].get("examples"), name
-    success = next(code for code in ("200", "201") if code in operation["responses"])
+    success = next((code for code in ("200", "201", "202")
+                    if code in operation["responses"]), "")
+    assert success, f"{name} documents no success answer"
     content = operation["responses"][success].get("content", {})
     assert any(item.get("example") is not None for item in content.values()), name
 

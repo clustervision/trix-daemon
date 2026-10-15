@@ -1589,3 +1589,68 @@ def test_the_doorbell_is_not_the_administrator_alone(client, headers):
     allowed = client.post(f"{API_PREFIX}/system/notify", headers=operator, json={})
     assert allowed.status_code == 200, allowed.text
     assert "rendered" in allowed.json()
+
+
+def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client, headers):
+    """
+    The difference from the doorbell, and the reason this route exists: acting on a
+    change reads back from the source, so a source pushing from inside its own request
+    would end up waiting on itself. This answers 202 with the work written down and
+    nothing run yet, which is what lets a hook push and carry on.
+    """
+    from trixd.core import tasks
+
+    acted = []
+    tasks.register("switches", lambda event, param="": acted.append(event) or "noted")
+    try:
+        answer = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
+            {"event": "switches.port.down", "payload": {"port": "eth0"}},
+            {"event": "switches.port.up", "payload": {"port": "eth1"}}]})
+        assert answer.status_code == 202, answer.text
+        queued = answer.json()["queued"]
+        assert len(queued) == 2, "one request id per change"
+        assert acted == [], "the request acted on the set instead of queuing it"
+
+        held = [tasks.status(identifier) for identifier in queued]
+        assert [row["task"] for row in held] == ["switches.port.down", "switches.port.up"], \
+            "the set must keep the order it was given"
+        assert all(row["subsystem"] == "switches" for row in held)
+        assert held[0]["param"] == '{"port": "eth0"}'
+
+        tasks.drain()
+        assert acted == ["switches.port.down", "switches.port.up"]
+    finally:
+        tasks._handlers.pop("switches", None)
+
+
+def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
+    """
+    All or nothing. Half a set is the worst answer available: the caller is told it
+    failed and retries, while the accepted half is already being acted on.
+    """
+    from sqlalchemy import select
+
+    from trixd.core import tasks
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    tasks.register("switches", lambda event, param="": "noted")
+    try:
+        refused = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
+            {"event": "switches.port.down", "payload": {"port": "eth0"}},
+            {"event": "switches.port", "payload": {"port": "eth1"}}]})
+        assert refused.status_code == 400, refused.text
+        assert "switches.port" in refused.json()["message"]
+
+        tasks.drain()
+        handle = database.session()
+        try:
+            assert handle.scalars(select(models.Task)).all() == [], \
+                "the good half of a refused set was queued anyway"
+        finally:
+            handle.close()
+
+        empty = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": []})
+        assert empty.status_code == 400, "an empty set is a caller mistake, not a no-op"
+    finally:
+        tasks._handlers.pop("switches", None)

@@ -72,6 +72,14 @@ class Change(BaseModel):
     payload: dict = Field(default_factory=dict)
 
 
+class Changes(BaseModel):
+    """
+    Several changes in one call, in the order they are to be acted on.
+    """
+
+    changes: list[Change] = Field(default_factory=list)
+
+
 @router.get("/health", summary="Whether this daemon is serving, its renders and triggers",
             description=(
                 "For a monitor, with no token. `plugins` counts the loaded plugins. Each "
@@ -244,6 +252,54 @@ def notify(body: Change = Body(openapi_examples=docs.example(
     said = dispatch(body.event, json.dumps(body.payload or {}))
     LOGGER.info("notified of %s: %s", body.event, said)
     return {"event": body.event, "acted": said, "rendered": []}
+
+
+@router.post("/bulk", status_code=202,
+             summary="Hand trixd a set of changes to act on, and do not wait",
+             description=(
+                 "For a caller that must not be held up: the changes are written down and "
+                 "the answer comes at once, with the request id this daemon logs each one "
+                 "under, so a caller's own log can be read against ours. Use this rather "
+                 "than `/system/notify` from anything inside another service's request, such as "
+                 "a hook: notify acts before it answers, and acting reads back from the "
+                 "source, so a source waiting on trixd would be waiting on itself.\n\n"
+                 "Each change is named as `<source>.<object>.<event>` with whatever the "
+                 "source holds about it, exactly as `/system/notify` takes one. Send the "
+                 "whole set in one call: a caller with a hundred changed nodes makes one "
+                 "request, not a hundred.\n\nEvery change is checked before any is "
+                 "queued, so a set is taken whole or refused whole."),
+             responses=docs.answers({"queued": ["1791545863-2051-0f3ab9c1",
+                                                "1791545863-2051-7d2e4a06"]},
+                                    "One request id per change, in order",
+                                    errors={400: "Not an event, or nothing publishes it"},
+                                    status=202))
+def bulk(body: Changes = Body(openapi_examples=docs.example(
+             {"changes": [{"event": "luna.node.update",
+                           "payload": {"name": "node001", "group": "compute"}},
+                          {"event": "luna.node.delete", "payload": {"name": "node002"}}]})),
+         caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
+    """
+    Write the set down and answer; the worker acts on it in the order it was given.
+    """
+    if not body.changes:
+        raise BadRequest("name at least one change, each an event and its payload")
+
+    # Checked in full first: a set half-queued is worse than one refused, because the
+    # caller is told it failed while part of it is already on its way.
+    for change in body.changes:
+        parts = change.event.split(".")
+        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+            raise BadRequest(f"{change.event} is not an event: name one as "
+                             f"<source>.<object>.<event>, such as luna.node.update")
+        if tasks.handler(parts[0]) is None:
+            raise BadRequest(f"nothing here publishes {parts[0]} events")
+
+    queued = [tasks.submit(change.event.split(".")[0], change.event,
+                           json.dumps(change.payload or {}), caller.name)
+              for change in body.changes]
+    LOGGER.info("%s handed us %d change(s): %s", caller.name, len(queued),
+                ", ".join(change.event for change in body.changes))
+    return {"queued": queued}
 
 
 @router.get("/replication/hashes", summary="One hash per replicated table",
