@@ -490,6 +490,15 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
         "plugin": "nosuch", "path": "x", "method": "PATCH", "origin": "ctrl1"})
     assert missing.status_code == 404, missing.text
 
+    # An endpoint that takes no body sends a null one, and the envelope must accept that.
+    # It did not: `body: dict = None` is not optional to pydantic, so a DELETE was refused
+    # 422 and the sender could only read that as terminal. Found on a live pair, by the
+    # first real call, because every test until this one sent an empty dict instead.
+    null_body = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "directory", "path": "users/<name>", "method": "DELETE",
+        "variables": {"name": "someone"}, "body": None, "origin": "ctrl1"})
+    assert null_body.status_code != 422, null_body.text
+
 
 def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
     """

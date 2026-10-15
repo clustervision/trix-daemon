@@ -5,9 +5,16 @@
         "description": "One call a peer has already made and this controller has to make too.",
         "properties": {
           "body": {
-            "additionalProperties": true,
-            "title": "Body",
-            "type": "object"
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
           },
           "method": {
             "default": "",

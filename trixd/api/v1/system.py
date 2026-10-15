@@ -32,6 +32,7 @@ __status__      = "Production"
 import inspect
 import json
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
@@ -90,7 +91,10 @@ class Action(BaseModel):
     path: str = ""
     method: str = ""
     variables: dict = Field(default_factory=dict)
-    body: dict = None
+    # Optional, not "dict with a None default": an endpoint that takes no body sends null,
+    # and a plain `dict = None` refuses that with a 422 the sender can only treat as
+    # terminal. A DELETE is exactly that case.
+    body: Optional[dict] = None
     origin: str = ""
     request_id: str = ""
 
