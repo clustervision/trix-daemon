@@ -3775,7 +3775,7 @@
                 }
               }
             },
-            "description": "was was not given, so the files written under the previous name cannot be found"
+            "description": "was was given but is empty, so there is no previous name to find the files by"
           },
           "401": {
             "content": {
@@ -3807,11 +3807,11 @@
             "content": {
               "application/json": {
                 "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
+                  "$ref": "#/components/schemas/Error"
                 }
               }
             },
-            "description": "Validation Error"
+            "description": "was was not given at all"
           }
         },
         "security": [

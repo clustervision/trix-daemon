@@ -307,7 +307,8 @@ endpoints:
       description: What was moved and what was rewritten
       example: {node: node002, hostname: node002.cluster, moved: ["trix.hw.node001.cluster.rules"], rewritten: ["trix.hw.node002.cluster.rules"]}
     errors:
-      400: was was not given, so the files written under the previous name cannot be found
+      400: was was given but is empty, so there is no previous name to find the files by
+      422: was was not given at all
 
   - path: hw-rules
     methods: [GET]
