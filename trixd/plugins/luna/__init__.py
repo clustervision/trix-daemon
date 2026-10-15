@@ -40,7 +40,8 @@ from trixd.core.security import nodes
 from trixd.plugins.luna import config as luna_config
 from trixd.plugins.luna import hashes, hooks
 from trixd.plugins.luna.client import current as client
-from trixd.plugins.luna.credentials import for_luna
+from trixd.plugins.luna.credentials import (get_credentials, get_token,
+                                            get_token_for)
 
 # What the published document shows, where no reader's host is known.
 _PUBLISHED: str = "https://<controller>:7050"
@@ -64,4 +65,4 @@ nodes.register(client())
 docs.register_placeholder("luna", _link, _PUBLISHED)
 hooks.install()
 
-__all__ = ["client", "for_luna"]
+__all__ = ["client", "get_credentials", "get_token", "get_token_for"]

@@ -32,9 +32,12 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import json
+import os
+import stat
 import sys
 from types import ModuleType, SimpleNamespace
 
+import jwt
 import pytest
 import requests
 from fastapi.testclient import TestClient
@@ -42,12 +45,14 @@ from fastapi.testclient import TestClient
 from tests.unit.test_plugins import Ran
 from tests.unit.test_replication import _peer
 from trixd.common import settings as configuration
-from trixd.common.errors import BackendFailure, BadRequest, NotFound, ServiceUnavailable
+from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
+                                 Unauthenticated)
 from trixd.core.replication import sweep as replication
 from trixd.core.replication import tables
 from trixd.db import engine as database
 from trixd.db import models
-from trixd.plugins.luna import hashes
+from trixd.plugins.luna import config as luna_config
+from trixd.plugins.luna import credentials, hashes
 from trixd.plugins.luna.client import LunaClient
 
 
@@ -177,6 +182,235 @@ def test_luna_being_away_is_a_503_not_a_traceback(rig, tmp_path, monkeypatch):
     client, _ = _luna(Answer(body={}))
     with pytest.raises(ServiceUnavailable, match="no token for Luna"):
         client.get("config/node")
+
+
+@pytest.fixture(autouse=True)
+def _no_token_held():
+    """
+    The token is held for the process, so one test must not answer the next one's call.
+    """
+    credentials._held, credentials._held_for = "", ()
+    yield
+    credentials._held, credentials._held_for = "", ()
+
+
+def _luna_ini(tmp_path, **api) -> str:
+    """
+    A luna.ini carrying only what the test puts in its [API] section.
+    """
+    path = tmp_path / "luna.ini"
+    body = "".join(f"{key.upper()} = {value}\n" for key, value in api.items())
+    path.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = https\n{body}",
+                    encoding="utf-8")
+    return str(path)
+
+
+def _cached(tmp_path, monkeypatch, token: str) -> str:
+    """
+    A token already in the cache file, with the cache pointed at the scratch directory.
+    """
+    path = tmp_path / "cache" / "token"
+    path.parent.mkdir(exist_ok=True)
+    path.write_text(token + "\n", encoding="utf-8")
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, str(path))
+    return str(path)
+
+
+def _signed(secret: str, seconds: int = 600) -> str:
+    """
+    A token that looks like one Luna issued, expiring when the test says.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    return jwt.encode({"id": 0, "exp": datetime.now(timezone.utc) + timedelta(seconds=seconds)},
+                      secret, algorithm="HS256")
+
+
+def test_the_luna_credentials_come_from_lunas_own_ini(rig, tmp_path, monkeypatch):
+    """
+    The account is read from Luna's file, which is the only place it is written.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="s3cret"))
+    assert credentials.get_credentials() == ("luna", "s3cret")
+
+
+def test_an_ini_with_no_account_says_which_file_and_which_keys(rig, tmp_path, monkeypatch):
+    """
+    The refusal names the file to edit, because that is the whole of the fix.
+    """
+    path = _luna_ini(tmp_path)
+    monkeypatch.setenv("TRIXD_LUNA_INI", path)
+    with pytest.raises(Unauthenticated, match=r"has no \[API\] USERNAME and PASSWORD"):
+        credentials.get_credentials()
+
+
+def test_the_cached_token_is_used_before_anything_is_minted(rig, tmp_path, monkeypatch):
+    """
+    A usable token on disk costs neither a signature nor a request.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    monkeypatch.setenv("TRIXD_LUNA_INI",
+                       _luna_ini(tmp_path, username="luna", password="p", secret_key=SHARED_SECRET))
+    kept = _signed(SHARED_SECRET)
+    _cached(tmp_path, monkeypatch, kept)
+    assert credentials.get_token() == kept
+
+
+def test_an_expired_or_corrupt_cached_token_is_ignored(rig, tmp_path, monkeypatch):
+    """
+    Neither is an error: the token is minted again, and the bad one is replaced.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    monkeypatch.setenv("TRIXD_LUNA_INI",
+                       _luna_ini(tmp_path, username="luna", password="p", secret_key=SHARED_SECRET))
+    for useless in (_signed(SHARED_SECRET, seconds=-10), "not a token at all"):
+        _cached(tmp_path, monkeypatch, useless)
+        credentials._held, credentials._held_for = "", ()
+        fresh = credentials.get_token()
+        assert fresh != useless
+        assert jwt.decode(fresh, SHARED_SECRET, algorithms=["HS256"])["id"] == 0
+
+
+def test_the_secret_is_preferred_over_signing_in(rig, tmp_path, monkeypatch):
+    """
+    Signing costs nothing and a sign-in costs a request, so a secret wins and Luna is
+    never asked.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    monkeypatch.setenv("TRIXD_LUNA_INI",
+                       _luna_ini(tmp_path, username="luna", password="p", secret_key=SHARED_SECRET))
+    _cached(tmp_path, monkeypatch, "")
+    asked = []
+    monkeypatch.setattr(credentials.requests, "post",
+                        lambda *args, **kwargs: asked.append(args) or Answer(body={}))
+    token = credentials.get_token()
+    assert asked == [], "Luna was asked for a token although luna.ini holds the secret"
+    assert jwt.decode(token, SHARED_SECRET, algorithms=["HS256"])["id"] == 0
+
+
+def test_with_no_secret_trixd_signs_in_and_keeps_what_it_got(rig, tmp_path, monkeypatch):
+    """
+    The last resort: the account from luna.ini, one POST to Luna, and the answer cached
+    so a restart does not ask again. The file is the owner's alone.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    # Not created here: the directory trixd makes itself is the one it promises 0700 for.
+    path = str(tmp_path / "fresh" / "token")
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, path)
+    issued = _signed("l" * 32)
+    sent = {}
+    monkeypatch.setattr(credentials.requests, "post", lambda url, **kwargs: (
+        sent.update(url=url, json=kwargs.get("json")), Answer(201, body={"token": issued}))[1])
+
+    assert credentials.get_token() == issued
+    assert sent["url"].endswith("/token")
+    assert sent["json"] == {"username": "luna", "password": "p"}
+    with open(path, encoding="utf-8") as handle:
+        assert handle.read().strip() == issued
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+        assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
+
+
+def test_luna_away_with_nothing_held_is_unavailable_not_a_wrong_token(rig, tmp_path, monkeypatch):
+    """
+    A render answers 503 and records the failure; it never renders from a token it
+    could not get.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, str(tmp_path / "absent" / "token"))
+    monkeypatch.setattr(credentials.requests, "post",
+                        lambda *args, **kwargs: (_ for _ in ()).throw(
+                            requests.ConnectionError("refused")))
+    with pytest.raises(ServiceUnavailable, match="not answering"):
+        credentials.get_token()
+
+
+def test_a_luna_ini_naming_another_luna_drops_the_held_token(rig, tmp_path, monkeypatch):
+    """
+    A token for one Luna is the wrong token for another, however long it has left.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    monkeypatch.setenv("TRIXD_LUNA_INI",
+                       _luna_ini(tmp_path, username="luna", password="p", secret_key=SHARED_SECRET))
+    _cached(tmp_path, monkeypatch, "")
+    first = credentials.get_token()
+
+    other = tmp_path / "other.ini"
+    other.write_text(f"[API]\nENDPOINT = elsewhere:7050\nPROTOCOL = https\n"
+                     f"SECRET_KEY = {'f' * 32}\n", encoding="utf-8")
+    monkeypatch.setenv("TRIXD_LUNA_INI", str(other))
+    assert credentials.get_token() != first
+
+
+def test_the_personal_luna_ini_is_read_before_the_controllers(tmp_path, monkeypatch):
+    """
+    The order luna2-cli uses: whoever runs this may have logged in as themselves.
+    """
+    monkeypatch.delenv("TRIXD_LUNA_INI", raising=False)
+    home = tmp_path / "home"
+    (home / ".luna").mkdir(parents=True)
+    monkeypatch.setenv("HOME", str(home))
+    assert luna_config.chosen_path() == luna_config.DEFAULT_LUNA_INI, "none yet, so the controller's"
+
+    personal = home / ".luna" / "luna.ini"
+    personal.write_text("[API]\nENDPOINT = mine:7050\n", encoding="utf-8")
+    assert luna_config.chosen_path() == str(personal)
+    monkeypatch.setenv("TRIXD_LUNA_INI", "/named/explicitly.ini")
+    assert luna_config.chosen_path() == "/named/explicitly.ini", "the environment still wins"
+
+
+def test_a_token_for_another_account_is_signed_in_for_and_never_cached(rig, tmp_path,
+                                                                       monkeypatch):
+    """
+    The cache holds the daemon's own token. A token for somebody else must not land in
+    it, or the next caller asking for the daemon's gets a stranger's.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    monkeypatch.setenv("TRIXD_LUNA_INI",
+                       _luna_ini(tmp_path, username="luna", password="p", secret_key=SHARED_SECRET))
+    path = str(tmp_path / "own" / "token")
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, path)
+    mine = credentials.get_token()
+
+    theirs = _signed("x" * 32)
+    sent = {}
+    monkeypatch.setattr(credentials.requests, "post", lambda url, **kwargs: (
+        sent.update(json=kwargs.get("json")), Answer(201, body={"token": theirs}))[1])
+
+    assert credentials.get_token_for("alice", "her-password") == theirs
+    assert sent["json"] == {"username": "alice", "password": "her-password"}
+    assert credentials.get_token() == mine, "the held token is still the daemon's own"
+    assert not os.path.exists(path), "a token for another account was written to the cache"
+
+
+def test_a_token_for_another_account_needs_both_halves(rig, tmp_path, monkeypatch):
+    """
+    Signing in with half an account is a refusal here, not a request to Luna.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    asked = []
+    monkeypatch.setattr(credentials.requests, "post",
+                        lambda *args, **kwargs: asked.append(args) or Answer(body={}))
+    for username, password in (("", "p"), ("alice", "")):
+        with pytest.raises(Unauthenticated, match="username and a password"):
+            credentials.get_token_for(username, password)
+    assert asked == [], "Luna was asked although the account was incomplete"
+
+
+def test_a_refused_account_is_unavailable_and_names_the_file(rig, tmp_path, monkeypatch):
+    """
+    Luna saying no is not this daemon's failure, but the caller still cannot proceed.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    monkeypatch.setattr(credentials.requests, "post", lambda *args, **kwargs: Answer(401))
+    with pytest.raises(ServiceUnavailable, match="refused the account"):
+        credentials.get_token_for("alice", "wrong")
 
 
 def test_lunas_envelopes_are_unwrapped(rig):
