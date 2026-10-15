@@ -2,17 +2,17 @@
   "components": {
     "schemas": {
       "Change": {
-        "description": "Which kind of Luna object changed, and optionally which one.",
+        "description": "What changed, named as <source>.<object>.<event>, and whatever the source holds about it.",
         "properties": {
-          "name": {
+          "event": {
             "default": "",
-            "title": "Name",
+            "title": "Event",
             "type": "string"
           },
-          "object": {
-            "default": "",
-            "title": "Object",
-            "type": "string"
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
           }
         },
         "title": "Change",
@@ -5347,7 +5347,7 @@
     },
     "/api/v1/system/notify": {
       "post": {
-        "description": "For a change trixd could not notice itself: the renders that read that kind of object run again. `object` is a Luna table such as `node`, `group` or `network`; left empty, every render runs. `rendered` lists the renders that ran now; one that ran inside its two-second window runs again when the window closes. Nothing calls this on its own; it is for an operator or a script.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "For a change trixd could not notice itself. `event` names it as `<source>.<object>.<event>`: who holds the thing, what it is, and what happened to it, such as `luna.node.update`. Every plugin that declared that event acts on it, and the renders that read the object run again. `payload` is whatever the source holds about the change and is passed on unchanged.\n\nA plugin that declared nothing is not called, and an event nobody declared is not an error: `acted` then says so and the renders still run. Ring it once after a sweep rather than once per node; a whole set belongs in the plugin's own bulk route.\n\nLeft empty, every render runs and nothing is dispatched, which is the operator's nudge.\n\n**Access:** operator or above: operator, manager and rootus",
         "operationId": "notify_api_v1_system_notify_post",
         "requestBody": {
           "content": {
@@ -5355,8 +5355,10 @@
               "examples": {
                 "example": {
                   "value": {
-                    "name": "node001",
-                    "object": "node"
+                    "event": "luna.node.update",
+                    "payload": {
+                      "name": "node001"
+                    }
                   }
                 }
               },
@@ -5372,12 +5374,9 @@
             "content": {
               "application/json": {
                 "example": {
-                  "rendered": [
-                    "genders/renders/genders",
-                    "prometheus/renders/rule-files",
-                    "prometheus/renders/targets",
-                    "slurm/renders/config"
-                  ]
+                  "acted": "prometheus: node001: moved [], rewritten []",
+                  "event": "luna.node.update",
+                  "rendered": []
                 },
                 "schema": {
                   "additionalProperties": true,
@@ -5386,7 +5385,7 @@
                 }
               }
             },
-            "description": "The renders that ran"
+            "description": "What acted, and what ran"
           },
           "401": {
             "content": {
@@ -5433,12 +5432,12 @@
             "bearer": []
           }
         ],
-        "summary": "Tell trixd a Luna object changed",
+        "summary": "Tell trixd that something it did not see has changed",
         "tags": [
           "system"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "operator"
       }
     },
     "/api/v1/system/plugins": {

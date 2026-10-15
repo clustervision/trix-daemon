@@ -29,17 +29,20 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import json
 from datetime import datetime
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   PLUGIN_STATE_LOADED, ROLE_READER, ROLE_ROOTUS)
+                                   HOOK_EVENT_PARTS, PLUGIN_STATE_LOADED, ROLE_OPERATOR,
+                                   ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused
+from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import tables
@@ -62,11 +65,11 @@ PLUGIN_EXAMPLE: dict = {
 
 class Change(BaseModel):
     """
-    Which kind of Luna object changed, and optionally which one.
+    What changed, named as <source>.<object>.<event>, and whatever the source holds about it.
     """
 
-    object: str = ""
-    name: str = ""
+    event: str = ""
+    payload: dict = Field(default_factory=dict)
 
 
 @router.get("/health", summary="Whether this daemon is serving, its renders and triggers",
@@ -203,27 +206,44 @@ def disable_plugin(request: Request,
     return {"plugin": entry.summary()}
 
 
-@router.post("/notify", summary="Tell trixd a Luna object changed",
+@router.post("/notify", summary="Tell trixd that something it did not see has changed",
              description=(
-                 "For a change trixd could not notice itself: the renders that read that "
-                 "kind of object run again. `object` is a Luna table such as `node`, `group` "
-                 "or `network`; left empty, every render runs. `rendered` lists the renders "
-                 "that ran now; one that ran inside its two-second window runs again when the "
-                 "window closes. Nothing calls this on its own; it is for an operator or a "
-                 "script."),
-             responses=docs.answers({"rendered": [
-                 "genders/renders/genders", "prometheus/renders/rule-files",
-                 "prometheus/renders/targets", "slurm/renders/config"]}, "The renders that ran"))
-def notify(body: Change = Body(openapi_examples=docs.example({"object": "node",
-                                                              "name": "node001"})),
-           caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+                 "For a change trixd could not notice itself. `event` names it as "
+                 "`<source>.<object>.<event>`: who holds the thing, what it is, and what "
+                 "happened to it, such as `luna.node.update`. Every plugin that declared "
+                 "that event acts on it, and the renders that read the object run again. "
+                 "`payload` is whatever the source holds about the change and is passed "
+                 "on unchanged.\n\nA plugin that declared nothing is not called, and an "
+                 "event nobody declared is not an error: `acted` then says so and the "
+                 "renders still run. Ring it once after a sweep rather than once per "
+                 "node; a whole set belongs in the plugin's own bulk route.\n\nLeft "
+                 "empty, every render runs and nothing is dispatched, which is the "
+                 "operator's nudge."),
+             responses=docs.answers({"event": "luna.node.update",
+                                     "acted": "prometheus: node001: moved [], rewritten []",
+                                     "rendered": []}, "What acted, and what ran"))
+def notify(body: Change = Body(openapi_examples=docs.example(
+               {"event": "luna.node.update", "payload": {"name": "node001"}})),
+           caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
     """
-    Wake the renders that read this kind of object, or every render when none is named.
-    Nothing calls it on its own; it is there for an operator or a script to nudge.
+    Hand the change to whatever publishes that kind of event, which runs the plugins
+    that declared it and wakes the renders. With no event, wake every render.
     """
-    woken = renders().notify(f"luna.{body.object}" if body.object else "")
-    LOGGER.info("notified of %s %s, woke %d render(s)", body.object, body.name, len(woken))
-    return {"rendered": woken}
+    if not body.event:
+        woken = renders().notify("")
+        LOGGER.info("nudged, woke %d render(s)", len(woken))
+        return {"event": "", "acted": "", "rendered": woken}
+
+    parts = body.event.split(".")
+    if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+        raise BadRequest(f"{body.event} is not an event: name one as "
+                         f"<source>.<object>.<event>, such as luna.node.update")
+    dispatch = tasks.handler(parts[0])
+    if dispatch is None:
+        raise BadRequest(f"nothing here publishes {parts[0]} events")
+    said = dispatch(body.event, json.dumps(body.payload or {}))
+    LOGGER.info("notified of %s: %s", body.event, said)
+    return {"event": body.event, "acted": said, "rendered": []}
 
 
 @router.get("/replication/hashes", summary="One hash per replicated table",

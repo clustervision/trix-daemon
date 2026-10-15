@@ -71,6 +71,14 @@ def register(subsystem: str, handler) -> None:
     _handlers[subsystem] = handler
 
 
+def handler(subsystem: str):
+    """
+    What runs a task of this kind, or None when nothing registered for it. A caller
+    reaches a plugin's own dispatcher by name, without knowing which plugin it is.
+    """
+    return _handlers.get(subsystem)
+
+
 def submit(subsystem: str, task: str, param: str = "", principal: str = "") -> str:
     """
     Take the work, write it down, answer at once. The caller polls the id.

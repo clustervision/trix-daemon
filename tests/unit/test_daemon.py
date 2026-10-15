@@ -1542,3 +1542,50 @@ def test_the_check_command_needs_no_daemon_and_says_why(rig, tmp_path, capsys):
     config = configuration.current().config_file
     assert server.main(["--config", config, "plugin", "check", "services"]) == 0
     assert server.main(["--config", config, "plugin", "check", "nosuch"]) == 1
+
+
+def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client, headers):
+    """
+    Core holds no list of sources: it reads the first part of the event and hands the
+    change to whatever registered that name, so a plugin publishing switches.port.down
+    works without the daemon learning anything. An event nobody declared is not an
+    error - the renders still run - but a source nobody publishes is, because the
+    caller would otherwise be told nothing happened and not know why.
+    """
+    from trixd.core import tasks
+
+    seen = []
+    tasks.register("switches", lambda event, param="": seen.append((event, param)) or "noted")
+    try:
+        answer = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                             json={"event": "switches.port.down", "payload": {"port": "eth0"}})
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["acted"] == "noted"
+        assert seen == [("switches.port.down", '{"port": "eth0"}')]
+    finally:
+        tasks._handlers.pop("switches", None)
+
+    refused = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                          json={"event": "switches.port.down"})
+    assert refused.status_code == 400, "a source nobody publishes must say so"
+    assert "switches" in refused.json()["message"]
+
+    shapeless = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                            json={"event": "node.update"})
+    assert shapeless.status_code == 400, "two parts is not an event"
+
+
+def test_the_doorbell_is_not_the_administrator_alone(client, headers):
+    """
+    A graphical interface or another tool rings this, not only the daemon's own account.
+    An operator may; a reader may not, because it writes files and reloads services.
+    """
+    reader = _principal(client, headers, "rings-reader", "reader")
+    operator = _principal(client, headers, "rings-operator", "operator")
+
+    refused = client.post(f"{API_PREFIX}/system/notify", headers=reader, json={})
+    assert refused.status_code == 403, "a reader rang the doorbell"
+
+    allowed = client.post(f"{API_PREFIX}/system/notify", headers=operator, json={})
+    assert allowed.status_code == 200, allowed.text
+    assert "rendered" in allowed.json()
