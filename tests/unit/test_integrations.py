@@ -37,6 +37,7 @@ from types import ModuleType, SimpleNamespace
 
 import pytest
 import requests
+from fastapi.testclient import TestClient
 
 from tests.unit.test_plugins import Ran
 from tests.unit.test_replication import _peer
@@ -740,12 +741,11 @@ def test_slurm_without_its_generator_says_so(rig, monkeypatch):
         slurm.Backend().render_config()
 
 
-def _gated() -> "TestClient":
+def _gated() -> TestClient:
     """
     Three routes behind the gate alone: one for a node token, two for user roles.
     """
     from fastapi import Depends, FastAPI
-    from fastapi.testclient import TestClient
 
     from trixd.common import errors
     from trixd.core.security.gate import guard

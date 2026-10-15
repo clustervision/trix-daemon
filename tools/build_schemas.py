@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 # This code is part of the TrinityX software suite
 # Copyright (C) 2026  ClusterVision Solutions b.v.
 #
