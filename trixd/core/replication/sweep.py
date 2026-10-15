@@ -33,18 +33,73 @@ import os
 import threading
 import time
 
+import jwt
 import requests
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
+from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.core.replication import tables
-from trixd.core.security import tokens
 from trixd.db import engine as database
 
 LOGGER = trixlog.get("sweep")
 
 TIMEOUT: int = 30
+# A token is replaced this long before it expires, so one never dies mid-pass.
+RENEW_MARGIN: int = 60
+
+# What each peer issued us, by peer. A peer signs us in and decides what its token may
+# do, which is why nothing here mints one: the two controllers of a pair are configured
+# with the same account but generate their own signing secret, so a token minted here
+# is not one the peer can verify.
+_tokens: dict = {}
+_token_lock = threading.Lock()
+
+
+def _usable(token: str) -> bool:
+    """
+    Whether a held token is worth presenting: it decodes, it says when it expires, and
+    that is far enough away to survive the pass it is about to be used for.
+    """
+    if not token:
+        return False
+    try:
+        claims = jwt.decode(token, options={"verify_signature": False, "require": ["exp"]})
+    except jwt.PyJWTError:
+        return False
+    return float(claims["exp"]) - time.time() > RENEW_MARGIN
+
+
+def _sign_in(peer: str, verify) -> str:
+    """
+    The account this daemon's own ini names, offered to the peer, which answers with a
+    token of its own. The peer's certificate is checked first: a password goes with it.
+    """
+    config = settings()
+    url = f"{config.api.protocol}://{peer}{API_PREFIX}/auth/token"
+    answer = requests.post(url, json={"username": config.api.username,
+                                      "password": config.api.password},
+                           timeout=TIMEOUT, verify=verify)
+    if answer.status_code >= 400:
+        raise Unauthenticated(f"{peer} refused the account trixd.ini names: "
+                              f"{answer.status_code}")
+    token = (answer.json() or {}).get("token", "")
+    if not token:
+        raise Unauthenticated(f"{peer} answered the token request without a token")
+    LOGGER.info("signed in at %s", peer)
+    return token
+
+
+def _token(peer: str, verify, renew: bool = False) -> str:
+    """
+    The token held for a peer, signing in when there is none worth using.
+    """
+    with _token_lock:
+        if not renew and _usable(_tokens.get(peer, "")):
+            return _tokens[peer]
+        _tokens[peer] = _sign_in(peer, verify)
+        return _tokens[peer]
 
 
 class Sweep:
@@ -67,13 +122,17 @@ class Sweep:
         """
         # The peer serves what this controller serves: the protocol trixd.ini names.
         url = f"{settings().api.protocol}://{peer}{API_PREFIX}/system/replication/{path}"
-        headers = {TOKEN_HEADER: tokens.service_token()}
-        # The service token passes every check, so it goes only to a peer that proves
-        # itself with a certificate the cluster's own CA signed.
-        answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=self._trust())
-        if answer.status_code >= 400:
-            raise RuntimeError(f"{peer} answered {answer.status_code}")
-        return answer.json()
+        verify = self._trust()
+        for attempt in (1, 2):
+            headers = {TOKEN_HEADER: _token(peer, verify, renew=attempt == 2)}
+            answer = requests.get(url, headers=headers, timeout=TIMEOUT, verify=verify)
+            if answer.status_code in (401, 403) and attempt == 1:
+                # The token the peer gave us is no longer good to it: ask for another.
+                continue
+            if answer.status_code >= 400:
+                raise RuntimeError(f"{peer} answered {answer.status_code}")
+            return answer.json()
+        return None
 
     def _trust(self):
         """

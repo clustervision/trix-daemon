@@ -37,7 +37,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import (LUNA_CLAIM_ID, LUNA_CLAIM_NODE, LUNA_CLAIM_SCOPE,
                                     LUNA_NO_USER_ID, LUNA_SCOPE_PROVISION,
                                     LUNA_SUPERUSER_ID, TOKEN_KIND_NODE,
-                                    TOKEN_KIND_SERVICE, TOKEN_KIND_USER, TOKEN_KINDS)
+                                    TOKEN_KIND_USER, TOKEN_KINDS)
 from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.core.security import keys
@@ -150,11 +150,3 @@ def verify(token: str) -> Claims:
     if claims.kind not in TOKEN_KINDS:
         raise Unauthenticated("token carries an unknown kind")
     return claims
-
-
-def service_token(expiry: int = 300) -> str:
-    """
-    A short-lived token naming this daemon, for talking to the other one.
-    """
-    ring = keys.current()
-    return mint(ring.issuer, kind=TOKEN_KIND_SERVICE, expiry=expiry, source="local")

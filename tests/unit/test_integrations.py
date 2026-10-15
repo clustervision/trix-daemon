@@ -585,9 +585,10 @@ def test_a_peer_is_trusted_through_the_cluster_ca_only_when_it_is_there(rig, tmp
     assert sweep._trust() == str(ca)
 
 
-def test_the_service_token_goes_to_a_peer_with_the_ca_check(rig, tmp_path, monkeypatch):
+def test_the_peer_signs_us_in_and_the_ca_is_checked(rig, tmp_path, monkeypatch):
     """
-    Over https, with the token header, verified against the cluster CA.
+    Over https, with the token the peer issued, verified against the cluster CA. The
+    password goes with that request, so the certificate check is what makes it safe.
     """
     ca = tmp_path / "cluster-ca.crt"
     ca.write_text("x", encoding="utf-8")
@@ -601,15 +602,24 @@ def test_the_service_token_goes_to_a_peer_with_the_ca_check(rig, tmp_path, monke
         seen.update(url=url, **kwargs)
         return Answer(body={"hashes": {}})
 
+    signed_in = []
+    monkeypatch.setattr(replication, "_tokens", {})
+    monkeypatch.setattr(replication.requests, "post", lambda url, **kwargs: (
+        signed_in.append((url, kwargs.get("verify"))),
+        Answer(201, body={"token": _signed("s" * 32)}))[1])
     monkeypatch.setattr(replication.requests, "get", get)
     assert replication.Sweep()._get("peer.cluster:8050", "hashes") == {"hashes": {}}
+    assert signed_in[0][0] == "https://peer.cluster:8050/api/v1/auth/token"
+    assert signed_in[0][1] == str(ca), "the peer's certificate is checked before the password"
     assert seen["url"] == "https://peer.cluster:8050/api/v1/system/replication/hashes"
     assert seen["verify"] == str(ca)
     assert seen["headers"]["x-access-tokens"]
 
+    # A refusal that a fresh token does not cure: signed in again, refused again, raised.
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: Answer(403))
     with pytest.raises(RuntimeError, match="answered 403"):
         replication.Sweep()._get("peer.cluster:8050", "hashes")
+    assert len(signed_in) == 2, "the refusal was retried once with a new token"
 
 
 def test_a_pass_takes_what_differs_from_the_peer_and_then_nothing(rig, tmp_path, monkeypatch):
@@ -1061,7 +1071,7 @@ def test_a_subject_nobody_knows_is_refused_and_the_peer_is_not(rig):
     client = _gated()
     ghost = {"x-access-tokens": tokens.mint("ghost-of-nobody")}
     assert client.get("/look", headers=ghost).status_code == 401
-    peer = {"x-access-tokens": tokens.service_token()}
+    peer = {"x-access-tokens": tokens.mint("trixd", kind="service")}
     answer = client.patch("/change", headers=peer)
     assert answer.status_code == 200, answer.text
 

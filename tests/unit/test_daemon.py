@@ -101,11 +101,13 @@ def test_a_personal_token_is_nobody_at_luna(rig):
     assert tokens.verify(minted).subject == "alice"
 
 
-def test_the_service_token_is_nobody_at_luna(rig):
+def test_a_service_kind_token_is_nobody_at_luna(rig):
     """
-    The peer's token is for the peer; at Luna it is refused, not obeyed.
+    A token naming this daemon rather than a person carries no Luna identity, so Luna
+    refuses it rather than obeying it.
     """
-    claims = jwt.decode(tokens.service_token(), SHARED_SECRET, algorithms=["HS256"])
+    minted = tokens.mint("trixd", kind="service")
+    claims = jwt.decode(minted, SHARED_SECRET, algorithms=["HS256"])
     assert claims["id"] == -1
 
 

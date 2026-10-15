@@ -175,12 +175,14 @@ def test_the_replication_endpoints_answer(client, headers):
 
 def test_a_peer_daemon_reaches_the_replication_endpoints(client):
     """
-    The sweep presents a service token, which names the other daemon and no principal.
+    A peer signs in here and presents the token this daemon issued it, which is the ini
+    account and so rootus. Nothing is minted for a peer: the two controllers of a pair
+    generate their own secret, so only the issuer can verify what it issued.
     """
     from trixd.common.constants import TOKEN_HEADER
     from trixd.core.security import tokens
 
-    peer = {TOKEN_HEADER: tokens.service_token()}
+    peer = {TOKEN_HEADER: tokens.mint("tester")}
     for path in ("hashes", "table/principal"):
         answer = client.get(f"{API_PREFIX}/system/replication/{path}", headers=peer)
         assert answer.status_code == 200, answer.text

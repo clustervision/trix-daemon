@@ -115,7 +115,7 @@ def test_replication_follows_the_protocol_too(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(replication, "settings", lambda: _settings(protocol="http"))
-    monkeypatch.setattr(replication.tokens, "service_token", lambda: "t")
+    monkeypatch.setattr(replication, "_token", lambda peer, verify, renew=False: "t")
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: (
         seen.setdefault("url", url), SimpleNamespace(status_code=200, json=lambda: {}))[1])
     replication.Sweep()._get("peer.cluster:8050", "hashes")
