@@ -346,3 +346,174 @@ def test_a_declaration_from_the_peer_wakes_the_renders_that_read_it(rig, tmp_pat
         handle.close()
         peer.close()
     assert woken == ["prometheus.rules"]
+
+def test_a_newer_call_for_one_target_replaces_the_older_row(rig):
+    """
+    The table is the size of the distinct things that changed, not of the call volume. A
+    reboot storm sends the same body per node, so repeats of one node collapse; and because
+    only the newest intent survives, no stale row can be applied late and undo newer state.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    for _ in range(5):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": "node001"}, {"force": True}, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req", "tester")
+    # A delete for the same node is a different intent and must not merge with the patch.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req", "tester")
+
+    handle = database.session()
+    try:
+        rows = handle.scalars(select(models.Outbox)).all()
+        assert len(rows) == 3, [(r.method, r.target) for r in rows]
+        assert {(r.method, r.target.split("|")[0]) for r in rows} == {
+            ("PATCH", "node=node001"), ("PATCH", "node=node002"),
+            ("DELETE", "node=node001")}
+    finally:
+        handle.close()
+
+
+def test_a_rename_never_collapses_with_another_rename(rig):
+    """
+    Two renames of one node are not the same intent: the second's `was` is the first's new
+    name, so dropping the first would leave the file under a name nothing looks for. The
+    body digest in the key makes that fall out of the schema rather than needing a case.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node002"}, {"was": "node001"}, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node003"}, {"was": "node002"}, "req", "tester")
+    handle = database.session()
+    try:
+        assert len(handle.scalars(select(models.Outbox)).all()) == 2
+    finally:
+        handle.close()
+
+
+def test_a_dark_peer_stops_being_attempted_after_three_failures(rig, monkeypatch):
+    """
+    TRIX-2049's shape, pre-empted: one worker, a bounded threadpool, and a dark peer would
+    otherwise have every replicated call hold a thread for the timeout while every other
+    caller queues behind it. Three consecutive transport failures say the peer rather than
+    the call, and from then on a replicated call costs a row and no socket at all.
+    """
+    from trixd.core.replication import outbox
+
+    tried = []
+
+    def refuse(peer, row):
+        """
+        A peer that is not answering.
+        """
+        tried.append(peer)
+        return outbox.QUEUED, "connection refused"
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    original, outbox._send = outbox._send, refuse
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        for _ in range(10):
+            said = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                    {"node": "node001"}, None, {"retired": []},
+                                    "req", "tester")
+        assert len(tried) == 3, f"attempted a dark peer {len(tried)} times, not 3"
+        assert said["peers"] == {"ctrl2": "peer-down"}, said
+        assert outbox.breaker_open("ctrl2")
+
+        # Only a sweep reaching the peer closes it; nothing probes from the request path.
+        outbox.record_success("ctrl2")
+        assert not outbox.breaker_open("ctrl2")
+    finally:
+        outbox._send = original
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_call_that_changed_nothing_is_not_replicated(rig, monkeypatch):
+    """
+    The local path deliberately costs nothing for a node that rebooted unchanged, and
+    replicating anyway would undo that at the one moment it matters. Only an explicit
+    falsy `changed` skips, so the default is to send: a missed replication is a silent
+    divergence, a redundant one is an idempotent no-op at the peer.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+    original = outbox._send
+    outbox._send = lambda peer, row: (sent.append(peer), (outbox.DONE, ""))[1]
+    try:
+        for result, expected in (({"changed": False}, "skipped"),
+                                 ({"changed": 0}, "skipped"),
+                                 ({"changed": True}, None),
+                                 ({"retired": ["a"]}, None),
+                                 (["a", "b"], None)):
+            said = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                    {"node": "node001"}, {}, result, "req", "tester")
+            if expected == "skipped":
+                assert said.get("state") == "skipped", result
+            else:
+                assert said["peers"].get("ctrl2") == outbox.DONE, result
+        assert len(sent) == 3, "a result without an explicit falsy changed must be sent"
+    finally:
+        outbox._send = original
+
+def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(client, headers):
+    """
+    The flag is checked at both ends. A peer running an older manifest refuses an action for
+    an endpoint it does not declare, which is what a version-skewed pair should do instead of
+    being persuaded into writes nobody marked as crossing. The refusal is terminal, so the
+    sender stops rather than retrying for a day.
+    """
+    from trixd.common.constants import API_PREFIX
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "directory", "path": "users/<name>", "method": "PATCH",
+        "variables": {"name": "someone"}, "body": {}, "origin": "ctrl1", "request_id": "r1"})
+    assert refused.status_code == 400, refused.text
+    assert "replicate" in refused.json()["message"]
+
+    missing = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "nosuch", "path": "x", "method": "PATCH", "origin": "ctrl1"})
+    assert missing.status_code == 404, missing.text
+
+
+def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
+    """
+    Four shapes where replicating is always wrong, refused at load rather than discovered in
+    production: a read has nothing to carry, a render is already driven at both ends by the
+    same source, a forwarded call is replicated by the service behind it, and a public one
+    would let anyone with no token make this controller call its peer.
+    """
+    import pytest
+
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend"}
+    for endpoint, because in (
+            ({"path": "x", "methods": ["GET"], "handler": "read", "minimum": "reader",
+              "replicate": True}, "reads"),
+            ({"path": "y", "methods": ["PATCH"], "handler": "w", "minimum": "manager",
+              "forward": True, "replicate": True}, "forwarded"),
+            ({"path": "z", "methods": ["PATCH"], "handler": "w", "public": True,
+              "replicate": True}, "public"),
+            ({"path": "r", "methods": ["PATCH"], "minimum": "manager", "handler": "w",
+              "render": {"inputs": ["luna.node"], "serve": "json"},
+              "replicate": True}, "a render")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse({**base, "endpoints": [endpoint]})
+        assert because in str(refusal.value), (because, str(refusal.value))

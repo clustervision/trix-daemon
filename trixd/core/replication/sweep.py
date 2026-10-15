@@ -91,6 +91,15 @@ def _sign_in(peer: str, verify) -> str:
     return token
 
 
+def trust():
+    """
+    The cluster CA to check a peer against, or the system store when it is missing. Module
+    level because the outbox sends to the same peers and must check them the same way.
+    """
+    ca_file = settings().replication.ca_file
+    return ca_file if ca_file and os.path.isfile(ca_file) else True
+
+
 def _token(peer: str, verify, renew: bool = False) -> str:
     """
     The token held for a peer, signing in when there is none worth using.
@@ -136,10 +145,9 @@ class Sweep:
 
     def _trust(self):
         """
-        The cluster CA to check a peer against, or the system store when it is missing.
+        The cluster CA to check a peer against; the sweep's own name for it.
         """
-        ca_file = settings().replication.ca_file
-        return ca_file if ca_file and os.path.isfile(ca_file) else True
+        return trust()
 
     def pass_over(self, peer: str) -> dict:
         """
@@ -165,12 +173,18 @@ class Sweep:
 
     def once(self) -> list:
         """
-        One pass over every configured peer.
+        One pass over every configured peer: what it owes the peer, then what differs.
         """
+        # Imported here because the outbox needs this module's sign-in and certificate,
+        # so importing it at the top would be a cycle.
+        from trixd.core.replication import outbox
+
         results = []
         for peer in settings().replication.peers:
             try:
-                results.append(self.pass_over(peer))
+                owed = outbox.drain(peer)
+                result = self.pass_over(peer)
+                results.append({**result, "owed": owed})
             except Exception as error:
                 # A peer being away is ordinary. The next pass picks it up.
                 LOGGER.warning("peer %s not reconciled this pass: %s", peer, error)

@@ -225,6 +225,7 @@ endpoints:
 
   - path: hw-rules/<node>
     methods: [PATCH]
+    replicate: true
     token: node
     handler: import_hw_rules
     schema: hw_rules
@@ -249,6 +250,7 @@ endpoints:
 
   - path: hw-rules/<node>
     methods: [DELETE]
+    replicate: true
     minimum: manager
     handler: remove_hw_rules
     summary: Retire the hardware rule files held for a node that is gone
@@ -269,6 +271,7 @@ endpoints:
 
   - path: hw-rules/<node>/actions/repair
     methods: [POST]
+    replicate: true
     minimum: manager
     handler: repair_hw_rules
     summary: Make a node's hardware rule files match what is held for it now
@@ -288,6 +291,7 @@ endpoints:
 
   - path: hw-rules/<node>/actions/rename
     methods: [POST]
+    replicate: true
     minimum: manager
     handler: rename_hw_rules
     schema: hw_rename
@@ -333,6 +337,7 @@ endpoints:
 
   - path: hw-rules
     methods: [PATCH]
+    replicate: true
     minimum: manager
     handler: set_hw_rules
     schema: hw_rules_many

@@ -119,6 +119,10 @@ class Endpoint(BaseModel):
     # The daemon checks nothing: the request goes on as sent and the service behind it
     # decides, as Luna does behind /api/v1/luna. Only the luna plugin needs it.
     forward: bool = False
+    # This call has to happen on the other controller too, because what it writes is not
+    # in a replicated table and no render brings it back. Off by default, including for a
+    # plugin's own bulk route: a call that need not cross should not.
+    replicate: bool = False
     # What /api/v1/docs shows beyond the summary: what the route does, what to send, what
     # comes back, and the refusals its own work can answer.
     description: str = ""
@@ -194,6 +198,19 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(
                 f'{endpoint.path or "/"} must declare a minimum role from '
                 f'{", ".join(MINIMUMS)}, not {endpoint.minimum or "nothing"}')
+        if endpoint.replicate:
+            # A read has nothing to carry; a render is already driven at both ends by the
+            # same source; a forwarded call is replicated by the service behind it; and a
+            # public one would let anyone make this controller call its peer.
+            if all(verb.upper() in ("GET", "HEAD") for verb in endpoint.methods):
+                raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
+                                    f"to replicate")
+            for why, blocked in (("a render", endpoint.render is not None),
+                                 ("forwarded", endpoint.forward),
+                                 ("public", endpoint.public)):
+                if blocked:
+                    raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
+                                        f"also replicate")
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")

@@ -141,6 +141,11 @@
             },
             "type": "object"
           },
+          "replicate": {
+            "default": false,
+            "description": "do this at the other controller too, for a write no replicated table or render carries",
+            "type": "boolean"
+          },
           "request_example": {
             "description": "an example body, shown on /api/v1/docs"
           },

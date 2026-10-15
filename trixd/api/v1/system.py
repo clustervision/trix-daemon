@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import inspect
 import json
 from datetime import datetime
 
@@ -45,7 +46,7 @@ from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
-from trixd.core.replication import tables
+from trixd.core.replication import outbox, tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
 from trixd.core.render import triggers
@@ -80,6 +81,20 @@ class Changes(BaseModel):
     changes: list[Change] = Field(default_factory=list)
 
 
+class Action(BaseModel):
+    """
+    One call a peer has already made and this controller has to make too.
+    """
+
+    plugin: str = ""
+    path: str = ""
+    method: str = ""
+    variables: dict = Field(default_factory=dict)
+    body: dict = None
+    origin: str = ""
+    request_id: str = ""
+
+
 @router.get("/health", summary="Whether this daemon is serving, its renders and triggers",
             description=(
                 "For a monitor, with no token. `plugins` counts the loaded plugins. Each "
@@ -87,7 +102,9 @@ class Changes(BaseModel):
                 "trixd or its plugin started, and whether that run worked. `triggers` carries one "
                 "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
                 "hashes, which it does on an HA master only, and `replication` when the last "
-                "sweep ran, 0 for never. States and "
+                "sweep ran, 0 for never. `owed` carries, per peer, whether it is "
+                "answering and how many replicated calls are still waiting for it, with "
+                "`failed` counting the ones given up on. States and "
                 "times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
@@ -96,7 +113,9 @@ class Changes(BaseModel):
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
-                             "replication": {"at": 1791545526.87}}}, "How trixd is doing"))
+                             "replication": {"at": 1791545526.87}},
+                "owed": {"ctrl2": {"answering": True, "pending": 0}, "failed": 0}},
+                "How trixd is doing"))
 def health() -> dict:
     """
     Unauthenticated on purpose: a health check that needs a token is not one.
@@ -110,7 +129,8 @@ def health() -> dict:
             "triggers": {**{name: {"answering": state.get("answering", False),
                                    "last_pass": state.get("last_pass", 0)}
                             for name, state in triggers.states().items()},
-                         "replication": {"at": (sweep().last or {}).get("at", 0)}}}
+                         "replication": {"at": (sweep().last or {}).get("at", 0)}},
+            "owed": outbox.states()}
 
 
 @router.get("/version", summary="What is running here",
@@ -347,6 +367,59 @@ def replication_table(name: str = Path(description="principal or declaration",
         return {"table": name, "documents": tables.export_table(handle, name)}
     finally:
         handle.close()
+
+
+@router.post("/replication/apply", summary="Do what a peer already did",
+             description=(
+                 "The other controller made a call whose effect is not in a replicated "
+                 "table and which no render brings back - a hardware rule file written or "
+                 "retired, for instance - so it asks this controller to make the same "
+                 "call. Only an endpoint whose own manifest says `replicate` can be asked "
+                 "for, which is checked here as well as there, so a version-skewed pair "
+                 "refuses instead of being talked into work it does not declare.\n\n"
+                 "The named handler is called directly rather than the route being "
+                 "re-entered, so nothing is written down to send onwards: there is no loop "
+                 "to prevent and no hop count to get wrong. rootus only, which is the "
+                 "account the pair already shares for replication."),
+             responses=docs.answers({"applied": "prometheus hw-rules/<node>",
+                                     "origin": "dev2-rocky9-controller1"},
+                                    "What was applied",
+                                    errors={400: "Not an endpoint that declares replicate",
+                                            404: "No such plugin, or no such endpoint"}))
+def replication_apply(body: Action = Body(openapi_examples=docs.example(
+                          {"plugin": "prometheus", "path": "hw-rules/<node>",
+                           "method": "DELETE", "variables": {"node": "node001"},
+                           "body": None, "origin": "dev2-rocky9-controller1",
+                           "request_id": "1791545863-2051-0f3ab9c1"})),
+                      caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+    """
+    Find the endpoint the peer names, check its manifest allows this, and call its handler.
+    """
+    entry = registry().plugins.get(body.plugin)
+    if entry is None or entry.state != PLUGIN_STATE_LOADED:
+        raise NotFound(f"no plugin named {body.plugin} is loaded here")
+    endpoint = next((item for item in entry.manifest.endpoints
+                     if item.path == body.path
+                     and body.method.upper() in [verb.upper() for verb in item.methods]),
+                    None)
+    if endpoint is None:
+        raise NotFound(f"{body.plugin} serves no {body.method} {body.path}")
+    if not endpoint.replicate:
+        raise BadRequest(f"{body.plugin} {body.method} {body.path} does not declare "
+                         f"replicate, so it is not ours to apply")
+    handler = getattr(entry.backend, endpoint.handler, None)
+    if handler is None:
+        raise NotFound(f"{body.plugin} has no handler {endpoint.handler}")
+
+    supplied = dict(body.variables or {})
+    if body.body is not None:
+        supplied["body"] = body.body
+    accepted = inspect.signature(handler).parameters
+    answer = handler(**{key: value for key, value in supplied.items() if key in accepted})
+    LOGGER.info("applied %s %s %s for %s (%s)", body.method, body.plugin, body.path,
+                body.origin, body.request_id)
+    return {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
+            "result": answer if isinstance(answer, (dict, list)) else str(answer)}
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now",

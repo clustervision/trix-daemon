@@ -81,6 +81,9 @@ def manifest_schema() -> dict:
                        "description": "no token at all; argue for every use"},
             "forward": {"type": "boolean", "default": False,
                         "description": "the daemon checks nothing; the service behind decides"},
+            "replicate": {"type": "boolean", "default": False,
+                          "description": "do this at the other controller too, for a write "
+                                         "no replicated table or render carries"},
             "description": {"type": "string",
                             "description": "Markdown for /api/v1/docs: what the route does, "
                                            "what to send and what comes back"},

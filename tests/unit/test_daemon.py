@@ -1609,8 +1609,11 @@ def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client,
         assert answer.status_code == 202, answer.text
         queued = answer.json()["queued"]
         assert len(queued) == 2, "one request id per change"
-        assert acted == [], "the request acted on the set instead of queuing it"
 
+        # The queue row is the evidence, not a stopwatch on the handler: the doorbell
+        # dispatches inline and writes no row, so a row existing is what distinguishes
+        # the two routes. Asserting the handler had not run yet raced the worker that
+        # an earlier test in this file leaves alive, and passed only by luck.
         held = [tasks.status(identifier) for identifier in queued]
         assert [row["task"] for row in held] == ["switches.port.down", "switches.port.up"], \
             "the set must keep the order it was given"
@@ -1618,7 +1621,8 @@ def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client,
         assert held[0]["param"] == '{"port": "eth0"}'
 
         tasks.drain()
-        assert acted == ["switches.port.down", "switches.port.up"]
+        assert acted == ["switches.port.down", "switches.port.up"], \
+            "the queued work did not run, or ran out of order"
     finally:
         tasks._handlers.pop("switches", None)
 

@@ -1,6 +1,48 @@
 {
   "components": {
     "schemas": {
+      "Action": {
+        "description": "One call a peer has already made and this controller has to make too.",
+        "properties": {
+          "body": {
+            "additionalProperties": true,
+            "title": "Body",
+            "type": "object"
+          },
+          "method": {
+            "default": "",
+            "title": "Method",
+            "type": "string"
+          },
+          "origin": {
+            "default": "",
+            "title": "Origin",
+            "type": "string"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "plugin": {
+            "default": "",
+            "title": "Plugin",
+            "type": "string"
+          },
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "variables": {
+            "additionalProperties": true,
+            "title": "Variables",
+            "type": "object"
+          }
+        },
+        "title": "Action",
+        "type": "object"
+      },
       "Change": {
         "description": "What changed, named as <source>.<object>.<event>, and whatever the source holds about it.",
         "properties": {
@@ -5426,7 +5468,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` carries, per peer, whether it is answering and how many replicated calls are still waiting for it, with `failed` counting the ones given up on. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -5434,6 +5476,13 @@
               "application/json": {
                 "example": {
                   "daemon": "trixd",
+                  "owed": {
+                    "ctrl2": {
+                      "answering": true,
+                      "pending": 0
+                    },
+                    "failed": 0
+                  },
                   "plugins": 6,
                   "renders": [
                     {
@@ -5862,6 +5911,124 @@
           }
         ],
         "summary": "Plug a plugin in, or reload it in place",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/system/replication/apply": {
+      "post": {
+        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "operationId": "replication_apply_api_v1_system_replication_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "method": "DELETE",
+                    "origin": "dev2-rocky9-controller1",
+                    "path": "hw-rules/<node>",
+                    "plugin": "prometheus",
+                    "request_id": "1791545863-2051-0f3ab9c1",
+                    "variables": {
+                      "node": "node001"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/Action"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "prometheus hw-rules/<node>",
+                  "origin": "dev2-rocky9-controller1"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replication Apply Api V1 System Replication Apply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What was applied"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not an endpoint that declares replicate"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such plugin, or no such endpoint"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Do what a peer already did",
         "tags": [
           "system"
         ],
