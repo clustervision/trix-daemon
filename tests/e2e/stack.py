@@ -149,11 +149,11 @@ class Stack:
                 f"[TOKENS]\nSECRET_KEY = {self.secret}\n"
                 f"[DATABASE]\nURL = sqlite:///{database}\n"
                 f"[AUTH]\nCHAIN = local\nCACHE = 0s\n"
-                f"[TRIGGERS]\nLUNA_HASHES = 0s\n"
                 f"[SERVICES]\nCOMMAND = {sys.executable}\n"
                 f"[PLUGINS]\nDIRECTORY = {os.path.join(ROOT, 'trixd', 'plugins')}\n"
                 f"SITE_DIRECTORY = {os.path.join(self.scratch, 'site')}\nENABLED =\n")
-        environment = dict(os.environ, TRIXD_LUNA_INI=luna_ini, PYTHONPATH=ROOT)
+        environment = dict(os.environ, TRIXD_LUNA_INI=luna_ini,
+                           TRIXD_LUNA_HASHES="0s", PYTHONPATH=ROOT)
         self.log = open(os.path.join(self.scratch, "stdout.log"), "w", encoding="utf-8")
         self.process = subprocess.Popen(
             [sys.executable, "-m", "trixd.server", "--config", ini], cwd=ROOT,

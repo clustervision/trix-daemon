@@ -140,13 +140,6 @@ class ReplicationSettings(BaseModel):
     ca_file: str = "/trinity/local/etc/ssl/cluster-ca.crt"
 
 
-class TriggerSettings(BaseModel):
-    """
-    How often the fallback asks Luna what changed.
-    """
-    luna_hashes: int = 60
-
-
 class AuditSettings(BaseModel):
     """
     How long the audit trail keeps a row.
@@ -177,7 +170,6 @@ class Settings(BaseModel):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
-    triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
     # Settings trixd.ini still names that are no longer read, to say so at startup.
@@ -284,8 +276,10 @@ def load(path: str = "") -> Settings:
         key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
         trust=get("TOKENS", "TRUST", data.tokens.trust),
         issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
-    # Where Luna answers is Luna's own business, read from luna.ini by the luna plugin.
-    data.ignored = ["[LUNA]"] if parser.has_section("LUNA") else []
+    # Settings this daemon no longer reads here: where Luna answers is Luna's own
+    # business, and a plugin's own settings belong to the plugin.
+    data.ignored = [f"[{name}]" for name in ("LUNA", "TRIGGERS")
+                    if parser.has_section(name)]
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
@@ -303,8 +297,6 @@ def load(path: str = "") -> Settings:
         interval=duration("REPLICATION", "INTERVAL", "300s"),
         enabled=_bool(get("REPLICATION", "ENABLED", "yes")),
         ca_file=get("REPLICATION", "CA_FILE", data.replication.ca_file))
-    data.triggers = TriggerSettings(
-        luna_hashes=duration("TRIGGERS", "LUNA_HASHES", "60s"))
     data.audit = AuditSettings(keep=duration("AUDIT", "KEEP", "90d"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),

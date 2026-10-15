@@ -52,9 +52,11 @@ TRUST = /trinity/local/etc/ssl/trust.d
 ; ALGORITHM = EdDSA uses PRIVATE_KEY, KEY_ID and TRUST instead, so a daemon that
 ; verifies cannot mint. It needs Luna to speak EdDSA too, and today Luna does not.
 
-; There is no [LUNA] section. Where Luna answers, its protocol and its certificate check
-; are read from Luna's own luna.ini, /trinity/local/luna/daemon/config/luna.ini, by the
-; luna plugin, so they are changed in one place.
+; There is no [LUNA] section, and no [TRIGGERS] one. Where Luna answers, its protocol and
+; its certificate check are read from Luna's own luna.ini,
+; /trinity/local/luna/daemon/config/luna.ini, by the luna plugin, so they are changed in
+; one place. A plugin's own settings are its own: they are set through its config
+; endpoint and kept with the plugin, not here.
 
 [DATABASE]
 URL = sqlite:////trinity/local/trixd/daemon/var/trixd.db
@@ -88,12 +90,6 @@ CA_FILE = /trinity/local/etc/ssl/cluster-ca.crt
 [AUDIT]
 ; How long a row of the audit trail is kept. Rows are written in batches.
 KEEP = 90d
-
-[TRIGGERS]
-LUNA_HASHES = 60s
-; How often Luna's table hashes are compared, to catch a change made at Luna directly.
-; Luna answers /table/hashes on the HA master only, so this is inert on a single
-; controller. 0s switches it off.
 
 [SERVICES]
 COMMAND = /usr/bin/systemctl

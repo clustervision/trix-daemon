@@ -39,6 +39,7 @@ from trixd.app import create_app
 from trixd.common import settings as configuration
 from trixd.core.lifespan import start
 from trixd.core.security import keys
+from trixd.plugins.luna import hashes
 from trixd.plugins.luna.config import LUNA_INI_ENV
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -64,6 +65,8 @@ def build(tmp_path, algorithm: str = "HS256"):
                         f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",
                         encoding="utf-8")
     os.environ[LUNA_INI_ENV] = str(luna_ini)
+    # The hash fallback is a timer; a test that wants it says so.
+    os.environ[hashes.INTERVAL_ENV] = "0s"
 
     ini = tmp_path / "trixd.ini"
     ini.write_text(
@@ -75,7 +78,6 @@ def build(tmp_path, algorithm: str = "HS256"):
         f"TRUST = {trust}\nISSUER = trixd\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
-        "[TRIGGERS]\nLUNA_HASHES = 0s\n"
         f"[PLUGINS]\nDIRECTORY = {plugins}\nSITE_DIRECTORY = {tmp_path / 'site-plugins'}\n"
         "ENABLED = luna, directory, services\n",
         encoding="utf-8")

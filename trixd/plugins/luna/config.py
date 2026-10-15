@@ -35,8 +35,15 @@ import threading
 from configparser import RawConfigParser
 
 from trixd.common import logging as trixlog
+from trixd.utils import declarations
 
 LOGGER = trixlog.get("luna.config")
+
+# This plugin's own setting, kept where every plugin keeps its own. How often the
+# fallback compares Luna's table hashes is trixd's behaviour; Luna's own facts stay
+# in luna.ini and are never copied into a row here.
+PLUGIN: str = "luna"
+DEFAULT_CONFIG: dict = {"hashes_interval": "1h"}
 
 # The same order luna2-cli reads: whoever is running this may have logged in as
 # themselves, and that file wins over the controller's own.
@@ -185,3 +192,19 @@ def current() -> LunaConfig:
     if _config is None or _config.path != path:
         _config = LunaConfig(path)
     return _config
+
+
+def poll_interval() -> str:
+    """
+    The configured interval for the hash fallback, as a duration string.
+    """
+    return str(stored().get("hashes_interval") or DEFAULT_CONFIG["hashes_interval"])
+
+
+def stored(body: dict = None) -> dict:
+    """
+    This plugin's own configuration: read it, or change only the keys that were sent.
+    """
+    if body:
+        return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
+    return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)

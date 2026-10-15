@@ -52,8 +52,9 @@ def start(app: FastAPI) -> None:
     """
     config = settings()
     if config.ignored:
-        LOGGER.warning("trixd.ini still names %s, which trixd no longer reads: where Luna "
-                       "answers comes from Luna's own luna.ini", ", ".join(config.ignored))
+        LOGGER.warning("trixd.ini still names %s, which trixd no longer reads here; a "
+                       "plugin's own settings are set through its config endpoint",
+                       ", ".join(config.ignored))
     database.start(config.database.url)
     keys.set_current(keys.KeyRing(config.tokens).load())
 

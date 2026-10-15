@@ -1279,15 +1279,29 @@ def test_a_bare_duration_is_seconds_except_the_token_expiry(tmp_path):
 
 def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
     """
-    Where Luna answers is Luna's own business, so a [LUNA] section still loads and is named;
-    the secret beside it is trixd's own and is read.
+    Where Luna answers is Luna's own business and a plugin's settings are the plugin's, so
+    both sections still load and are named; the secret beside them is trixd's own and is read.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text("[TOKENS]\nSECRET_KEY = x\nSECRET_FILE = /nowhere\n"
-                   "[LUNA]\nENDPOINT = a:7050\n", encoding="utf-8")
+                   "[LUNA]\nENDPOINT = a:7050\n[TRIGGERS]\nLUNA_HASHES = 60s\n",
+                   encoding="utf-8")
     loaded = configuration.load(str(ini))
-    assert loaded.ignored == ["[LUNA]"]
+    assert loaded.ignored == ["[LUNA]", "[TRIGGERS]"]
     assert loaded.tokens.secret_key == "x"
+
+
+def test_no_setting_this_daemon_reads_names_luna():
+    """
+    The daemon's own settings may not know what Luna is. An import of a plugin is caught
+    elsewhere; a Luna-named *setting* is not, and one lived here reading an interval that
+    belongs to the luna plugin. Enumerated from the model, so the next one is caught too.
+    """
+    import json
+
+    body = json.dumps(configuration.Settings().model_dump(), default=str).lower()
+    assert "luna" not in body, "a setting of this daemon names Luna"
+    assert not [name for name in dir(configuration) if "luna" in name.lower()]
 
 
 def _render_plugin(directory: str, handler: str = "about") -> None:
