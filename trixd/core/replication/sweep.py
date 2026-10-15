@@ -166,9 +166,17 @@ class Sweep:
         """
         Compare hashes with one peer and take whatever differs.
         """
+        # Here rather than at the top of the module: the outbox needs this module's
+        # sign-in and certificate, so importing it there would be a cycle.
+        from trixd.core.replication import outbox
+
         handle = database.session()
         try:
             theirs = (self._get(peer, "hashes") or {}).get("hashes") or {}
+            # It answered, so it is up: that closes its breaker whether or not anything
+            # was owed to it. Waiting for a replicated row to drain would leave health
+            # reporting a healthy peer as not answering until one happened along.
+            outbox.record_success(peer)
             ours = tables.hashes(handle)
             differing = [table for table in tables.ORDER
                          if theirs.get(table) and theirs[table] != ours.get(table)]

@@ -559,3 +559,45 @@ def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
     # The sweep may, and does.
     outbox.drain("ctrl2")
     assert signed == ["ctrl2"], "the sweep did not sign in to send what was owed"
+
+def test_the_body_and_the_caller_reach_the_peer(rig, monkeypatch):
+    """
+    What crosses must be what the handler was given. `_arguments` pops `body` and `caller`
+    out of the kwargs it is handed, so reading them from those afterwards gives a null body
+    and no origin on every call - and the peer accepts that and acts on it wrongly: labels
+    not applied, a force ignored, a bulk write of nothing, a rename refused.
+
+    Every other test here drives the outbox directly, which is exactly how that got
+    through. This one goes through the bound operation, the way a request does.
+    """
+    from trixd.core.plugins import binder
+    from trixd.core.plugins.manifest import Endpoint
+    from trixd.core.replication import outbox
+
+    seen = {}
+    monkeypatch.setattr(outbox, "replicate",
+                        lambda *args, **kw: seen.update(plugin=args[0], path=args[1],
+                                                        verb=args[2], variables=args[3],
+                                                        body=args[4], origin=args[7]) or {})
+
+    def handler(node=None, body=None, caller=None):
+        """
+        A backend that records what it was handed, as the real ones are handed it.
+        """
+        seen["handler_body"] = body
+        return {"node": node, "changed": True}
+
+    endpoint = Endpoint(path="hw-rules/<node>", methods=["PATCH"], handler="handler",
+                        minimum="manager", replicate=True)
+    operation = binder._endpoint_function(handler, endpoint, None, "prometheus", "PATCH")
+
+    class _Caller:
+        name = "someone"
+
+    operation(node="node001", body={"nhc": True}, caller=_Caller())
+
+    assert seen["handler_body"] == {"nhc": True}, "the handler itself lost the body"
+    assert seen["body"] == {"nhc": True}, \
+        f"the peer would have been sent {seen['body']!r} instead of the real body"
+    assert seen["origin"] == "someone", f"origin was {seen['origin']!r}, not the caller"
+    assert seen["variables"] == {"node": "node001"}, seen["variables"]

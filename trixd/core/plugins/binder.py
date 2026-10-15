@@ -137,19 +137,21 @@ def _responses(endpoint: Endpoint) -> dict:
     return answers
 
 
-def _replicated(endpoint: Endpoint, plugin: str, verb: str, kwargs: dict, result):
+def _replicated(endpoint: Endpoint, plugin: str, verb: str, supplied: dict, result):
     """
     Tell the peers about a call that has already happened here, and put what happened in
     the answer. Returns the result, with a `replicated` block when there is one to add.
 
+    Takes what the handler was handed, not the raw kwargs: `_arguments` pops `body` and
+    `caller` out of those, so reading them there gives a null body and no origin on every
+    call - which the peer accepts and acts on wrongly.
+
     Only reached for an endpoint whose manifest says so, and only after its handler
     returned: a call that raised changed nothing to pass on.
     """
-    body = kwargs.get("body")
-    if hasattr(body, "model_dump"):
-        body = body.model_dump(exclude_unset=True)
-    caller = kwargs.get("caller")
-    variables = {key: value for key, value in kwargs.items()
+    body = supplied.get("body")
+    caller = supplied.get("caller")
+    variables = {key: value for key, value in supplied.items()
                  if key not in ("body", "caller", "request")}
     said = outbox.replicate(plugin, endpoint.path, verb, variables, body, result,
                             tasks.request_id(), getattr(caller, "name", "local"))
@@ -171,18 +173,20 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
             """
             The path operation FastAPI awaits, for a handler that is itself async.
             """
-            answer = await _call(handler, _arguments(kwargs))
+            supplied = _arguments(kwargs)
+            answer = await _call(handler, supplied)
             if endpoint.replicate:
-                return _replicated(endpoint, plugin, verb, kwargs, answer)
+                return _replicated(endpoint, plugin, verb, supplied, answer)
             return answer
     else:
         def operation(**kwargs):
             """
             The path operation FastAPI calls, which hands the backend its arguments.
             """
-            answer = _call(handler, _arguments(kwargs))
+            supplied = _arguments(kwargs)
+            answer = _call(handler, supplied)
             if endpoint.replicate:
-                return _replicated(endpoint, plugin, verb, kwargs, answer)
+                return _replicated(endpoint, plugin, verb, supplied, answer)
             return answer
 
     parameters = _documented(endpoint)

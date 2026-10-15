@@ -5475,7 +5475,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` carries, per peer, whether it is answering and how many replicated calls are still waiting for it, with `failed` counting the ones given up on. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -5484,11 +5484,10 @@
                 "example": {
                   "daemon": "trixd",
                   "owed": {
-                    "ctrl2": {
-                      "answering": true,
-                      "pending": 0
-                    },
-                    "failed": 0
+                    "failed": 0,
+                    "not_answering": 0,
+                    "peers": 1,
+                    "pending": 0
                   },
                   "plugins": 6,
                   "renders": [
@@ -6107,6 +6106,79 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/system/replication/owed": {
+      "get": {
+        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many passes have tried it and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "replication_owed_api_v1_system_replication_owed_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "attempts": 2,
+                    "created": "2026-10-15T22:52:39",
+                    "message": "",
+                    "method": "DELETE",
+                    "path": "hw-rules/<node>",
+                    "peer": "ctrl2",
+                    "plugin": "prometheus",
+                    "state": "queued",
+                    "target": "node=node001"
+                  }
+                ],
+                "schema": {
+                  "items": {},
+                  "title": "Response Replication Owed Api V1 System Replication Owed Get",
+                  "type": "array"
+                }
+              }
+            },
+            "description": "One entry per owed action"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What this controller still owes its peers",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
       }
     },
     "/api/v1/system/replication/sweep": {

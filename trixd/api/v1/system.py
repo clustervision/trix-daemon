@@ -106,10 +106,11 @@ class Action(BaseModel):
                 "trixd or its plugin started, and whether that run worked. `triggers` carries one "
                 "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
                 "hashes, which it does on an HA master only, and `replication` when the last "
-                "sweep ran, 0 for never. `owed` carries, per peer, whether it is "
-                "answering and how many replicated calls are still waiting for it, with "
-                "`failed` counting the ones given up on. States and "
-                "times only: an error's text stays in the log."),
+                "sweep ran, 0 for never. `owed` counts the replicated calls still "
+                "waiting for a peer, the ones given up on, the peers configured and the "
+                "peers not answering - counts only, and no peer is named, because this "
+                "route takes no token: `GET /system/replication/owed` says where. States "
+                "and times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
                 "renders": [{"render": "prometheus/renders/targets",
@@ -118,7 +119,7 @@ class Action(BaseModel):
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
                              "replication": {"at": 1791545526.87}},
-                "owed": {"ctrl2": {"answering": True, "pending": 0}, "failed": 0}},
+                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0}},
                 "How trixd is doing"))
 def health() -> dict:
     """
@@ -371,6 +372,30 @@ def replication_table(name: str = Path(description="principal or declaration",
         return {"table": name, "documents": tables.export_table(handle, name)}
     finally:
         handle.close()
+
+
+@router.get("/replication/owed", summary="What this controller still owes its peers",
+            description=(
+                "Every replicated call that has not reached a peer yet, oldest first, with "
+                "the peer it is for, what it would do, how many passes have tried it and "
+                "the last refusal verbatim. A peer that is not answering is named first.\n\n"
+                "`/system/health` carries the counts and takes no token; this carries the "
+                "peers and the rows and therefore does, because naming the other "
+                "controllers is not something an unauthenticated port should do.\n\n"
+                "A row listed as `failed` has been given up on and stops everything behind "
+                "it for that peer: later actions assume the earlier one landed, so carrying "
+                "on would write over a prerequisite that never happened."),
+            responses=docs.answers([{"peer": "ctrl2", "plugin": "prometheus",
+                                     "path": "hw-rules/<node>", "method": "DELETE",
+                                     "target": "node=node001", "state": "queued",
+                                     "attempts": 2, "message": "",
+                                     "created": "2026-10-15T22:52:39"}],
+                                   "One entry per owed action"))
+def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> list:
+    """
+    The rows behind health's counts.
+    """
+    return outbox.owed()
 
 
 @router.post("/replication/apply", summary="Do what a peer already did",

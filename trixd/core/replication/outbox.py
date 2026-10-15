@@ -42,7 +42,7 @@ import time
 from datetime import datetime, timezone
 
 import requests
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
@@ -89,7 +89,10 @@ def target_of(variables: dict, body) -> str:
         return named[:255]
     digest = hashlib.sha256(json.dumps(body, sort_keys=True,
                                        default=str).encode()).hexdigest()[:16]
-    return f"{named}|{digest}"[:255] if named else digest
+    # The digest is what tells two bodies apart, so it is the part that must survive: trim
+    # the names instead. Truncating the whole string would cut the digest off the end and
+    # silently merge two different intents - a rename with a different `was` among them.
+    return f"{named[:238]}|{digest}" if named else digest
 
 
 def peers() -> list:
@@ -135,23 +138,47 @@ def record_success(peer: str) -> None:
 
 def states() -> dict:
     """
-    What the health endpoint publishes: per peer, whether its breaker is open and how many
-    actions are waiting for it.
+    What the health endpoint publishes: how much is owed and how many peers are not
+    answering - counts only.
+
+    No peer names and no rows: health takes no token, so naming the other controllers
+    there would publish the pair's layout to anyone who can reach the port. The counts
+    say whether to look; `GET /system/replication/owed` says where, behind the gate.
+    Counted in the database rather than by loading every row, because an unauthenticated
+    route must not cost more the further behind it falls.
     """
     handle = database.session()
     try:
-        waiting = {}
-        for row in handle.scalars(select(models.Outbox)
-                                  .where(models.Outbox.state == QUEUED)).all():
-            waiting[row.peer] = waiting.get(row.peer, 0) + 1
-        failed = len(handle.scalars(select(models.Outbox)
-                                    .where(models.Outbox.state == FAILED)).all())
+        counted = dict(handle.execute(
+            select(models.Outbox.state, func.count())
+            .where(models.Outbox.state.in_((QUEUED, FAILED)))
+            .group_by(models.Outbox.state)).all())
     finally:
         handle.close()
     with _lock:
-        down = dict(_open)
-    return {peer: {"answering": peer not in down, "pending": waiting.get(peer, 0)}
-            for peer in set(peers()) | set(waiting) | set(down)} | {"failed": failed}
+        down = len(_open)
+    return {"pending": counted.get(QUEUED, 0), "failed": counted.get(FAILED, 0),
+            "peers": len(peers()), "not_answering": down}
+
+
+def owed() -> list:
+    """
+    What is still owed, peer by peer, for somebody who is allowed to know the peers.
+    """
+    handle = database.session()
+    try:
+        rows = handle.scalars(select(models.Outbox)
+                              .where(models.Outbox.state.in_((QUEUED, FAILED)))
+                              .order_by(models.Outbox.created)).all()
+        listed = [{"peer": row.peer, "plugin": row.plugin, "path": row.path,
+                   "method": row.method, "target": row.target, "state": row.state,
+                   "attempts": row.attempts, "message": row.message,
+                   "created": row.created.isoformat()} for row in rows]
+    finally:
+        handle.close()
+    with _lock:
+        down = sorted(_open)
+    return [{"not_answering": down}, *listed] if down else listed
 
 
 def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body,
@@ -261,18 +288,42 @@ def _finish(row_id: int, state: str, message: str) -> None:
         handle.close()
 
 
+class _Held:
+    """
+    One row's fields, detached from the session that read them.
+    """
+
+    def __init__(self, row) -> None:
+        """
+        Copy what sending needs, so no connection is held while the network is waited on.
+        """
+        self.plugin = row.plugin
+        self.path = row.path
+        self.method = row.method
+        self.payload = row.payload
+        self.origin = row.origin
+        self.request_id = row.request_id
+
+
 def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> str:
     """
     One try at one row, updating the breaker from the outcome.
+
+    The row is copied out and the session closed before anything is sent: the pool is five
+    connections with ten of overflow, and up to forty threadpool threads can be in here at
+    once against a slow peer. Holding one across a network wait would starve every other
+    caller of the database, which is the same stall the breaker exists to prevent one
+    layer down.
     """
     handle = database.session()
     try:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
         if row is None or row.state != QUEUED:
             return DONE if row is not None else FAILED
-        state, message, reached = _send(peer, row, may_sign_in)
+        held = _Held(row)
     finally:
         handle.close()
+    state, message, reached = _send(peer, held, may_sign_in)
     if state == DONE:
         record_success(peer)
     elif state == QUEUED and reached:
@@ -309,8 +360,11 @@ def replicate(plugin: str, path: str, method: str, variables: dict, body,
             # Not on a caller's thread: no sign-in, and a short timeout.
             answered[peer] = _attempt(peer, row_id, may_sign_in=False)
         except Exception as error:
+            # Not "failed": that word means the peer refused it, and this never reached the
+            # peer. Two calls for one target can race on the unique key; the loser says so
+            # honestly and the winner's row is the newer intent anyway.
             LOGGER.error("could not write down %s %s for %s: %s", method, path, peer, error)
-            answered[peer] = "failed"
+            answered[peer] = "not-written-down"
     return {"request_id": request_id, "peers": answered}
 
 
@@ -318,29 +372,42 @@ def drain(peer: str) -> dict:
     """
     Everything still owed to one peer, oldest intent first. The sweep calls this; nothing
     else does, and nothing runs between passes.
+
+    A row that has been given up on stops the queue behind it rather than being stepped
+    over. The later actions assume the earlier one landed - a rename assumes the file it
+    renames was written - so carrying on would apply them over a prerequisite that never
+    happened, turning a loud failure into quiet wrong state. It is the same fail-stop the
+    journal uses, and it needs a person: section 8's `failed` count and the log are what tell
+    them.
     """
     handle = database.session()
     try:
         waiting = handle.scalars(select(models.Outbox)
                                  .where(models.Outbox.peer == peer,
-                                        models.Outbox.state == QUEUED)
+                                        models.Outbox.state.in_((QUEUED, FAILED)))
                                  .order_by(models.Outbox.created,
                                            models.Outbox.id)).all()
-        rows = [row.id for row in waiting]
+        rows = [(row.id, row.state) for row in waiting]
     finally:
         handle.close()
-    sent, left = 0, 0
-    for row_id in rows:
+    sent, left, blocked = 0, 0, 0
+    for index, (row_id, state) in enumerate(rows):
+        if state == FAILED:
+            blocked = len(rows) - index
+            LOGGER.error("%d action(s) for %s are stuck behind one that was given up on; "
+                         "nothing further is sent to it until that row is dealt with",
+                         blocked, peer)
+            break
         if _attempt(peer, row_id) == DONE:
             sent += 1
         else:
             # The peer has stopped answering: the rest keep their place for the next pass.
-            left = len(rows) - sent
+            left = len(rows) - index - 1
             break
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
     _prune()
-    return {"sent": sent, "left": left}
+    return {"sent": sent, "left": left, "blocked": blocked}
 
 
 def _prune() -> None:
