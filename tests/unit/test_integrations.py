@@ -555,13 +555,12 @@ def test_the_hash_baseline_and_poller_follow_the_interval(rig, monkeypatch):
     0s switches both off; a positive interval takes a baseline and starts the thread.
     """
     poller, _ = _hashes(monkeypatch, {"node": "1"})
-    assert hashes.interval() == 0, "the rig switches the fallback off"
+    assert hashes.INTERVAL == 0, "the rig switches the fallback off"
     poller.baseline()
     assert poller.seen == {}
     assert poller.start() is False
 
-    monkeypatch.setenv(hashes.INTERVAL_ENV, "1h")
-    assert hashes.interval() == 3600
+    monkeypatch.setattr(hashes, "INTERVAL", 3600)
     poller.baseline()
     assert poller.seen == {"node": "1"}
     assert poller.start() is True

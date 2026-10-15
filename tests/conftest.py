@@ -65,8 +65,6 @@ def build(tmp_path, algorithm: str = "HS256"):
                         f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",
                         encoding="utf-8")
     os.environ[LUNA_INI_ENV] = str(luna_ini)
-    # The hash fallback is a timer; a test that wants it says so.
-    os.environ[hashes.INTERVAL_ENV] = "0s"
 
     ini = tmp_path / "trixd.ini"
     ini.write_text(
@@ -94,9 +92,11 @@ def build(tmp_path, algorithm: str = "HS256"):
 @pytest.fixture(autouse=True)
 def _own_luna_ini(monkeypatch):
     """
-    Each test sees only the luna.ini it writes: the environment is put back afterwards.
+    Each test sees only the luna.ini it writes, and no test starts the hash timer
+    unless it says so: both are put back afterwards.
     """
     monkeypatch.delenv(LUNA_INI_ENV, raising=False)
+    monkeypatch.setattr(hashes, "INTERVAL", 0)
     yield
 
 

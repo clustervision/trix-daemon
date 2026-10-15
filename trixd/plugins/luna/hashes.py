@@ -29,32 +29,19 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import os
 import threading
 import time
 
 from trixd.common import logging as trixlog
-from trixd.common.settings import seconds
 from trixd.core.render.engine import current as renders
-from trixd.plugins.luna import config as luna_config
 from trixd.plugins.luna.client import current as luna
 
 LOGGER = trixlog.get("luna.hashes")
 
-# For a test or a workstation, beside the ones that name Luna's own files.
-INTERVAL_ENV: str = "TRIXD_LUNA_HASHES"
-
-
-def interval() -> int:
-    """
-    How often the hashes are compared, in seconds. This is a fallback for a change made
-    at Luna directly: a push from Luna is what trixd runs on, so an hour is plenty and
-    0s switches it off. Read each pass, so a change takes effect at the next one.
-    """
-    override = os.environ.get(INTERVAL_ENV)
-    if override:
-        return seconds(override, 3600)
-    return seconds(luna_config.poll_interval(), 3600)
+# How often the hashes are compared. This is the fallback for a change made at Luna
+# directly; what trixd runs on is a push from Luna, so an hour is plenty and there is
+# nothing here worth configuring. 0 switches it off, which is what a test wants.
+INTERVAL: int = 3600
 
 
 class LunaHashes:
@@ -115,28 +102,27 @@ class LunaHashes:
         Read the hashes once before the reconcile, so that a change landing after it is
         seen as a change rather than absorbed into the first reading.
         """
-        if interval() > 0:
+        if INTERVAL > 0:
             self.once()
 
     def _loop(self) -> None:
         """
         One pass per interval until the daemon stops.
         """
-        while not self.stop.wait(interval()):
+        while not self.stop.wait(INTERVAL):
             self.once()
 
     def start(self) -> bool:
         """
         Begin polling, unless the interval says not to.
         """
-        every = interval()
-        if every <= 0:
+        if INTERVAL <= 0:
             LOGGER.info("the Luna hash fallback is switched off")
             return False
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="trixd-hashes", daemon=True)
         self.thread.start()
-        LOGGER.info("comparing Luna table hashes every %ss", every)
+        LOGGER.info("comparing Luna table hashes every %ss", INTERVAL)
         return True
 
     def shutdown(self) -> None:
@@ -149,7 +135,7 @@ class LunaHashes:
         """
         What the poller is doing, for the control endpoint.
         """
-        return {"interval": interval(),
+        return {"interval": INTERVAL,
                 "last_pass": self.last_pass,
                 "tables_seen": len(self.seen),
                 "answering": not self.quiet and bool(self.seen)}
