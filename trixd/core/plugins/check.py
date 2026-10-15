@@ -90,7 +90,7 @@ def check(path: str) -> list:
                             "does not have")
             continue
         problems += [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
-    for event, handler in manifest.luna_hooks.items():
+    for event, handler in manifest.hooks.items():
         if not callable(getattr(backend, handler, None)):
             problems.append(f"{event} names handler {handler}, which the backend does not have")
     return problems

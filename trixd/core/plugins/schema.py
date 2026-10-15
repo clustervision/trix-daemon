@@ -30,7 +30,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from trixd.common.constants import HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trixd.common.constants import HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
 
 SCHEMA_ID: str = "https://gitlab.taurusgroup.one/clustervision/trix-daemon/docs/manifest.schema.json"
 
@@ -117,8 +117,8 @@ def manifest_schema() -> dict:
                         "description": "request bodies by name: field -> {type, optional, items, "
                                        "pattern, description, example}"},
             "endpoints": {"type": "array", "items": endpoint},
-            "luna_hooks": {"type": "object",
-                           "propertyNames": {"enum": list(LUNA_HOOKS)},
+            "hooks": {"type": "object",
+                      "propertyNames": {"pattern": r"^[^.]+\.[^.]+\.[^.]+$"},
                            "additionalProperties": {"type": "string"}},
         },
     }

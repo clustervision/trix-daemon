@@ -71,7 +71,7 @@ fails while the two documents and the code disagree.
 A plugin is a directory holding `manifest.yaml` and a backend module. A single
 Python script also loads, if it defines a class named `Plugin` with an `endpoints`
 list of the same entries a manifest has (and optionally `name`, `schemas` and
-`luna_hooks`); its methods are the handlers. A Luna plugin, which has methods and no
+`hooks`); its methods are the handlers. A Luna plugin, which has methods and no
 `endpoints`, is refused until that list is added.
 
 ### manifest.yaml
@@ -83,7 +83,7 @@ list of the same entries a manifest has (and optionally `name`, `schemas` and
 | `description` | one or two lines, for whoever reads the manifest | no |
 | `schemas` | request bodies, each a set of fields with a type, built once at load; a field may carry a `description` and an `example`, which the docs page shows | no |
 | `endpoints` | what to serve | yes |
-| `luna_hooks` | node changes made through the pass-through that the plugin acts on | no |
+| `hooks` | changes published elsewhere that the plugin acts on | no |
 
 Each endpoint:
 
@@ -162,7 +162,7 @@ the reload endpoint answers 409 with the reason.
 | an endpoint names a handler the backend does not have | refused |
 | a schema does not parse, or a verb is not one of the four | refused |
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
-| a `luna_hooks` entry names an unknown change or a missing handler | refused |
+| a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |
 
@@ -206,10 +206,15 @@ answered 2xx the daemon looks at what was asked. A plugin that wants to act on a
 node being renamed, moved between groups or deleted declares it:
 
 ```yaml
-luna_hooks:
-  node.update: node_updated
-  node.delete: node_deleted
+hooks:
+  luna.node.update: node_updated
+  luna.node.delete: node_deleted
 ```
+
+An event is named `<source>.<object>.<event>`: who publishes it, what it is about and
+what happened. The daemon checks that shape and nothing else, so the events that exist
+are whatever the plugins publishing them say they are. Subscribing to one nobody
+publishes is not an error; the handler simply never runs.
 
 The handler runs on the task queue, after the caller has its answer, with the
 payload as keyword arguments: `node_updated(name, newnodename="", group="")`

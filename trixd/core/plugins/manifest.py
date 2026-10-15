@@ -37,7 +37,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trixd.common.constants import (HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND_NODE,
+from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE,
                                    TOKEN_KIND_USER)
 from trixd.common.errors import PluginRefused
 
@@ -156,8 +156,8 @@ class Manifest(BaseModel):
     description: str = ""
     schemas: dict = Field(default_factory=dict)
     endpoints: list = Field(default_factory=list)
-    # Which changes at Luna this plugin acts on, and the backend method for each.
-    luna_hooks: dict = Field(default_factory=dict)
+    # Which changes elsewhere this plugin acts on, and the backend method for each.
+    hooks: dict = Field(default_factory=dict)
 
     @property
     def digest(self) -> str:
@@ -198,10 +198,11 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
         _check_docs(endpoint)
-    for event, handler in manifest.luna_hooks.items():
-        if event not in LUNA_HOOKS:
-            raise PluginRefused(f"{event} is not a change at Luna the daemon notices; "
-                                f"one of {', '.join(LUNA_HOOKS)}")
+    for event, handler in manifest.hooks.items():
+        parts = str(event).split(".")
+        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+            raise PluginRefused(f"{event} is not a hook event: name one as "
+                                f"<source>.<object>.<event>, such as luna.node.update")
         if not handler or not isinstance(handler, str):
             raise PluginRefused(f"{event} names no handler")
     return manifest

@@ -167,7 +167,7 @@ def _from_script(name: str, path: str):
         "backend": "inline",
         "schemas": getattr(plugin_class, "schemas", {}) or {},
         "endpoints": endpoints,
-        "luna_hooks": getattr(plugin_class, "luna_hooks", {}) or {},
+        "hooks": getattr(plugin_class, "hooks", {}) or {},
     }
     return manifests.parse(document), plugin_class()
 
@@ -224,10 +224,10 @@ def _register_renders(plugin: str, found: list) -> None:
 
 def _bind_hooks(manifest, backend) -> dict:
     """
-    The backend method behind each change at Luna the manifest declares.
+    The backend method behind each change the manifest declares.
     """
     hooks = {}
-    for event, handler in manifest.luna_hooks.items():
+    for event, handler in manifest.hooks.items():
         found = getattr(backend, handler, None)
         if found is None or not callable(found):
             raise PluginRefused(

@@ -87,7 +87,7 @@ class Registry:
 
     def hooks_for(self, event: str) -> list:
         """
-        Every loaded plugin's handler for one change at Luna, as plugin and callable.
+        Every loaded plugin's handler for one change, as plugin and callable.
         """
         return [(entry.name, entry.hooks[event]) for entry in self.plugins.values()
                 if entry.state == PLUGIN_STATE_LOADED and event in (entry.hooks or {})]

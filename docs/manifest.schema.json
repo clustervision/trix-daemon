@@ -181,15 +181,12 @@
       },
       "type": "array"
     },
-    "luna_hooks": {
+    "hooks": {
       "additionalProperties": {
         "type": "string"
       },
       "propertyNames": {
-        "enum": [
-          "node.update",
-          "node.delete"
-        ]
+        "pattern": "^[^.]+\\.[^.]+\\.[^.]+$"
       },
       "type": "object"
     },

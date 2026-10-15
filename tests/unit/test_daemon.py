@@ -201,6 +201,32 @@ def test_every_user_endpoint_declares_a_minimum_role():
             assert endpoint.get("minimum") in MINIMUMS, f"{path}: {endpoint['path']}"
 
 
+def test_every_hook_a_shipped_plugin_wants_is_published_by_one():
+    """
+    The daemon holds no list of which events exist, so a plugin may subscribe to one
+    nobody publishes and simply never run. That is right for a site's own plugin and
+    wrong for a shipped one, where it would be a typo nothing reports. Read from every
+    manifest and every publisher, so a new plugin on either side is covered.
+    """
+    import glob
+    import os
+
+    import yaml
+
+    from trixd.plugins.luna import hooks as luna_hooks
+
+    published = set(luna_hooks.PUBLISHES)
+    wanted = {}
+    for path in glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                       "manifest.yaml")):
+        with open(path, encoding="utf-8") as handle:
+            for event in (yaml.safe_load(handle).get("hooks") or {}):
+                wanted[event] = os.path.basename(os.path.dirname(path))
+    assert wanted, "no shipped plugin declares a hook, so this proves nothing"
+    unknown = {event: plugin for event, plugin in wanted.items() if event not in published}
+    assert unknown == {}, f"subscribed to an event nobody publishes: {unknown}"
+
+
 def test_the_published_document_matches_the_route_table(rig):
     """
     Enumerate one, assert the other.
@@ -953,12 +979,12 @@ def test_the_pass_through_recognises_a_node_rename(rig):
 
     body = b'{"config": {"node": {"node001": {"newnodename": "node002", "comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", body, 204) == {
-        "event": "node.update", "payload": {"name": "node001", "newnodename": "node002"}}
+        "event": "luna.node.update", "payload": {"name": "node001", "newnodename": "node002"}}
     moved = b'{"config": {"node": {"node001": {"group": "gpu"}}}}'
     assert hooks.notice("POST", "config/node/node001", moved, 204) == {
-        "event": "node.update", "payload": {"name": "node001", "group": "gpu"}}
+        "event": "luna.node.update", "payload": {"name": "node001", "group": "gpu"}}
     assert hooks.notice("GET", "config/node/node001/_delete", b"", 204) == {
-        "event": "node.delete", "payload": {"name": "node001"}}
+        "event": "luna.node.delete", "payload": {"name": "node001"}}
 
     plain = b'{"config": {"node": {"node001": {"comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", plain, 204) is None
@@ -996,7 +1022,7 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
     handle = database.session()
     try:
         row = handle.query(models.Task).filter(models.Task.subsystem == "luna").one()
-        assert row.task == "node.update" and '"newnodename": "node002"' in row.param
+        assert row.task == "luna.node.update" and '"newnodename": "node002"' in row.param
     finally:
         handle.close()
 
@@ -1010,7 +1036,7 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
     plugin = tmp_path / "plugins" / "watcher"
     plugin.mkdir()
     (plugin / "manifest.yaml").write_text(
-        "plugin: watcher\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "plugin: watcher\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
         "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
         encoding="utf-8")
     (plugin / "backend.py").write_text(
@@ -1022,21 +1048,28 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
         encoding="utf-8")
     loader.load(rig, "watcher")
 
-    said = hooks.run("node.update", '{"name": "node001", "newnodename": "node002"}')
+    said = hooks.run("luna.node.update", '{"name": "node001", "newnodename": "node002"}')
     assert said == "watcher: noted"
     shown = client.get(f"{API_PREFIX}/watcher/seen", headers=headers).json()
     assert shown["calls"] == [["node001", "node002", ""]]
-    assert hooks.run("node.delete", '{"name": "node001"}') == "nothing declared node.delete"
+    assert hooks.run("luna.node.delete", '{"name": "node001"}') == "nothing declared luna.node.delete"
 
 
 def test_a_hook_for_an_unknown_change_is_refused():
     """
-    A plugin cannot subscribe to something the pass-through never notices.
+    A hook event names who publishes it, what it is about and what happened. The daemon
+    checks that shape and nothing more: which events exist belongs to whatever publishes
+    them, so a plugin may subscribe to one the daemon has never heard of.
     """
+    endpoints = [{"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]
     with pytest.raises(Exception) as raised:
-        parse({"plugin": "x", "luna_hooks": {"node.paint": "paint"}, "endpoints": [
-            {"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]})
-    assert "node.paint" in str(raised.value)
+        parse({"plugin": "x", "hooks": {"node.paint": "paint"}, "endpoints": endpoints})
+    assert "node.paint" in str(raised.value), "two parts is not an event"
+
+    accepted = parse({"plugin": "x", "hooks": {"switches.port.down": "shut"},
+                      "endpoints": endpoints})
+    assert accepted.hooks == {"switches.port.down": "shut"}, \
+        "the daemon holds no list of which events exist"
 
 
 def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
@@ -1050,7 +1083,7 @@ def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
     plugin = tmp_path / "plugins" / "orderly"
     plugin.mkdir()
     (plugin / "manifest.yaml").write_text(
-        "plugin: orderly\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "plugin: orderly\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
         "  - path: renders/seen\n    methods: [GET]\n    minimum: none\n"
         "    handler: render_seen\n    render:\n      inputs: [luna.node]\n      serve: json\n",
         encoding="utf-8")
@@ -1440,7 +1473,7 @@ def _broken_plugin(root) -> str:
         "    def change(self, body=None, extra=None):\n        return {}\n"
         "    def picky(self, wanted):\n        return {}\n", encoding="utf-8")
     (path / "manifest.yaml").write_text(
-        "plugin: broken\nbackend: backend\nluna_hooks:\n  node.delete: gone\nendpoints:\n"
+        "plugin: broken\nbackend: backend\nhooks:\n  luna.node.delete: gone\nendpoints:\n"
         "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
         "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
         "  - path: missing\n    methods: [GET]\n    minimum: reader\n    handler: absent\n"
@@ -1476,7 +1509,7 @@ def test_the_check_lists_every_problem_at_once(rig, tmp_path):
     assert "does not take the path variable node" in text
     assert "names handler absent" in text
     assert "picky needs wanted, which nothing supplies" in text
-    assert "node.delete names handler gone" in text
+    assert "luna.node.delete names handler gone" in text
 
 
 def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tmp_path):

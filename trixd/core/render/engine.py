@@ -64,13 +64,14 @@ class Render:
 
     def wants(self, changed: str) -> bool:
         """
-        Whether a change is one of our inputs: a Luna object such as luna.node, or one of
-        this plugin's own declarations, named bare in the manifest and plugin.kind here.
+        Whether a change is one of our inputs. An input that names its source carries a
+        dot, such as luna.node; a bare one is this plugin's own declaration, and takes
+        the plugin's name here as it does in plugin.kind.
         """
         if not changed:
             return True
         for item in map(str, self.spec.inputs):
-            if not item.startswith("luna."):
+            if "." not in item:
                 item = f"{self.plugin}.{item}"
             if item == changed or item.startswith(f"{changed}.") or changed.startswith(f"{item}."):
                 return True

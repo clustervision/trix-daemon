@@ -33,12 +33,16 @@ import json
 import re
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import LUNA_HOOK_SUBSYSTEM
 from trixd.core import tasks
 from trixd.core.plugins.registry import current as registry
 from trixd.core.render.engine import current as renders
 
 LOGGER = trixlog.get("luna.hooks")
+
+# What this plugin publishes, and the queue those run on. A plugin that wants one of
+# these names it in its manifest; nothing in the daemon holds this list.
+SOURCE: str = "luna"
+PUBLISHES: tuple = ("luna.node.update", "luna.node.delete")
 
 # The calls the pass-through recognises as a change to a node, by method and path.
 NODE_UPDATE = re.compile(r"^config/node/(?P<name>[^/]+)$")
@@ -57,7 +61,7 @@ def notice(method: str, path: str, body: bytes, status: int) -> dict:
     method = str(method or "").upper()
     deleted = NODE_DELETE.match(path)
     if method == "GET" and deleted:
-        return {"event": "node.delete", "payload": {"name": deleted.group("name")}}
+        return {"event": "luna.node.delete", "payload": {"name": deleted.group("name")}}
     updated = NODE_UPDATE.match(path)
     if method != "POST" or not updated:
         return None
@@ -72,7 +76,7 @@ def notice(method: str, path: str, body: bytes, status: int) -> dict:
             payload[field] = str(data[field])
     if len(payload) == 1:
         return None
-    return {"event": "node.update", "payload": payload}
+    return {"event": "luna.node.update", "payload": payload}
 
 
 def changed_object(method: str, path: str, status: int) -> str:
@@ -96,7 +100,7 @@ def after(method: str, path: str, body: bytes, status: int) -> None:
     try:
         found = notice(method, path, body, status)
         if found is not None:
-            identifier = tasks.submit(LUNA_HOOK_SUBSYSTEM, found["event"],
+            identifier = tasks.submit(SOURCE, found["event"],
                                       json.dumps(found["payload"]), "pass-through")
             LOGGER.info("%s at Luna for %s, queued as %s", found["event"],
                         found["payload"]["name"], identifier)
@@ -123,7 +127,7 @@ def run(task: str, param: str = "") -> str:
             except Exception as error:
                 LOGGER.error("%s could not act on %s: %s", plugin, task, error)
                 outcomes.append(f"{plugin}: failed: {error}")
-    woken = renders().notify(f"luna.{task.split('.')[0]}")
+    woken = renders().notify(".".join(task.split(".")[:2]))
     if woken:
         outcomes.append(f"woke {', '.join(woken)}")
     return "; ".join(outcomes) or f"nothing declared {task}"
@@ -133,4 +137,4 @@ def install() -> None:
     """
     Register the task that runs the hooks, before the worker starts requeuing old ones.
     """
-    tasks.register(LUNA_HOOK_SUBSYSTEM, run)
+    tasks.register(SOURCE, run)
