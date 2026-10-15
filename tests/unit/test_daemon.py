@@ -1279,13 +1279,15 @@ def test_a_bare_duration_is_seconds_except_the_token_expiry(tmp_path):
 
 def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
     """
-    A trixd.ini written before trixd read luna.ini still loads, and says what it ignores.
+    Where Luna answers is Luna's own business, so a [LUNA] section still loads and is named;
+    the secret beside it is trixd's own and is read.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text("[TOKENS]\nSECRET_KEY = x\nSECRET_FILE = /nowhere\n"
                    "[LUNA]\nENDPOINT = a:7050\n", encoding="utf-8")
     loaded = configuration.load(str(ini))
-    assert loaded.ignored == ["[LUNA]", "[TOKENS] SECRET_KEY", "[TOKENS] SECRET_FILE"]
+    assert loaded.ignored == ["[LUNA]"]
+    assert loaded.tokens.secret_key == "x"
 
 
 def _render_plugin(directory: str, handler: str = "about") -> None:

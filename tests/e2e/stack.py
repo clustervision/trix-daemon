@@ -51,6 +51,7 @@ urllib3.disable_warnings()
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 PREFIX = "/api/v1"
 LUNA_INI = "/trinity/local/luna/daemon/config/luna.ini"
+TRIXD_INI = "/trinity/local/trixd/daemon/config/trixd.ini"
 # Every name the suite creates starts with this, so it can find and remove all of them.
 MARK = "e2e-"
 ROLES = ("none", "reader", "operator", "manager")
@@ -98,24 +99,30 @@ class Stack:
             self.base = url.rstrip("/") + PREFIX
             self.user = os.environ.get("TRIXD_E2E_USER", "trixd")
             self.password = os.environ.get("TRIXD_E2E_PASSWORD", "trixd")
-            self.secret = os.environ.get("TRIXD_E2E_SECRET", "") or self._secret_from_luna_ini()
+            self.secret = os.environ.get("TRIXD_E2E_SECRET", "") or self._secret_from_ini()
         else:
             self._start_local()
         self._wait()
         self.nodes = self._luna_nodes()
         return self
 
-    def _secret_from_luna_ini(self) -> str:
+    def _secret_from_ini(self) -> str:
         """
-        The shared secret, when this runs on the controller and may read luna.ini.
+        The secret the daemon signs with, when this runs on the controller and may read
+        its ini. trixd's own comes first; a controller where only Luna's is set still
+        works, because the installer writes the same secret to both.
         """
-        path = os.environ.get("TRIXD_LUNA_INI", LUNA_INI)
-        parser = RawConfigParser()
-        try:
-            parser.read(path)
-            return parser.get("API", "SECRET_KEY", fallback="").strip()
-        except Exception:
-            return ""
+        for path, section in ((os.environ.get("TRIXD_INI", TRIXD_INI), "TOKENS"),
+                              (os.environ.get("TRIXD_LUNA_INI", LUNA_INI), "API")):
+            parser = RawConfigParser()
+            try:
+                parser.read(path)
+                found = parser.get(section, "SECRET_KEY", fallback="").strip()
+            except Exception:
+                found = ""
+            if found:
+                return found
+        return ""
 
     def _start_local(self) -> None:
         """
@@ -139,6 +146,7 @@ class Stack:
                 f"[LOGGER]\nLEVEL = info\nLOGFILE = {os.path.join(self.scratch, 'trixd.log')}\n"
                 f"[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:{port}\n"
                 f"USERNAME = {self.user}\nPASSWORD = {self.password}\nEXPIRY = 1h\n"
+                f"[TOKENS]\nSECRET_KEY = {self.secret}\n"
                 f"[DATABASE]\nURL = sqlite:///{database}\n"
                 f"[AUTH]\nCHAIN = local\nCACHE = 0s\n"
                 f"[TRIGGERS]\nLUNA_HASHES = 0s\n"

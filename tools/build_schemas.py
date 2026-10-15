@@ -64,6 +64,7 @@ def openapi_document() -> dict:
         ini = os.path.join(scratch, "trixd.ini")
         lines = ["[LOGGER]", "LEVEL = error", "LOGFILE =", "[API]", "BIND =",
                  "INSECURE_BIND = 127.0.0.1:0", "USERNAME = schema", "PASSWORD = schema",
+                 "[TOKENS]", "SECRET_KEY = " + "0" * 32,
                  "[DATABASE]", "URL = sqlite:///" + os.path.join(scratch, "trixd.db").replace(os.sep, "/"),
                  "[TRIGGERS]", "LUNA_HASHES = 0s",
                  "[PLUGINS]", "DIRECTORY = " + os.path.join(ROOT, "trixd", "plugins"),

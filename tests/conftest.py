@@ -70,7 +70,7 @@ def build(tmp_path, algorithm: str = "HS256"):
         "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
         "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
         "USERNAME = tester\nPASSWORD = secret\nEXPIRY = 1h\n"
-        f"[TOKENS]\nALGORITHM = {algorithm}\n"
+        f"[TOKENS]\nALGORITHM = {algorithm}\nSECRET_KEY = {SHARED_SECRET}\n"
         f'PRIVATE_KEY = {tmp_path / "trixd.ed25519"}\nKEY_ID = trixd-test\n'
         f"TRUST = {trust}\nISSUER = trixd\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'

@@ -74,6 +74,7 @@ class ApiSettings(BaseModel):
     """
     bind: str = "0.0.0.0:8050"
     insecure_bind: str = "0.0.0.0:8051"
+    protocol: str = "https"
     certfile: str = ""
     keyfile: str = ""
     expiry: int = 3600
@@ -86,6 +87,8 @@ class TokenSettings(BaseModel):
     What tokens are signed with, and by which algorithm.
     """
     algorithm: str = DEFAULT_TOKEN_ALGORITHM
+    secret_key: str = ""
+    secret_file: str = "/trinity/local/etc/ssl/secret.key"
     private_key: str = "/trinity/local/etc/ssl/trixd.ed25519"
     key_id: str = "trixd-1"
     trust: str = "/trinity/local/etc/ssl/trust.d"
@@ -209,6 +212,28 @@ def _bool(value: str) -> bool:
     return str(value or "").strip().lower() in ("1", "yes", "true", "on")
 
 
+def _secret(inline: str, path: str) -> str:
+    """
+    This daemon's own secret: what the ini states, else the file the installer wrote it to.
+    """
+    if inline:
+        return inline.strip()
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    return ""
+
+
+def _protocol(value: str) -> str:
+    """
+    Canonicalise the scheme trixd serves on, refusing one it cannot serve.
+    """
+    wanted = str(value or "").strip().lower() or "https"
+    if wanted not in ("https", "http"):
+        raise ValueError(f"[API] PROTOCOL is {wanted}, which is not https or http")
+    return wanted
+
+
 def load(path: str = "") -> Settings:
     """
     Read the ini into a Settings object, falling back to the defaults above.
@@ -243,24 +268,24 @@ def load(path: str = "") -> Settings:
     data.api = ApiSettings(
         bind=get("API", "BIND", data.api.bind),
         insecure_bind=get("API", "INSECURE_BIND", data.api.insecure_bind),
+        protocol=_protocol(get("API", "PROTOCOL", data.api.protocol)),
         certfile=get("API", "CERTFILE", ""),
         keyfile=get("API", "KEYFILE", ""),
         # A bare EXPIRY counts in hours, as luna.ini's does.
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""))
+    secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
+        secret_key=_secret(get("TOKENS", "SECRET_KEY", ""), secret_file),
+        secret_file=secret_file,
         private_key=get("TOKENS", "PRIVATE_KEY", data.tokens.private_key),
         key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
         trust=get("TOKENS", "TRUST", data.tokens.trust),
         issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
-    # Luna's address, protocol and secret come from Luna's own luna.ini, never from here.
-    ignored = ["[LUNA]"] if parser.has_section("LUNA") else []
-    for key in ("SECRET_KEY", "SECRET_FILE"):
-        if parser.has_section("TOKENS") and parser.has_option("TOKENS", key):
-            ignored.append(f"[TOKENS] {key}")
-    data.ignored = ignored
+    # Where Luna answers is Luna's own business, read from luna.ini by the luna plugin.
+    data.ignored = ["[LUNA]"] if parser.has_section("LUNA") else []
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),

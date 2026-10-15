@@ -283,6 +283,45 @@ def test_a_missing_private_key_says_who_makes_it(tmp_path):
         keys.read_private(str(tmp_path / "absent.ed25519"))
 
 
+def test_the_signing_secret_is_trixds_own_and_needs_no_luna_ini(tmp_path, monkeypatch):
+    """
+    trixd signs with the secret its own ini names, so it starts on a controller where
+    Luna's luna.ini is absent, unreadable or holds a different secret.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", str(tmp_path / "there-is-no-luna.ini"))
+    mine = "a" * 32
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {mine}\n", encoding="utf-8")
+    ring = keys.KeyRing(configuration.load(str(ini)).tokens).load()
+    assert ring.signing_key() == mine
+    assert ring.verifying_key() == mine
+
+
+def test_the_signing_secret_falls_back_to_the_file_the_installer_wrote(tmp_path):
+    """
+    An empty SECRET_KEY takes SECRET_FILE, which is how the installer may leave it.
+    """
+    secret_file = tmp_path / "secret.key"
+    secret_file.write_text("b" * 32 + "\n", encoding="utf-8")
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY =\n"
+                   f"SECRET_FILE = {secret_file}\n", encoding="utf-8")
+    assert configuration.load(str(ini)).tokens.secret_key == "b" * 32
+
+
+def test_no_secret_anywhere_stops_the_start_naming_both_places(tmp_path):
+    """
+    Signing with nothing is the one thing that must not pass quietly.
+    """
+    from trixd.common.errors import TrixdError
+
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY =\n"
+                   f"SECRET_FILE = {tmp_path / 'absent.key'}\n", encoding="utf-8")
+    with pytest.raises(TrixdError, match=r"\[TOKENS\] SECRET_KEY in trixd.ini"):
+        keys.KeyRing(configuration.load(str(ini)).tokens).load()
+
+
 def test_logging_survives_a_log_file_it_cannot_write(tmp_path):
     """
     A bad LOGFILE is a warning, not a failed start.

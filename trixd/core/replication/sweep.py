@@ -38,7 +38,6 @@ import requests
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.settings import current as settings
-from trixd.core.luna import config as luna_config
 from trixd.core.replication import tables
 from trixd.core.security import tokens
 from trixd.db import engine as database
@@ -66,8 +65,8 @@ class Sweep:
         """
         One read from a peer, or None when it is away.
         """
-        # The peer serves what this controller serves: the protocol luna.ini names.
-        url = f"{luna_config.current().protocol}://{peer}{API_PREFIX}/system/replication/{path}"
+        # The peer serves what this controller serves: the protocol trixd.ini names.
+        url = f"{settings().api.protocol}://{peer}{API_PREFIX}/system/replication/{path}"
         headers = {TOKEN_HEADER: tokens.service_token()}
         # The service token passes every check, so it goes only to a peer that proves
         # itself with a certificate the cluster's own CA signed.

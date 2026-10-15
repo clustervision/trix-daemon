@@ -48,20 +48,17 @@ def build_config(config):
     """
     from hypercorn.config import Config
 
-    from trixd.core.luna import config as luna_config
-
     served = Config()
     served.bind = []
     served.insecure_bind = []
     bind, plain = config.api.bind, config.api.insecure_bind
-    # BIND follows the protocol all.yml chose for Luna, read from luna.ini, as Luna's 7050 does.
-    protocol = luna_config.current().protocol
+    protocol = config.api.protocol
 
     if bind and protocol == "https":
         for setting, path in (("CERTFILE", config.api.certfile), ("KEYFILE", config.api.keyfile)):
             if not path or not os.path.isfile(path):
-                raise SystemExit(f"luna.ini says https, so BIND {bind} needs [API] {setting}; "
-                                 f"{path or 'it is empty'} is not a file")
+                raise SystemExit(f"[API] PROTOCOL is https, so BIND {bind} needs [API] "
+                                 f"{setting}; {path or 'it is empty'} is not a file")
         served.bind = [bind]
         served.certfile = config.api.certfile
         served.keyfile = config.api.keyfile
@@ -72,7 +69,7 @@ def build_config(config):
         # plain listener is a bind.
         served.bind = [item for item in (bind, plain) if item]
         if bind:
-            LOGGER.warning("luna.ini says http: serving plain HTTP on %s, as Luna does on 7050",
+            LOGGER.warning("[API] PROTOCOL is http: serving plain HTTP on %s",
                            ", ".join(served.bind))
     if not served.bind:
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")

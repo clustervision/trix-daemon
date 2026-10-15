@@ -38,7 +38,6 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import MINIMUM_SECRET_LENGTH, TOKEN_ALGORITHM_SHARED
 from trixd.common.errors import TrixdError
 from trixd.common.settings import TokenSettings
-from trixd.core.luna import config as luna_config
 
 LOGGER = trixlog.get("keys")
 
@@ -77,12 +76,13 @@ class KeyRing:
 
     def _load_secret(self) -> "KeyRing":
         """
-        Take the secret both daemons hold, so either one can verify the other.
+        Take this daemon's own secret, which the installer generates as it does Luna's.
         """
-        if not self.shared_secret():
+        self.secret = self.config.secret_key
+        if not self.secret:
             raise TrixdError(
-                f"{self.algorithm} signs with the secret trixd shares with Luna, and "
-                f"{luna_config.current().path} has no [API] SECRET_KEY")
+                f"{self.algorithm} signs with a shared secret and none was found: set "
+                f"[TOKENS] SECRET_KEY in trixd.ini, or put it in {self.config.secret_file}")
         if len(self.secret) < MINIMUM_SECRET_LENGTH:
             LOGGER.warning("the shared secret is %d characters long; the installer "
                            "writes %d", len(self.secret), MINIMUM_SECRET_LENGTH)
@@ -102,20 +102,11 @@ class KeyRing:
                     ", ".join(sorted(self.trusted)) or "nothing else")
         return self
 
-    def shared_secret(self) -> str:
-        """
-        Luna's secret as luna.ini holds it now, so a change there is followed here.
-        """
-        found = luna_config.current().secret
-        if found:
-            self.secret = found
-        return self.secret
-
     def signing_key(self):
         """
         What this daemon mints with, or None when it holds nothing to mint with.
         """
-        return (self.shared_secret() or None) if self.shared else self.private
+        return (self.secret or None) if self.shared else self.private
 
     def verifying_key(self, key_id: str = ""):
         """
@@ -123,7 +114,7 @@ class KeyRing:
         A shared secret has one answer and no key id, as Luna's own tokens carry.
         """
         if self.shared:
-            return self.shared_secret() or None
+            return self.secret or None
         return self.trusted.get(key_id)
 
 
