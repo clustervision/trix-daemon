@@ -38,8 +38,8 @@ import urllib3
 from trixd.common import logging as trixlog
 from trixd.common.constants import TOKEN_HEADER
 from trixd.common.errors import ServiceUnavailable, Unauthenticated
-from trixd.core.luna import config as luna_config
-from trixd.core.security import tokens
+from trixd.plugins.luna import config as luna_config
+from trixd.plugins.luna import credentials
 
 LOGGER = trixlog.get("luna")
 
@@ -76,7 +76,7 @@ class LunaClient:
         stored anywhere for trixd, and nothing goes over the wire to get one.
         """
         try:
-            return tokens.for_luna(TOKEN_LIFETIME)
+            return credentials.for_luna(TOKEN_LIFETIME)
         except Unauthenticated as error:
             raise ServiceUnavailable(f"no token for Luna: {error.message}") from None
 

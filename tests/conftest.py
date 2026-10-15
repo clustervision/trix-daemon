@@ -38,8 +38,8 @@ from fastapi.testclient import TestClient
 from trixd.app import create_app
 from trixd.common import settings as configuration
 from trixd.core.lifespan import start
-from trixd.core.luna.config import LUNA_INI_ENV
 from trixd.core.security import keys
+from trixd.plugins.luna.config import LUNA_INI_ENV
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              "trixd", "plugins")
@@ -58,7 +58,7 @@ def build(tmp_path, algorithm: str = "HS256"):
         shutil.copytree(PLUGIN_SOURCE, plugins)
     trust = tmp_path / "trust.d"
     trust.mkdir(exist_ok=True)
-    # Luna's own luna.ini, which trixd reads for Luna's address and the shared secret.
+    # Luna's own luna.ini, which the luna plugin reads for Luna's address and secret.
     luna_ini = tmp_path / "luna.ini"
     luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = https\n"
                         f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",

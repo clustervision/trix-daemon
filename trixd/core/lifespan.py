@@ -36,10 +36,9 @@ from fastapi import FastAPI
 from trixd.common import logging as trixlog
 from trixd.common.settings import current as settings
 from trixd.core import tasks
-from trixd.core.luna import hooks
 from trixd.core.plugins import loader
 from trixd.core.render.engine import current as renders
-from trixd.core.render.triggers import current as luna_hashes
+from trixd.core.render import triggers
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import audit, keys
 from trixd.db import engine as database
@@ -53,9 +52,8 @@ def start(app: FastAPI) -> None:
     """
     config = settings()
     if config.ignored:
-        LOGGER.warning("trixd.ini still names %s, which trixd no longer reads: Luna's "
-                       "address, protocol and secret come from Luna's own luna.ini",
-                       ", ".join(config.ignored))
+        LOGGER.warning("trixd.ini still names %s, which trixd no longer reads: where Luna "
+                       "answers comes from Luna's own luna.ini", ", ".join(config.ignored))
     database.start(config.database.url)
     keys.set_current(keys.KeyRing(config.tokens).load())
 
@@ -65,17 +63,16 @@ def start(app: FastAPI) -> None:
 
     # After the plugins, never before: the worker requeues what a restart left
     # behind, and a handler that has not registered yet fails that work at once.
-    hooks.install()
     tasks.start()
 
-    # The baseline comes first, so a change made at Luna during the reconcile is caught.
-    luna_hashes().baseline()
+    # The baseline comes first, so a change made while the reconcile runs is caught.
+    triggers.baseline_all()
     done = renders().run_all()
     LOGGER.info("reconciled %d render(s) before opening the listeners", done)
 
     # Both are background timers, so they start after the reconcile: the first
     # answer a caller gets should come from a render, not from an empty cache.
-    luna_hashes().start()
+    triggers.start_all()
     sweep().start()
 
 
@@ -83,7 +80,7 @@ def stop(app: FastAPI) -> None:
     """
     Stop the timers. Queued tasks are in the database and are requeued on the next start.
     """
-    luna_hashes().shutdown()
+    triggers.shutdown_all()
     sweep().shutdown()
     audit.shutdown()
     LOGGER.info("shutting down")

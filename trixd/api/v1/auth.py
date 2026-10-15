@@ -38,8 +38,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_KIND_NODE
 from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
-from trixd.core.luna.client import current as luna
-from trixd.core.security import audit, principals, tokens
+from trixd.core.security import audit, nodes, principals, tokens
 from trixd.core.security.gate import Caller, guard
 from trixd.db import engine as database
 from trixd.db.engine import scoped
@@ -129,11 +128,11 @@ def issue_node(node: str = Path(description="The node, as Luna names it",
     A node token, on the same terms Luna issues one: the measurement when the cluster
     enforces security, a credential when it does not. Never on the node name alone.
     """
-    record = luna().node(node)
+    record = nodes.current().node(node)
     if not record:
         raise Unauthenticated(f"{node} is not a node Luna knows")
 
-    if luna().enforcing_security():
+    if nodes.current().enforcing_security():
         expected = record.get("tpm_sha256") or ""
         if not expected:
             LOGGER.warning("node %s has no measurement and the cluster enforces one", node)

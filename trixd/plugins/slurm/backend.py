@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
-from trixd.core.luna.client import current as luna
+from trixd.plugins.luna.client import current as luna
 from trixd.utils import declarations, shell
 
 LOGGER = trixlog.get("slurm")

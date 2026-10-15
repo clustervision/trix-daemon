@@ -504,7 +504,7 @@ def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypa
             """
             return False
 
-    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
     answer = client.post(f"{API_PREFIX}/auth/node/node001", json={"tpm_sha256": ""})
     assert answer.status_code == 401
 
@@ -540,7 +540,7 @@ def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, clie
             """
             return True
 
-    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
     assert client.post(f"{API_PREFIX}/auth/node/node001",
                        json={"tpm_sha256": "wrong"}).status_code == 401
     assert client.post(f"{API_PREFIX}/auth/node/node001",
@@ -947,7 +947,7 @@ def test_the_pass_through_recognises_a_node_rename(rig):
     """
     A POST to the node with newnodename or group, answered 2xx, is what a hook must see.
     """
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
 
     body = b'{"config": {"node": {"node001": {"newnodename": "node002", "comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", body, 204) == {
@@ -1003,7 +1003,7 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.
     """
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
 
     plugin = tmp_path / "plugins" / "watcher"
     plugin.mkdir()
@@ -1042,7 +1042,7 @@ def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
     A reconcile woken beside the hook could retire a file the hook was about to move.
     """
     from trixd.core import tasks
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
     from trixd.core.plugins.registry import current as registry
 
     plugin = tmp_path / "plugins" / "orderly"

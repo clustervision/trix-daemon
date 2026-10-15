@@ -45,7 +45,7 @@ from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
-from trixd.core.render.triggers import current as luna_hashes
+from trixd.core.render import triggers
 from trixd.core.security import audit
 from trixd.core.security.gate import Caller, guard
 from trixd.db import engine as database
@@ -73,9 +73,10 @@ class Change(BaseModel):
             description=(
                 "For a monitor, with no token. `plugins` counts the loaded plugins. Each "
                 "render says when it last ran, as Unix time, 0 before its first run since "
-                "trixd or its plugin started, and whether that run worked. `luna_hashes` "
-                "says whether Luna answers its table hashes, which it does on an HA master "
-                "only, and `replication` when the last sweep ran, 0 for never. States and "
+                "trixd or its plugin started, and whether that run worked. `triggers` carries one "
+                "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
+                "hashes, which it does on an HA master only, and `replication` when the last "
+                "sweep ran, 0 for never. States and "
                 "times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
@@ -92,12 +93,12 @@ def health() -> dict:
     """
     loaded = [entry for entry in registry().plugins.values()
               if entry.state == PLUGIN_STATE_LOADED]
-    hashes = luna_hashes().state()
     return {"status": "ok", "daemon": DAEMON_NAME, "plugins": len(loaded),
             "renders": [{"render": item["render"], "rendered_at": item["rendered_at"],
                          "ok": not item["error"]} for item in renders().listing()],
-            "triggers": {"luna_hashes": {"answering": hashes["answering"],
-                                         "last_pass": hashes["last_pass"]},
+            "triggers": {**{name: {"answering": state.get("answering", False),
+                                   "last_pass": state.get("last_pass", 0)}
+                            for name, state in triggers.states().items()},
                          "replication": {"at": (sweep().last or {}).get("at", 0)}}}
 
 

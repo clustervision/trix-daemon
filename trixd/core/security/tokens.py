@@ -34,11 +34,10 @@ from datetime import datetime, timedelta, timezone
 import jwt
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import (DAEMON_NAME, LUNA_CLAIM_ID, LUNA_CLAIM_NODE,
-                                    LUNA_CLAIM_SCOPE, LUNA_NO_USER_ID, LUNA_SCOPE_PROVISION,
-                                    LUNA_SUPERUSER_ID, TOKEN_ALGORITHM_SHARED,
-                                    TOKEN_KIND_NODE, TOKEN_KIND_SERVICE, TOKEN_KIND_USER,
-                                    TOKEN_KINDS)
+from trixd.common.constants import (LUNA_CLAIM_ID, LUNA_CLAIM_NODE, LUNA_CLAIM_SCOPE,
+                                    LUNA_NO_USER_ID, LUNA_SCOPE_PROVISION,
+                                    LUNA_SUPERUSER_ID, TOKEN_KIND_NODE,
+                                    TOKEN_KIND_SERVICE, TOKEN_KIND_USER, TOKEN_KINDS)
 from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.core.security import keys
@@ -159,21 +158,3 @@ def service_token(expiry: int = 300) -> str:
     """
     ring = keys.current()
     return mint(ring.issuer, kind=TOKEN_KIND_SERVICE, expiry=expiry, source="local")
-
-
-def for_luna(expiry: int = 300) -> str:
-    """
-    What trixd shows Luna for its own calls: Luna's administrator, id 0, signed with the
-    secret from luna.ini, so no Luna password is ever stored for trixd. Always HS256,
-    which is what Luna verifies, whatever trixd signs its own tokens with.
-    """
-    from trixd.core.luna import config as luna_config
-
-    secret = luna_config.current().secret
-    if not secret:
-        raise Unauthenticated(f"{luna_config.current().path} has no [API] SECRET_KEY")
-    issued = datetime.now(timezone.utc)
-    payload = {"iss": keys.current().issuer, "sub": DAEMON_NAME, "kind": TOKEN_KIND_SERVICE,
-               "src": "local", "iat": issued, "exp": issued + timedelta(seconds=expiry),
-               LUNA_CLAIM_ID: LUNA_SUPERUSER_ID}
-    return jwt.encode(payload, secret, algorithm=TOKEN_ALGORITHM_SHARED)

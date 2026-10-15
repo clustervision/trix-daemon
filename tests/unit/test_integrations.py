@@ -42,12 +42,12 @@ from tests.unit.test_plugins import Ran
 from tests.unit.test_replication import _peer
 from trixd.common import settings as configuration
 from trixd.common.errors import BackendFailure, BadRequest, NotFound, ServiceUnavailable
-from trixd.core.luna.client import LunaClient
-from trixd.core.render import triggers
 from trixd.core.replication import sweep as replication
 from trixd.core.replication import tables
 from trixd.db import engine as database
 from trixd.db import models
+from trixd.plugins.luna import hashes
+from trixd.plugins.luna.client import LunaClient
 
 
 class Answer:
@@ -207,7 +207,7 @@ def test_trixd_follows_luna_ini_when_it_changes(rig, tmp_path, monkeypatch):
     import os
     import time
 
-    from trixd.core.luna import config as luna_config
+    from trixd.plugins.luna import config as luna_config
 
     path = tmp_path / "moving-luna.ini"
     path.write_text("[API]\nENDPOINT = one:7050\nPROTOCOL = https\nSECRET_KEY = " + "a" * 32
@@ -274,9 +274,9 @@ def _hashes(monkeypatch, *answers) -> tuple:
     A fresh poller wired to a scripted Luna and a recording engine.
     """
     luna, renders = FakeLuna(*answers), FakeRenders()
-    monkeypatch.setattr(triggers, "luna", lambda: luna)
-    monkeypatch.setattr(triggers, "renders", lambda: renders)
-    return triggers.LunaHashes(), renders
+    monkeypatch.setattr(hashes, "luna", lambda: luna)
+    monkeypatch.setattr(hashes, "renders", lambda: renders)
+    return hashes.LunaHashes(), renders
 
 
 def test_the_first_hash_reading_is_a_baseline_and_wakes_nothing(rig, monkeypatch):

@@ -42,7 +42,7 @@ import yaml
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure, BadRequest, NotFound, TrixdError
-from trixd.core.luna.client import current as luna
+from trixd.plugins.luna.client import current as luna
 from trixd.utils import declarations, files
 from trixd.utils import shell
 

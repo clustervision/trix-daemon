@@ -18,7 +18,8 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-The fallback trigger: compare Luna's table hashes on a slow timer.
+Background triggers: what wakes a render when the change did not come through this
+daemon. The daemon holds them and runs them; a plugin says what one watches.
 """
 
 __author__      = "Sumit Sharma"
@@ -29,121 +30,70 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import threading
-import time
-
 from trixd.common import logging as trixlog
-from trixd.common.settings import current as settings
-from trixd.core.luna.client import current as luna
-from trixd.core.render.engine import current as renders
 
 LOGGER = trixlog.get("triggers")
 
+# Name to trigger, in the order they registered. A trigger offers baseline, start,
+# shutdown and state; what it watches, and whether it watches anything at all, is
+# the plugin's business and never the daemon's. Its state() carries at least
+# answering and last_pass, which are what /system/health publishes for it.
+_triggers: dict = {}
 
-class LunaHashes:
+
+def register(name: str, trigger) -> None:
     """
-    One request and one comparison per pass. A change made at Luna directly, never
-    passing through this daemon, is picked up here wherever Luna answers the route.
+    Offer a background trigger under a name, which is the key it reports health by.
+    Registering the same name twice replaces it, so a re-plug does not stack pollers.
     """
+    if name in _triggers and _triggers[name] is not trigger:
+        LOGGER.info("trigger %s replaced", name)
+    _triggers[name] = trigger
 
-    def __init__(self) -> None:
-        """
-        The poller, not yet running.
-        """
-        self.stop = threading.Event()
-        self.thread = None
-        self.seen: dict = {}
-        self.last_pass: float = 0.0
-        self.quiet: bool = False
 
-    def once(self) -> list:
-        """
-        Fetch the hashes, wake whatever declared a changed table as an input.
-        """
-        self.last_pass = time.time()
+def baseline_all() -> None:
+    """
+    Take every trigger's baseline before the reconcile, so a change landing after it
+    is seen as a change rather than absorbed into the first reading.
+    """
+    for name, trigger in _triggers.items():
         try:
-            current = luna().table_hashes()
+            trigger.baseline()
         except Exception as error:
-            LOGGER.warning("could not read Luna table hashes: %s", error)
-            return []
-
-        if not current:
-            # Luna answers this only on the HA master, so empty is normal here and
-            # is not "nothing changed". Said once, then left alone.
-            if not self.quiet:
-                LOGGER.warning("Luna returned no table hashes, so this fallback is inert "
-                               "here; Luna answers that route on the HA master only")
-                self.quiet = True
-            return []
-        self.quiet = False
-
-        changed = [table for table, digest in current.items()
-                   if self.seen.get(table) != digest]
-        first = not self.seen
-        self.seen = dict(current)
-        if first:
-            LOGGER.info("baseline taken for %d Luna tables", len(current))
-            return []
-
-        woken = []
-        for table in changed:
-            woken.extend(renders().notify(f"luna.{table}"))
-        if changed:
-            LOGGER.info("Luna tables changed: %s; woke %s",
-                        ", ".join(changed), ", ".join(woken) or "nothing")
-        return woken
-
-    def baseline(self) -> None:
-        """
-        Read the hashes once before the reconcile, so that a change landing after it is
-        seen as a change rather than absorbed into the first reading.
-        """
-        if settings().triggers.luna_hashes > 0:
-            self.once()
-
-    def _loop(self) -> None:
-        """
-        One pass per interval until the daemon stops.
-        """
-        interval = settings().triggers.luna_hashes
-        while not self.stop.wait(interval):
-            self.once()
-
-    def start(self) -> bool:
-        """
-        Begin polling, unless the interval says not to.
-        """
-        interval = settings().triggers.luna_hashes
-        if interval <= 0:
-            LOGGER.info("the Luna hash fallback is switched off")
-            return False
-        self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-hashes", daemon=True)
-        self.thread.start()
-        LOGGER.info("comparing Luna table hashes every %ss", interval)
-        return True
-
-    def shutdown(self) -> None:
-        """
-        Ask the poller to stop; it ends at its next wake-up.
-        """
-        self.stop.set()
-
-    def state(self) -> dict:
-        """
-        What the poller is doing, for the control endpoint.
-        """
-        return {"interval": settings().triggers.luna_hashes,
-                "last_pass": self.last_pass,
-                "tables_seen": len(self.seen),
-                "answering": not self.quiet and bool(self.seen)}
+            LOGGER.error("trigger %s could not take its baseline: %s", name, error)
 
 
-_hashes: LunaHashes = LunaHashes()
-
-
-def current() -> LunaHashes:
+def start_all() -> None:
     """
-    The Luna hash poller for this process.
+    Start every trigger. One that refuses to start says so and the others still run.
     """
-    return _hashes
+    for name, trigger in _triggers.items():
+        try:
+            trigger.start()
+        except Exception as error:
+            LOGGER.error("trigger %s could not start: %s", name, error)
+
+
+def shutdown_all() -> None:
+    """
+    Ask every trigger to stop; each ends at its next wake-up.
+    """
+    for name, trigger in _triggers.items():
+        try:
+            trigger.shutdown()
+        except Exception as error:
+            LOGGER.error("trigger %s could not be stopped: %s", name, error)
+
+
+def states() -> dict:
+    """
+    What each trigger is doing, for the health endpoint.
+    """
+    found = {}
+    for name, trigger in _triggers.items():
+        try:
+            found[name] = trigger.state()
+        except Exception as error:
+            LOGGER.error("trigger %s could not report its state: %s", name, error)
+            found[name] = {"error": True}
+    return found
