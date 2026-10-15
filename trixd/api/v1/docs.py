@@ -37,8 +37,10 @@ from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.responses import HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
+from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, DAEMON_VERSION
-from trixd.core.luna.config import current as luna_config
+
+LOGGER = trixlog.get("docs")
 
 TITLE: str = "TrinityX Daemon (trixd)"
 SWAGGER_UI: str = "5.32.15"
@@ -47,9 +49,33 @@ STATIC_DIR: str = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(
 STATIC_URL: str = f"{API_PREFIX}/docs/static"
 OPENAPI_URL: str = f"{API_PREFIX}/openapi.json"
 LICENSE_URL: str = f"{STATIC_URL}/LICENSE.txt"
-# Replaced per request by Luna's address on the host the reader came in on.
-LUNA: str = "{luna}"
-PUBLISHED_LUNA: str = "https://<controller>:7050"
+# A plugin may name its own service in the description: it registers the placeholder
+# it writes there and what to put in its place. The published document cannot know the
+# reader's host, so each one offers a static stand-in for that copy too.
+_placeholders: dict = {}
+
+
+def register_placeholder(name: str, resolve, published: str) -> None:
+    """
+    Offer "{name}" in the description, resolved per request and published as published.
+    """
+    _placeholders[name] = (resolve, published)
+
+
+def substitute(text: str, request: Request = None) -> str:
+    """
+    Replace every registered placeholder, with the reader's own address when there is a
+    request and the static stand-in when there is not. An unregistered one is left as
+    written, so a disabled plugin shows its placeholder rather than a wrong address.
+    """
+    for name, (resolve, published) in _placeholders.items():
+        try:
+            value = resolve(request) if request is not None else published
+        except Exception as error:
+            LOGGER.error("could not resolve the %s address for the document: %s", name, error)
+            value = published
+        text = text.replace("{" + name + "}", value)
+    return text
 
 DESCRIPTION: str = """\
 **trixd** is the TrinityX daemon for everything that is not a physical node: the \
@@ -78,7 +104,7 @@ lowest role, shown as **Access** under its description. **rootus**, the account 
 it is, with `GET /api/v1/auth/whoami`.
 
 ### Ports
-**8050** speaks the protocol Luna's `luna.ini` names, https or http. **8051** is plain \
+**8050** speaks the protocol `trixd.ini` names, https or http. **8051** is plain \
 HTTP on every address, for nodes; a password or token sent there crosses the network in \
 clear text.
 
@@ -117,19 +143,6 @@ SWAGGER_PARAMETERS: dict = {"validatorUrl": None, "showExtensions": False,
 router = APIRouter(prefix=API_PREFIX)
 
 
-def luna_link(request: Request) -> str:
-    """
-    Luna on the host the reader reached this page by: it runs on the same controller, and
-    the name luna.ini gives it may not resolve where the reader sits.
-    """
-    config = luna_config()
-    port = config.endpoint.rpartition(":")[2] or "7050"
-    host = request.url.hostname or "localhost"
-    if ":" in host:
-        host = f"[{host}]"
-    return f"{config.protocol}://{host}:{port}"
-
-
 @router.get("/docs", include_in_schema=False)
 def page() -> HTMLResponse:
     """
@@ -150,7 +163,7 @@ def document(request: Request) -> JSONResponse:
     """
     built = request.app.openapi()
     info = dict(built["info"])
-    info["description"] = info.get("description", "").replace(LUNA, luna_link(request))
+    info["description"] = substitute(info.get("description", ""), request)
     info["license"] = {**info.get("license", {}),
                        "url": str(request.base_url).rstrip("/") + LICENSE_URL}
     return JSONResponse({**built, "info": info})

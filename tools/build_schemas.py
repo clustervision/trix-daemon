@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 # This code is part of the TrinityX software suite
 # Copyright (C) 2026  ClusterVision Solutions b.v.
 #
@@ -53,7 +50,7 @@ def openapi_document() -> dict:
     from trixd.common import settings as configuration
     from trixd.common.constants import DAEMON_RELEASE
     from trixd.core.lifespan import start, stop
-    from trixd.core.luna.config import LUNA_INI_ENV
+    from trixd.plugins.luna.config import LUNA_INI_ENV
 
     with tempfile.TemporaryDirectory() as scratch:
         luna_ini = os.path.join(scratch, "luna.ini")
@@ -64,6 +61,7 @@ def openapi_document() -> dict:
         ini = os.path.join(scratch, "trixd.ini")
         lines = ["[LOGGER]", "LEVEL = error", "LOGFILE =", "[API]", "BIND =",
                  "INSECURE_BIND = 127.0.0.1:0", "USERNAME = schema", "PASSWORD = schema",
+                 "[TOKENS]", "SECRET_KEY = " + "0" * 32,
                  "[DATABASE]", "URL = sqlite:///" + os.path.join(scratch, "trixd.db").replace(os.sep, "/"),
                  "[TRIGGERS]", "LUNA_HASHES = 0s",
                  "[PLUGINS]", "DIRECTORY = " + os.path.join(ROOT, "trixd", "plugins"),
@@ -81,10 +79,10 @@ def openapi_document() -> dict:
             database.engine().dispose()
     # The release line, not the build: the document describes the API, not one wheel.
     document["info"]["version"] = DAEMON_RELEASE
-    # A served copy names Luna on the reader's host; the published one cannot know it.
+    # A served copy names a service on the reader's host; the published one cannot know
+    # it, so each plugin's static stand-in goes in instead.
     from trixd.api.v1 import docs
-    document["info"]["description"] = document["info"]["description"].replace(
-        docs.LUNA, docs.PUBLISHED_LUNA)
+    document["info"]["description"] = docs.substitute(document["info"]["description"])
     return document
 
 

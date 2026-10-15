@@ -38,7 +38,9 @@ from pydantic import BaseModel
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import PluginRefused
+from trixd.core import tasks
 from trixd.core.plugins.manifest import QUERY_TYPES, Endpoint, Manifest
+from trixd.core.replication import outbox
 from trixd.core.security.gate import Caller, guard, stamp
 
 LOGGER = trixlog.get("binder")
@@ -135,7 +137,34 @@ def _responses(endpoint: Endpoint) -> dict:
     return answers
 
 
-def _endpoint_function(handler, endpoint: Endpoint, body_model):
+def _replicated(endpoint: Endpoint, plugin: str, verb: str, supplied: dict, result):
+    """
+    Tell the peers about a call that has already happened here, and put what happened in
+    the answer. Returns the result, with a `replicated` block when there is one to add.
+
+    Takes what the handler was handed, not the raw kwargs: `_arguments` pops `body` and
+    `caller` out of those, so reading them there gives a null body and no origin on every
+    call - which the peer accepts and acts on wrongly.
+
+    Only reached for an endpoint whose manifest says so, and only after its handler
+    returned: a call that raised changed nothing to pass on.
+    """
+    body = supplied.get("body")
+    caller = supplied.get("caller")
+    variables = {key: value for key, value in supplied.items()
+                 if key not in ("body", "caller", "request")}
+    said = outbox.replicate(plugin, endpoint.path, verb, variables, body, result,
+                            tasks.request_id(), getattr(caller, "name", "local"))
+    if isinstance(result, dict):
+        return {**result, "replicated": said}
+    # Nothing to attach it to, so the log is where it is said. A manifest cannot reach
+    # here with a render, which is the only shipped handler that answers a bare list.
+    LOGGER.info("replicated %s %s: %s", verb, endpoint.path, said)
+    return result
+
+
+def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = "",
+                       verb: str = ""):
     """
     Build a path operation whose signature FastAPI can introspect.
     """
@@ -144,13 +173,21 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model):
             """
             The path operation FastAPI awaits, for a handler that is itself async.
             """
-            return await _call(handler, _arguments(kwargs))
+            supplied = _arguments(kwargs)
+            answer = await _call(handler, supplied)
+            if endpoint.replicate:
+                return _replicated(endpoint, plugin, verb, supplied, answer)
+            return answer
     else:
         def operation(**kwargs):
             """
             The path operation FastAPI calls, which hands the backend its arguments.
             """
-            return _call(handler, _arguments(kwargs))
+            supplied = _arguments(kwargs)
+            answer = _call(handler, supplied)
+            if endpoint.replicate:
+                return _replicated(endpoint, plugin, verb, supplied, answer)
+            return answer
 
     parameters = _documented(endpoint)
     if "request" in inspect.signature(handler).parameters:
@@ -202,7 +239,7 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
             wants_body = body_model if verb in BODY_VERBS else None
             router.add_api_route(
                 "/" + endpoint.route_path if endpoint.route_path else "",
-                _endpoint_function(handler, endpoint, wants_body),
+                _endpoint_function(handler, endpoint, wants_body, manifest.plugin, verb),
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",
                 summary=endpoint.summary or f"{verb} {endpoint.path}",

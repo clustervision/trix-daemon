@@ -101,11 +101,13 @@ def test_a_personal_token_is_nobody_at_luna(rig):
     assert tokens.verify(minted).subject == "alice"
 
 
-def test_the_service_token_is_nobody_at_luna(rig):
+def test_a_service_kind_token_is_nobody_at_luna(rig):
     """
-    The peer's token is for the peer; at Luna it is refused, not obeyed.
+    A token naming this daemon rather than a person carries no Luna identity, so Luna
+    refuses it rather than obeying it.
     """
-    claims = jwt.decode(tokens.service_token(), SHARED_SECRET, algorithms=["HS256"])
+    minted = tokens.mint("trixd", kind="service")
+    claims = jwt.decode(minted, SHARED_SECRET, algorithms=["HS256"])
     assert claims["id"] == -1
 
 
@@ -197,6 +199,32 @@ def test_every_user_endpoint_declares_a_minimum_role():
             if endpoint.get("public") or endpoint.get("forward") or endpoint.get("token") == "node":
                 continue
             assert endpoint.get("minimum") in MINIMUMS, f"{path}: {endpoint['path']}"
+
+
+def test_every_hook_a_shipped_plugin_wants_is_published_by_one():
+    """
+    The daemon holds no list of which events exist, so a plugin may subscribe to one
+    nobody publishes and simply never run. That is right for a site's own plugin and
+    wrong for a shipped one, where it would be a typo nothing reports. Read from every
+    manifest and every publisher, so a new plugin on either side is covered.
+    """
+    import glob
+    import os
+
+    import yaml
+
+    from trixd.plugins.luna import hooks as luna_hooks
+
+    published = set(luna_hooks.PUBLISHES)
+    wanted = {}
+    for path in glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                       "manifest.yaml")):
+        with open(path, encoding="utf-8") as handle:
+            for event in (yaml.safe_load(handle).get("hooks") or {}):
+                wanted[event] = os.path.basename(os.path.dirname(path))
+    assert wanted, "no shipped plugin declares a hook, so this proves nothing"
+    unknown = {event: plugin for event, plugin in wanted.items() if event not in published}
+    assert unknown == {}, f"subscribed to an event nobody publishes: {unknown}"
 
 
 def test_the_published_document_matches_the_route_table(rig):
@@ -504,7 +532,7 @@ def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypa
             """
             return False
 
-    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
     answer = client.post(f"{API_PREFIX}/auth/node/node001", json={"tpm_sha256": ""})
     assert answer.status_code == 401
 
@@ -540,7 +568,7 @@ def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, clie
             """
             return True
 
-    monkeypatch.setattr(auth_routes, "luna", lambda: Stub())
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
     assert client.post(f"{API_PREFIX}/auth/node/node001",
                        json={"tpm_sha256": "wrong"}).status_code == 401
     assert client.post(f"{API_PREFIX}/auth/node/node001",
@@ -947,16 +975,16 @@ def test_the_pass_through_recognises_a_node_rename(rig):
     """
     A POST to the node with newnodename or group, answered 2xx, is what a hook must see.
     """
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
 
     body = b'{"config": {"node": {"node001": {"newnodename": "node002", "comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", body, 204) == {
-        "event": "node.update", "payload": {"name": "node001", "newnodename": "node002"}}
+        "event": "luna.node.update", "payload": {"name": "node001", "newnodename": "node002"}}
     moved = b'{"config": {"node": {"node001": {"group": "gpu"}}}}'
     assert hooks.notice("POST", "config/node/node001", moved, 204) == {
-        "event": "node.update", "payload": {"name": "node001", "group": "gpu"}}
+        "event": "luna.node.update", "payload": {"name": "node001", "group": "gpu"}}
     assert hooks.notice("GET", "config/node/node001/_delete", b"", 204) == {
-        "event": "node.delete", "payload": {"name": "node001"}}
+        "event": "luna.node.delete", "payload": {"name": "node001"}}
 
     plain = b'{"config": {"node": {"node001": {"comment": "x"}}}}'
     assert hooks.notice("POST", "config/node/node001", plain, 204) is None
@@ -994,7 +1022,7 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
     handle = database.session()
     try:
         row = handle.query(models.Task).filter(models.Task.subsystem == "luna").one()
-        assert row.task == "node.update" and '"newnodename": "node002"' in row.param
+        assert row.task == "luna.node.update" and '"newnodename": "node002"' in row.param
     finally:
         handle.close()
 
@@ -1003,12 +1031,12 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.
     """
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
 
     plugin = tmp_path / "plugins" / "watcher"
     plugin.mkdir()
     (plugin / "manifest.yaml").write_text(
-        "plugin: watcher\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "plugin: watcher\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
         "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
         encoding="utf-8")
     (plugin / "backend.py").write_text(
@@ -1020,21 +1048,28 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
         encoding="utf-8")
     loader.load(rig, "watcher")
 
-    said = hooks.run("node.update", '{"name": "node001", "newnodename": "node002"}')
+    said = hooks.run("luna.node.update", '{"name": "node001", "newnodename": "node002"}')
     assert said == "watcher: noted"
     shown = client.get(f"{API_PREFIX}/watcher/seen", headers=headers).json()
     assert shown["calls"] == [["node001", "node002", ""]]
-    assert hooks.run("node.delete", '{"name": "node001"}') == "nothing declared node.delete"
+    assert hooks.run("luna.node.delete", '{"name": "node001"}') == "nothing declared luna.node.delete"
 
 
 def test_a_hook_for_an_unknown_change_is_refused():
     """
-    A plugin cannot subscribe to something the pass-through never notices.
+    A hook event names who publishes it, what it is about and what happened. The daemon
+    checks that shape and nothing more: which events exist belongs to whatever publishes
+    them, so a plugin may subscribe to one the daemon has never heard of.
     """
+    endpoints = [{"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]
     with pytest.raises(Exception) as raised:
-        parse({"plugin": "x", "luna_hooks": {"node.paint": "paint"}, "endpoints": [
-            {"path": "a", "methods": ["GET"], "minimum": "none", "handler": "a"}]})
-    assert "node.paint" in str(raised.value)
+        parse({"plugin": "x", "hooks": {"node.paint": "paint"}, "endpoints": endpoints})
+    assert "node.paint" in str(raised.value), "two parts is not an event"
+
+    accepted = parse({"plugin": "x", "hooks": {"switches.port.down": "shut"},
+                      "endpoints": endpoints})
+    assert accepted.hooks == {"switches.port.down": "shut"}, \
+        "the daemon holds no list of which events exist"
 
 
 def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
@@ -1042,13 +1077,13 @@ def test_the_renders_wake_after_the_hooks_have_run(rig, tmp_path):
     A reconcile woken beside the hook could retire a file the hook was about to move.
     """
     from trixd.core import tasks
-    from trixd.core.luna import hooks
+    from trixd.plugins.luna import hooks
     from trixd.core.plugins.registry import current as registry
 
     plugin = tmp_path / "plugins" / "orderly"
     plugin.mkdir()
     (plugin / "manifest.yaml").write_text(
-        "plugin: orderly\nbackend: backend\nluna_hooks:\n  node.update: moved\nendpoints:\n"
+        "plugin: orderly\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
         "  - path: renders/seen\n    methods: [GET]\n    minimum: none\n"
         "    handler: render_seen\n    render:\n      inputs: [luna.node]\n      serve: json\n",
         encoding="utf-8")
@@ -1279,13 +1314,29 @@ def test_a_bare_duration_is_seconds_except_the_token_expiry(tmp_path):
 
 def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
     """
-    A trixd.ini written before trixd read luna.ini still loads, and says what it ignores.
+    Where Luna answers is Luna's own business and a plugin's settings are the plugin's, so
+    both sections still load and are named; the secret beside them is trixd's own and is read.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text("[TOKENS]\nSECRET_KEY = x\nSECRET_FILE = /nowhere\n"
-                   "[LUNA]\nENDPOINT = a:7050\n", encoding="utf-8")
+                   "[LUNA]\nENDPOINT = a:7050\n[TRIGGERS]\nLUNA_HASHES = 60s\n",
+                   encoding="utf-8")
     loaded = configuration.load(str(ini))
-    assert loaded.ignored == ["[LUNA]", "[TOKENS] SECRET_KEY", "[TOKENS] SECRET_FILE"]
+    assert loaded.ignored == ["[LUNA]", "[TRIGGERS]"]
+    assert loaded.tokens.secret_key == "x"
+
+
+def test_no_setting_this_daemon_reads_names_luna():
+    """
+    The daemon's own settings may not know what Luna is. An import of a plugin is caught
+    elsewhere; a Luna-named *setting* is not, and one lived here reading an interval that
+    belongs to the luna plugin. Enumerated from the model, so the next one is caught too.
+    """
+    import json
+
+    body = json.dumps(configuration.Settings().model_dump(), default=str).lower()
+    assert "luna" not in body, "a setting of this daemon names Luna"
+    assert not [name for name in dir(configuration) if "luna" in name.lower()]
 
 
 def _render_plugin(directory: str, handler: str = "about") -> None:
@@ -1422,7 +1473,7 @@ def _broken_plugin(root) -> str:
         "    def change(self, body=None, extra=None):\n        return {}\n"
         "    def picky(self, wanted):\n        return {}\n", encoding="utf-8")
     (path / "manifest.yaml").write_text(
-        "plugin: broken\nbackend: backend\nluna_hooks:\n  node.delete: gone\nendpoints:\n"
+        "plugin: broken\nbackend: backend\nhooks:\n  luna.node.delete: gone\nendpoints:\n"
         "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
         "  - path: item/<node>\n    methods: [GET]\n    minimum: reader\n    handler: show\n"
         "  - path: missing\n    methods: [GET]\n    minimum: reader\n    handler: absent\n"
@@ -1458,7 +1509,7 @@ def test_the_check_lists_every_problem_at_once(rig, tmp_path):
     assert "does not take the path variable node" in text
     assert "names handler absent" in text
     assert "picky needs wanted, which nothing supplies" in text
-    assert "node.delete names handler gone" in text
+    assert "luna.node.delete names handler gone" in text
 
 
 def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tmp_path):
@@ -1491,3 +1542,119 @@ def test_the_check_command_needs_no_daemon_and_says_why(rig, tmp_path, capsys):
     config = configuration.current().config_file
     assert server.main(["--config", config, "plugin", "check", "services"]) == 0
     assert server.main(["--config", config, "plugin", "check", "nosuch"]) == 1
+
+
+def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client, headers):
+    """
+    Core holds no list of sources: it reads the first part of the event and hands the
+    change to whatever registered that name, so a plugin publishing switches.port.down
+    works without the daemon learning anything. An event nobody declared is not an
+    error - the renders still run - but a source nobody publishes is, because the
+    caller would otherwise be told nothing happened and not know why.
+    """
+    from trixd.core import tasks
+
+    seen = []
+    tasks.register("switches", lambda event, param="": seen.append((event, param)) or "noted")
+    try:
+        answer = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                             json={"event": "switches.port.down", "payload": {"port": "eth0"}})
+        assert answer.status_code == 200, answer.text
+        assert answer.json()["acted"] == "noted"
+        assert seen == [("switches.port.down", '{"port": "eth0"}')]
+    finally:
+        tasks._handlers.pop("switches", None)
+
+    refused = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                          json={"event": "switches.port.down"})
+    assert refused.status_code == 400, "a source nobody publishes must say so"
+    assert "switches" in refused.json()["message"]
+
+    shapeless = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                            json={"event": "node.update"})
+    assert shapeless.status_code == 400, "two parts is not an event"
+
+
+def test_the_doorbell_is_not_the_administrator_alone(client, headers):
+    """
+    A graphical interface or another tool rings this, not only the daemon's own account.
+    An operator may; a reader may not, because it writes files and reloads services.
+    """
+    reader = _principal(client, headers, "rings-reader", "reader")
+    operator = _principal(client, headers, "rings-operator", "operator")
+
+    refused = client.post(f"{API_PREFIX}/system/notify", headers=reader, json={})
+    assert refused.status_code == 403, "a reader rang the doorbell"
+
+    allowed = client.post(f"{API_PREFIX}/system/notify", headers=operator, json={})
+    assert allowed.status_code == 200, allowed.text
+    assert "rendered" in allowed.json()
+
+
+def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client, headers):
+    """
+    The difference from the doorbell, and the reason this route exists: acting on a
+    change reads back from the source, so a source pushing from inside its own request
+    would end up waiting on itself. This answers 202 with the work written down and
+    nothing run yet, which is what lets a hook push and carry on.
+    """
+    from trixd.core import tasks
+
+    acted = []
+    tasks.register("switches", lambda event, param="": acted.append(event) or "noted")
+    try:
+        answer = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
+            {"event": "switches.port.down", "payload": {"port": "eth0"}},
+            {"event": "switches.port.up", "payload": {"port": "eth1"}}]})
+        assert answer.status_code == 202, answer.text
+        queued = answer.json()["queued"]
+        assert len(queued) == 2, "one request id per change"
+
+        # The queue row is the evidence, not a stopwatch on the handler: the doorbell
+        # dispatches inline and writes no row, so a row existing is what distinguishes
+        # the two routes. Asserting the handler had not run yet raced the worker that
+        # an earlier test in this file leaves alive, and passed only by luck.
+        held = [tasks.status(identifier) for identifier in queued]
+        assert [row["task"] for row in held] == ["switches.port.down", "switches.port.up"], \
+            "the set must keep the order it was given"
+        assert all(row["subsystem"] == "switches" for row in held)
+        assert held[0]["param"] == '{"port": "eth0"}'
+
+        tasks.drain()
+        assert acted == ["switches.port.down", "switches.port.up"], \
+            "the queued work did not run, or ran out of order"
+    finally:
+        tasks._handlers.pop("switches", None)
+
+
+def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
+    """
+    All or nothing. Half a set is the worst answer available: the caller is told it
+    failed and retries, while the accepted half is already being acted on.
+    """
+    from sqlalchemy import select
+
+    from trixd.core import tasks
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    tasks.register("switches", lambda event, param="": "noted")
+    try:
+        refused = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
+            {"event": "switches.port.down", "payload": {"port": "eth0"}},
+            {"event": "switches.port", "payload": {"port": "eth1"}}]})
+        assert refused.status_code == 400, refused.text
+        assert "switches.port" in refused.json()["message"]
+
+        tasks.drain()
+        handle = database.session()
+        try:
+            assert handle.scalars(select(models.Task)).all() == [], \
+                "the good half of a refused set was queued anyway"
+        finally:
+            handle.close()
+
+        empty = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": []})
+        assert empty.status_code == 400, "an empty set is a caller mistake, not a no-op"
+    finally:
+        tasks._handlers.pop("switches", None)

@@ -37,7 +37,7 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trixd.common.constants import (HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND_NODE,
+from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE,
                                    TOKEN_KIND_USER)
 from trixd.common.errors import PluginRefused
 
@@ -119,6 +119,10 @@ class Endpoint(BaseModel):
     # The daemon checks nothing: the request goes on as sent and the service behind it
     # decides, as Luna does behind /api/v1/luna. Only the luna plugin needs it.
     forward: bool = False
+    # This call has to happen on the other controller too, because what it writes is not
+    # in a replicated table and no render brings it back. Off by default, including for a
+    # plugin's own bulk route: a call that need not cross should not.
+    replicate: bool = False
     # What /api/v1/docs shows beyond the summary: what the route does, what to send, what
     # comes back, and the refusals its own work can answer.
     description: str = ""
@@ -156,8 +160,8 @@ class Manifest(BaseModel):
     description: str = ""
     schemas: dict = Field(default_factory=dict)
     endpoints: list = Field(default_factory=list)
-    # Which changes at Luna this plugin acts on, and the backend method for each.
-    luna_hooks: dict = Field(default_factory=dict)
+    # Which changes elsewhere this plugin acts on, and the backend method for each.
+    hooks: dict = Field(default_factory=dict)
 
     @property
     def digest(self) -> str:
@@ -194,14 +198,28 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(
                 f'{endpoint.path or "/"} must declare a minimum role from '
                 f'{", ".join(MINIMUMS)}, not {endpoint.minimum or "nothing"}')
+        if endpoint.replicate:
+            # A read has nothing to carry; a render is already driven at both ends by the
+            # same source; a forwarded call is replicated by the service behind it; and a
+            # public one would let anyone make this controller call its peer.
+            if all(verb.upper() in ("GET", "HEAD") for verb in endpoint.methods):
+                raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
+                                    f"to replicate")
+            for why, blocked in (("a render", endpoint.render is not None),
+                                 ("forwarded", endpoint.forward),
+                                 ("public", endpoint.public)):
+                if blocked:
+                    raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
+                                        f"also replicate")
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
         _check_docs(endpoint)
-    for event, handler in manifest.luna_hooks.items():
-        if event not in LUNA_HOOKS:
-            raise PluginRefused(f"{event} is not a change at Luna the daemon notices; "
-                                f"one of {', '.join(LUNA_HOOKS)}")
+    for event, handler in manifest.hooks.items():
+        parts = str(event).split(".")
+        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+            raise PluginRefused(f"{event} is not a hook event: name one as "
+                                f"<source>.<object>.<event>, such as luna.node.update")
         if not handler or not isinstance(handler, str):
             raise PluginRefused(f"{event} names no handler")
     return manifest

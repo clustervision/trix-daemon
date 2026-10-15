@@ -88,9 +88,10 @@ MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
 
 HTTP_VERBS: tuple = ("GET", "POST", "PATCH", "DELETE")
 
-# The changes at Luna a plugin may act on, as the pass-through recognises them.
-LUNA_HOOKS: tuple = ("node.update", "node.delete")
-LUNA_HOOK_SUBSYSTEM: str = "luna"
+# A hook event is named <source>.<object>.<event>: who publishes it, what it is about,
+# and what happened. The daemon checks that shape and nothing else; which events exist
+# is the business of whatever publishes them.
+HOOK_EVENT_PARTS: int = 3
 
 PLUGIN_STATE_LOADED: str = "loaded"
 PLUGIN_STATE_REFUSED: str = "refused"

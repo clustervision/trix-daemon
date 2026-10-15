@@ -29,22 +29,16 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import threading
-import time
-
 import requests
 import urllib3
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import TOKEN_HEADER
 from trixd.common.errors import ServiceUnavailable, Unauthenticated
-from trixd.core.luna import config as luna_config
-from trixd.core.security import tokens
+from trixd.plugins.luna import config as luna_config
+from trixd.plugins.luna import credentials
 
 LOGGER = trixlog.get("luna")
-
-# How long trixd's own token for Luna lives; it is signed again a minute before.
-TOKEN_LIFETIME: int = 300
 
 urllib3.disable_warnings()
 
@@ -59,9 +53,6 @@ class LunaClient:
         No connection yet: the token is fetched on first use.
         """
         self.session = requests.Session()
-        self.lock = threading.Lock()
-        self.token: str = ""
-        self.renew_at: float = 0.0
 
     @property
     def base(self) -> str:
@@ -70,25 +61,15 @@ class LunaClient:
         """
         return luna_config.current().base
 
-    def _authenticate(self) -> str:
+    def _headers(self, renew: bool = False) -> dict:
         """
-        A token trixd signs itself with the secret luna.ini holds: no Luna password is
-        stored anywhere for trixd, and nothing goes over the wire to get one.
+        The token header Luna expects. The one cache lives in credentials, so this asks
+        for a token rather than keeping a second one of its own.
         """
         try:
-            return tokens.for_luna(TOKEN_LIFETIME)
+            return {TOKEN_HEADER: credentials.get_token(renew=renew)}
         except Unauthenticated as error:
             raise ServiceUnavailable(f"no token for Luna: {error.message}") from None
-
-    def _headers(self) -> dict:
-        """
-        The token header Luna expects, fetched if we hold none.
-        """
-        with self.lock:
-            if not self.token or time.monotonic() > self.renew_at:
-                self.token = self._authenticate()
-                self.renew_at = time.monotonic() + TOKEN_LIFETIME - 60
-            return {TOKEN_HEADER: self.token}
 
     def request(self, method: str, uri: str, payload=None, params: dict = None):
         """
@@ -99,13 +80,12 @@ class LunaClient:
         for attempt in (1, 2):
             try:
                 answer = self.session.request(
-                    method, url, headers=self._headers(), json=payload, params=params,
-                    timeout=luna_config.TIMEOUT, verify=config.verify)
+                    method, url, headers=self._headers(renew=attempt == 2), json=payload,
+                    params=params, timeout=luna_config.TIMEOUT, verify=config.verify)
             except requests.RequestException as error:
                 raise ServiceUnavailable(f"Luna is not answering: {error}") from None
             if answer.status_code in (401, 403) and attempt == 1:
-                with self.lock:
-                    self.token = ""
+                # The token was refused: ask for a new one rather than the held one.
                 continue
             if answer.status_code == 404:
                 return None

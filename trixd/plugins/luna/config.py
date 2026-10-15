@@ -38,11 +38,26 @@ from trixd.common import logging as trixlog
 
 LOGGER = trixlog.get("luna.config")
 
+# The same order luna2-cli reads: whoever is running this may have logged in as
+# themselves, and that file wins over the controller's own.
+USER_LUNA_INI: str = "~/.luna/luna.ini"
 DEFAULT_LUNA_INI: str = "/trinity/local/luna/daemon/config/luna.ini"
-# Only for a workstation or a test; on a controller luna.ini is where Luna keeps it.
 LUNA_INI_ENV: str = "TRIXD_LUNA_INI"
 TIMEOUT: int = 20
 PROTOCOLS: tuple = ("https", "http")
+
+
+def chosen_path() -> str:
+    """
+    The luna.ini this process follows: what the environment names, else a personal login
+    where there is one, else the controller's own. Naming the controller's file when
+    neither exists puts the expected location in the error.
+    """
+    named = os.environ.get(LUNA_INI_ENV)
+    if named:
+        return named
+    personal = os.path.expanduser(USER_LUNA_INI)
+    return personal if os.path.isfile(personal) else DEFAULT_LUNA_INI
 
 
 def _bool(value: str) -> bool:
@@ -61,7 +76,7 @@ class LunaConfig:
         """
         Nothing is read until a value is asked for.
         """
-        self.path = path or os.environ.get(LUNA_INI_ENV) or DEFAULT_LUNA_INI
+        self.path = path or chosen_path()
         self.lock = threading.Lock()
         self._stamp = None
         self._values: dict = {}
@@ -93,7 +108,9 @@ class LunaConfig:
             values = {"endpoint": str(api.get("endpoint", "")).strip() or "localhost:7050",
                       "protocol": protocol,
                       "verify": _bool(api.get("verify_certificate", "no")),
-                      "secret": str(api.get("secret_key", "")).strip()}
+                      "secret": str(api.get("secret_key", "")).strip(),
+                      "username": str(api.get("username", "")).strip(),
+                      "password": str(api.get("password", "")).strip()}
             if self._values and values != self._values:
                 LOGGER.warning("luna.ini changed: Luna is %s://%s", protocol, values["endpoint"])
             self._values, self._stamp = values, stamp
@@ -119,6 +136,20 @@ class LunaConfig:
         Whether Luna's certificate is checked.
         """
         return bool(self._values_now().get("verify", False))
+
+    @property
+    def username(self) -> str:
+        """
+        The account Luna's own ini names, which is Luna's administrator.
+        """
+        return self._values_now().get("username", "")
+
+    @property
+    def password(self) -> str:
+        """
+        That account's password, read from Luna's file and never copied into trixd's.
+        """
+        return self._values_now().get("password", "")
 
     @property
     def base(self) -> str:
@@ -150,7 +181,7 @@ def current() -> LunaConfig:
     The luna.ini this process follows; a new path in the environment starts a new one.
     """
     global _config
-    path = os.environ.get(LUNA_INI_ENV) or DEFAULT_LUNA_INI
+    path = chosen_path()
     if _config is None or _config.path != path:
         _config = LunaConfig(path)
     return _config

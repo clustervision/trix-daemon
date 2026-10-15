@@ -83,7 +83,7 @@ sits on the boot path.
    `/api/v1/luna/config/node/node001` to Luna as `/config/node/node001`, at the address
    Luna's own `luna.ini` names, with the method, query, headers and body as sent, less
    the connection headers, and returns Luna's answer unchanged. Luna decides who may.
-2. After the answer has left, `trixd/core/luna/hooks.py` looks at what was asked. A
+2. After the answer has left, `trixd/plugins/luna/hooks.py` looks at what was asked. A
    successful rename, group move or delete is queued as a task (`trixd/core/tasks.py`).
 3. The task worker runs every plugin's `luna_hooks` handler for it; the prometheus
    plugin moves the node's rule file and rewrites it to the new name and group.
@@ -103,10 +103,10 @@ render once, start the background timers, and only then open the listeners.
 | `trixd/common/` | Settings, constants, typed errors, logging. |
 | `trixd/core/security/` | Keys, tokens, the sign-in sources and chain, the role gate, the audit trail. |
 | `trixd/core/plugins/` | Manifest, loader, registry, router binder, route swap, scaffold. |
-| `trixd/core/render/` | The render engine and the Luna table-hash trigger. |
+| `trixd/core/render/` | The render engine, and the register of background triggers a plugin fills. |
 | `trixd/core/replication/` | Keeping two controllers' tables the same. |
-| `trixd/core/luna/` | The Luna client, the reader for Luna's own `luna.ini`, and the hooks a change through the luna plugin runs. |
 | `trixd/core/tasks.py` | The queue: one worker, one task at a time, requeued after a restart. |
+| `trixd/plugins/luna/` | Everything that knows what Luna is: the client, the reader for Luna's own `luna.ini`, the credentials it is reached with, the table-hash trigger, and the hooks a change through the luna plugin runs. |
 | `trixd/db/` | Engine, models and the Alembic migrations. |
 | `trixd/api/v1/` | The daemon's own routes: auth, identity, system, and `docs.py`, the docs page and the document it shows. |
 | `trixd/static/` | What the docs page loads: the TrinityX look, logo and icon, and Swagger UI 5.32.15, so it works without internet. |

@@ -29,23 +29,28 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import inspect
+import json
 from datetime import datetime
+from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   PLUGIN_STATE_LOADED, ROLE_READER, ROLE_ROOTUS)
+                                   HOOK_EVENT_PARTS, PLUGIN_STATE_LOADED, ROLE_OPERATOR,
+                                   ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused
+from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
-from trixd.core.replication import tables
+from trixd.core.replication import outbox, tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
-from trixd.core.render.triggers import current as luna_hashes
+from trixd.core.render import triggers
 from trixd.core.security import audit
 from trixd.core.security.gate import Caller, guard
 from trixd.db import engine as database
@@ -62,21 +67,50 @@ PLUGIN_EXAMPLE: dict = {
 
 class Change(BaseModel):
     """
-    Which kind of Luna object changed, and optionally which one.
+    What changed, named as <source>.<object>.<event>, and whatever the source holds about it.
     """
 
-    object: str = ""
-    name: str = ""
+    event: str = ""
+    payload: dict = Field(default_factory=dict)
+
+
+class Changes(BaseModel):
+    """
+    Several changes in one call, in the order they are to be acted on.
+    """
+
+    changes: list[Change] = Field(default_factory=list)
+
+
+class Action(BaseModel):
+    """
+    One call a peer has already made and this controller has to make too.
+    """
+
+    plugin: str = ""
+    path: str = ""
+    method: str = ""
+    variables: dict = Field(default_factory=dict)
+    # Optional, not "dict with a None default": an endpoint that takes no body sends null,
+    # and a plain `dict = None` refuses that with a 422 the sender can only treat as
+    # terminal. A DELETE is exactly that case.
+    body: Optional[dict] = None
+    origin: str = ""
+    request_id: str = ""
 
 
 @router.get("/health", summary="Whether this daemon is serving, its renders and triggers",
             description=(
                 "For a monitor, with no token. `plugins` counts the loaded plugins. Each "
                 "render says when it last ran, as Unix time, 0 before its first run since "
-                "trixd or its plugin started, and whether that run worked. `luna_hashes` "
-                "says whether Luna answers its table hashes, which it does on an HA master "
-                "only, and `replication` when the last sweep ran, 0 for never. States and "
-                "times only: an error's text stays in the log."),
+                "trixd or its plugin started, and whether that run worked. `triggers` carries one "
+                "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
+                "hashes, which it does on an HA master only, and `replication` when the last "
+                "sweep ran, 0 for never. `owed` counts the replicated calls still "
+                "waiting for a peer, the ones given up on, the peers configured and the "
+                "peers not answering - counts only, and no peer is named, because this "
+                "route takes no token: `GET /system/replication/owed` says where. States "
+                "and times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
                 "renders": [{"render": "prometheus/renders/targets",
@@ -84,7 +118,9 @@ class Change(BaseModel):
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
-                             "replication": {"at": 1791545526.87}}}, "How trixd is doing"))
+                             "replication": {"at": 1791545526.87}},
+                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0}},
+                "How trixd is doing"))
 def health() -> dict:
     """
     Unauthenticated on purpose: a health check that needs a token is not one.
@@ -92,13 +128,14 @@ def health() -> dict:
     """
     loaded = [entry for entry in registry().plugins.values()
               if entry.state == PLUGIN_STATE_LOADED]
-    hashes = luna_hashes().state()
     return {"status": "ok", "daemon": DAEMON_NAME, "plugins": len(loaded),
             "renders": [{"render": item["render"], "rendered_at": item["rendered_at"],
                          "ok": not item["error"]} for item in renders().listing()],
-            "triggers": {"luna_hashes": {"answering": hashes["answering"],
-                                         "last_pass": hashes["last_pass"]},
-                         "replication": {"at": (sweep().last or {}).get("at", 0)}}}
+            "triggers": {**{name: {"answering": state.get("answering", False),
+                                   "last_pass": state.get("last_pass", 0)}
+                            for name, state in triggers.states().items()},
+                         "replication": {"at": (sweep().last or {}).get("at", 0)}},
+            "owed": outbox.states()}
 
 
 @router.get("/version", summary="What is running here",
@@ -202,27 +239,92 @@ def disable_plugin(request: Request,
     return {"plugin": entry.summary()}
 
 
-@router.post("/notify", summary="Tell trixd a Luna object changed",
+@router.post("/notify", summary="Tell trixd that something it did not see has changed",
              description=(
-                 "For a change trixd could not notice itself: the renders that read that "
-                 "kind of object run again. `object` is a Luna table such as `node`, `group` "
-                 "or `network`; left empty, every render runs. `rendered` lists the renders "
-                 "that ran now; one that ran inside its two-second window runs again when the "
-                 "window closes. Nothing calls this on its own; it is for an operator or a "
-                 "script."),
-             responses=docs.answers({"rendered": [
-                 "genders/renders/genders", "prometheus/renders/rule-files",
-                 "prometheus/renders/targets", "slurm/renders/config"]}, "The renders that ran"))
-def notify(body: Change = Body(openapi_examples=docs.example({"object": "node",
-                                                              "name": "node001"})),
-           caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+                 "For a change trixd could not notice itself. `event` names it as "
+                 "`<source>.<object>.<event>`: who holds the thing, what it is, and what "
+                 "happened to it, such as `luna.node.update`. Every plugin that declared "
+                 "that event acts on it, and the renders that read the object run again. "
+                 "`payload` is whatever the source holds about the change and is passed "
+                 "on unchanged.\n\nA plugin that declared nothing is not called, and an "
+                 "event nobody declared is not an error: `acted` then says so and the "
+                 "renders still run. Ring it once after a sweep rather than once per "
+                 "node; a whole set belongs in the plugin's own bulk route.\n\nLeft "
+                 "empty, every render runs and nothing is dispatched, which is the "
+                 "operator's nudge."),
+             responses=docs.answers({"event": "luna.node.update",
+                                     "acted": "prometheus: node001: moved [], rewritten []",
+                                     "rendered": []}, "What acted, and what ran"))
+def notify(body: Change = Body(openapi_examples=docs.example(
+               {"event": "luna.node.update", "payload": {"name": "node001"}})),
+           caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
     """
-    Wake the renders that read this kind of object, or every render when none is named.
-    Nothing calls it on its own; it is there for an operator or a script to nudge.
+    Hand the change to whatever publishes that kind of event, which runs the plugins
+    that declared it and wakes the renders. With no event, wake every render.
     """
-    woken = renders().notify(f"luna.{body.object}" if body.object else "")
-    LOGGER.info("notified of %s %s, woke %d render(s)", body.object, body.name, len(woken))
-    return {"rendered": woken}
+    if not body.event:
+        woken = renders().notify("")
+        LOGGER.info("nudged, woke %d render(s)", len(woken))
+        return {"event": "", "acted": "", "rendered": woken}
+
+    parts = body.event.split(".")
+    if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+        raise BadRequest(f"{body.event} is not an event: name one as "
+                         f"<source>.<object>.<event>, such as luna.node.update")
+    dispatch = tasks.handler(parts[0])
+    if dispatch is None:
+        raise BadRequest(f"nothing here publishes {parts[0]} events")
+    said = dispatch(body.event, json.dumps(body.payload or {}))
+    LOGGER.info("notified of %s: %s", body.event, said)
+    return {"event": body.event, "acted": said, "rendered": []}
+
+
+@router.post("/bulk", status_code=202,
+             summary="Hand trixd a set of changes to act on, and do not wait",
+             description=(
+                 "For a caller that must not be held up: the changes are written down and "
+                 "the answer comes at once, with the request id this daemon logs each one "
+                 "under, so a caller's own log can be read against ours. Use this rather "
+                 "than `/system/notify` from anything inside another service's request, such as "
+                 "a hook: notify acts before it answers, and acting reads back from the "
+                 "source, so a source waiting on trixd would be waiting on itself.\n\n"
+                 "Each change is named as `<source>.<object>.<event>` with whatever the "
+                 "source holds about it, exactly as `/system/notify` takes one. Send the "
+                 "whole set in one call: a caller with a hundred changed nodes makes one "
+                 "request, not a hundred.\n\nEvery change is checked before any is "
+                 "queued, so a set is taken whole or refused whole."),
+             responses=docs.answers({"queued": ["1791545863-2051-0f3ab9c1",
+                                                "1791545863-2051-7d2e4a06"]},
+                                    "One request id per change, in order",
+                                    errors={400: "Not an event, or nothing publishes it"},
+                                    status=202))
+def bulk(body: Changes = Body(openapi_examples=docs.example(
+             {"changes": [{"event": "luna.node.update",
+                           "payload": {"name": "node001", "group": "compute"}},
+                          {"event": "luna.node.delete", "payload": {"name": "node002"}}]})),
+         caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
+    """
+    Write the set down and answer; the worker acts on it in the order it was given.
+    """
+    if not body.changes:
+        raise BadRequest("name at least one change, each an event and its payload")
+
+    # Checked in full first: a set half-queued is worse than one refused, because the
+    # caller is told it failed while part of it is already on its way.
+    for change in body.changes:
+        parts = change.event.split(".")
+        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+            raise BadRequest(f"{change.event} is not an event: name one as "
+                             f"<source>.<object>.<event>, such as luna.node.update")
+        if tasks.handler(parts[0]) is None:
+            raise BadRequest(f"nothing here publishes {parts[0]} events")
+
+    queued = [tasks.submit(change.event.split(".")[0], change.event,
+                           json.dumps(change.payload or {}), caller.name)
+              for change in body.changes]
+    LOGGER.info("%s handed us %d change(s): %s", caller.name, len(queued),
+                ", ".join(change.event for change in body.changes))
+    return {"queued": queued}
 
 
 @router.get("/replication/hashes", summary="One hash per replicated table",
@@ -270,6 +372,86 @@ def replication_table(name: str = Path(description="principal or declaration",
         return {"table": name, "documents": tables.export_table(handle, name)}
     finally:
         handle.close()
+
+
+@router.get("/replication/owed", summary="What this controller still owes its peers",
+            description=(
+                "Every replicated call that has not reached a peer yet, oldest first, with "
+                "the peer it is for, what it would do, how many passes have tried it and "
+                "the last refusal verbatim. A peer that is not answering is named first.\n\n"
+                "`/system/health` carries the counts and takes no token; this carries the "
+                "peers and the rows and therefore does, because naming the other "
+                "controllers is not something an unauthenticated port should do.\n\n"
+                "A row listed as `failed` has been given up on and stops everything behind "
+                "it for that peer: later actions assume the earlier one landed, so carrying "
+                "on would write over a prerequisite that never happened."),
+            responses=docs.answers({"not_answering": [],
+                                    "actions": [{"peer": "ctrl2", "plugin": "prometheus",
+                                                 "path": "hw-rules/<node>",
+                                                 "method": "DELETE",
+                                                 "target": "node=node001",
+                                                 "state": "queued", "attempts": 2,
+                                                 "message": "",
+                                                 "created": "2026-10-15T22:52:39"}]},
+                                   "The peers not answering, and one entry per owed action"))
+def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
+    """
+    The rows behind health's counts.
+    """
+    return outbox.owed()
+
+
+@router.post("/replication/apply", summary="Do what a peer already did",
+             description=(
+                 "The other controller made a call whose effect is not in a replicated "
+                 "table and which no render brings back - a hardware rule file written or "
+                 "retired, for instance - so it asks this controller to make the same "
+                 "call. Only an endpoint whose own manifest says `replicate` can be asked "
+                 "for, which is checked here as well as there, so a version-skewed pair "
+                 "refuses instead of being talked into work it does not declare.\n\n"
+                 "The named handler is called directly rather than the route being "
+                 "re-entered, so nothing is written down to send onwards: there is no loop "
+                 "to prevent and no hop count to get wrong. rootus only, which is the "
+                 "account the pair already shares for replication."),
+             responses=docs.answers({"applied": "prometheus hw-rules/<node>",
+                                     "origin": "dev2-rocky9-controller1"},
+                                    "What was applied",
+                                    errors={400: "Not an endpoint that declares replicate",
+                                            404: "No such plugin, or no such endpoint"}))
+def replication_apply(body: Action = Body(openapi_examples=docs.example(
+                          {"plugin": "prometheus", "path": "hw-rules/<node>",
+                           "method": "DELETE", "variables": {"node": "node001"},
+                           "body": None, "origin": "dev2-rocky9-controller1",
+                           "request_id": "1791545863-2051-0f3ab9c1"})),
+                      caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+    """
+    Find the endpoint the peer names, check its manifest allows this, and call its handler.
+    """
+    entry = registry().plugins.get(body.plugin)
+    if entry is None or entry.state != PLUGIN_STATE_LOADED:
+        raise NotFound(f"no plugin named {body.plugin} is loaded here")
+    endpoint = next((item for item in entry.manifest.endpoints
+                     if item.path == body.path
+                     and body.method.upper() in [verb.upper() for verb in item.methods]),
+                    None)
+    if endpoint is None:
+        raise NotFound(f"{body.plugin} serves no {body.method} {body.path}")
+    if not endpoint.replicate:
+        raise BadRequest(f"{body.plugin} {body.method} {body.path} does not declare "
+                         f"replicate, so it is not ours to apply")
+    handler = getattr(entry.backend, endpoint.handler, None)
+    if handler is None:
+        raise NotFound(f"{body.plugin} has no handler {endpoint.handler}")
+
+    supplied = dict(body.variables or {})
+    if body.body is not None:
+        supplied["body"] = body.body
+    accepted = inspect.signature(handler).parameters
+    answer = handler(**{key: value for key, value in supplied.items() if key in accepted})
+    LOGGER.info("applied %s %s %s for %s (%s)", body.method, body.plugin, body.path,
+                body.origin, body.request_id)
+    return {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
+            "result": answer if isinstance(answer, (dict, list)) else str(answer)}
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now",

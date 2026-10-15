@@ -59,66 +59,53 @@ def _pair(tmp_path) -> tuple:
     return str(cert), str(key)
 
 
-def _luna_says(tmp_path, monkeypatch, protocol: str) -> None:
+def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path):
     """
-    Luna's luna.ini, naming the protocol all.yml chose.
+    https and the shipped binds: TLS on 8050, and plain 8051 open to the nodes.
     """
-    luna_ini = tmp_path / f"luna-{protocol}.ini"
-    luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = {protocol}\n"
-                        f"SECRET_KEY = {'c' * 32}\n", encoding="utf-8")
-    monkeypatch.setenv("TRIXD_LUNA_INI", str(luna_ini))
-
-
-def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path, monkeypatch):
-    """
-    Luna on https, the shipped binds: TLS on 8050, and plain 8051 open to the nodes.
-    """
-    _luna_says(tmp_path, monkeypatch, "https")
     cert, key = _pair(tmp_path)
     shipped = configuration.ApiSettings()
     served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
-                                           certfile=cert, keyfile=key))
+                                           protocol="https", certfile=cert, keyfile=key))
     assert served.bind == ["0.0.0.0:8050"]
     assert served.insecure_bind == ["0.0.0.0:8051"]
     assert (served.certfile, served.keyfile) == (cert, key)
     assert served.workers == 1, "one process: the plugin registry is in memory"
 
 
-def test_http_serves_plain_on_both_with_no_certificate(tmp_path, monkeypatch):
+def test_http_serves_plain_on_both_with_no_certificate():
     """
-    Luna on http, as a customer may choose in all.yml: 8050 and 8051 both plain, both open.
+    http, as a site may choose: 8050 and 8051 both plain, both open.
     """
-    _luna_says(tmp_path, monkeypatch, "http")
     shipped = configuration.ApiSettings()
-    served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind))
+    served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
+                                           protocol="http"))
     assert served.bind == ["0.0.0.0:8050", "0.0.0.0:8051"]
     assert served.insecure_bind == []
     assert not served.ssl_enabled
 
 
-def test_https_without_its_certificate_stops_the_start_by_name(tmp_path, monkeypatch):
+def test_https_without_its_certificate_stops_the_start_by_name(tmp_path):
     """
     Better a named stop than a daemon that quietly serves no TLS where https was chosen.
     """
-    _luna_says(tmp_path, monkeypatch, "https")
     cert, _ = _pair(tmp_path)
     with pytest.raises(SystemExit, match=r"needs \[API\] KEYFILE"):
-        server.build_config(_settings(bind="0.0.0.0:8050", certfile=cert,
+        server.build_config(_settings(bind="0.0.0.0:8050", protocol="https", certfile=cert,
                                       keyfile=str(tmp_path / "absent.key")))
     with pytest.raises(SystemExit, match=r"needs \[API\] CERTFILE"):
-        server.build_config(_settings(bind="0.0.0.0:8050"))
+        server.build_config(_settings(bind="0.0.0.0:8050", protocol="https"))
 
 
-def test_no_listener_at_all_stops_the_start(tmp_path, monkeypatch):
+def test_no_listener_at_all_stops_the_start():
     """
     Neither BIND nor INSECURE_BIND leaves nothing to serve.
     """
-    _luna_says(tmp_path, monkeypatch, "http")
     with pytest.raises(SystemExit, match="neither BIND nor INSECURE_BIND"):
-        server.build_config(_settings())
+        server.build_config(_settings(protocol="http"))
 
 
-def test_replication_follows_the_protocol_too(tmp_path, monkeypatch):
+def test_replication_follows_the_protocol_too(monkeypatch):
     """
     The peer serves what this controller serves, so the sweep asks it the same way.
     """
@@ -126,9 +113,9 @@ def test_replication_follows_the_protocol_too(tmp_path, monkeypatch):
 
     from trixd.core.replication import sweep as replication
 
-    _luna_says(tmp_path, monkeypatch, "http")
     seen = {}
-    monkeypatch.setattr(replication.tokens, "service_token", lambda: "t")
+    monkeypatch.setattr(replication, "settings", lambda: _settings(protocol="http"))
+    monkeypatch.setattr(replication, "_token", lambda peer, verify, renew=False: "t")
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: (
         seen.setdefault("url", url), SimpleNamespace(status_code=200, json=lambda: {}))[1])
     replication.Sweep()._get("peer.cluster:8050", "hashes")
@@ -158,7 +145,7 @@ def test_the_version_is_the_installed_one(capsys):
 
 def test_keygen_refuses_under_the_shared_secret(rig, capsys):
     """
-    HS256 signs with Luna's secret, so there is no keypair to make.
+    HS256 signs with a shared secret, so there is no keypair to make.
     """
     config = configuration.current().config_file
     assert server.main(["--config", config, "keygen"]) == 1

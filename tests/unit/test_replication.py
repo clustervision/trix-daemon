@@ -175,12 +175,14 @@ def test_the_replication_endpoints_answer(client, headers):
 
 def test_a_peer_daemon_reaches_the_replication_endpoints(client):
     """
-    The sweep presents a service token, which names the other daemon and no principal.
+    A peer signs in here and presents the token this daemon issued it, which is the ini
+    account and so rootus. Nothing is minted for a peer: the two controllers of a pair
+    generate their own secret, so only the issuer can verify what it issued.
     """
     from trixd.common.constants import TOKEN_HEADER
     from trixd.core.security import tokens
 
-    peer = {TOKEN_HEADER: tokens.service_token()}
+    peer = {TOKEN_HEADER: tokens.mint("tester")}
     for path in ("hashes", "table/principal"):
         answer = client.get(f"{API_PREFIX}/system/replication/{path}", headers=peer)
         assert answer.status_code == 200, answer.text
@@ -344,3 +346,398 @@ def test_a_declaration_from_the_peer_wakes_the_renders_that_read_it(rig, tmp_pat
         handle.close()
         peer.close()
     assert woken == ["prometheus.rules"]
+
+def test_a_newer_call_for_one_target_replaces_the_older_row(rig):
+    """
+    The table is the size of the distinct things that changed, not of the call volume. A
+    reboot storm sends the same body per node, so repeats of one node collapse; and because
+    only the newest intent survives, no stale row can be applied late and undo newer state.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    for _ in range(5):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": "node001"}, {"force": True}, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req", "tester")
+    # A delete for the same node is a different intent and must not merge with the patch.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req", "tester")
+
+    handle = database.session()
+    try:
+        rows = handle.scalars(select(models.Outbox)).all()
+        assert len(rows) == 3, [(r.method, r.target) for r in rows]
+        assert {(r.method, r.target.split("|")[0]) for r in rows} == {
+            ("PATCH", "node=node001"), ("PATCH", "node=node002"),
+            ("DELETE", "node=node001")}
+    finally:
+        handle.close()
+
+
+def test_a_rename_never_collapses_with_another_rename(rig):
+    """
+    Two renames of one node are not the same intent: the second's `was` is the first's new
+    name, so dropping the first would leave the file under a name nothing looks for. The
+    body digest in the key makes that fall out of the schema rather than needing a case.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node002"}, {"was": "node001"}, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node003"}, {"was": "node002"}, "req", "tester")
+    handle = database.session()
+    try:
+        assert len(handle.scalars(select(models.Outbox)).all()) == 2
+    finally:
+        handle.close()
+
+
+def test_a_dark_peer_stops_being_attempted_after_three_failures(rig, monkeypatch):
+    """
+    TRIX-2049's shape, pre-empted: one worker, a bounded threadpool, and a dark peer would
+    otherwise have every replicated call hold a thread for the timeout while every other
+    caller queues behind it. Three consecutive transport failures say the peer rather than
+    the call, and from then on a replicated call costs a row and no socket at all.
+    """
+    from trixd.core.replication import outbox
+
+    tried = []
+
+    def refuse(peer, row, may_sign_in=True):
+        """
+        A peer that was reached and refused the connection.
+        """
+        tried.append(peer)
+        return outbox.QUEUED, "connection refused", True
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    original, outbox._send = outbox._send, refuse
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        for _ in range(10):
+            said = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                    {"node": "node001"}, None, {"retired": []},
+                                    "req", "tester")
+        assert len(tried) == 3, f"attempted a dark peer {len(tried)} times, not 3"
+        assert said["peers"] == {"ctrl2": "peer-down"}, said
+        assert outbox.breaker_open("ctrl2")
+
+        # Only a sweep reaching the peer closes it; nothing probes from the request path.
+        outbox.record_success("ctrl2")
+        assert not outbox.breaker_open("ctrl2")
+    finally:
+        outbox._send = original
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_call_that_changed_nothing_is_not_replicated(rig, monkeypatch):
+    """
+    The local path deliberately costs nothing for a node that rebooted unchanged, and
+    replicating anyway would undo that at the one moment it matters. Only an explicit
+    falsy `changed` skips, so the default is to send: a missed replication is a silent
+    divergence, a redundant one is an idempotent no-op at the peer.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+    original = outbox._send
+    outbox._send = lambda peer, row, may_sign_in=True: (sent.append(peer),
+                                                        (outbox.DONE, "", True))[1]
+    try:
+        for result, expected in (({"changed": False}, "skipped"),
+                                 ({"changed": 0}, "skipped"),
+                                 ({"changed": True}, None),
+                                 ({"retired": ["a"]}, None),
+                                 (["a", "b"], None)):
+            said = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                    {"node": "node001"}, {}, result, "req", "tester")
+            if expected == "skipped":
+                assert said.get("state") == "skipped", result
+            else:
+                assert said["peers"].get("ctrl2") == outbox.DONE, result
+        assert len(sent) == 3, "a result without an explicit falsy changed must be sent"
+    finally:
+        outbox._send = original
+
+def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(client, headers):
+    """
+    The flag is checked at both ends. A peer running an older manifest refuses an action for
+    an endpoint it does not declare, which is what a version-skewed pair should do instead of
+    being persuaded into writes nobody marked as crossing. The refusal is terminal, so the
+    sender stops rather than retrying for a day.
+    """
+    from trixd.common.constants import API_PREFIX
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "directory", "path": "users/<name>", "method": "PATCH",
+        "variables": {"name": "someone"}, "body": {}, "origin": "ctrl1", "request_id": "r1"})
+    assert refused.status_code == 400, refused.text
+    assert "replicate" in refused.json()["message"]
+
+    missing = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "nosuch", "path": "x", "method": "PATCH", "origin": "ctrl1"})
+    assert missing.status_code == 404, missing.text
+
+    # An endpoint that takes no body sends a null one, and the envelope must accept that.
+    # It did not: `body: dict = None` is not optional to pydantic, so a DELETE was refused
+    # 422 and the sender could only read that as terminal. Found on a live pair, by the
+    # first real call, because every test until this one sent an empty dict instead.
+    null_body = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "directory", "path": "users/<name>", "method": "DELETE",
+        "variables": {"name": "someone"}, "body": None, "origin": "ctrl1"})
+    assert null_body.status_code != 422, null_body.text
+
+
+def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
+    """
+    Four shapes where replicating is always wrong, refused at load rather than discovered in
+    production: a read has nothing to carry, a render is already driven at both ends by the
+    same source, a forwarded call is replicated by the service behind it, and a public one
+    would let anyone with no token make this controller call its peer.
+    """
+    import pytest
+
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend"}
+    for endpoint, because in (
+            ({"path": "x", "methods": ["GET"], "handler": "read", "minimum": "reader",
+              "replicate": True}, "reads"),
+            ({"path": "y", "methods": ["PATCH"], "handler": "w", "minimum": "manager",
+              "forward": True, "replicate": True}, "forwarded"),
+            ({"path": "z", "methods": ["PATCH"], "handler": "w", "public": True,
+              "replicate": True}, "public"),
+            ({"path": "r", "methods": ["PATCH"], "minimum": "manager", "handler": "w",
+              "render": {"inputs": ["luna.node"], "serve": "json"},
+              "replicate": True}, "a render")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse({**base, "endpoints": [endpoint]})
+        assert because in str(refusal.value), (because, str(refusal.value))
+
+def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
+    """
+    The short timeout is worthless if obtaining the token ignores it. Signing in is a
+    request with the sweep's own thirty-second timeout, so an inline attempt that signs in
+    holds a thread for half a minute against a dark peer - measured at 30s on a live pair,
+    which is the stall the breaker exists to prevent arriving through the back door.
+
+    With nothing held the row waits for the sweep, which can afford to sign in.
+    """
+    from trixd.core.replication import outbox, sweep
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    signed = []
+    monkeypatch.setattr(sweep, "_sign_in",
+                        lambda peer, verify: signed.append(peer) or "token")
+    # Nothing held for this peer, which is the state after any restart.
+    monkeypatch.setattr(sweep, "held_token", lambda peer: "")
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "")
+
+    for _ in range(5):
+        said = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                {"node": "node001"}, None, {"retired": []}, "req", "tester")
+    assert said["peers"] == {"ctrl2": outbox.QUEUED}, said
+    assert signed == [], "the request path signed in at the peer"
+    # Having no token is a fact about us, not about the peer, so it must not be read as
+    # the peer being down: after a restart every peer starts with nothing held.
+    assert not outbox.breaker_open("ctrl2"), "a missing token was blamed on the peer"
+
+    # The sweep may, and does.
+    outbox.drain("ctrl2")
+    assert signed == ["ctrl2"], "the sweep did not sign in to send what was owed"
+
+def test_the_body_and_the_caller_reach_the_peer(rig, monkeypatch):
+    """
+    What crosses must be what the handler was given. `_arguments` pops `body` and `caller`
+    out of the kwargs it is handed, so reading them from those afterwards gives a null body
+    and no origin on every call - and the peer accepts that and acts on it wrongly: labels
+    not applied, a force ignored, a bulk write of nothing, a rename refused.
+
+    Every other test here drives the outbox directly, which is exactly how that got
+    through. This one goes through the bound operation, the way a request does.
+    """
+    from pydantic import BaseModel
+
+    from trixd.core.plugins import binder
+    from trixd.core.plugins.manifest import Endpoint
+    from trixd.core.replication import outbox
+
+    seen = {}
+    monkeypatch.setattr(outbox, "replicate",
+                        lambda *args, **kw: seen.update(plugin=args[0], path=args[1],
+                                                        verb=args[2], variables=args[3],
+                                                        body=args[4], origin=args[7]) or {})
+
+    def handler(node=None, body=None, caller=None):
+        """
+        A backend that records what it was handed, as the real ones are handed it.
+        """
+        seen["handler_body"] = body
+        return {"node": node, "changed": True}
+
+    endpoint = Endpoint(path="hw-rules/<node>", methods=["PATCH"], handler="handler",
+                        minimum="manager", replicate=True)
+
+    class _Body(BaseModel):
+        """
+        A body as FastAPI actually hands it over: a model, not a dict.
+        """
+
+        nhc: bool = False
+
+    operation = binder._endpoint_function(handler, endpoint, _Body, "prometheus", "PATCH")
+
+    class _Caller:
+        name = "someone"
+
+    # A model, because that is what a real request arrives as: a dict here would skip the
+    # conversion every real call goes through.
+    operation(node="node001", body=_Body(nhc=True), caller=_Caller())
+
+    assert seen["handler_body"] == {"nhc": True}, "the handler itself lost the body"
+    assert seen["body"] == {"nhc": True}, \
+        f"the peer would have been sent {seen['body']!r} instead of the real body"
+    assert seen["origin"] == "someone", f"origin was {seen['origin']!r}, not the caller"
+    assert seen["variables"] == {"node": "node001"}, seen["variables"]
+
+def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
+    """
+    The fail-stop must not become a wedge. A row that is only waiting for a peer stays
+    waiting: escalating it to refused after some number of passes would mean a controller
+    rebooted for an hour of patching comes back to a terminal row that holds its target
+    for ever, with nothing that clears it. What such a row needs is to be seen, which is
+    what the owed route and the health counts are for.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (outbox.QUEUED, "away", True))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                      {"node": "node001"}, None, "req", "tester")
+        for _ in range(30):
+            outbox.drain("ctrl2")
+        assert outbox.states()["failed"] == 0, "a peer merely being away became terminal"
+        assert outbox.states()["pending"] == 1, "the row stopped waiting to be sent"
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
+    """
+    A refused write holds that node's actions that were already queued behind it, because
+    `repair` and `rename` relabel and move a file that is already there - `rename_hw_rules`
+    is `repair_hw_rules(node, was=...)` and does nothing when there is no file - so a rename
+    behind a refused write would silently do nothing.
+
+    It holds that node and nothing else: another node says nothing about this one, and
+    holding it too would make one malformed action an outage for everything owed.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer that refuses node001's delete outright and takes everything else.
+        """
+        if row.method == "DELETE" and "node001" in row.payload:
+            return outbox.FAILED, "400: malformed", True
+        sent.append(row.payload)
+        return outbox.DONE, "", True
+
+    monkeypatch.setattr(outbox, "_send", send)
+    # All three are queued before the refusal happens, so node001's repair is one that
+    # assumed the delete landed rather than a newer statement of what the node should be.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                  {"node": "node001"}, None, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node002"}, None, "req", "tester")
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        # The first pass meets the refusal at the head and stops there; the second one
+        # knows the row is refused and is the pass that holds the rest of the chain.
+        outbox.drain("ctrl2")
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert result["refused"] == 1, result
+    assert result["blocked"] == 1, f"node001's repair was not held: {result}"
+    assert result["sent"] == 1, result
+    assert len(sent) == 1 and "node002" in sent[0], \
+        f"sent {sent}: node001's repair should be held behind its refused write, and " \
+        f"node002 should have gone"
+
+
+def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatch):
+    """
+    A refusal must not wedge a node. Only a call with the same body replaced a refused row,
+    so a refused rename held every later action for that node: a different body made a
+    second row, which queued behind the first and waited for a call that never came.
+
+    It clears that node's refusal and no other node's: a refusal naming one node says
+    nothing about another, and clearing it would throw away the evidence.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
+                                                             (outbox.DONE, "", True))[1])
+    refused = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                            {"node": "node001"}, {"was": "node000"}, "req", "tester")
+    outbox._finish(refused, outbox.FAILED, "400: malformed")
+    elsewhere = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                              {"node": "node002"}, None, "req", "tester")
+    outbox._finish(elsewhere, outbox.FAILED, "400: malformed")
+
+    # A different body for the same node: the call that used to queue behind the refusal.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node001"}, {"nhc": True}, "req", "tester")
+
+    handle = database.session()
+    try:
+        # The node part of the target, read off the row rather than through the code
+        # under test, so this fails on the behaviour and not on an import.
+        held = {(row.method, row.target.split("|")[0], row.state)
+                for row in handle.scalars(select(models.Outbox)).all()}
+    finally:
+        handle.close()
+    assert ("POST", "node=node001", outbox.FAILED) not in held, \
+        f"the refused rename still holds node001: {held}"
+    assert ("DELETE", "node=node002", outbox.FAILED) in held, \
+        f"an action for node001 cleared node002's refusal: {held}"
+
+    result = outbox.drain("ctrl2")
+    assert result["blocked"] == 0, f"node001 is still held behind the refusal: {result}"
+    assert len(sent) == 1 and "node001" in sent[0], \
+        f"sent {sent}: node001's patch should have gone once the refusal was cleared"

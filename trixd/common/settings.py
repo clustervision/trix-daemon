@@ -74,6 +74,7 @@ class ApiSettings(BaseModel):
     """
     bind: str = "0.0.0.0:8050"
     insecure_bind: str = "0.0.0.0:8051"
+    protocol: str = "https"
     certfile: str = ""
     keyfile: str = ""
     expiry: int = 3600
@@ -86,6 +87,8 @@ class TokenSettings(BaseModel):
     What tokens are signed with, and by which algorithm.
     """
     algorithm: str = DEFAULT_TOKEN_ALGORITHM
+    secret_key: str = ""
+    secret_file: str = "/trinity/local/etc/ssl/secret.key"
     private_key: str = "/trinity/local/etc/ssl/trixd.ed25519"
     key_id: str = "trixd-1"
     trust: str = "/trinity/local/etc/ssl/trust.d"
@@ -137,13 +140,6 @@ class ReplicationSettings(BaseModel):
     ca_file: str = "/trinity/local/etc/ssl/cluster-ca.crt"
 
 
-class TriggerSettings(BaseModel):
-    """
-    How often the fallback asks Luna what changed.
-    """
-    luna_hashes: int = 60
-
-
 class AuditSettings(BaseModel):
     """
     How long the audit trail keeps a row.
@@ -174,7 +170,6 @@ class Settings(BaseModel):
     auth: AuthSettings = Field(default_factory=AuthSettings)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
-    triggers: TriggerSettings = Field(default_factory=TriggerSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
     plugins: PluginSettings = Field(default_factory=PluginSettings)
     # Settings trixd.ini still names that are no longer read, to say so at startup.
@@ -207,6 +202,28 @@ def _bool(value: str) -> bool:
     Accept yes, true, on and 1 as true, anything else as false.
     """
     return str(value or "").strip().lower() in ("1", "yes", "true", "on")
+
+
+def _secret(inline: str, path: str) -> str:
+    """
+    This daemon's own secret: what the ini states, else the file the installer wrote it to.
+    """
+    if inline:
+        return inline.strip()
+    if path and os.path.isfile(path):
+        with open(path, "r", encoding="utf-8") as handle:
+            return handle.read().strip()
+    return ""
+
+
+def _protocol(value: str) -> str:
+    """
+    Canonicalise the scheme trixd serves on, refusing one it cannot serve.
+    """
+    wanted = str(value or "").strip().lower() or "https"
+    if wanted not in ("https", "http"):
+        raise ValueError(f"[API] PROTOCOL is {wanted}, which is not https or http")
+    return wanted
 
 
 def load(path: str = "") -> Settings:
@@ -243,24 +260,26 @@ def load(path: str = "") -> Settings:
     data.api = ApiSettings(
         bind=get("API", "BIND", data.api.bind),
         insecure_bind=get("API", "INSECURE_BIND", data.api.insecure_bind),
+        protocol=_protocol(get("API", "PROTOCOL", data.api.protocol)),
         certfile=get("API", "CERTFILE", ""),
         keyfile=get("API", "KEYFILE", ""),
         # A bare EXPIRY counts in hours, as luna.ini's does.
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""))
+    secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
+        secret_key=_secret(get("TOKENS", "SECRET_KEY", ""), secret_file),
+        secret_file=secret_file,
         private_key=get("TOKENS", "PRIVATE_KEY", data.tokens.private_key),
         key_id=get("TOKENS", "KEY_ID", data.tokens.key_id),
         trust=get("TOKENS", "TRUST", data.tokens.trust),
         issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
-    # Luna's address, protocol and secret come from Luna's own luna.ini, never from here.
-    ignored = ["[LUNA]"] if parser.has_section("LUNA") else []
-    for key in ("SECRET_KEY", "SECRET_FILE"):
-        if parser.has_section("TOKENS") and parser.has_option("TOKENS", key):
-            ignored.append(f"[TOKENS] {key}")
-    data.ignored = ignored
+    # Settings this daemon no longer reads here: where Luna answers is Luna's own
+    # business, and a plugin's own settings belong to the plugin.
+    data.ignored = [f"[{name}]" for name in ("LUNA", "TRIGGERS")
+                    if parser.has_section(name)]
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
@@ -278,8 +297,6 @@ def load(path: str = "") -> Settings:
         interval=duration("REPLICATION", "INTERVAL", "300s"),
         enabled=_bool(get("REPLICATION", "ENABLED", "yes")),
         ca_file=get("REPLICATION", "CA_FILE", data.replication.ca_file))
-    data.triggers = TriggerSettings(
-        luna_hashes=duration("TRIGGERS", "LUNA_HASHES", "60s"))
     data.audit = AuditSettings(keep=duration("AUDIT", "KEEP", "90d"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),

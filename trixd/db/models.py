@@ -129,6 +129,38 @@ class Task(Base):
     finished: Mapped[datetime] = mapped_column(DateTime, nullable=True)
 
 
+class Outbox(Base):
+    """
+    One action this controller owes a peer, and where it got to. Local: it is this
+    controller's record of what it still has to tell the other one.
+
+    Unique on the peer, the endpoint and the target, so the newest intent for a target
+    replaces the older one instead of queueing behind it. That is what keeps the table
+    the size of the distinct things that changed rather than the number of calls.
+    """
+
+    __tablename__ = "outbox"
+    __table_args__ = (UniqueConstraint("peer", "plugin", "path", "method", "target",
+                                       name="uq_outbox_target"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
+    request_id: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    peer: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    plugin: Mapped[str] = mapped_column(String(64), default="", nullable=False)
+    path: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    method: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    # The path variables and a digest of the body: what makes two calls the same intent.
+    target: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    # Text, not String: a many-node body does not fit 255 and must never be truncated.
+    payload: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    origin: Mapped[str] = mapped_column(String(255), default="", nullable=False)
+    created: Mapped[datetime] = mapped_column(DateTime, default=now, nullable=False)
+    state: Mapped[str] = mapped_column(String(16), default="queued", nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, default=0, nullable=False)
+    message: Mapped[str] = mapped_column(Text, default="", nullable=False)
+    finished: Mapped[datetime] = mapped_column(DateTime, nullable=True)
+
+
 class RenderState(Base):
     """
     When a render last ran here, and whether it worked. Local.

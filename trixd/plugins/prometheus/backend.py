@@ -42,7 +42,7 @@ import yaml
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure, BadRequest, NotFound, TrixdError
-from trixd.core.luna.client import current as luna
+from trixd.plugins.luna.client import current as luna
 from trixd.utils import declarations, files
 from trixd.utils import shell
 
@@ -303,6 +303,17 @@ class Backend:
             self.reload()
             LOGGER.info("hardware rules for %s: moved %s, rewritten %s", node, moved, rewritten)
         return {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten}
+
+    def rename_hw_rules(self, node: str, body: dict = None) -> dict:
+        """
+        The rule files of a node that has been renamed, carried to its new name. The
+        previous name has to be given: nothing else can find the files it was written
+        under, because Luna no longer holds it.
+        """
+        was = str((body or {}).get("was") or "").strip()
+        if not was:
+            raise BadRequest("was names what the node was called before it was renamed")
+        return self.repair_hw_rules(node, was=was)
 
     def remove_hw_rules(self, node: str) -> dict:
         """

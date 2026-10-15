@@ -30,7 +30,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from trixd.common.constants import HTTP_VERBS, LUNA_HOOKS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trixd.common.constants import HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
 
 SCHEMA_ID: str = "https://gitlab.taurusgroup.one/clustervision/trix-daemon/docs/manifest.schema.json"
 
@@ -81,6 +81,9 @@ def manifest_schema() -> dict:
                        "description": "no token at all; argue for every use"},
             "forward": {"type": "boolean", "default": False,
                         "description": "the daemon checks nothing; the service behind decides"},
+            "replicate": {"type": "boolean", "default": False,
+                          "description": "do this at the other controller too, for a write "
+                                         "no replicated table or render carries"},
             "description": {"type": "string",
                             "description": "Markdown for /api/v1/docs: what the route does, "
                                            "what to send and what comes back"},
@@ -117,8 +120,8 @@ def manifest_schema() -> dict:
                         "description": "request bodies by name: field -> {type, optional, items, "
                                        "pattern, description, example}"},
             "endpoints": {"type": "array", "items": endpoint},
-            "luna_hooks": {"type": "object",
-                           "propertyNames": {"enum": list(LUNA_HOOKS)},
+            "hooks": {"type": "object",
+                      "propertyNames": {"pattern": r"^[^.]+\.[^.]+\.[^.]+$"},
                            "additionalProperties": {"type": "string"}},
         },
     }

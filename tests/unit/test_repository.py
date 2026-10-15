@@ -191,3 +191,52 @@ def test_every_published_route_says_who_may_call_it():
     assert public == ["GET /api/v1/prometheus/renders/targets", "GET /api/v1/system/health",
                       "GET /api/v1/system/version", "POST /api/v1/auth/node/{node}",
                       "POST /api/v1/auth/token"], public
+
+
+def test_the_daemon_itself_knows_nothing_about_luna():
+    """
+    Luna is a plugin, not a part of the daemon. Nothing the daemon is made of may import
+    it: the moment one module does, a controller without the plugin stops being able to
+    start, and the next Luna-shaped thing gets added to the core instead of beside it.
+    This walks the imports rather than checking the one module that prompted it, so the
+    next import is caught too.
+    """
+    import ast
+
+    offenders = []
+    for name in _tracked():
+        if not name.endswith(".py"):
+            continue
+        if not (name.startswith("trixd/core/") or name.startswith("trixd/api/")
+                or name.startswith("trixd/common/") or name in ("trixd/app.py",
+                                                                "trixd/server.py")):
+            continue
+        for node in ast.walk(ast.parse(_read(name).decode("ascii"))):
+            if isinstance(node, ast.Import):
+                found = [alias.name for alias in node.names]
+            elif isinstance(node, ast.ImportFrom):
+                found = [node.module or ""]
+            else:
+                continue
+            for module in found:
+                if module.startswith("trixd.plugins") or module.startswith("trixd.core.luna"):
+                    offenders.append(f"{name}:{node.lineno} imports {module}")
+    assert offenders == [], "the daemon reaches into a plugin:\n" + "\n".join(offenders)
+
+
+def test_the_luna_plugin_is_reachable_as_one_module():
+    """
+    The loader imports a plugin directory under its own module name, so a plugin that
+    imported itself relatively would hold a second client with a second token cache.
+    Every import of the luna plugin's own modules is therefore absolute.
+    """
+    import ast
+
+    offenders = []
+    for name in _tracked():
+        if not name.startswith("trixd/plugins/luna/") or not name.endswith(".py"):
+            continue
+        for node in ast.walk(ast.parse(_read(name).decode("ascii"))):
+            if isinstance(node, ast.ImportFrom) and node.level:
+                offenders.append(f"{name}:{node.lineno} imports relatively")
+    assert offenders == [], "\n".join(offenders)

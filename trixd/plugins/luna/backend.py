@@ -39,8 +39,8 @@ from starlette.concurrency import run_in_threadpool
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import ServiceUnavailable
-from trixd.core.luna import config as luna_config
-from trixd.core.luna import hooks
+from trixd.plugins.luna import config as luna_config
+from trixd.plugins.luna import hooks
 
 LOGGER = trixlog.get("plugin.luna")
 

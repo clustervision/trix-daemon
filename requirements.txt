@@ -19,9 +19,24 @@ hypercorn==0.18.0
 pydantic>=2.9.0
 SQLAlchemy==2.0.54
 alembic==1.20.0
-PyJWT>=2.8.0
-cryptography>=41.0.3
 PyYAML>=6.0.0
-requests>=2.29.0
 python-pam==2.0.2
 ldap3==2.9.1
+
+# Pinned to exactly what luna2-daemon pins. Both daemons are pip-installed into the one
+# python on a controller, so a floor here lets an upgrade of trixd move a package Luna
+# pinned, and Luna then runs on a version it never declared. Where Luna pins, we pin
+# the same; a version we genuinely need newer is a conversation with Luna, not a wider
+# range here.
+PyJWT==2.8.0
+cryptography==41.0.3
+requests==2.29.0
+urllib3==1.26.16
+
+# Imported directly by the luna plugin and so declared directly, although fastapi
+# pulls it in: a dependency we import is ours to state. The floor is fastapi's own.
+starlette>=0.46.0
+
+# trinityx-config-slurm and trinityx-config-genders are deliberately NOT here. The
+# installer puts them on a controller, each plugin imports its own inside a try, and
+# trixd has to run where neither is present.

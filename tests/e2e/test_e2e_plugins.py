@@ -141,3 +141,24 @@ def test_a_site_plugin_dropped_in_is_served_without_a_restart(stack):
     assert stack.call("POST", "/system/plugins/e2e-hello/disable",
                       stack.rootus()).status_code == 200
     assert stack.call("GET", "/e2e-hello/greet/world", stack.rootus()).status_code == 404
+
+
+def test_a_rename_over_http_refuses_both_ways_of_not_naming_the_old_name(stack):
+    """
+    The previous name is the only way to find the files a renamed node was written
+    under, so neither leaving it out nor sending it empty may be accepted. They are
+    refused by different things - the schema and the handler - and the published errors
+    name both, which is what a caller reads before writing against this.
+
+    Who may call it is not asserted here: a derived test already holds every published
+    route to the minimum it declares.
+    """
+    node = stack.nodes[0] if stack.nodes else "node001"
+    path = f"/prometheus/hw-rules/{node}/actions/rename"
+
+    missing = stack.call("POST", path, stack.rootus(), json={})
+    assert missing.status_code == 422, missing.text
+
+    empty = stack.call("POST", path, stack.rootus(), json={"was": "   "})
+    assert empty.status_code == 400, empty.text
+    assert "was" in empty.json().get("message", "")

@@ -1,21 +1,84 @@
 {
   "components": {
     "schemas": {
-      "Change": {
-        "description": "Which kind of Luna object changed, and optionally which one.",
+      "Action": {
+        "description": "One call a peer has already made and this controller has to make too.",
         "properties": {
-          "name": {
+          "body": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "title": "Body"
+          },
+          "method": {
             "default": "",
-            "title": "Name",
+            "title": "Method",
             "type": "string"
           },
-          "object": {
+          "origin": {
             "default": "",
-            "title": "Object",
+            "title": "Origin",
             "type": "string"
+          },
+          "path": {
+            "default": "",
+            "title": "Path",
+            "type": "string"
+          },
+          "plugin": {
+            "default": "",
+            "title": "Plugin",
+            "type": "string"
+          },
+          "request_id": {
+            "default": "",
+            "title": "Request Id",
+            "type": "string"
+          },
+          "variables": {
+            "additionalProperties": true,
+            "title": "Variables",
+            "type": "object"
+          }
+        },
+        "title": "Action",
+        "type": "object"
+      },
+      "Change": {
+        "description": "What changed, named as <source>.<object>.<event>, and whatever the source holds about it.",
+        "properties": {
+          "event": {
+            "default": "",
+            "title": "Event",
+            "type": "string"
+          },
+          "payload": {
+            "additionalProperties": true,
+            "title": "Payload",
+            "type": "object"
           }
         },
         "title": "Change",
+        "type": "object"
+      },
+      "Changes": {
+        "description": "Several changes in one call, in the order they are to be acted on.",
+        "properties": {
+          "changes": {
+            "items": {
+              "$ref": "#/components/schemas/Change"
+            },
+            "title": "Changes",
+            "type": "array"
+          }
+        },
+        "title": "Changes",
         "type": "object"
       },
       "Credentials": {
@@ -594,6 +657,20 @@
         "title": "PrometheusConfig",
         "type": "object"
       },
+      "PrometheusHw_Rename": {
+        "properties": {
+          "was": {
+            "description": "The name the node was called before it was renamed",
+            "title": "Was",
+            "type": "string"
+          }
+        },
+        "required": [
+          "was"
+        ],
+        "title": "PrometheusHw_Rename",
+        "type": "object"
+      },
       "PrometheusHw_Rules": {
         "properties": {
           "disabled": {
@@ -925,7 +1002,7 @@
     }
   },
   "info": {
-    "description": "**trixd** is the TrinityX daemon for everything that is not a physical node: the cluster's users and groups, the Prometheus monitoring configuration, starting and stopping services, and the slurm and genders files computed from Luna's node list. Every route below says what it does, what to send, what comes back, and who may call it.\n\n**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: nodes, groups, images, networks and boot. It answers at https://<controller>:7050, and [https://<controller>:7050/version](https://<controller>:7050/version) says which version it runs. A request to `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides who may.\n\n### Signing in\n1. `POST /api/v1/auth/token` with `{\"username\": \"...\", \"password\": \"...\"}` answers `201` and `{\"token\": \"...\"}`, valid for an hour unless `trixd.ini` says otherwise.\n2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as `Authorization: Bearer <token>`.\n3. On this page: **Authorize**, paste the token into either field, and every **Try it out** sends it.\n\n### Who may call what\nA user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a lowest role, shown as **Access** under its description. **rootus**, the account `trixd.ini` names, is the administrator and passes every check. `none` may only ask who it is, with `GET /api/v1/auth/whoami`.\n\n### Ports\n**8050** speaks the protocol Luna's `luna.ini` names, https or http. **8051** is plain HTTP on every address, for nodes; a password or token sent there crosses the network in clear text.\n\n### Errors\nA refusal or a failure answers its status and `{\"message\": \"...\"}` saying why: 400 a request that cannot be acted on, 401 no token or a bad one, 403 a role below the route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd failed, 503 not available on this controller.\n",
+    "description": "**trixd** is the TrinityX daemon for everything that is not a physical node: the cluster's users and groups, the Prometheus monitoring configuration, starting and stopping services, and the slurm and genders files computed from Luna's node list. Every route below says what it does, what to send, what comes back, and who may call it.\n\n**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: nodes, groups, images, networks and boot. It answers at https://<controller>:7050, and [https://<controller>:7050/version](https://<controller>:7050/version) says which version it runs. A request to `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides who may.\n\n### Signing in\n1. `POST /api/v1/auth/token` with `{\"username\": \"...\", \"password\": \"...\"}` answers `201` and `{\"token\": \"...\"}`, valid for an hour unless `trixd.ini` says otherwise.\n2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as `Authorization: Bearer <token>`.\n3. On this page: **Authorize**, paste the token into either field, and every **Try it out** sends it.\n\n### Who may call what\nA user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a lowest role, shown as **Access** under its description. **rootus**, the account `trixd.ini` names, is the administrator and passes every check. `none` may only ask who it is, with `GET /api/v1/auth/whoami`.\n\n### Ports\n**8050** speaks the protocol `trixd.ini` names, https or http. **8051** is plain HTTP on every address, for nodes; a password or token sent there crosses the network in clear text.\n\n### Errors\nA refusal or a failure answers its status and `{\"message\": \"...\"}` saying why: 400 a request that cannot be acted on, 401 no token or a bad one, 403 a role below the route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd failed, 503 not available on this controller.\n",
     "license": {
       "name": "GPL-3.0-or-later",
       "url": "/api/v1/docs/static/LICENSE.txt"
@@ -3378,6 +3455,94 @@
       }
     },
     "/api/v1/prometheus/hw-rules/{node}": {
+      "delete": {
+        "description": "For a node that no longer exists. Every rule file naming it is moved under\n`backup/` in the rules directory, out of the glob Prometheus loads, and Prometheus\nis reloaded once. Nothing is deleted, so a file retired by mistake can be put back\nby hand.\n\nA node that still exists keeps its rules: use this when the node has gone, and\n`POST /api/v1/prometheus/hw-rules/<node>/actions/repair` when it is still there and\nits file is wrong.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_hw_rules_delete_api_v1_prometheus_hw_rules__node__delete",
+        "parameters": [
+          {
+            "description": "The node, by its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node, by its short name or full hostname",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "node": "node001",
+                  "retired": [
+                    "trix.hw.node001.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was retired"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Retire the hardware rule files held for a node that is gone",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
       "get": {
         "description": "The Prometheus rule file trixd holds for one node, as YAML loads it: one group,\n`trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported\nwhen the file was generated. An alert fires when its part stops being reported, so a\nmissing DIMM, disk or card is noticed.\n\nEach rule's labels say how its alert counts: `nhc`, whether it counts for the node's\nhealth check, and `disabled`, whether it fires at all. A manager changes them with\n`PATCH /api/v1/prometheus/hw-rules`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_get_hw_rules_get_api_v1_prometheus_hw_rules__node__get",
@@ -3605,6 +3770,219 @@
         ],
         "x-trixd-access": "node",
         "x-trixd-minimum": ""
+      }
+    },
+    "/api/v1/prometheus/hw-rules/{node}/actions/rename": {
+      "post": {
+        "description": "For a node Luna has already renamed. The file written under the previous name is\ncarried to the new one and its alert expressions rewritten, and Prometheus is\nreloaded once.\n\n`was` is required and is the name the files were written under. Nothing else can\nfind them: Luna holds only the new name, so a file left under the old one would\nstop matching and never be noticed.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_rename_hw_rules_post_api_v1_prometheus_hw_rules__node__actions_rename_post",
+        "parameters": [
+          {
+            "description": "The node as it is called now",
+            "examples": {
+              "example": {
+                "value": "node002"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node as it is called now",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "was": "node001"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusHw_Rename"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "hostname": "node002.cluster",
+                  "moved": [
+                    "trix.hw.node001.cluster.rules"
+                  ],
+                  "node": "node002",
+                  "rewritten": [
+                    "trix.hw.node002.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was moved and what was rewritten"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "was was given but is empty, so there is no previous name to find the files by"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "was was not given at all"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Carry a renamed node's hardware rule files to its new name",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/hw-rules/{node}/actions/repair": {
+      "post": {
+        "description": "A node's name and its group are written into every alert expression in its rule\nfile, so a file can disagree with what Luna holds and stop matching anything. This\nrewrites the file from the node as Luna holds it now and reloads Prometheus, but\nonly when something actually changed.\n\nA node Luna does not know is skipped and said so, rather than refused. For a node\nthat has been renamed use `actions/rename`, which also needs the previous name.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_repair_hw_rules_post_api_v1_prometheus_hw_rules__node__actions_repair_post",
+        "parameters": [
+          {
+            "description": "The node, by its short name or full hostname",
+            "examples": {
+              "example": {
+                "value": "node001"
+              }
+            },
+            "in": "path",
+            "name": "node",
+            "required": true,
+            "schema": {
+              "description": "The node, by its short name or full hostname",
+              "title": "Node",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "hostname": "node001.cluster",
+                  "moved": [],
+                  "node": "node001",
+                  "rewritten": [
+                    "trix.hw.node001.cluster.rules"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "What was moved and what was rewritten"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Make a node's hardware rule files match what is held for it now",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/prometheus/renders/targets": {
@@ -4978,100 +5356,69 @@
         "x-trixd-minimum": "reader"
       }
     },
-    "/api/v1/system/health": {
-      "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
-        "operationId": "health_api_v1_system_health_get",
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "daemon": "trixd",
-                  "plugins": 6,
-                  "renders": [
-                    {
-                      "ok": true,
-                      "render": "prometheus/renders/targets",
-                      "rendered_at": 1791545863.87
-                    },
-                    {
-                      "ok": true,
-                      "render": "slurm/renders/config",
-                      "rendered_at": 1791545864.38
-                    }
-                  ],
-                  "status": "ok",
-                  "triggers": {
-                    "luna_hashes": {
-                      "answering": false,
-                      "last_pass": 1791545823.43
-                    },
-                    "replication": {
-                      "at": 1791545526.87
-                    }
-                  }
-                },
-                "schema": {
-                  "additionalProperties": true,
-                  "title": "Response Health Api V1 System Health Get",
-                  "type": "object"
-                }
-              }
-            },
-            "description": "How trixd is doing"
-          }
-        },
-        "summary": "Whether this daemon is serving, its renders and triggers",
-        "tags": [
-          "system"
-        ],
-        "x-trixd-access": "public",
-        "x-trixd-minimum": ""
-      }
-    },
-    "/api/v1/system/notify": {
+    "/api/v1/system/bulk": {
       "post": {
-        "description": "For a change trixd could not notice itself: the renders that read that kind of object run again. `object` is a Luna table such as `node`, `group` or `network`; left empty, every render runs. `rendered` lists the renders that ran now; one that ran inside its two-second window runs again when the window closes. Nothing calls this on its own; it is for an operator or a script.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
-        "operationId": "notify_api_v1_system_notify_post",
+        "description": "For a caller that must not be held up: the changes are written down and the answer comes at once, with the request id this daemon logs each one under, so a caller's own log can be read against ours. Use this rather than `/system/notify` from anything inside another service's request, such as a hook: notify acts before it answers, and acting reads back from the source, so a source waiting on trixd would be waiting on itself.\n\nEach change is named as `<source>.<object>.<event>` with whatever the source holds about it, exactly as `/system/notify` takes one. Send the whole set in one call: a caller with a hundred changed nodes makes one request, not a hundred.\n\nEvery change is checked before any is queued, so a set is taken whole or refused whole.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "bulk_api_v1_system_bulk_post",
         "requestBody": {
           "content": {
             "application/json": {
               "examples": {
                 "example": {
                   "value": {
-                    "name": "node001",
-                    "object": "node"
+                    "changes": [
+                      {
+                        "event": "luna.node.update",
+                        "payload": {
+                          "group": "compute",
+                          "name": "node001"
+                        }
+                      },
+                      {
+                        "event": "luna.node.delete",
+                        "payload": {
+                          "name": "node002"
+                        }
+                      }
+                    ]
                   }
                 }
               },
               "schema": {
-                "$ref": "#/components/schemas/Change"
+                "$ref": "#/components/schemas/Changes"
               }
             }
           },
           "required": true
         },
         "responses": {
-          "200": {
+          "202": {
             "content": {
               "application/json": {
                 "example": {
-                  "rendered": [
-                    "genders/renders/genders",
-                    "prometheus/renders/rule-files",
-                    "prometheus/renders/targets",
-                    "slurm/renders/config"
+                  "queued": [
+                    "1791545863-2051-0f3ab9c1",
+                    "1791545863-2051-7d2e4a06"
                   ]
                 },
                 "schema": {
                   "additionalProperties": true,
-                  "title": "Response Notify Api V1 System Notify Post",
+                  "title": "Response Bulk Api V1 System Bulk Post",
                   "type": "object"
                 }
               }
             },
-            "description": "The renders that ran"
+            "description": "One request id per change, in order"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not an event, or nothing publishes it"
           },
           "401": {
             "content": {
@@ -5118,12 +5465,165 @@
             "bearer": []
           }
         ],
-        "summary": "Tell trixd a Luna object changed",
+        "summary": "Hand trixd a set of changes to act on, and do not wait",
         "tags": [
           "system"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "operator"
+      }
+    },
+    "/api/v1/system/health": {
+      "get": {
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "operationId": "health_api_v1_system_health_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "daemon": "trixd",
+                  "owed": {
+                    "failed": 0,
+                    "not_answering": 0,
+                    "peers": 1,
+                    "pending": 0
+                  },
+                  "plugins": 6,
+                  "renders": [
+                    {
+                      "ok": true,
+                      "render": "prometheus/renders/targets",
+                      "rendered_at": 1791545863.87
+                    },
+                    {
+                      "ok": true,
+                      "render": "slurm/renders/config",
+                      "rendered_at": 1791545864.38
+                    }
+                  ],
+                  "status": "ok",
+                  "triggers": {
+                    "luna_hashes": {
+                      "answering": false,
+                      "last_pass": 1791545823.43
+                    },
+                    "replication": {
+                      "at": 1791545526.87
+                    }
+                  }
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Health Api V1 System Health Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "How trixd is doing"
+          }
+        },
+        "summary": "Whether this daemon is serving, its renders and triggers",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "public",
+        "x-trixd-minimum": ""
+      }
+    },
+    "/api/v1/system/notify": {
+      "post": {
+        "description": "For a change trixd could not notice itself. `event` names it as `<source>.<object>.<event>`: who holds the thing, what it is, and what happened to it, such as `luna.node.update`. Every plugin that declared that event acts on it, and the renders that read the object run again. `payload` is whatever the source holds about the change and is passed on unchanged.\n\nA plugin that declared nothing is not called, and an event nobody declared is not an error: `acted` then says so and the renders still run. Ring it once after a sweep rather than once per node; a whole set belongs in the plugin's own bulk route.\n\nLeft empty, every render runs and nothing is dispatched, which is the operator's nudge.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "notify_api_v1_system_notify_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "event": "luna.node.update",
+                    "payload": {
+                      "name": "node001"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/Change"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "acted": "prometheus: node001: moved [], rewritten []",
+                  "event": "luna.node.update",
+                  "rendered": []
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Notify Api V1 System Notify Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What acted, and what ran"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Tell trixd that something it did not see has changed",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
       }
     },
     "/api/v1/system/plugins": {
@@ -5424,6 +5924,124 @@
         "x-trixd-minimum": "rootus"
       }
     },
+    "/api/v1/system/replication/apply": {
+      "post": {
+        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "operationId": "replication_apply_api_v1_system_replication_apply_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "method": "DELETE",
+                    "origin": "dev2-rocky9-controller1",
+                    "path": "hw-rules/<node>",
+                    "plugin": "prometheus",
+                    "request_id": "1791545863-2051-0f3ab9c1",
+                    "variables": {
+                      "node": "node001"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/Action"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "prometheus hw-rules/<node>",
+                  "origin": "dev2-rocky9-controller1"
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replication Apply Api V1 System Replication Apply Post",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "What was applied"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Not an endpoint that declares replicate"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No such plugin, or no such endpoint"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Do what a peer already did",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "rootus"
+      }
+    },
     "/api/v1/system/replication/hashes": {
       "get": {
         "description": "One hash per replicated table, `principal` and `declaration`, which the other controller of a pair compares before copying anything: equal hashes mean there is nothing to copy.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
@@ -5488,6 +6106,82 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/system/replication/owed": {
+      "get": {
+        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many passes have tried it and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "replication_owed_api_v1_system_replication_owed_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "actions": [
+                    {
+                      "attempts": 2,
+                      "created": "2026-10-15T22:52:39",
+                      "message": "",
+                      "method": "DELETE",
+                      "path": "hw-rules/<node>",
+                      "peer": "ctrl2",
+                      "plugin": "prometheus",
+                      "state": "queued",
+                      "target": "node=node001"
+                    }
+                  ],
+                  "not_answering": []
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Replication Owed Api V1 System Replication Owed Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The peers not answering, and one entry per owed action"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What this controller still owes its peers",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
       }
     },
     "/api/v1/system/replication/sweep": {

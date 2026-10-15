@@ -912,3 +912,43 @@ def test_the_hardware_rules_of_every_node_can_be_listed(rig, tmp_path, monkeypat
         query_params={"nodes": "node001,node999", "detail": "no"}))["nodes"]
     assert some[0]["exists"] is True and "document" not in some[0]
     assert some[1] == {"node": "node999", "exists": False}
+
+
+def test_a_renamed_node_carries_its_rule_files_and_needs_the_old_name(rig, tmp_path, monkeypatch):
+    """
+    Luna has already renamed the node, so only the caller still knows what the files were
+    written under. Without it there is nothing to find them by, and a file left behind
+    stops matching anything without ever being noticed.
+    """
+    from trixd.common.errors import BadRequest
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    before = sorted(os.listdir(backend._rules_dir()))
+    assert any("node001" in name for name in before)
+
+    with pytest.raises(BadRequest, match="was names what the node was called"):
+        backend.rename_hw_rules("node001", {})
+    with pytest.raises(BadRequest):
+        backend.rename_hw_rules("node001", {"was": "   "})
+    assert sorted(os.listdir(backend._rules_dir())) == before, "a refusal moved nothing"
+
+
+def test_a_node_that_is_gone_has_its_rule_files_retired_not_deleted(rig, tmp_path, monkeypatch):
+    """
+    Retired means out of the glob Prometheus loads, under backup/, and still readable: a
+    file retired by mistake can be put back. Deleting it could not be undone.
+    """
+    backend, reloads = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    rules = backend._rules_dir()
+    before = len(reloads)
+    live = [name for name in os.listdir(rules) if name.endswith(".rules")]
+    assert live, "nothing was written, so retiring it proves nothing"
+
+    answer = backend.remove_hw_rules("node001")
+    assert answer["retired"], "nothing was reported as retired"
+    assert [name for name in os.listdir(rules) if name.endswith(".rules")] == []
+    kept = os.listdir(os.path.join(rules, "backup"))
+    assert kept, "retired, but not kept where it can be put back"
+    assert len(reloads) > before, "Prometheus was not told the rules changed"
