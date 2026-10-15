@@ -172,11 +172,18 @@ class Sweep:
 
         handle = database.session()
         try:
-            theirs = (self._get(peer, "hashes") or {}).get("hashes") or {}
-            # It answered, so it is up: that closes its breaker whether or not anything
-            # was owed to it. Waiting for a replicated row to drain would leave health
+            answered = self._get(peer, "hashes")
+            theirs = (answered or {}).get("hashes") or {}
+            # It answered, so it is up: that closes its breaker whether or not anything was
+            # owed to it. Waiting for a replicated row to drain would leave health
             # reporting a healthy peer as not answering until one happened along.
-            outbox.record_success(peer)
+            #
+            # None means it did not answer: _get gives that back when both attempts were
+            # refused, and a refusal surviving a renewal is the one failure that should
+            # keep the breaker shut, not open it. Reading None as success made a credential
+            # mismatch oscillate - closed by every pass, reopened by the next three calls.
+            if answered is not None:
+                outbox.record_success(peer)
             ours = tables.hashes(handle)
             differing = [table for table in tables.ORDER
                          if theirs.get(table) and theirs[table] != ours.get(table)]

@@ -385,13 +385,16 @@ def replication_table(name: str = Path(description="principal or declaration",
                 "A row listed as `failed` has been given up on and stops everything behind "
                 "it for that peer: later actions assume the earlier one landed, so carrying "
                 "on would write over a prerequisite that never happened."),
-            responses=docs.answers([{"peer": "ctrl2", "plugin": "prometheus",
-                                     "path": "hw-rules/<node>", "method": "DELETE",
-                                     "target": "node=node001", "state": "queued",
-                                     "attempts": 2, "message": "",
-                                     "created": "2026-10-15T22:52:39"}],
-                                   "One entry per owed action"))
-def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> list:
+            responses=docs.answers({"not_answering": [],
+                                    "actions": [{"peer": "ctrl2", "plugin": "prometheus",
+                                                 "path": "hw-rules/<node>",
+                                                 "method": "DELETE",
+                                                 "target": "node=node001",
+                                                 "state": "queued", "attempts": 2,
+                                                 "message": "",
+                                                 "created": "2026-10-15T22:52:39"}]},
+                                   "The peers not answering, and one entry per owed action"))
+def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
     """
     The rows behind health's counts.
     """

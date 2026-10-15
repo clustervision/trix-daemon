@@ -570,6 +570,8 @@ def test_the_body_and_the_caller_reach_the_peer(rig, monkeypatch):
     Every other test here drives the outbox directly, which is exactly how that got
     through. This one goes through the bound operation, the way a request does.
     """
+    from pydantic import BaseModel
+
     from trixd.core.plugins import binder
     from trixd.core.plugins.manifest import Endpoint
     from trixd.core.replication import outbox
@@ -589,15 +591,86 @@ def test_the_body_and_the_caller_reach_the_peer(rig, monkeypatch):
 
     endpoint = Endpoint(path="hw-rules/<node>", methods=["PATCH"], handler="handler",
                         minimum="manager", replicate=True)
-    operation = binder._endpoint_function(handler, endpoint, None, "prometheus", "PATCH")
+
+    class _Body(BaseModel):
+        """
+        A body as FastAPI actually hands it over: a model, not a dict.
+        """
+
+        nhc: bool = False
+
+    operation = binder._endpoint_function(handler, endpoint, _Body, "prometheus", "PATCH")
 
     class _Caller:
         name = "someone"
 
-    operation(node="node001", body={"nhc": True}, caller=_Caller())
+    # A model, because that is what a real request arrives as: a dict here would skip the
+    # conversion every real call goes through.
+    operation(node="node001", body=_Body(nhc=True), caller=_Caller())
 
     assert seen["handler_body"] == {"nhc": True}, "the handler itself lost the body"
     assert seen["body"] == {"nhc": True}, \
         f"the peer would have been sent {seen['body']!r} instead of the real body"
     assert seen["origin"] == "someone", f"origin was {seen['origin']!r}, not the caller"
     assert seen["variables"] == {"node": "node001"}, seen["variables"]
+
+def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
+    """
+    The fail-stop must not become a wedge. A row that is only waiting for a peer stays
+    waiting: escalating it to refused after some number of passes would mean a controller
+    rebooted for an hour of patching comes back to a terminal row that holds its target
+    for ever, with nothing that clears it. What such a row needs is to be seen, which is
+    what the owed route and the health counts are for.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (outbox.QUEUED, "away", True))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                      {"node": "node001"}, None, "req", "tester")
+        for _ in range(30):
+            outbox.drain("ctrl2")
+        assert outbox.states()["failed"] == 0, "a peer merely being away became terminal"
+        assert outbox.states()["pending"] == 1, "the row stopped waiting to be sent"
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_refusal_holds_its_own_node_and_no_other(rig, monkeypatch):
+    """
+    A refused write for one node holds that node's later actions, because `repair` and
+    `rename` relabel and move a file that is already there - `rename_hw_rules` is
+    `repair_hw_rules(node, was=...)` and does nothing when there is no file - so a rename
+    behind a refused write would silently do nothing.
+
+    It holds that node and nothing else: another node says nothing about this one, and
+    holding it too would make one malformed action an outage for everything owed.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
+                                                             (outbox.DONE, "", True))[1])
+    # One refused row for node001, a later one for the same node, and one for node002.
+    first = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                          {"node": "node001"}, None, "req", "tester")
+    outbox._finish(first, outbox.FAILED, "400: malformed")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                  {"node": "node001"}, None, "req", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node002"}, None, "req", "tester")
+
+    result = outbox.drain("ctrl2")
+    assert result["refused"] == 1, result
+    assert len(sent) == 1 and "node002" in sent[0], \
+        f"sent {sent}: node001's repair should be held behind its refused write, and " \
+        f"node002 should have gone"
+    assert result["sent"] == 1, result
+    assert result["blocked"] == 1, f"node001's repair was not held: {result}"

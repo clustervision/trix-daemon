@@ -6116,27 +6116,30 @@
           "200": {
             "content": {
               "application/json": {
-                "example": [
-                  {
-                    "attempts": 2,
-                    "created": "2026-10-15T22:52:39",
-                    "message": "",
-                    "method": "DELETE",
-                    "path": "hw-rules/<node>",
-                    "peer": "ctrl2",
-                    "plugin": "prometheus",
-                    "state": "queued",
-                    "target": "node=node001"
-                  }
-                ],
+                "example": {
+                  "actions": [
+                    {
+                      "attempts": 2,
+                      "created": "2026-10-15T22:52:39",
+                      "message": "",
+                      "method": "DELETE",
+                      "path": "hw-rules/<node>",
+                      "peer": "ctrl2",
+                      "plugin": "prometheus",
+                      "state": "queued",
+                      "target": "node=node001"
+                    }
+                  ],
+                  "not_answering": []
+                },
                 "schema": {
-                  "items": {},
+                  "additionalProperties": true,
                   "title": "Response Replication Owed Api V1 System Replication Owed Get",
-                  "type": "array"
+                  "type": "object"
                 }
               }
             },
-            "description": "One entry per owed action"
+            "description": "The peers not answering, and one entry per owed action"
           },
           "401": {
             "content": {

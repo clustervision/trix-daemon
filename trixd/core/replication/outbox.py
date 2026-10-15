@@ -61,9 +61,12 @@ FAILED: str = "failed"
 # The caller is waiting on this, so it is seconds rather than the sweep's thirty: the row
 # makes giving up free, and a dark peer must not hold a request thread.
 TIMEOUT: int = 3
-# After this many sweep passes a row stops riding the sweep. A row retried for ever is a
-# divergence nobody is told about.
-MAX_ATTEMPTS: int = 12
+# After this many sweep passes a row still waiting is said loudly, once, and then every
+# this-many passes. It is NOT given up on: a peer away for an hour of patching would
+# otherwise leave a terminal row that stops everything for that target with no way back.
+# What a row needs is to be seen, which is `/system/replication/owed` and the health
+# counts, not to be abandoned.
+LOUD_AFTER: int = 12
 # How long a finished row is kept, so a caller that polls slowly still sees it.
 KEEP_SECONDS: int = 3600
 
@@ -161,9 +164,13 @@ def states() -> dict:
             "peers": len(peers()), "not_answering": down}
 
 
-def owed() -> list:
+def owed() -> dict:
     """
     What is still owed, peer by peer, for somebody who is allowed to know the peers.
+
+    One shape always: a client reading `owed["actions"]` gets a list whether or not a peer
+    is down. The peers-down notice used to be the first element of the same list, which
+    meant the shape changed exactly when somebody was looking at it.
     """
     handle = database.session()
     try:
@@ -178,7 +185,7 @@ def owed() -> list:
         handle.close()
     with _lock:
         down = sorted(_open)
-    return [{"not_answering": down}, *listed] if down else listed
+    return {"not_answering": down, "actions": listed}
 
 
 def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body,
@@ -274,11 +281,9 @@ def _finish(row_id: int, state: str, message: str) -> None:
             return
         row.attempts += 1
         row.message = message[:2048]
-        if state == QUEUED and row.attempts >= MAX_ATTEMPTS:
-            state = FAILED
-            message = f"gave up after {row.attempts} attempts: {message}"
-            row.message = message[:2048]
-            LOGGER.error("%s still owes %s %s %s after %d attempts: %s", row.origin,
+        if state == QUEUED and row.attempts and row.attempts % LOUD_AFTER == 0:
+            # Said, not abandoned: it keeps riding the sweep until the peer takes it.
+            LOGGER.error("%s has owed %s a %s %s for %d passes now: %s", row.origin,
                          row.peer, row.method, row.path, row.attempts, message)
         row.state = state
         if state in (DONE, FAILED):
@@ -373,12 +378,24 @@ def drain(peer: str) -> dict:
     Everything still owed to one peer, oldest intent first. The sweep calls this; nothing
     else does, and nothing runs between passes.
 
-    A row that has been given up on stops the queue behind it rather than being stepped
-    over. The later actions assume the earlier one landed - a rename assumes the file it
-    renames was written - so carrying on would apply them over a prerequisite that never
-    happened, turning a loud failure into quiet wrong state. It is the same fail-stop the
-    journal uses, and it needs a person: section 8's `failed` count and the log are what tell
-    them.
+    A row the peer refused outright stops the rest of **that target's** chain rather than
+    being stepped over: the later actions for a target assume the earlier one landed - a
+    rename assumes the file it renames was written - so carrying on would apply them over a
+    prerequisite that never happened, turning a loud failure into quiet wrong state.
+
+    It stops that node's chain and nothing else. A refusal naming one node says nothing
+    about another node, or another plugin, and blocking those would make one malformed
+    action an outage for everything this controller owes.
+
+    Which actions are relative was read rather than assumed: `repair` and `rename` take the
+    file that is already there, relabel it and move it - `rename_hw_rules` is
+    `repair_hw_rules(node, was=...)` and does nothing at all when no file exists. Only the
+    PATCH routes write a file from scratch. So a rename behind a refused write would
+    silently do nothing, which is the case this exists for.
+
+    A refused row is cleared by a newer call for the same endpoint and body. One with a
+    different body queues behind it and is held - an open question recorded with the work,
+    not a decision taken here.
     """
     handle = database.session()
     try:
@@ -387,27 +404,39 @@ def drain(peer: str) -> dict:
                                         models.Outbox.state.in_((QUEUED, FAILED)))
                                  .order_by(models.Outbox.created,
                                            models.Outbox.id)).all()
-        rows = [(row.id, row.state) for row in waiting]
+        # The chain is the plugin and the thing named in the path - the node - with the
+        # body digest left off, so a PATCH and a rename for one node are the same chain.
+        # Keying on the whole target would not group them: the PATCH carries a digest and
+        # the rename a different one, which is precisely the pair that must stay ordered.
+        rows = [(row.id, row.state, (row.plugin, row.target.split("|")[0]))
+                for row in waiting]
     finally:
         handle.close()
-    sent, left, blocked = 0, 0, 0
-    for index, (row_id, state) in enumerate(rows):
+    sent, left, refused, blocked, stuck = 0, 0, 0, 0, set()
+    for index, (row_id, state, chain) in enumerate(rows):
         if state == FAILED:
-            blocked = len(rows) - index
-            LOGGER.error("%d action(s) for %s are stuck behind one that was given up on; "
-                         "nothing further is sent to it until that row is dealt with",
-                         blocked, peer)
-            break
+            stuck.add(chain)
+            refused += 1
+            continue
+        if chain in stuck:
+            # Something earlier for this same target was refused; this one assumes it.
+            blocked += 1
+            continue
         if _attempt(peer, row_id) == DONE:
             sent += 1
         else:
-            # The peer has stopped answering: the rest keep their place for the next pass.
-            left = len(rows) - index - 1
+            # The peer has stopped answering. Everything from here, this row included,
+            # keeps its place for the next pass.
+            left = len(rows) - index
             break
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
+    if refused:
+        LOGGER.error("%s refused %d action(s), holding %d more for the same target(s); a "
+                     "newer call for a stuck target replaces it and clears the hold",
+                     peer, refused, blocked)
     _prune()
-    return {"sent": sent, "left": left, "blocked": blocked}
+    return {"sent": sent, "left": left, "refused": refused, "blocked": blocked}
 
 
 def _prune() -> None:
