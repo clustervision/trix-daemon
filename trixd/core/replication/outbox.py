@@ -98,6 +98,16 @@ def target_of(variables: dict, body) -> str:
     return f"{named[:238]}|{digest}" if named else digest
 
 
+def chain_of(target: str) -> str:
+    """
+    What two actions for one node share: the target without the body digest.
+
+    One definition, because `drain` holds a chain behind a refusal and `submit` clears one,
+    and the two disagreeing would leave rows nothing can clear.
+    """
+    return target.split("|")[0]
+
+
 def peers() -> list:
     """
     The peers to replicate to, which are the peers the sweep reconciles with.
@@ -176,7 +186,8 @@ def owed() -> dict:
     try:
         rows = handle.scalars(select(models.Outbox)
                               .where(models.Outbox.state.in_((QUEUED, FAILED)))
-                              .order_by(models.Outbox.created)).all()
+                              .order_by(models.Outbox.created,
+                                        models.Outbox.id)).all()
         listed = [{"peer": row.peer, "plugin": row.plugin, "path": row.path,
                    "method": row.method, "target": row.target, "state": row.state,
                    "attempts": row.attempts, "message": row.message,
@@ -188,6 +199,26 @@ def owed() -> dict:
     return {"not_answering": down, "actions": listed}
 
 
+def _clear_refused(handle, peer: str, plugin: str, chain: str) -> None:
+    """
+    Drop what this peer refused for the same node, so a new intent is not held behind it.
+
+    Whoever acts on that node again states what it should be now, which is a better account
+    of the intent than the refused row is. The refusal is said as the row goes, because the
+    row is the only other place it was written down.
+    """
+    refused = handle.scalars(select(models.Outbox).where(
+        models.Outbox.peer == peer, models.Outbox.plugin == plugin,
+        models.Outbox.state == FAILED)).all()
+    for row in refused:
+        if chain_of(row.target) != chain:
+            continue
+        LOGGER.warning("discarding %s %s, which %s refused (%s): a newer action for %s has "
+                       "arrived and says what it should be now", row.method, row.path,
+                       peer, row.message, chain)
+        handle.delete(row)
+
+
 def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body,
            request_id: str, origin: str) -> int:
     """
@@ -195,11 +226,17 @@ def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body
 
     The replacement is the point: the newest intent is the only one worth sending, and a
     stale row applied late is how a retry undoes newer state.
+
+    A refusal for the same node goes at the same time, whatever its body. `drain` holds a
+    node's chain behind a refused row, and only an identical call would have replaced that
+    row - so a node whose rename was refused stayed held until one arrived, which is a
+    wedge for everything else that node needs.
     """
     mark = target_of(variables, body)
     payload = json.dumps({"variables": variables or {}, "body": body})
     handle = database.session()
     try:
+        _clear_refused(handle, peer, plugin, chain_of(mark))
         row = handle.scalar(select(models.Outbox).where(
             models.Outbox.peer == peer, models.Outbox.plugin == plugin,
             models.Outbox.path == path, models.Outbox.method == method,
@@ -285,6 +322,12 @@ def _finish(row_id: int, state: str, message: str) -> None:
             # Said, not abandoned: it keeps riding the sweep until the peer takes it.
             LOGGER.error("%s has owed %s a %s %s for %d passes now: %s", row.origin,
                          row.peer, row.method, row.path, row.attempts, message)
+        if state == FAILED:
+            # The row is not permanent evidence - the next action for this node discards it
+            # - so what the peer said has to reach the log as it happens.
+            LOGGER.error("%s refused %s %s (%s): %s - it holds this node's later actions "
+                         "until a newer one arrives", row.peer, row.method, row.path,
+                         row.target, message)
         row.state = state
         if state in (DONE, FAILED):
             row.finished = datetime.now(timezone.utc).replace(tzinfo=None)
@@ -393,9 +436,10 @@ def drain(peer: str) -> dict:
     PATCH routes write a file from scratch. So a rename behind a refused write would
     silently do nothing, which is the case this exists for.
 
-    A refused row is cleared by a newer call for the same endpoint and body. One with a
-    different body queues behind it and is held - an open question recorded with the work,
-    not a decision taken here.
+    What clears a refused row is the next action for the same node, whatever its body:
+    `submit` discards it, and the hold goes with it. So a refusal holds the actions that
+    were already queued behind it - the ones that assumed it landed - and nothing after
+    that, because whoever acts on the node again states what it should be now.
     """
     handle = database.session()
     try:
@@ -408,7 +452,7 @@ def drain(peer: str) -> dict:
         # body digest left off, so a PATCH and a rename for one node are the same chain.
         # Keying on the whole target would not group them: the PATCH carries a digest and
         # the rename a different one, which is precisely the pair that must stay ordered.
-        rows = [(row.id, row.state, (row.plugin, row.target.split("|")[0]))
+        rows = [(row.id, row.state, (row.plugin, chain_of(row.target)))
                 for row in waiting]
     finally:
         handle.close()
@@ -432,8 +476,8 @@ def drain(peer: str) -> dict:
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
     if refused:
-        LOGGER.error("%s refused %d action(s), holding %d more for the same target(s); a "
-                     "newer call for a stuck target replaces it and clears the hold",
+        LOGGER.error("%s refused %d action(s), holding %d more for the same node(s); the "
+                     "next action for a held node clears the refusal and the hold",
                      peer, refused, blocked)
     _prune()
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked}

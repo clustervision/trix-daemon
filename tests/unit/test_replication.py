@@ -641,11 +641,11 @@ def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
         outbox._open.clear()
 
 
-def test_a_refusal_holds_its_own_node_and_no_other(rig, monkeypatch):
+def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
     """
-    A refused write for one node holds that node's later actions, because `repair` and
-    `rename` relabel and move a file that is already there - `rename_hw_rules` is
-    `repair_hw_rules(node, was=...)` and does nothing when there is no file - so a rename
+    A refused write holds that node's actions that were already queued behind it, because
+    `repair` and `rename` relabel and move a file that is already there - `rename_hw_rules`
+    is `repair_hw_rules(node, was=...)` and does nothing when there is no file - so a rename
     behind a refused write would silently do nothing.
 
     It holds that node and nothing else: another node says nothing about this one, and
@@ -655,22 +655,89 @@ def test_a_refusal_holds_its_own_node_and_no_other(rig, monkeypatch):
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
-    monkeypatch.setattr(outbox, "_send",
-                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
-                                                             (outbox.DONE, "", True))[1])
-    # One refused row for node001, a later one for the same node, and one for node002.
-    first = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
-                          {"node": "node001"}, None, "req", "tester")
-    outbox._finish(first, outbox.FAILED, "400: malformed")
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer that refuses node001's delete outright and takes everything else.
+        """
+        if row.method == "DELETE" and "node001" in row.payload:
+            return outbox.FAILED, "400: malformed", True
+        sent.append(row.payload)
+        return outbox.DONE, "", True
+
+    monkeypatch.setattr(outbox, "_send", send)
+    # All three are queued before the refusal happens, so node001's repair is one that
+    # assumed the delete landed rather than a newer statement of what the node should be.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req", "tester")
     outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
                   {"node": "node001"}, None, "req", "tester")
     outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
                   {"node": "node002"}, None, "req", "tester")
 
-    result = outbox.drain("ctrl2")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        # The first pass meets the refusal at the head and stops there; the second one
+        # knows the row is refused and is the pass that holds the rest of the chain.
+        outbox.drain("ctrl2")
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
     assert result["refused"] == 1, result
+    assert result["blocked"] == 1, f"node001's repair was not held: {result}"
+    assert result["sent"] == 1, result
     assert len(sent) == 1 and "node002" in sent[0], \
         f"sent {sent}: node001's repair should be held behind its refused write, and " \
         f"node002 should have gone"
-    assert result["sent"] == 1, result
-    assert result["blocked"] == 1, f"node001's repair was not held: {result}"
+
+
+def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatch):
+    """
+    A refusal must not wedge a node. Only a call with the same body replaced a refused row,
+    so a refused rename held every later action for that node: a different body made a
+    second row, which queued behind the first and waited for a call that never came.
+
+    It clears that node's refusal and no other node's: a refusal naming one node says
+    nothing about another, and clearing it would throw away the evidence.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    sent = []
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
+                                                             (outbox.DONE, "", True))[1])
+    refused = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                            {"node": "node001"}, {"was": "node000"}, "req", "tester")
+    outbox._finish(refused, outbox.FAILED, "400: malformed")
+    elsewhere = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                              {"node": "node002"}, None, "req", "tester")
+    outbox._finish(elsewhere, outbox.FAILED, "400: malformed")
+
+    # A different body for the same node: the call that used to queue behind the refusal.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node001"}, {"nhc": True}, "req", "tester")
+
+    handle = database.session()
+    try:
+        # The node part of the target, read off the row rather than through the code
+        # under test, so this fails on the behaviour and not on an import.
+        held = {(row.method, row.target.split("|")[0], row.state)
+                for row in handle.scalars(select(models.Outbox)).all()}
+    finally:
+        handle.close()
+    assert ("POST", "node=node001", outbox.FAILED) not in held, \
+        f"the refused rename still holds node001: {held}"
+    assert ("DELETE", "node=node002", outbox.FAILED) in held, \
+        f"an action for node001 cleared node002's refusal: {held}"
+
+    result = outbox.drain("ctrl2")
+    assert result["blocked"] == 0, f"node001 is still held behind the refusal: {result}"
+    assert len(sent) == 1 and "node001" in sent[0], \
+        f"sent {sent}: node001's patch should have gone once the refusal was cleared"
