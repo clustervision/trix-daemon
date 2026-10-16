@@ -3278,7 +3278,7 @@
     },
     "/api/v1/prometheus/exporters": {
       "get": {
-        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n`read` says whether that file is the baseline in use. False means it is absent,\nunreadable or names no nodes section, and the exporters built into the daemon are being\nserved instead - which two digests alone would not tell you.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_list_exporters_get_api_v1_prometheus_exporters_get",
         "responses": {
           "200": {
@@ -3306,7 +3306,9 @@
                         "port": 14200
                       }
                     },
-                    "path": "/trinity/local/trixd/daemon/config/exporters.yaml"
+                    "path": "/trinity/local/trixd/daemon/config/exporters.yaml",
+                    "read": true,
+                    "reason": ""
                   }
                 },
                 "schema": {}

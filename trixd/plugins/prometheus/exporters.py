@@ -33,6 +33,7 @@ __status__      = "Development"
 
 import hashlib
 import os
+import re
 import threading
 
 import yaml
@@ -65,24 +66,89 @@ _held: dict = {}
 _lock = threading.Lock()
 
 
+LABEL_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
+
+def checked(name: str, fields, where: str, strict: bool = False) -> dict:
+    """
+    One exporter's fields, with anything the render cannot use taken out here.
+
+    Everything is checked where it is read, not where it is used: the render runs once per node
+    per exporter and per change, so a check there is thousands of identical complaints in a boot
+    storm - and an exception there leaves a restarted daemon serving no document at all.
+
+    A file is sanitised and carried on with, because one bad label must not cost a cluster its
+    targets. A request is refused instead - `strict` - because the caller is there to be told,
+    and a stored shape the render cannot use is how this breaks later rather than now.
+    """
+    if not isinstance(fields, dict):
+        LOGGER.error("%s in %s is %s, not a mapping of fields", name, where,
+                     type(fields).__name__)
+        return None
+    kept = {key: value for key, value in fields.items() if key != "labels"}
+    labels = fields.get("labels")
+    if labels is None:
+        return kept
+    if not isinstance(labels, dict):
+        LOGGER.error("the labels of %s in %s are %s, not a mapping; ignoring them",
+                     name, where, type(labels).__name__)
+        return None if strict else kept
+    carried = {}
+    for key, value in labels.items():
+        if not LABEL_NAME.match(str(key)):
+            LOGGER.error("%s in %s carries the label %r, which Prometheus will not accept",
+                         name, where, key)
+            if strict:
+                return None
+            continue
+        if isinstance(value, (dict, list)):
+            LOGGER.error("the label %s of %s in %s is %s, which has no string form",
+                         key, name, where, type(value).__name__)
+            if strict:
+                return None
+            continue
+        # A bare 7 in yaml is an integer and plainly meant as a label; carried as what it reads
+        # as, rather than thrown away.
+        carried[key] = str(value)
+    if carried:
+        kept["labels"] = carried
+    return kept
+
+
 def _sections(body: dict, path: str) -> dict:
     """
-    The file as this understands it, or nothing where it is shaped wrongly.
+    The file as this understands it, section by section.
 
-    A port written where a mapping belongs is an ordinary typo, and it must not reach the
-    render: an exception there leaves a restarted daemon with no document at all, which is a
-    404 to every poll rather than a stale answer.
+    A section that is shaped wrongly is dropped on its own: refusing the whole file for one
+    typo takes away the sections that were right, which is how a mistake in `hosts` costs
+    every node its exporters.
     """
+    read = {}
     for section in (NODES, CONTROLLERS, HOSTS):
         held = body.get(section)
         if held is None:
             continue
-        if not isinstance(held, dict) or not all(isinstance(v, dict) or v is None
-                                                 for v in held.values()):
-            LOGGER.error("%s in %s is not a mapping of name to fields, ignoring the file",
+        if not isinstance(held, dict):
+            LOGGER.error("%s in %s is %s, not a mapping; that section is ignored",
+                         section, path, type(held).__name__)
+            continue
+        kept, refused = {}, 0
+        for name, fields in held.items():
+            kept_fields = checked(name, fields if fields is not None else {},
+                                  f"{section} of {path}")
+            if kept_fields is None:
+                refused += 1
+            else:
+                kept[name] = kept_fields
+        if held and not kept and refused:
+            # Every entry was refused. Left as an empty section this would read as "scrape
+            # nothing here", which is a drastic thing for a typo to mean; left out, the caller
+            # falls back as it does for a section that was never written.
+            LOGGER.error("every entry in %s of %s was refused; the section is left out",
                          section, path)
-            return {}
-    return body
+            continue
+        read[section] = kept
+    return read
 
 
 def factory(path: str) -> dict:
@@ -100,11 +166,19 @@ def factory(path: str) -> dict:
     except OSError as error:
         with _lock:
             held = _held.get("body", {}) if _held.get("path") == path else {}
+            said = _held.get("missing") == path
+            _held["missing"] = path
         if held:
             # It was there a moment ago. Saying nothing here is how every controller target
             # disappears and every node silently moves back to the ports built into the code.
             LOGGER.error("the exporter file %s has gone, keeping what was loaded: %s",
                          path, error)
+        elif not said:
+            # A file that never arrived is the fresh-install case: the daemon then serves the
+            # exporters built into it and no controllers at all, which is worth one line.
+            # Once per path, because a render can follow every node change.
+            LOGGER.error("no exporter file at %s, so the exporters built into the daemon are "
+                         "in use and no controller is scraped: %s", path, error)
         return held
     with _lock:
         if _held.get("path") == path and _held.get("stamp") == stamp:
@@ -126,7 +200,7 @@ def factory(path: str) -> dict:
         body = {}
     body = _sections(body, path)
     with _lock:
-        _held.update({"path": path, "stamp": stamp, "body": body})
+        _held.update({"path": path, "stamp": stamp, "body": body, "missing": ""})
     LOGGER.info("read %d node and %d controller exporter(s) from %s",
                 len(body.get(NODES) or {}), len(body.get(CONTROLLERS) or {}), path)
     return body

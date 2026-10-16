@@ -1159,7 +1159,7 @@ def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, 
     backend = _prometheus_rig(tmp_path, monkeypatch, {})
 
     with pytest.raises(BadRequest):
-        backend.set_applied("group:" + "x" * 300, {"node": True})
+        backend.set_applied("group:" + "x" * 300, {"exporters": {"node": True}})
 
 
 def _bound(endpoint_path, verb, handler_name, tmp_path, monkeypatch, nodes=None):
@@ -1173,7 +1173,9 @@ def _bound(endpoint_path, verb, handler_name, tmp_path, monkeypatch, nodes=None)
     import yaml
     from trixd.core.plugins import binder, manifest as manifests
 
-    document = yaml.safe_load(open("trixd/plugins/prometheus/manifest.yaml", encoding="utf-8"))
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    document = yaml.safe_load(open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"),
+                                   encoding="utf-8"))
     parsed = manifests.parse(document)
     endpoint = [e for e in parsed.endpoints
                 if e.path == endpoint_path and verb in [m.upper() for m in e.methods]][0]
@@ -1238,8 +1240,17 @@ def test_a_write_wakes_the_render_that_reads_it(rig, monkeypatch):
     prometheus.Backend().set_applied("cluster", {"exporters": {"node": True}})
 
     assert woken, "nothing was notified at all"
-    assert all(w.startswith("prometheus.") for w in woken), \
-        f"notified {woken}, which no render's input matches"
+    # Against the render's own matcher and this plugin's declared inputs, so renaming an input
+    # breaks the test rather than leaving it green while the render stops waking.
+    import yaml
+    from trixd.core.plugins import manifest as manifests
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    parsed = manifests.parse(yaml.safe_load(
+        open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
+    targets = [e for e in parsed.endpoints if e.path == "renders/targets"][0]
+    render = engine.Render("prometheus", "renders/targets", targets.render, lambda: [])
+    assert any(render.wants(key) for key in woken), \
+        f"notified {woken}, which the targets render does not match"
 
 
 def test_a_site_cannot_rename_the_labels_everything_groups_by(rig, tmp_path, monkeypatch):
@@ -1263,7 +1274,8 @@ def test_a_label_prometheus_cannot_parse_does_not_take_the_document_down(rig, tm
                                                                         monkeypatch):
     """
     http_sd refuses the whole response over one invalid label, so one site's typo would stop
-    every target being discovered rather than its own.
+    every target being discovered rather than its own. A name it will not accept is dropped; a
+    bare integer is what an operator plainly meant and is carried as its string.
     """
     backend = _prometheus_rig(tmp_path, monkeypatch,
                               {"node001": {"hostname": "node001.cluster", "group": "compute"}})
@@ -1273,7 +1285,7 @@ def test_a_label_prometheus_cannot_parse_does_not_take_the_document_down(rig, tm
     labels = backend.render_targets()[0]["labels"]
 
     assert "gpu-type" not in labels, "a label name Prometheus refuses was emitted"
-    assert "rack" not in labels, "a non-string label value was emitted"
+    assert labels["rack"] == "7", "a bare integer label was thrown away rather than carried"
     assert labels["exporter"] == "node"
 
 
@@ -1292,3 +1304,85 @@ def test_a_port_where_a_mapping_belongs_does_not_stop_discovery(rig, tmp_path, m
     assert {entry["labels"]["exporter"] for entry in rendered} == {"node", "ipmi", "nvidia",
                                                                    "slurm_job", "lshw"}, \
         "the file was refused but the shipped baseline did not take over"
+
+
+def test_an_interval_reaches_prometheus_or_it_is_not_a_feature(rig, tmp_path, monkeypatch):
+    """
+    http_sd carries a per-target interval only as __scrape_interval__. Stored, echoed back and
+    never emitted, the field would be a setting that reads as applied and changes nothing.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {"nodes": {
+        "lshw": {"port": 14208, "interval": "5m", "timeout": "30s"}}})})
+
+    labels = backend.render_targets()[0]["labels"]
+
+    assert labels["__scrape_interval__"] == "5m", "the interval never reached the target"
+    assert labels["__scrape_timeout__"] == "30s"
+
+
+def test_the_listing_says_when_it_is_not_reading_the_file(rig, tmp_path, monkeypatch):
+    """
+    Comparing two controllers is the endpoint's purpose. Reporting the exporters built into the
+    daemon under the file's own path and digest tells the operator the files differ in content
+    when the truth is that one controller is not reading its file at all.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    backend.config({"exporters_file": str(tmp_path / "there-is-no-such-file.yaml")})
+
+    factory = backend.list_exporters()["factory"]
+
+    assert factory["read"] is False
+    assert factory["reason"], "no reason was given for not using the file"
+    assert backend.list_exporters()["factory"]["nodes"], "the fallback is not reported at all"
+
+
+def test_the_api_refuses_a_shape_the_render_cannot_use(rig, tmp_path, monkeypatch):
+    """
+    The file's reader checks what it reads; the API is the other way in. A labels value that is
+    not a mapping reaches the render otherwise, and after a restart there is no document at all
+    - which is 404 to every poll, on both controllers, from one authenticated call.
+    """
+    import pytest
+    from trixd.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    with pytest.raises(BadRequest):
+        backend.set_applied("cluster", {"exporters": {"node": {"labels": "rack=7"}}})
+    with pytest.raises(BadRequest):
+        backend.set_exporter("node", {"labels": "rack=7"})
+
+
+def test_a_path_word_cannot_be_taken_as_an_exporter_name(rig, tmp_path, monkeypatch):
+    """
+    PATCH /exporters/applied with the scope left off matches the one-segment route, so without
+    this it defines an exporter named after the path word and scrapes it on every node.
+    """
+    import pytest
+    from trixd.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    with pytest.raises(BadRequest):
+        backend.set_exporter("applied", {"port": 14200})
+
+
+def test_a_bad_entry_in_one_section_does_not_cost_the_others(rig, tmp_path, monkeypatch):
+    """
+    Refusing the whole file for one typo takes away the sections that were right: a mistake in
+    hosts would cost every node its exporters, which is a far bigger loss than the mistake.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {
+        "nodes": {"node": {"port": 14200}, "amd": {"port": 14209}},
+        "hosts": {"ctrl1.cluster": "10.141.255.252"}})})      # a string where a mapping belongs
+
+    rendered = backend.render_targets()
+
+    assert {e["labels"]["exporter"] for e in rendered} == {"node", "amd"}, \
+        "a typo in hosts took the node section down with it"
+    assert not [e for e in rendered if e["labels"].get("luna_group") == "controller"], \
+        "the refused host was scraped anyway"

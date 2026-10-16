@@ -55,7 +55,8 @@ urllib3.disable_warnings()
 PLUGIN: str = "prometheus"
 
 # What Prometheus accepts as a label name; anything else makes it refuse the whole document.
-LABEL_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# Path words under /exporters, which an exporter may therefore not be called.
+RESERVED: tuple = ("applied",)
 
 DEFAULT_CONFIG: dict = {
     "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
@@ -450,7 +451,12 @@ class Backend:
         """
         baseline, definitions, scopes = self._exporter_inputs()
         path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
+        read = exporters.NODES in exporters.factory(path)
         return {"factory": {"path": path, "digest": exporters.digest(path),
+                            "read": read,
+                            "reason": "" if read else
+                                      "the file is absent, unreadable or names no nodes "
+                                      "section; the exporters built into the daemon are in use",
                             "nodes": baseline.get(exporters.NODES) or {},
                             "controllers": baseline.get(exporters.CONTROLLERS) or {},
                             "hosts": sorted(baseline.get(exporters.HOSTS) or {})},
@@ -478,10 +484,19 @@ class Backend:
         """
         Define an exporter the baseline does not have, or change one that it does.
         """
+        if exporter in RESERVED:
+            # /exporters/applied with the scope left off lands here, and would otherwise
+            # define an exporter named after the path word and scrape it on every node.
+            raise BadRequest(f"{exporter} is part of the path, not an exporter name")
+        sent = {k: v for k, v in (body or {}).items() if v is not None}
+        # Checked here as the file's reader checks it, so a shape the render cannot use is a
+        # refusal with a reason rather than a row that breaks service discovery later.
+        if exporters.checked(exporter, sent, "the request", strict=True) is None:
+            raise BadRequest("an exporter is a mapping of fields")
         held = declarations.read(PLUGIN, exporters.DEFINITION, exporter, {})
         # Only what was actually sent: the binder fills every unset optional with None, and
         # writing those would blank the port this exporter is scraped on.
-        held.update({k: v for k, v in (body or {}).items() if v is not None})
+        held.update(sent)
         return {"exporter": exporter,
                 "fields": self._state(exporters.DEFINITION, exporter, held)}
 
@@ -501,6 +516,10 @@ class Backend:
         if not isinstance(sent, dict):
             raise BadRequest("exporters must be a mapping of exporter name to false, true, "
                              "or the fields to change")
+        for name, deviation in sent.items():
+            if isinstance(deviation, dict) and exporters.checked(
+                    name, deviation, "the request", strict=True) is None:
+                raise BadRequest(f"the deviation for {name} is not a mapping of fields")
         held = declarations.read(PLUGIN, exporters.SCOPE, where, {})
         held.update(sent)
         return {"applied": where, "exporters": self._state(exporters.SCOPE, where, held)}
@@ -553,16 +572,16 @@ class Backend:
         """
         One service discovery entry. The labels are the compatibility surface: dashboards and
         alert rules group by them, so a change here is a change to what a customer sees.
+
+        A scrape interval reaches Prometheus only as __scrape_interval__ on the target; set as
+        a plain field it would be stored, echoed back and silently ignored.
         """
-        carried = {}
-        for key, value in (fields.get("labels") or {}).items():
-            if not LABEL_NAME.match(str(key)) or not isinstance(value, str):
-                # http_sd rejects the whole document over one bad label, so a site's typo would
-                # take every target down rather than its own.
-                LOGGER.warning("ignoring the label %r on %s: a label is a name and a string",
-                               key, exporter)
-                continue
-            carried[key] = value
+        held = fields.get("labels")
+        carried = dict(held) if isinstance(held, dict) else {}
+        for field, label in (("interval", "__scrape_interval__"),
+                             ("timeout", "__scrape_timeout__")):
+            if fields.get(field):
+                carried[label] = str(fields[field])
         # Last, so a site cannot rename the labels dashboards and alert rules group by.
         carried.update(labels)
         return {"targets": [f"{address}:{fields['port']}"], "labels": carried}

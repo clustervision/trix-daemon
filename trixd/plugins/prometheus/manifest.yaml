@@ -431,10 +431,14 @@ endpoints:
       scope that deviates. The baseline is a file and is NOT replicated, so its digest is
       reported here: one call on each controller, and two different digests mean the pair
       disagrees about what it is scraping while the database looks converged.
+
+      `read` says whether that file is the baseline in use. False means it is absent,
+      unreadable or names no nodes section, and the exporters built into the daemon are being
+      served instead - which two digests alone would not tell you.
     response:
       description: The baseline, the definitions and the deviations
       example:
-        factory: {path: /trinity/local/trixd/daemon/config/exporters.yaml, digest: 9f2c1d0ab3e45678, nodes: {node: {port: 14200}}, controllers: {ha: {port: 14205}}, hosts: [controller1.cluster]}
+        factory: {path: /trinity/local/trixd/daemon/config/exporters.yaml, digest: 9f2c1d0ab3e45678, read: true, reason: '', nodes: {node: {port: 14200}}, controllers: {ha: {port: 14205}}, hosts: [controller1.cluster]}
         defined: {}
         applied: {group:gpu: {lshw: false}}
 
