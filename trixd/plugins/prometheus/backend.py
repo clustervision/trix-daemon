@@ -42,7 +42,9 @@ import yaml
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure, BadRequest, NotFound, TrixdError
+from trixd.core.render.engine import current as renders
 from trixd.plugins.luna.client import current as luna
+from trixd.plugins.prometheus import exporters
 from trixd.utils import declarations, files
 from trixd.utils import shell
 
@@ -53,6 +55,7 @@ urllib3.disable_warnings()
 PLUGIN: str = "prometheus"
 
 DEFAULT_CONFIG: dict = {
+    "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
     "prometheus_url": "https://localhost:9090",
     "reload_command": "systemctl reload prometheus-server",
@@ -431,26 +434,147 @@ class Backend:
             self.prometheus_url = url
         return answer
 
+    # --------------------------------------------------------------- exporters
+
+    def list_exporters(self, caller=None) -> dict:
+        """
+        What is scraped and where: the baseline, what this site has defined on top of it, and
+        every scope that deviates.
+
+        The baseline's digest is here because that file is NOT replicated - only the deviations
+        are - so two controllers can disagree about it while the database looks converged. One
+        call per controller and the two digests settle it.
+        """
+        baseline, definitions, scopes = self._exporter_inputs()
+        path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
+        return {"factory": {"path": path, "digest": exporters.digest(path),
+                            "nodes": baseline.get(exporters.NODES) or {},
+                            "controllers": baseline.get(exporters.CONTROLLERS) or {},
+                            "hosts": sorted(baseline.get(exporters.HOSTS) or {})},
+                "defined": definitions, "applied": scopes}
+
+    def _state(self, kind: str, name: str, body: dict) -> dict:
+        """
+        Write one exporter document and wake the render that reads it.
+
+        An empty body is how this plugin removes one. A row is never deleted: the table
+        replicates, and the peer re-adds a row that is missing here at the next pass, so a
+        delete would come back within the sweep interval.
+        """
+        # The name becomes a declaration's name, which the column holds to 255 characters: a
+        # longer one is a caller's mistake and belongs in a refusal rather than a database error.
+        if not name or len(name) > 255:
+            raise BadRequest("a name is needed, of at most 255 characters")
+        stored = declarations.write(PLUGIN, kind, name, body or {})
+        renders().notify(kind)
+        return stored
+
+    def set_exporter(self, exporter: str, body: dict = None) -> dict:
+        """
+        Define an exporter the baseline does not have, or change one that it does.
+        """
+        held = declarations.read(PLUGIN, exporters.DEFINITION, exporter, {})
+        held.update(body or {})
+        return {"exporter": exporter,
+                "fields": self._state(exporters.DEFINITION, exporter, held)}
+
+    def remove_exporter(self, exporter: str) -> dict:
+        """
+        Forget what this site said about an exporter, leaving the baseline to speak.
+        """
+        return {"exporter": exporter,
+                "fields": self._state(exporters.DEFINITION, exporter, {})}
+
+    def set_applied(self, where: str, body: dict = None) -> dict:
+        """
+        Where an exporter applies, and what it looks like there: a mapping of exporter name to
+        false to switch it off, true to take the baseline, or fields to change.
+        """
+        held = declarations.read(PLUGIN, exporters.SCOPE, where, {})
+        held.update(body or {})
+        return {"applied": where, "exporters": self._state(exporters.SCOPE, where, held)}
+
+    def remove_applied(self, where: str) -> dict:
+        """
+        Drop every deviation held for one scope.
+        """
+        return {"applied": where, "exporters": self._state(exporters.SCOPE, where, {})}
+
+    def show_applied(self, where: str) -> dict:
+        """
+        What Prometheus will scrape there once everything has been resolved, so an operator can
+        look before the render does it for real.
+        """
+        baseline, definitions, scopes = self._exporter_inputs()
+        if where in (exporters.EVERY_CONTROLLER,) or where in (baseline.get(exporters.HOSTS) or {}):
+            resolved = exporters.for_controller(where, baseline, definitions, scopes)
+        elif where.startswith("node:"):
+            name = where.split(":", 1)[1]
+            record = luna().node(name) or {}
+            resolved = exporters.for_node(name, record.get("group") or "",
+                                          baseline, definitions, scopes)
+        elif where.startswith("group:"):
+            resolved = exporters.for_node("", where.split(":", 1)[1],
+                                          baseline, definitions, scopes)
+        else:
+            resolved = exporters.for_node("", "", baseline, definitions, scopes)
+        return {"applied": where, "exporters": resolved}
+
+    def _exporter_inputs(self) -> tuple:
+        """
+        The baseline, whatever the site has defined on top of it, and where each one applies.
+
+        No file means an installation that predates it, so the five this daemon shipped with are
+        the baseline and the render is what it was yesterday.
+        """
+        path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
+        baseline = exporters.factory(path)
+        if not baseline.get(exporters.NODES):
+            baseline = dict(baseline)
+            baseline[exporters.NODES] = {name: {"port": port} for name, port in EXPORTERS.items()}
+        definitions = {row["name"]: row["body"]
+                       for row in declarations.listing(PLUGIN, exporters.DEFINITION)}
+        scopes = {row["name"]: row["body"]
+                  for row in declarations.listing(PLUGIN, exporters.SCOPE)}
+        return baseline, definitions, scopes
+
+    def _target(self, address: str, exporter: str, fields: dict, labels: dict) -> dict:
+        """
+        One service discovery entry. The labels are the compatibility surface: dashboards and
+        alert rules group by them, so a change here is a change to what a customer sees.
+        """
+        carried = dict(labels)
+        carried.update(fields.get("labels") or {})
+        return {"targets": [f"{address}:{fields['port']}"], "labels": carried}
+
     # --------------------------------------------------------------- renders
 
     def render_targets(self) -> list:
         """
         The service discovery document, built once per change, not per poll.
         """
+        baseline, definitions, scopes = self._exporter_inputs()
         nodes = luna().nodes()
         targets = []
-        for exporter, port in EXPORTERS.items():
-            for name, node in nodes.items():
-                address = _provision_address(node) or node.get("hostname") or name
-                entry = {
-                    "targets": [f"{address}:{port}"],
-                    "labels": {"exporter": exporter,
-                               "hostname": node.get("hostname") or name},
-                }
-                if node.get("group"):
-                    entry["labels"]["luna_group"] = node["group"]
-                targets.append(entry)
-        LOGGER.info("rendered %d target(s) for %d node(s)", len(targets), len(nodes))
+        for name, node in nodes.items():
+            address = _provision_address(node) or node.get("hostname") or name
+            labels = {"hostname": node.get("hostname") or name}
+            if node.get("group"):
+                labels["luna_group"] = node["group"]
+            for exporter, fields in exporters.for_node(name, node.get("group") or "",
+                                                       baseline, definitions, scopes).items():
+                targets.append(self._target(address, exporter, fields,
+                                            {"exporter": exporter, **labels}))
+        hosts = baseline.get(exporters.HOSTS) or {}
+        for host, where in hosts.items():
+            address = (where or {}).get("address") or host
+            for exporter, fields in exporters.for_controller(host, baseline,
+                                                             definitions, scopes).items():
+                targets.append(self._target(address, exporter, fields,
+                                            {"exporter": exporter, "luna_group": "controller",
+                                             "hostname": host}))
+        LOGGER.info("rendered %d target(s) for %d node(s) and %d controller(s)",
+                    len(targets), len(nodes), len(hosts))
         return targets
 
     def render_rule_files(self) -> dict:

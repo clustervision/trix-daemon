@@ -657,6 +657,81 @@
         "title": "PrometheusConfig",
         "type": "object"
       },
+      "PrometheusExporter": {
+        "properties": {
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How often to scrape it, where it differs from the baseline",
+            "examples": [
+              "5m"
+            ],
+            "title": "Interval"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Labels added to every target of this exporter",
+            "title": "Labels"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The port the exporter answers on, where it differs from the baseline",
+            "examples": [
+              14200
+            ],
+            "title": "Port"
+          }
+        },
+        "title": "PrometheusExporter",
+        "type": "object"
+      },
+      "PrometheusExporter_Applied": {
+        "properties": {
+          "exporters": {
+            "additionalProperties": true,
+            "description": "Exporter name to false to switch it off here, true to take the baseline, or the fields to change. A name the baseline does not have is defined by saying it here.\n",
+            "examples": [
+              {
+                "lshw": false,
+                "node": {
+                  "interval": "15s"
+                },
+                "storcli": {
+                  "port": 14211
+                }
+              }
+            ],
+            "title": "Exporters",
+            "type": "object"
+          }
+        },
+        "required": [
+          "exporters"
+        ],
+        "title": "PrometheusExporter_Applied",
+        "type": "object"
+      },
       "PrometheusHw_Rename": {
         "properties": {
           "was": {
@@ -3199,6 +3274,566 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/prometheus/exporters": {
+      "get": {
+        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_list_exporters_get_api_v1_prometheus_exporters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": {
+                    "group:gpu": {
+                      "lshw": false
+                    }
+                  },
+                  "defined": {},
+                  "factory": {
+                    "controllers": {
+                      "ha": {
+                        "port": 14205
+                      }
+                    },
+                    "digest": "9f2c1d0ab3e45678",
+                    "hosts": [
+                      "controller1.cluster"
+                    ],
+                    "nodes": {
+                      "node": {
+                        "port": 14200
+                      }
+                    },
+                    "path": "/trinity/local/trixd/daemon/config/exporters.yaml"
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The baseline, the definitions and the deviations"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Every exporter this cluster scrapes, and where each one applies",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/prometheus/exporters/applied/{where}": {
+      "delete": {
+        "description": "Drop every deviation held for one scope\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_applied_delete_api_v1_prometheus_exporters_applied__where__delete",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {}
+                },
+                "schema": {}
+              }
+            },
+            "description": "The scope, with nothing held for it"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Drop every deviation held for one scope",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
+      "get": {
+        "description": "Resolves the baseline, this site's definitions and every scope that applies, so an\noperator can look before the render does it for real. Takes `cluster`, `controllers`,\n`group:<name>`, `node:<name>`, or a controller's own hostname.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_show_applied_get_api_v1_prometheus_exporters_applied__where__get",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {
+                    "node": {
+                      "port": 14200
+                    }
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "Exporter name to the fields it is scraped with there"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What will be scraped somewhere, once everything is resolved",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "A scope is `cluster`, a Luna group, one node, every controller, or one controller by its\nown hostname. A controller is named by its real hostname and never by \"this one\": the\ntable replicates, so a row meaning \"me\" would be written by both controllers under one\nkey and each would overwrite the other.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_set_applied_patch_api_v1_prometheus_exporters_applied__where__patch",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "lshw": false,
+                    "node": {
+                      "interval": "15s"
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusExporter_Applied"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {
+                    "lshw": false
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "What this scope now holds"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Apply an exporter somewhere, override its fields, or switch it off",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/exporters/{exporter}": {
+      "delete": {
+        "description": "Leaves the baseline to speak for it again. The row is emptied rather than deleted: the\ntable replicates, and a row missing here is re-added from the peer at the next pass.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_exporter_delete_api_v1_prometheus_exporters__exporter__delete",
+        "parameters": [
+          {
+            "description": "The exporter's name",
+            "examples": {
+              "example": {
+                "value": "lshw"
+              }
+            },
+            "in": "path",
+            "name": "exporter",
+            "required": true,
+            "schema": {
+              "description": "The exporter's name",
+              "title": "Exporter",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "exporter": "lshw",
+                  "fields": {}
+                },
+                "schema": {}
+              }
+            },
+            "description": "The exporter, with nothing held against it"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Forget what this site said about an exporter",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
+      "patch": {
+        "description": "Changes an exporter everywhere it applies, which is how a site that runs one on another\nport says so once rather than per group. An exporter the baseline has never heard of is\ndefined by this call.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_set_exporter_patch_api_v1_prometheus_exporters__exporter__patch",
+        "parameters": [
+          {
+            "description": "The exporter's name",
+            "examples": {
+              "example": {
+                "value": "lshw"
+              }
+            },
+            "in": "path",
+            "name": "exporter",
+            "required": true,
+            "schema": {
+              "description": "The exporter's name",
+              "title": "Exporter",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "port": 24208
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusExporter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "exporter": "lshw",
+                  "fields": {
+                    "port": 24208
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The exporter as it now stands"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Define an exporter, or change one the baseline already has",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/prometheus/hw-rules": {

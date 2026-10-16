@@ -952,3 +952,211 @@ def test_a_node_that_is_gone_has_its_rule_files_retired_not_deleted(rig, tmp_pat
     kept = os.listdir(os.path.join(rules, "backup"))
     assert kept, "retired, but not kept where it can be put back"
     assert len(reloads) > before, "Prometheus was not told the rules changed"
+
+
+def _factory_file(tmp_path, body=None):
+    """
+    The baseline the installer renders, as a file on disk.
+    """
+    import yaml
+    path = tmp_path / "exporters.yaml"
+    path.write_text(yaml.safe_dump(body if body is not None else {
+        "exporters": {"node": {"port": 14200}, "lshw": {"port": 14208, "interval": "5m"}},
+        "controllers": {"node": {"port": 14200}, "ha": {"port": 14205}},
+    }), encoding="utf-8")
+    return str(path)
+
+
+def test_an_empty_table_renders_what_the_factory_file_says(rig, tmp_path):
+    """
+    The upgrade case, and the reason the baseline is a file rather than rows: a cluster that has
+    changed nothing has no rows at all, and must render exactly what it rendered yesterday.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+
+    resolved = exporters.for_node("node001", "compute", baseline, {}, {})
+    assert sorted(resolved) == ["lshw", "node"]
+    assert resolved["lshw"] == {"port": 14208, "interval": "5m"}
+
+
+def test_a_group_overrides_the_cluster_and_a_node_overrides_its_group(rig, tmp_path):
+    """
+    The ladder, in one go: least specific first, each one having the last word over the one
+    before it.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+    rows = {"cluster": {"node": {"interval": "30s"}},
+            "group:gpu": {"node": {"interval": "15s"}},
+            "node:node002": {"node": {"interval": "5s"}}}
+
+    assert exporters.for_node("node001", "compute", baseline, {}, rows)["node"]["interval"] == "30s"
+    assert exporters.for_node("node001", "gpu", baseline, {}, rows)["node"]["interval"] == "15s"
+    assert exporters.for_node("node002", "gpu", baseline, {}, rows)["node"]["interval"] == "5s"
+
+
+def test_a_scope_switches_one_off_and_declares_one_the_factory_never_heard_of(rig, tmp_path):
+    """
+    A deviation is not only on or off: it carries a port, so a site can add its own exporter, and
+    absence has to mean inherit or nothing could ever be turned off.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+    rows = {"group:gpu": {"lshw": False, "storcli": {"port": 14211}}}
+
+    resolved = exporters.for_node("node001", "gpu", baseline, {}, rows)
+
+    assert "lshw" not in resolved, "a scope could not switch a factory exporter off"
+    assert resolved["storcli"] == {"port": 14211}, "a scope could not declare its own exporter"
+    assert "lshw" in exporters.for_node("node001", "compute", baseline, {}, rows), \
+        "switching it off for one group took it from another"
+
+
+def test_a_definition_moves_a_port_everywhere_without_touching_the_file(rig, tmp_path):
+    """
+    A site that runs an exporter on another port says so once, rather than per group.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+
+    resolved = exporters.for_node("node001", "compute", baseline, {"node": {"port": 24200}}, {})
+
+    assert resolved["node"]["port"] == 24200
+
+
+def test_a_controller_resolves_on_its_own_ladder_and_not_the_nodes(rig, tmp_path):
+    """
+    The two ladders are separate on purpose: a rule written for every node must not land on a
+    controller, which is not one of Luna's nodes.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+    rows = {"cluster": {"lshw": False},
+            "controllers": {"ha": {"interval": "1m"}},
+            "ctrl2.cluster": {"ha": False}}
+
+    one = exporters.for_controller("ctrl1.cluster", baseline, {}, rows)
+    two = exporters.for_controller("ctrl2.cluster", baseline, {}, rows)
+
+    assert one["ha"]["interval"] == "1m", "the controllers scope did not apply"
+    assert "ha" not in two, "a controller's own row did not override the controllers scope"
+    assert "node" in one and "node" in two
+    assert "lshw" not in baseline["controllers"], "the node baseline leaked into the controllers"
+
+
+def test_the_factory_file_is_read_again_only_when_it_moves(rig, tmp_path, monkeypatch):
+    """
+    A render asks for the baseline on every pass, and a pass can follow every node change. The
+    file is parsed when it changes and not once per boot in a boot storm.
+    """
+    import yaml
+    from trixd.plugins.prometheus import exporters
+
+    path = _factory_file(tmp_path)
+    reads = []
+    original = yaml.safe_load
+    monkeypatch.setattr(yaml, "safe_load", lambda *a, **k: reads.append(1) or original(*a, **k))
+
+    exporters.factory(path)
+    exporters.factory(path)
+    exporters.factory(path)
+    assert len(reads) == 1, f"the file was parsed {len(reads)} times for three asks"
+
+    os.utime(path, (0, 0))
+    exporters.factory(path)
+    assert len(reads) == 2, "a changed file was not read again"
+
+
+def test_a_broken_factory_file_keeps_what_was_loaded(rig, tmp_path):
+    """
+    A half-written or invalid file must not empty Prometheus's target list. It is said loudly and
+    the daemon renders what it already had.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    path = _factory_file(tmp_path)
+    good = exporters.factory(path)
+    assert good.get("exporters")
+
+    with open(path, "w", encoding="utf-8") as handle:
+        handle.write("exporters: {node: {port: 14200}\n")      # never closed
+    os.utime(path, (1, 1))
+
+    assert exporters.factory(path).get("exporters"), "a broken file emptied the baseline"
+
+
+def test_the_render_scrapes_what_the_factory_file_says_and_the_controllers_it_names(
+        rig, tmp_path, monkeypatch):
+    """
+    The whole point of the file: the ten the product installs rather than the five that were
+    typed into the daemon, and the controllers as targets in their own right.
+
+    The labels are asserted, not just the count, because dashboards and alert rules group by
+    them - they are what a customer sees, and they must match what the file_sd this replaces
+    emitted: exporter, luna_group, hostname.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    path = _factory_file(tmp_path, {
+        "exporters": {"node": {"port": 14200}, "amd": {"port": 14209}},
+        "controllers": {"node": {"port": 14200}, "ha": {"port": 14205}},
+        "hosts": {"ctrl1.cluster": {"address": "10.141.255.252"}},
+    })
+    backend.config({"exporters_file": path})
+
+    rendered = backend.render_targets()
+    by_target = {entry["targets"][0]: entry["labels"] for entry in rendered}
+
+    assert "10.141.255.252:14205" in by_target, "the controller is not scraped for ha"
+    assert by_target["10.141.255.252:14205"] == {
+        "exporter": "ha", "luna_group": "controller", "hostname": "ctrl1.cluster"}, \
+        "a controller's labels no longer match what file_sd emitted"
+    assert by_target["node001.cluster:14209"]["exporter"] == "amd", \
+        "an exporter the product installs but the daemon never listed is still not scraped"
+    assert by_target["node001.cluster:14209"]["luna_group"] == "compute"
+
+
+def test_a_deviation_changes_what_one_group_is_scraped_on(rig, tmp_path, monkeypatch):
+    """
+    End to end through the render: a site turns one exporter off for a group and moves another's
+    port, and only that group moves.
+    """
+    from trixd.utils import declarations
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {
+        "node001": {"hostname": "node001.cluster", "group": "compute"},
+        "node002": {"hostname": "node002.cluster", "group": "gpu"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {
+        "exporters": {"node": {"port": 14200}, "lshw": {"port": 14208}}})})
+    declarations.write("prometheus", "exporter-scope", "group:gpu",
+                       {"lshw": False, "node": {"port": 24200}})
+
+    by_host = {}
+    for entry in backend.render_targets():
+        by_host.setdefault(entry["labels"]["hostname"], []).append(entry["targets"][0])
+
+    assert sorted(by_host["node001.cluster"]) == ["node001.cluster:14200",
+                                                  "node001.cluster:14208"]
+    assert by_host["node002.cluster"] == ["node002.cluster:24200"], \
+        "the gpu group did not get its own port, or kept the exporter it switched off"
+
+
+def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    A path segment reaches the declaration's name column, which holds 255 characters. Without
+    this the caller's mistake arrives as a 500 from the database rather than as a refusal.
+    """
+    import pytest
+    from trixd.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    with pytest.raises(BadRequest):
+        backend.set_applied("group:" + "x" * 300, {"node": True})
