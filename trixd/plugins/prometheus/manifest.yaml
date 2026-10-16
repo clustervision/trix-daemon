@@ -497,7 +497,7 @@ endpoints:
       key and each would overwrite the other.
     params:
       where: {description: "cluster, controllers, group:<name>, node:<name> or a controller hostname", example: "group:gpu"}
-    request_example: {lshw: false, node: {interval: 15s}}
+    request_example: {exporters: {lshw: false, node: {interval: 15s}}}
     response:
       description: What this scope now holds
       example: {applied: "group:gpu", exporters: {lshw: false}}

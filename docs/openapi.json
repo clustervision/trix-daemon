@@ -3561,9 +3561,11 @@
               "examples": {
                 "example": {
                   "value": {
-                    "lshw": false,
-                    "node": {
-                      "interval": "15s"
+                    "exporters": {
+                      "lshw": false,
+                      "node": {
+                        "interval": "15s"
+                      }
                     }
                   }
                 }

@@ -54,6 +54,9 @@ urllib3.disable_warnings()
 
 PLUGIN: str = "prometheus"
 
+# What Prometheus accepts as a label name; anything else makes it refuse the whole document.
+LABEL_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+
 DEFAULT_CONFIG: dict = {
     "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
@@ -466,7 +469,9 @@ class Backend:
         if not name or len(name) > 255:
             raise BadRequest("a name is needed, of at most 255 characters")
         stored = declarations.write(PLUGIN, kind, name, body or {})
-        renders().notify(kind)
+        # Qualified with the plugin, because a render's bare manifest input is compared that
+        # way: a bare kind here wakes nothing, and the change then waits for a node to move.
+        renders().notify(f"{PLUGIN}.{kind}")
         return stored
 
     def set_exporter(self, exporter: str, body: dict = None) -> dict:
@@ -474,7 +479,9 @@ class Backend:
         Define an exporter the baseline does not have, or change one that it does.
         """
         held = declarations.read(PLUGIN, exporters.DEFINITION, exporter, {})
-        held.update(body or {})
+        # Only what was actually sent: the binder fills every unset optional with None, and
+        # writing those would blank the port this exporter is scraped on.
+        held.update({k: v for k, v in (body or {}).items() if v is not None})
         return {"exporter": exporter,
                 "fields": self._state(exporters.DEFINITION, exporter, held)}
 
@@ -490,8 +497,12 @@ class Backend:
         Where an exporter applies, and what it looks like there: a mapping of exporter name to
         false to switch it off, true to take the baseline, or fields to change.
         """
+        sent = (body or {}).get("exporters")
+        if not isinstance(sent, dict):
+            raise BadRequest("exporters must be a mapping of exporter name to false, true, "
+                             "or the fields to change")
         held = declarations.read(PLUGIN, exporters.SCOPE, where, {})
-        held.update(body or {})
+        held.update(sent)
         return {"applied": where, "exporters": self._state(exporters.SCOPE, where, held)}
 
     def remove_applied(self, where: str) -> dict:
@@ -529,7 +540,7 @@ class Backend:
         """
         path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
         baseline = exporters.factory(path)
-        if not baseline.get(exporters.NODES):
+        if exporters.NODES not in baseline:
             baseline = dict(baseline)
             baseline[exporters.NODES] = {name: {"port": port} for name, port in EXPORTERS.items()}
         definitions = {row["name"]: row["body"]
@@ -543,8 +554,17 @@ class Backend:
         One service discovery entry. The labels are the compatibility surface: dashboards and
         alert rules group by them, so a change here is a change to what a customer sees.
         """
-        carried = dict(labels)
-        carried.update(fields.get("labels") or {})
+        carried = {}
+        for key, value in (fields.get("labels") or {}).items():
+            if not LABEL_NAME.match(str(key)) or not isinstance(value, str):
+                # http_sd rejects the whole document over one bad label, so a site's typo would
+                # take every target down rather than its own.
+                LOGGER.warning("ignoring the label %r on %s: a label is a name and a string",
+                               key, exporter)
+                continue
+            carried[key] = value
+        # Last, so a site cannot rename the labels dashboards and alert rules group by.
+        carried.update(labels)
         return {"targets": [f"{address}:{fields['port']}"], "labels": carried}
 
     # --------------------------------------------------------------- renders

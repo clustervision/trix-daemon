@@ -961,7 +961,7 @@ def _factory_file(tmp_path, body=None):
     import yaml
     path = tmp_path / "exporters.yaml"
     path.write_text(yaml.safe_dump(body if body is not None else {
-        "exporters": {"node": {"port": 14200}, "lshw": {"port": 14208, "interval": "5m"}},
+        "nodes": {"node": {"port": 14200}, "lshw": {"port": 14208, "interval": "5m"}},
         "controllers": {"node": {"port": 14200}, "ha": {"port": 14205}},
     }), encoding="utf-8")
     return str(path)
@@ -1082,13 +1082,13 @@ def test_a_broken_factory_file_keeps_what_was_loaded(rig, tmp_path):
 
     path = _factory_file(tmp_path)
     good = exporters.factory(path)
-    assert good.get("exporters")
+    assert good.get("nodes")
 
     with open(path, "w", encoding="utf-8") as handle:
-        handle.write("exporters: {node: {port: 14200}\n")      # never closed
+        handle.write("nodes: {node: {port: 14200}\n")      # never closed
     os.utime(path, (1, 1))
 
-    assert exporters.factory(path).get("exporters"), "a broken file emptied the baseline"
+    assert exporters.factory(path).get("nodes"), "a broken file emptied the baseline"
 
 
 def test_the_render_scrapes_what_the_factory_file_says_and_the_controllers_it_names(
@@ -1104,7 +1104,7 @@ def test_the_render_scrapes_what_the_factory_file_says_and_the_controllers_it_na
     backend = _prometheus_rig(tmp_path, monkeypatch,
                               {"node001": {"hostname": "node001.cluster", "group": "compute"}})
     path = _factory_file(tmp_path, {
-        "exporters": {"node": {"port": 14200}, "amd": {"port": 14209}},
+        "nodes": {"node": {"port": 14200}, "amd": {"port": 14209}},
         "controllers": {"node": {"port": 14200}, "ha": {"port": 14205}},
         "hosts": {"ctrl1.cluster": {"address": "10.141.255.252"}},
     })
@@ -1133,7 +1133,7 @@ def test_a_deviation_changes_what_one_group_is_scraped_on(rig, tmp_path, monkeyp
         "node001": {"hostname": "node001.cluster", "group": "compute"},
         "node002": {"hostname": "node002.cluster", "group": "gpu"}})
     backend.config({"exporters_file": _factory_file(tmp_path, {
-        "exporters": {"node": {"port": 14200}, "lshw": {"port": 14208}}})})
+        "nodes": {"node": {"port": 14200}, "lshw": {"port": 14208}}})})
     declarations.write("prometheus", "exporter-scope", "group:gpu",
                        {"lshw": False, "node": {"port": 24200}})
 
@@ -1160,3 +1160,135 @@ def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, 
 
     with pytest.raises(BadRequest):
         backend.set_applied("group:" + "x" * 300, {"node": True})
+
+
+def _bound(endpoint_path, verb, handler_name, tmp_path, monkeypatch, nodes=None):
+    """
+    One of this plugin's endpoints as the daemon binds it: the manifest's own schema turned
+    into the pydantic model FastAPI would use, in front of the real handler.
+
+    Calling the backend directly - as every other test here does - skips exactly the layer
+    where a schema and a handler can disagree while the suite stays green.
+    """
+    import yaml
+    from trixd.core.plugins import binder, manifest as manifests
+
+    document = yaml.safe_load(open("trixd/plugins/prometheus/manifest.yaml", encoding="utf-8"))
+    parsed = manifests.parse(document)
+    endpoint = [e for e in parsed.endpoints
+                if e.path == endpoint_path and verb in [m.upper() for m in e.methods]][0]
+    models = manifests.build_models(parsed)
+    backend = _prometheus_rig(tmp_path, monkeypatch, nodes or {})
+    model = models.get(endpoint.body_schema) if endpoint.body_schema else None
+    operation = binder._endpoint_function(getattr(backend, handler_name), endpoint, model,
+                                          "prometheus", verb)
+    import inspect
+    operation.body_model = inspect.signature(operation).parameters["body"].annotation
+    return operation, [e for e in document["endpoints"]
+                       if e["path"] == endpoint_path and verb in e["methods"]][0]
+
+
+def test_the_scope_endpoint_takes_the_body_its_own_manifest_documents(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    The documented request example, through the model the manifest declares. A schema asking
+    for one shape while the handler reads another answers 422 to the only body anybody would
+    send, and no test that calls the backend directly can see it.
+    """
+    operation, documented = _bound("exporters/applied/<where>", "PATCH", "set_applied",
+                                   tmp_path, monkeypatch)
+
+    answer = operation(where="group:gpu",
+                       body=operation.body_model(**documented["request_example"]))
+
+    assert answer["exporters"]["lshw"] is False, answer
+
+
+def test_changing_one_field_through_the_model_keeps_the_rest(rig, tmp_path, monkeypatch):
+    """
+    The model fills every unset optional with None. Written straight into the document those
+    blank the port, and the exporter then resolves to nothing on every node - from a PATCH that
+    only meant to change an interval.
+    """
+    operation, _ = _bound("exporters/<exporter>", "PATCH", "set_exporter", tmp_path, monkeypatch)
+    model = operation.body_model
+
+    operation(exporter="node", body=model(port=14200))
+    answer = operation(exporter="node", body=model(interval="15s"))
+
+    assert answer["fields"] == {"port": 14200, "interval": "15s"}, \
+        "an interval-only change dropped the port"
+
+
+def test_a_write_wakes_the_render_that_reads_it(rig, monkeypatch):
+    """
+    A render's bare manifest input is compared plugin-qualified, so a bare kind wakes nothing
+    and the change waits for an unrelated node to move. The symptom is a deviation that applies
+    on the controller nobody used.
+    """
+    from trixd.core.render import engine
+    from trixd.plugins.prometheus import backend as prometheus
+
+    woken = []
+    monkeypatch.setattr(engine, "current",
+                        lambda: type("E", (), {"notify": lambda self, changed:
+                                               woken.append(changed) or []})())
+    monkeypatch.setattr(prometheus, "renders", engine.current)
+
+    prometheus.Backend().set_applied("cluster", {"exporters": {"node": True}})
+
+    assert woken, "nothing was notified at all"
+    assert all(w.startswith("prometheus.") for w in woken), \
+        f"notified {woken}, which no render's input matches"
+
+
+def test_a_site_cannot_rename_the_labels_everything_groups_by(rig, tmp_path, monkeypatch):
+    """
+    Dashboards group by exporter, luna_group and hostname - 122 queries on luna_group alone -
+    so a label carried from the file must not be able to take one of those names.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {"nodes": {
+        "node": {"port": 14200,
+                 "labels": {"exporter": "node_v2", "hostname": "elsewhere", "rack": "7"}}}})})
+
+    labels = backend.render_targets()[0]["labels"]
+
+    assert labels["exporter"] == "node" and labels["hostname"] == "node001.cluster"
+    assert labels["rack"] == "7", "a label of the site's own was dropped"
+
+
+def test_a_label_prometheus_cannot_parse_does_not_take_the_document_down(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    http_sd refuses the whole response over one invalid label, so one site's typo would stop
+    every target being discovered rather than its own.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {"nodes": {
+        "node": {"port": 14200, "labels": {"gpu-type": "a100", "rack": 7}}}})})
+
+    labels = backend.render_targets()[0]["labels"]
+
+    assert "gpu-type" not in labels, "a label name Prometheus refuses was emitted"
+    assert "rack" not in labels, "a non-string label value was emitted"
+    assert labels["exporter"] == "node"
+
+
+def test_a_port_where_a_mapping_belongs_does_not_stop_discovery(rig, tmp_path, monkeypatch):
+    """
+    An ordinary typo in the file must not reach the render: an exception there leaves a
+    restarted daemon with no document at all, which answers 404 to every poll.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {"nodes": {"node": 14200}})})
+
+    rendered = backend.render_targets()
+
+    assert rendered, "a typo emptied the service discovery document"
+    assert {entry["labels"]["exporter"] for entry in rendered} == {"node", "ipmi", "nvidia",
+                                                                   "slurm_job", "lshw"}, \
+        "the file was refused but the shipped baseline did not take over"

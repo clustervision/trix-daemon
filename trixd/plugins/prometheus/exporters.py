@@ -43,7 +43,7 @@ LOGGER = trixlog.get("prometheus")
 
 # The file's two sections: one ladder for Luna's nodes, one for the controllers. They are kept
 # apart so a rule written for every node does not quietly land on a controller as well.
-NODES: str = "exporters"
+NODES: str = "nodes"
 CONTROLLERS: str = "controllers"
 # The controllers themselves, with the address to scrape each on. Luna knows nodes, not
 # controllers, and the installer already writes these addresses for the file it replaces - so it
@@ -65,35 +65,68 @@ _held: dict = {}
 _lock = threading.Lock()
 
 
+def _sections(body: dict, path: str) -> dict:
+    """
+    The file as this understands it, or nothing where it is shaped wrongly.
+
+    A port written where a mapping belongs is an ordinary typo, and it must not reach the
+    render: an exception there leaves a restarted daemon with no document at all, which is a
+    404 to every poll rather than a stale answer.
+    """
+    for section in (NODES, CONTROLLERS, HOSTS):
+        held = body.get(section)
+        if held is None:
+            continue
+        if not isinstance(held, dict) or not all(isinstance(v, dict) or v is None
+                                                 for v in held.values()):
+            LOGGER.error("%s in %s is not a mapping of name to fields, ignoring the file",
+                         section, path)
+            return {}
+    return body
+
+
 def factory(path: str) -> dict:
     """
-    The file as it is now, read again only when it has moved.
+    The file as it is now, read again only when it has changed.
 
     A render asks for this on every pass, and a pass can follow every node change, so the cost
-    of being wrong here is paid per boot in a boot storm.
+    of being wrong here is paid per boot in a boot storm. The stamp is the size as well as the
+    time: two writes inside one timestamp tick are not rare, and the cache beside this one in
+    the backend pairs them for the same reason.
     """
     try:
-        stamp = os.path.getmtime(path)
-    except OSError:
-        return {}
+        status = os.stat(path)
+        stamp = (status.st_mtime, status.st_size)
+    except OSError as error:
+        with _lock:
+            held = _held.get("body", {}) if _held.get("path") == path else {}
+        if held:
+            # It was there a moment ago. Saying nothing here is how every controller target
+            # disappears and every node silently moves back to the ports built into the code.
+            LOGGER.error("the exporter file %s has gone, keeping what was loaded: %s",
+                         path, error)
+        return held
     with _lock:
-        if _held.get("path") == path and _held.get("mtime") == stamp:
+        if _held.get("path") == path and _held.get("stamp") == stamp:
             return _held["body"]
     try:
         with open(path, "r", encoding="utf-8") as handle:
             body = yaml.safe_load(handle) or {}
+            # Stamped from the handle, so a file replaced between the stat and the open is not
+            # remembered under the previous file's mtime.
+            status = os.fstat(handle.fileno())
+            stamp = (status.st_mtime, status.st_size)
     except (OSError, yaml.YAMLError) as error:
-        # Loudly, and then the caller renders what it had: a broken file must not empty
-        # Prometheus's target list.
         LOGGER.error("the exporter file %s could not be read, keeping what was loaded: %s",
                      path, error)
         with _lock:
-            return _held.get("body", {})
+            return _held.get("body", {}) if _held.get("path") == path else {}
     if not isinstance(body, dict):
         LOGGER.error("the exporter file %s is not a mapping, ignoring it", path)
         body = {}
+    body = _sections(body, path)
     with _lock:
-        _held.update({"path": path, "mtime": stamp, "body": body})
+        _held.update({"path": path, "stamp": stamp, "body": body})
     LOGGER.info("read %d node and %d controller exporter(s) from %s",
                 len(body.get(NODES) or {}), len(body.get(CONTROLLERS) or {}), path)
     return body
