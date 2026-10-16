@@ -1249,7 +1249,7 @@ def test_a_write_wakes_the_render_that_reads_it(rig, monkeypatch):
         open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
     targets = [e for e in parsed.endpoints if e.path == "renders/targets"][0]
     render = engine.Render("prometheus", "renders/targets", targets.render, lambda: [])
-    assert any(render.wants(key) for key in woken), \
+    assert all(render.wants(key) for key in woken), \
         f"notified {woken}, which the targets render does not match"
 
 
@@ -1386,3 +1386,103 @@ def test_a_bad_entry_in_one_section_does_not_cost_the_others(rig, tmp_path, monk
         "a typo in hosts took the node section down with it"
     assert not [e for e in rendered if e["labels"].get("luna_group") == "controller"], \
         "the refused host was scraped anyway"
+
+
+def test_a_timeout_sent_to_the_route_is_not_quietly_dropped(rig, tmp_path, monkeypatch):
+    """
+    A field the handler emits but the schema does not declare is dropped by the model before
+    the handler ever sees it, and the call still answers 200 - a setting that reads as applied
+    and does nothing, which is the whole defect this field was added to fix.
+    """
+    operation, _ = _bound("exporters/<exporter>", "PATCH", "set_exporter", tmp_path, monkeypatch)
+    model = operation.body_model
+
+    answer = operation(exporter="lshw", body=model(port=14208, timeout="10s"))
+
+    assert answer["fields"].get("timeout") == "10s", \
+        f"the timeout never reached the handler: {answer['fields']}"
+
+
+def test_a_duration_that_is_not_one_is_refused_on_both_routes(rig, tmp_path, monkeypatch):
+    """
+    A bare number is not a duration: Prometheus's own parser rejects __scrape_interval__ and
+    drops the target, silently from here. The scope route takes a free mapping, so without a
+    check of its own it would accept what the typed route refuses - one field, two answers.
+    """
+    import pytest
+    from trixd.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    with pytest.raises(BadRequest):
+        backend.set_applied("group:gpu", {"exporters": {"node": {"interval": 30}}})
+    with pytest.raises(BadRequest):
+        backend.set_exporter("node", {"port": "14200 "})
+
+
+def test_no_verb_takes_a_path_word_as_an_exporter_name(rig, tmp_path, monkeypatch):
+    """
+    Derived from the manifest rather than from a list someone keeps by hand: every literal word
+    that appears as a path segment under exporters/ must be refused as an exporter name, on
+    every verb bound to the one-segment route. A new route adds a new word for free.
+    """
+    import pytest
+    import yaml
+    from trixd.common.errors import BadRequest
+    from trixd.plugins.prometheus import backend as prometheus
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    document = yaml.safe_load(open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"),
+                                   encoding="utf-8"))
+    words = set()
+    for endpoint in document["endpoints"]:
+        parts = endpoint["path"].split("/")
+        if parts[0] == "exporters":
+            words.update(p for p in parts[1:] if not p.startswith("<"))
+    assert words, "no path words were found under exporters/, so this test proves nothing"
+    assert words <= set(prometheus.RESERVED), \
+        f"{words - set(prometheus.RESERVED)} can be taken as an exporter name"
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    for word in words:
+        with pytest.raises(BadRequest):
+            backend.set_exporter(word, {"port": 14200})
+        with pytest.raises(BadRequest):
+            backend.remove_exporter(word)
+
+
+def test_a_section_written_empty_means_nothing_here(rig, tmp_path, monkeypatch):
+    """
+    The delicate half of the rule: a section emptied by refusals falls back to what the daemon
+    was built with, while one an operator deliberately wrote empty means none - and only this
+    pins the second, so loosening the condition would silently start scraping five ports.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {
+        "nodes": {}, "controllers": {"ha": {"port": 14205}},
+        "hosts": {"ctrl1.cluster": {"address": "10.0.0.1"}}})})
+
+    rendered = backend.render_targets()
+
+    assert not [e for e in rendered if e["labels"].get("hostname") == "node001.cluster"], \
+        "an empty nodes section fell back to the exporters built into the daemon"
+    assert [e for e in rendered if e["labels"].get("luna_group") == "controller"], \
+        "the controllers went with it"
+
+
+def test_the_listing_says_what_the_file_lost(rig, tmp_path, monkeypatch):
+    """
+    The file is forgiving on purpose, so the one place an operator can see what it forgave is
+    the API - a log line from start-up has rotated long before anyone diffs the two.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    backend.config({"exporters_file": _factory_file(tmp_path, {"nodes": {
+        "node": {"port": 14200, "labels": {"gpu-type": "a100"}},
+        "lshw": {"port": 14208, "interval": 30}}})})
+
+    listed = backend.list_exporters()["factory"]
+
+    assert listed["read"] is True
+    assert any("gpu-type" in line for line in listed["ignored"]), listed["ignored"]
+    assert any("interval" in line for line in listed["ignored"]), listed["ignored"]

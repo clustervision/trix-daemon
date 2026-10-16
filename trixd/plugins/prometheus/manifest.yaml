@@ -34,8 +34,13 @@ schemas:
     interval:
       type: string
       optional: true
-      description: How often to scrape it, where it differs from the baseline
+      description: How often to scrape it, as a duration such as 30s or 5m
       example: 5m
+    timeout:
+      type: string
+      optional: true
+      description: How long one scrape of it may take, as a duration such as 10s
+      example: 10s
     labels:
       type: object
       optional: true
@@ -435,10 +440,15 @@ endpoints:
       `read` says whether that file is the baseline in use. False means it is absent,
       unreadable or names no nodes section, and the exporters built into the daemon are being
       served instead - which two digests alone would not tell you.
+
+      `ignored` is what the last read of that file threw away: a label Prometheus will not
+      accept, a port that is not a number, a duration that is not one. The file is forgiving,
+      because one bad label must not cost a cluster its targets - this is where it says what
+      it forgave, rather than only a log line that has since rotated.
     response:
       description: The baseline, the definitions and the deviations
       example:
-        factory: {path: /trinity/local/trixd/daemon/config/exporters.yaml, digest: 9f2c1d0ab3e45678, read: true, reason: '', nodes: {node: {port: 14200}}, controllers: {ha: {port: 14205}}, hosts: [controller1.cluster]}
+        factory: {path: /trinity/local/trixd/daemon/config/exporters.yaml, digest: 9f2c1d0ab3e45678, read: true, reason: '', ignored: [], nodes: {node: {port: 14200}}, controllers: {ha: {port: 14205}}, hosts: [controller1.cluster]}
         defined: {}
         applied: {group:gpu: {lshw: false}}
 

@@ -668,7 +668,7 @@
                 "type": "null"
               }
             ],
-            "description": "How often to scrape it, where it differs from the baseline",
+            "description": "How often to scrape it, as a duration such as 30s or 5m",
             "examples": [
               "5m"
             ],
@@ -701,6 +701,21 @@
               14200
             ],
             "title": "Port"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long one scrape of it may take, as a duration such as 10s",
+            "examples": [
+              "10s"
+            ],
+            "title": "Timeout"
           }
         },
         "title": "PrometheusExporter",
@@ -3278,7 +3293,7 @@
     },
     "/api/v1/prometheus/exporters": {
       "get": {
-        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n`read` says whether that file is the baseline in use. False means it is absent,\nunreadable or names no nodes section, and the exporters built into the daemon are being\nserved instead - which two digests alone would not tell you.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n`read` says whether that file is the baseline in use. False means it is absent,\nunreadable or names no nodes section, and the exporters built into the daemon are being\nserved instead - which two digests alone would not tell you.\n\n`ignored` is what the last read of that file threw away: a label Prometheus will not\naccept, a port that is not a number, a duration that is not one. The file is forgiving,\nbecause one bad label must not cost a cluster its targets - this is where it says what\nit forgave, rather than only a log line that has since rotated.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_list_exporters_get_api_v1_prometheus_exporters_get",
         "responses": {
           "200": {
@@ -3301,6 +3316,7 @@
                     "hosts": [
                       "controller1.cluster"
                     ],
+                    "ignored": [],
                     "nodes": {
                       "node": {
                         "port": 14200

@@ -67,6 +67,20 @@ _lock = threading.Lock()
 
 
 LABEL_NAME = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
+# What Prometheus reads as a duration. A bare number is not one: it fails in its own parser and
+# the target is dropped from the scrape pool, silently from here.
+DURATION = re.compile(r"^([0-9]+(ms|[smhdwy]))+$")
+# What the last read of the file threw away, so the listing can say so rather than only the log.
+IGNORED: list = []
+
+
+def _ignored(what: str, strict: bool) -> None:
+    """
+    Say it, and remember it where a reader of the API can find it.
+    """
+    LOGGER.error("%s", what)
+    if not strict:
+        IGNORED.append(what)
 
 
 def checked(name: str, fields, where: str, strict: bool = False) -> dict:
@@ -85,25 +99,40 @@ def checked(name: str, fields, where: str, strict: bool = False) -> dict:
         LOGGER.error("%s in %s is %s, not a mapping of fields", name, where,
                      type(fields).__name__)
         return None
-    kept = {key: value for key, value in fields.items() if key != "labels"}
+    kept = {}
+    for key, value in fields.items():
+        if key == "labels":
+            continue
+        if key == "port" and not isinstance(value, int):
+            _ignored(f"{name} in {where}: port {value!r} is not a number", strict)
+            if strict:
+                return None
+            continue
+        if key in ("interval", "timeout") and not DURATION.match(str(value)):
+            _ignored(f"{name} in {where}: {key} {value!r} is not a duration such as 30s or 5m",
+                     strict)
+            if strict:
+                return None
+            continue
+        kept[key] = value
     labels = fields.get("labels")
     if labels is None:
         return kept
     if not isinstance(labels, dict):
-        LOGGER.error("the labels of %s in %s are %s, not a mapping; ignoring them",
-                     name, where, type(labels).__name__)
+        _ignored(f"the labels of {name} in {where} are "
+                 f"{type(labels).__name__}, not a mapping", strict)
         return None if strict else kept
     carried = {}
     for key, value in labels.items():
         if not LABEL_NAME.match(str(key)):
-            LOGGER.error("%s in %s carries the label %r, which Prometheus will not accept",
-                         name, where, key)
+            _ignored(f"{name} in {where} carries the label {key!r}, "
+                     f"which Prometheus will not accept", strict)
             if strict:
                 return None
             continue
         if isinstance(value, (dict, list)):
-            LOGGER.error("the label %s of %s in %s is %s, which has no string form",
-                         key, name, where, type(value).__name__)
+            _ignored(f"the label {key} of {name} in {where} is "
+                     f"{type(value).__name__}, which has no string form", strict)
             if strict:
                 return None
             continue
@@ -125,8 +154,13 @@ def _sections(body: dict, path: str) -> dict:
     """
     read = {}
     for section in (NODES, CONTROLLERS, HOSTS):
+        if section not in body:
+            continue
         held = body.get(section)
         if held is None:
+            # `nodes:` with nothing under it is yaml for an empty mapping, and an operator who
+            # writes that means none here - not "fall back to what the daemon was built with".
+            read[section] = {}
             continue
         if not isinstance(held, dict):
             LOGGER.error("%s in %s is %s, not a mapping; that section is ignored",
@@ -168,12 +202,13 @@ def factory(path: str) -> dict:
             held = _held.get("body", {}) if _held.get("path") == path else {}
             said = _held.get("missing") == path
             _held["missing"] = path
-        if held:
+        if held and not said:
             # It was there a moment ago. Saying nothing here is how every controller target
             # disappears and every node silently moves back to the ports built into the code.
+            # Once: a render can follow every node change, and the file stays gone.
             LOGGER.error("the exporter file %s has gone, keeping what was loaded: %s",
                          path, error)
-        elif not said:
+        elif not held and not said:
             # A file that never arrived is the fresh-install case: the daemon then serves the
             # exporters built into it and no controllers at all, which is worth one line.
             # Once per path, because a render can follow every node change.
@@ -198,6 +233,7 @@ def factory(path: str) -> dict:
     if not isinstance(body, dict):
         LOGGER.error("the exporter file %s is not a mapping, ignoring it", path)
         body = {}
+    del IGNORED[:]
     body = _sections(body, path)
     with _lock:
         _held.update({"path": path, "stamp": stamp, "body": body, "missing": ""})

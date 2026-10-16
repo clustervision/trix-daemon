@@ -55,7 +55,8 @@ urllib3.disable_warnings()
 PLUGIN: str = "prometheus"
 
 # What Prometheus accepts as a label name; anything else makes it refuse the whole document.
-# Path words under /exporters, which an exporter may therefore not be called.
+# The literal words in this plugin's own route paths under /exporters, which an exporter may
+# therefore not be called: the one-segment route catches them when a scope is left off.
 RESERVED: tuple = ("applied",)
 
 DEFAULT_CONFIG: dict = {
@@ -449,14 +450,15 @@ class Backend:
         are - so two controllers can disagree about it while the database looks converged. One
         call per controller and the two digests settle it.
         """
-        baseline, definitions, scopes = self._exporter_inputs()
+        baseline, definitions, scopes, read = self._exporter_inputs(say=True)
         path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
-        read = exporters.NODES in exporters.factory(path)
         return {"factory": {"path": path, "digest": exporters.digest(path),
                             "read": read,
                             "reason": "" if read else
-                                      "the file is absent, unreadable or names no nodes "
-                                      "section; the exporters built into the daemon are in use",
+                                      "no nodes section was read from this file - it is "
+                                      "absent, unreadable, or names none; the exporters built "
+                                      "into the daemon are in use",
+                            "ignored": list(exporters.IGNORED),
                             "nodes": baseline.get(exporters.NODES) or {},
                             "controllers": baseline.get(exporters.CONTROLLERS) or {},
                             "hosts": sorted(baseline.get(exporters.HOSTS) or {})},
@@ -504,6 +506,10 @@ class Backend:
         """
         Forget what this site said about an exporter, leaving the baseline to speak.
         """
+        if exporter in RESERVED:
+            # DELETE /exporters/applied with the scope left off lands here, and would answer
+            # 200 while the scope's deviations stay exactly where they were.
+            raise BadRequest(f"{exporter} is part of the path, not an exporter name")
         return {"exporter": exporter,
                 "fields": self._state(exporters.DEFINITION, exporter, {})}
 
@@ -550,7 +556,7 @@ class Backend:
             resolved = exporters.for_node("", "", baseline, definitions, scopes)
         return {"applied": where, "exporters": resolved}
 
-    def _exporter_inputs(self) -> tuple:
+    def _exporter_inputs(self, say: bool = False) -> tuple:
         """
         The baseline, whatever the site has defined on top of it, and where each one applies.
 
@@ -559,14 +565,15 @@ class Backend:
         """
         path = self._config().get("exporters_file") or DEFAULT_CONFIG["exporters_file"]
         baseline = exporters.factory(path)
-        if exporters.NODES not in baseline:
+        read = exporters.NODES in baseline
+        if not read:
             baseline = dict(baseline)
             baseline[exporters.NODES] = {name: {"port": port} for name, port in EXPORTERS.items()}
         definitions = {row["name"]: row["body"]
                        for row in declarations.listing(PLUGIN, exporters.DEFINITION)}
         scopes = {row["name"]: row["body"]
                   for row in declarations.listing(PLUGIN, exporters.SCOPE)}
-        return baseline, definitions, scopes
+        return (baseline, definitions, scopes, read) if say else (baseline, definitions, scopes)
 
     def _target(self, address: str, exporter: str, fields: dict, labels: dict) -> dict:
         """
