@@ -741,3 +741,91 @@ def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatc
     assert result["blocked"] == 0, f"node001 is still held behind the refusal: {result}"
     assert len(sent) == 1 and "node001" in sent[0], \
         f"sent {sent}: node001's patch should have gone once the refusal was cleared"
+
+
+def test_a_forgotten_declaration_does_not_come_back_from_the_peer(rig, tmp_path):
+    """
+    The defect this closes is only visible across two controllers: deleting the row outright
+    leaves the peer holding it, and the next sweep puts it back - within thirty seconds, with
+    nothing said. A marked row carries the deletion instead, and counts as no row on both.
+    """
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node001", {"ipmi": False})
+    handle = database.session()
+    peer = _peer(tmp_path)
+    try:
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        assert peer.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node001")) is not None, "the peer never had it"
+
+        assert declarations.forget("prometheus", "exporter-scope", "node:node001") is True
+        handle.expire_all()
+        # A sweep in each direction, as the pair does every thirty seconds.
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+
+        theirs = peer.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node001"))
+        assert theirs.deleted, "the deletion did not reach the peer"
+        assert declarations.read("prometheus", "exporter-scope", "node:node001") is None, \
+            "the row came back as a document here"
+        assert "node:node001" not in [row["name"] for row
+                                      in declarations.listing("prometheus", "exporter-scope")], \
+            "a forgotten declaration is still listed"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_writing_a_forgotten_key_again_brings_it_back(rig):
+    """
+    A marker must not be a tombstone nobody can get past: the same name written again is a
+    live document, or a scope could never be set twice.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "group:gpu", {"lshw": False})
+    declarations.forget("prometheus", "exporter-scope", "group:gpu")
+    assert declarations.read("prometheus", "exporter-scope", "group:gpu") is None
+
+    declarations.write("prometheus", "exporter-scope", "group:gpu", {"nvidia": True})
+
+    assert declarations.read("prometheus", "exporter-scope", "group:gpu") == {"nvidia": True}
+    assert "group:gpu" in [row["name"] for row
+                           in declarations.listing("prometheus", "exporter-scope")]
+
+
+def test_a_hard_delete_comes_back_from_the_peer(rig, tmp_path):
+    """
+    Why the marker exists, pinned so the reason cannot quietly stop being true.
+
+    If this ever fails, the sweep no longer re-adds a row that is missing here, and forgetting
+    could become an ordinary delete.
+    """
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node009", {"ipmi": False})
+    handle = database.session()
+    peer = _peer(tmp_path)
+    try:
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        handle.execute(models.Declaration.__table__.delete().where(
+            models.Declaration.name == "node:node009"))
+        handle.commit()
+        assert declarations.read("prometheus", "exporter-scope", "node:node009") is None
+
+        tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+
+        assert declarations.read("prometheus", "exporter-scope",
+                                 "node:node009") == {"ipmi": False}, \
+            "a row deleted outright no longer returns, so the marker may not be needed"
+    finally:
+        handle.close()
+        peer.close()

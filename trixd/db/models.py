@@ -74,6 +74,10 @@ class Declaration(Base, Replicated):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     body: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # A deleted declaration stays as a marker so the deletion reaches the peer; it counts as
+    # no row. Without it the sweep finds the row missing here, present there, and puts it back.
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"),
+                                          nullable=False)
 
 
 class Principal(Base, Replicated):

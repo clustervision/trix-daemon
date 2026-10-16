@@ -468,9 +468,8 @@ class Backend:
         """
         Write one exporter document and wake the render that reads it.
 
-        An empty body is how this plugin removes one. A row is never deleted: the table
-        replicates, and the peer re-adds a row that is missing here at the next pass, so a
-        delete would come back within the sweep interval.
+        Removal is `forget`, which marks the row rather than deleting it: the peer re-adds a
+        row that is missing here, so a real delete comes back within the sweep interval.
         """
         # The name becomes a declaration's name, which the column holds to 255 characters: a
         # longer one is a caller's mistake and belongs in a refusal rather than a database error.
@@ -502,6 +501,14 @@ class Backend:
         return {"exporter": exporter,
                 "fields": self._state(exporters.DEFINITION, exporter, held)}
 
+    def _forget(self, kind: str, name: str) -> bool:
+        """
+        Mark one document deleted and wake the render that read it.
+        """
+        gone = declarations.forget(PLUGIN, kind, name)
+        renders().notify(f"{PLUGIN}.{kind}")
+        return gone
+
     def remove_exporter(self, exporter: str) -> dict:
         """
         Forget what this site said about an exporter, leaving the baseline to speak.
@@ -510,8 +517,8 @@ class Backend:
             # DELETE /exporters/applied with the scope left off lands here, and would answer
             # 200 while the scope's deviations stay exactly where they were.
             raise BadRequest(f"{exporter} is part of the path, not an exporter name")
-        return {"exporter": exporter,
-                "fields": self._state(exporters.DEFINITION, exporter, {})}
+        return {"exporter": exporter, "forgotten": self._forget(exporters.DEFINITION, exporter),
+                "fields": {}}
 
     def set_applied(self, where: str, body: dict = None) -> dict:
         """
@@ -534,7 +541,8 @@ class Backend:
         """
         Drop every deviation held for one scope.
         """
-        return {"applied": where, "exporters": self._state(exporters.SCOPE, where, {})}
+        return {"applied": where, "forgotten": self._forget(exporters.SCOPE, where),
+                "exporters": {}}
 
     def show_applied(self, where: str) -> dict:
         """

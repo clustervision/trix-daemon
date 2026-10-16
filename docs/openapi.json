@@ -3403,7 +3403,8 @@
               "application/json": {
                 "example": {
                   "applied": "group:gpu",
-                  "exporters": {}
+                  "exporters": {},
+                  "forgotten": true
                 },
                 "schema": {}
               }
@@ -3665,7 +3666,7 @@
     },
     "/api/v1/prometheus/exporters/{exporter}": {
       "delete": {
-        "description": "Leaves the baseline to speak for it again. The row is emptied rather than deleted: the\ntable replicates, and a row missing here is re-added from the peer at the next pass.\n\n**Access:** manager or above: manager and rootus",
+        "description": "Leaves the baseline to speak for it again. The row is marked rather than deleted, because\na row missing here is re-added from the peer at the next pass; marked, it counts as no\nrow on both controllers.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_remove_exporter_delete_api_v1_prometheus_exporters__exporter__delete",
         "parameters": [
           {
@@ -3691,7 +3692,8 @@
               "application/json": {
                 "example": {
                   "exporter": "lshw",
-                  "fields": {}
+                  "fields": {},
+                  "forgotten": true
                 },
                 "schema": {}
               }

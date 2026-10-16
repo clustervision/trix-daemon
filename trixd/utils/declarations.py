@@ -47,6 +47,35 @@ def _origin() -> str:
     return socket.gethostname().split(".")[0]
 
 
+def forget(plugin: str, kind: str, name: str) -> bool:
+    """
+    Mark one document deleted, so the deletion reaches the peer instead of being undone by it.
+
+    The row stays: the sweep re-adds a row that is missing here and present there, so a real
+    delete comes back within the interval. Marked, it counts as no row on both.
+    """
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Declaration).where(
+            models.Declaration.plugin == plugin, models.Declaration.kind == kind,
+            models.Declaration.name == name))
+        if row is None or row.deleted:
+            return False
+        row.deleted = True
+        row.body = {}
+        row.version = (row.version or 0) + 1
+        row.origin = _origin()
+        handle.commit()
+        LOGGER.info("declaration %s/%s/%s forgotten at version %s",
+                    plugin, kind, name or "-", row.version)
+        return True
+    except Exception:
+        handle.rollback()
+        raise
+    finally:
+        handle.close()
+
+
 def read(plugin: str, kind: str, name: str = "", fallback=None):
     """
     The stored document, or the fallback when nothing has been written yet.
@@ -58,7 +87,8 @@ def read(plugin: str, kind: str, name: str = "", fallback=None):
                 models.Declaration.plugin == plugin,
                 models.Declaration.kind == kind,
                 models.Declaration.name == name))
-        return dict(row.body) if row is not None else fallback
+        # A marked row is the record of a deletion, not a document.
+        return dict(row.body) if row is not None and not row.deleted else fallback
     finally:
         handle.close()
 
@@ -80,6 +110,9 @@ def write(plugin: str, kind: str, name: str, body: dict) -> dict:
             handle.add(row)
         else:
             row.body = dict(body)
+            # Writing a key again revives it: the marker is how a deletion travels, and it has
+            # travelled by the time anyone writes here.
+            row.deleted = False
             row.version = (row.version or 0) + 1
             row.origin = _origin()
         handle.commit()
@@ -108,7 +141,8 @@ def listing(plugin: str, kind: str = "") -> list:
     """
     handle = database.session()
     try:
-        query = select(models.Declaration).where(models.Declaration.plugin == plugin)
+        query = select(models.Declaration).where(models.Declaration.plugin == plugin,
+                                                 models.Declaration.deleted.is_(False))
         if kind:
             query = query.where(models.Declaration.kind == kind)
         return [{"kind": row.kind, "name": row.name, "version": row.version,

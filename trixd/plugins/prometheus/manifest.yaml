@@ -475,13 +475,14 @@ endpoints:
     handler: remove_exporter
     summary: Forget what this site said about an exporter
     description: |
-      Leaves the baseline to speak for it again. The row is emptied rather than deleted: the
-      table replicates, and a row missing here is re-added from the peer at the next pass.
+      Leaves the baseline to speak for it again. The row is marked rather than deleted, because
+      a row missing here is re-added from the peer at the next pass; marked, it counts as no
+      row on both controllers.
     params:
       exporter: {description: "The exporter's name", example: lshw}
     response:
       description: The exporter, with nothing held against it
-      example: {exporter: lshw, fields: {}}
+      example: {exporter: lshw, forgotten: true, fields: {}}
 
   - path: exporters/applied/<where>
     methods: [GET]
@@ -525,4 +526,4 @@ endpoints:
       where: {description: "cluster, controllers, group:<name>, node:<name> or a controller hostname", example: "group:gpu"}
     response:
       description: The scope, with nothing held for it
-      example: {applied: "group:gpu", exporters: {}}
+      example: {applied: "group:gpu", forgotten: true, exporters: {}}

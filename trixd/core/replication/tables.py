@@ -96,7 +96,8 @@ def to_document(handle: Session, table: str, row) -> dict:
                     enabled=bool(row.enabled), role=row.role, deleted=bool(row.deleted))
     elif table == "declaration":
         body.update(key=[row.plugin, row.kind, row.name], plugin=row.plugin,
-                    kind=row.kind, name=row.name, body=dict(row.body or {}))
+                    kind=row.kind, name=row.name, body=dict(row.body or {}),
+                    deleted=bool(row.deleted))
     return body
 
 
@@ -147,7 +148,8 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
                 "role": document.get("role", ROLE_NONE),
                 "deleted": bool(document.get("deleted", False))}
     return {"plugin": key[0], "kind": key[1], "name": key[2],
-            "body": dict(document.get("body") or {})}
+            "body": dict(document.get("body") or {}),
+            "deleted": bool(document.get("deleted", False))}
 
 
 def _newer(incoming: dict, row) -> bool:
