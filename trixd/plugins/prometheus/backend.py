@@ -102,6 +102,75 @@ INFINIBAND_LABELS: tuple = COMPONENT_LABELS[:-1]
 NODE_LABELS: tuple = ("hostname", "luna_group")
 # One label matcher inside a selector: name, operator, quoted value with escapes.
 MATCHER = re.compile(r'(\w+)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"')
+# The braces of one selector. PromQL does not nest them.
+SELECTOR = re.compile(r"\{([^{}]*)\}")
+# Prometheus's own checker, which ships beside it. Where it lands depends on how Prometheus
+# was installed - the package puts it in /usr/bin, a tarball in /usr/local/bin - so both are
+# looked at before PATH. A cluster without it loses the check, not the write.
+PROMTOOL: tuple = ("/usr/bin/promtool", "/usr/local/bin/promtool")
+# Said once when promtool is not installed, rather than on every write.
+_said_no_promtool: bool = False
+
+
+def _promtool_refuses(paths: list) -> str:
+    """
+    What promtool says is wrong with a set of rule files, or empty when it takes them all.
+
+    One call for the whole set: it is a fork of a Go binary, around 35 ms before it reads
+    anything, so one per file is a cost multiplied by the number of nodes.
+
+    Where promtool is not installed nothing is checked and it is said once. It does not ship
+    everywhere, and a cluster without it should lose the check rather than the reload - the
+    in-process check at write time is what holds in that case, and it covers the values that
+    come off a node, which is the half that varies.
+    """
+    global _said_no_promtool
+    if not paths:
+        return ""
+    tool = next((candidate for candidate in PROMTOOL if os.path.isfile(candidate)),
+                shutil.which("promtool"))
+    if not tool:
+        if not _said_no_promtool:
+            _said_no_promtool = True
+            LOGGER.warning("promtool is not installed, so the rule files are not checked "
+                           "before a reload; what is written is still checked in process")
+        return ""
+    result = shell.run([tool, "check", "rules", *paths], check=False)
+    if result.ok:
+        return ""
+    return (result.err or result.out or "promtool refused the rules").strip()[:500]
+
+
+def unaccounted(expr: str) -> str:
+    """
+    What is left inside a selector once its matchers have been read, which is nothing when
+    every value is escaped.
+
+    A value that closes its quote early leaves the rest of itself behind as text no matcher
+    accounts for, and that is exactly what Prometheus refuses. Counting the matchers does
+    not catch it: the pattern re-synchronises, so a broken selector still parses as the
+    right number of them, each truncated.
+    """
+    for inside in SELECTOR.findall(expr or ""):
+        left = MATCHER.sub("", inside).strip(" ,\t")
+        if left:
+            return left[:120]
+    return ""
+
+
+def quoted(value) -> str:
+    """
+    One label value as PromQL takes it, inside the double quotes the caller writes.
+
+    Hardware strings come off the node and carry whatever the vendor wrote: an inch mark in
+    a disk's product string is ordinary. Interpolated raw it closes the quote early, and
+    Prometheus then refuses the whole rule file, aborts the reload and goes on serving its
+    previous configuration - so every later rule change is silently not applied while this
+    daemon reports success. MATCHER above already reads escapes back, so the reader was
+    always expecting this; only the writers were not doing it.
+    """
+    text = str(value).replace("\\", "\\\\").replace('"', '\\"')
+    return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
 
 class Backend:
@@ -111,8 +180,13 @@ class Backend:
 
     def __init__(self) -> None:
         """
-        No hardware file seen yet.
+        No hardware file seen yet, and nothing written waiting to be checked.
         """
+        # Rule files written since the last reload, which is what promtool is given. Held
+        # under a lock: the writers are request threads and the reload runs on whichever of
+        # them took the ticket.
+        self.pending_check: set = set()
+        self.pending_lock = threading.Lock()
         # path -> (mtime, size, hostname, group) of a file as last read or written here, so a
         # reconcile with nothing to change reads no file: at a thousand nodes, the parse is
         # the whole cost.
@@ -265,7 +339,7 @@ class Backend:
             return {"hostname": _hw_host(path), "rules": count, "changed": False}
         if os.path.isfile(path):
             self._keep_copy(path)
-        files.write_yaml(path, document)
+        self._write_rules(path, document)
         LOGGER.info("hardware rules written for %s at %s", node, path)
         return {"hostname": _hw_host(path), "rules": count, "changed": True}
 
@@ -278,6 +352,30 @@ class Backend:
         kept = os.path.join(backup, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
         shutil.copy2(path, kept)
         return kept
+
+    def _write_rules(self, path: str, document) -> str:
+        """
+        Write a rule file, refusing one whose selectors do not hold together.
+
+        Every rule file this plugin writes goes through here, and the check is in-process on
+        purpose. This runs once per node: a fork of promtool and a second durable write
+        here would be ~35 ms and an fsync each, which is nothing at four nodes and is a
+        thousand of each in a boot storm, on the request threads and inside the reconcile
+        pass that has to return to idle. What promtool adds beyond this is the same for
+        every node, so it is paid once per reload instead - see _reload_now.
+        """
+        for group in (document or {}).get("groups") or []:
+            for rule in group.get("rules") or []:
+                left = unaccounted(str(rule.get("expr") or ""))
+                if left:
+                    raise BackendFailure(
+                        f"the rules for {os.path.basename(path)} would not parse: a label "
+                        f"value leaves {left!r} outside any matcher, so Prometheus would "
+                        f"refuse the whole file")
+        written = files.write_yaml(path, document)
+        with self.pending_lock:
+            self.pending_check.add(path)
+        return written
 
     def repair_hw_rules(self, node: str, was: str = "") -> dict:
         """
@@ -302,7 +400,7 @@ class Backend:
             changed = _relabel_document(document, want)
             if path == target and not changed:
                 continue
-            files.write_yaml(target, document)
+            self._write_rules(target, document)
             if path != target:
                 _discard(path)
                 moved.append(os.path.basename(path))
@@ -388,7 +486,8 @@ class Backend:
             labels = COMPONENT_LABELS
             if component.get("class") == "network" and component.get("description") == "interface":
                 labels = INFINIBAND_LABELS
-            selector = ",".join(f'{key}="{component[key]}"' for key in labels if component.get(key))
+            selector = ",".join(f'{key}="{quoted(component[key])}"'
+                                for key in labels if component.get(key))
             rules.append({
                 "alert": HW_ALERT,
                 "expr": f"absent({HW_METRIC}{{{selector}}})",
@@ -689,7 +788,7 @@ class Backend:
             if not changed and path == target:
                 self.seen[path] = _stamp(path, want)
                 continue
-            files.write_yaml(target, document)
+            self._write_rules(target, document)
             self.seen[target] = _stamp(target, want)
             if path != target:
                 _discard(path)
@@ -717,7 +816,7 @@ class Backend:
                     continue
             except (OSError, yaml.YAMLError):
                 pass
-            files.write_yaml(path, {"groups": subset})
+            self._write_rules(path, {"groups": subset})
             written.append(path)
         return written
 
@@ -742,7 +841,26 @@ class Backend:
     def _reload_now(self) -> tuple:
         """
         Tell Prometheus to re-read what we wrote, once.
+
+        Prometheus's own checker runs first, in one call, over the files written since the
+        last reload rather than over the whole directory. Measured on a thousand-node set:
+        one call over every file is 3.2 s and 69 MB, which is not a thing to put on a
+        caller's path, and it is not needed - Prometheus re-reads them all itself, and only
+        what we just changed can have become bad. In steady state that is a file or two.
+
+        Here rather than per write because a fork is ~35 ms before promtool reads anything,
+        so one per node is a cost multiplied by the number of nodes; reloads are already
+        shared between callers, so a boot storm pays for a handful of these.
+
+        Refused, nothing is sent: Prometheus would read the files itself, refuse them, abort
+        and go on serving its previous configuration - the same outcome, with nobody told.
         """
+        with self.pending_lock:
+            changed, self.pending_check = sorted(self.pending_check), set()
+        refused = _promtool_refuses([path for path in changed if os.path.isfile(path)])
+        if refused:
+            LOGGER.error("not reloading: promtool refuses what is on disk: %s", refused)
+            return False, f"promtool refuses the rules on disk: {refused}"
         command = self._config().get("reload_command", DEFAULT_CONFIG["reload_command"])
         result = shell.run(command.split(), timeout=30)
         if not result.ok:
@@ -851,7 +969,7 @@ def _relabel(expr: str, values: dict) -> str:
         """
         key, operator = match.group(1), match.group(2)
         if operator == "=" and key in NODE_LABELS and values.get(key):
-            return f'{key}="{values[key]}"'
+            return f'{key}="{quoted(values[key])}"'
         return match.group(0)
     return MATCHER.sub(one, expr)
 

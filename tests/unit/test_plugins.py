@@ -1612,3 +1612,60 @@ def test_the_listing_says_what_the_file_lost(rig, tmp_path, monkeypatch):
     assert listed["read"] is True
     assert any("gpu-type" in line for line in listed["ignored"]), listed["ignored"]
     assert any("interval" in line for line in listed["ignored"]), listed["ignored"]
+
+
+def test_a_hardware_string_cannot_break_the_selector(rig, monkeypatch):
+    """
+    Hardware strings come off the node and carry whatever the vendor wrote: an inch mark in
+    a disk's product string is ordinary. Interpolated raw it closes the quote early, and the
+    real promtool then refuses the whole file - "unexpected identifier ... in label
+    matching" - which aborts the reload and leaves Prometheus serving its previous
+    configuration, so every later rule change is silently not applied.
+
+    Asserted over every label at once, so a value put into a selector without the escape is
+    caught here rather than on a cluster. It has to be caught here: promtool is not
+    installed everywhere, so the check at write time cannot be what closes this.
+    """
+    from trixd.plugins.prometheus.backend import (COMPONENT_LABELS, MATCHER, Backend,
+                                                  quoted)
+
+    awkward = '2.5" SATA\\ SSD'
+    component = {label: awkward for label in COMPONENT_LABELS}
+    backend = Backend()
+    monkeypatch.setattr(backend, "_components", lambda host: [component])
+    monkeypatch.setattr(backend, "settings", lambda: {})
+
+    expr = backend._generate_hw_rules("node001")["groups"][0]["rules"][0]["expr"]
+    carried = {key: value for key, _, value in MATCHER.findall(expr)}
+
+    # The values, not the number of them: the matcher pattern re-synchronises after a value
+    # that closes its quote early, so an unescaped selector still parses as the right COUNT
+    # of matchers - each one truncated. Counting them passes either way.
+    assert set(carried) == set(COMPONENT_LABELS), carried
+    for key, value in carried.items():
+        assert value == quoted(awkward), f"{key} carries {value!r}, not the whole string"
+
+
+def test_writing_a_rule_file_forks_nothing(rig, monkeypatch, tmp_path):
+    """
+    The check at write time is in process, and has to stay that way. A fork is about 35 ms
+    before promtool reads anything, and this runs once per node: at a thousand nodes that
+    is 35 s of forks spread over the request threads, and the same again inside the
+    reconcile pass that is supposed to return to idle. Measured in process instead: 0.2 ms
+    per node for a twenty-component file.
+
+    What promtool adds is the shape of our own rules, which is the same for every node, so
+    it is paid once per reload over the files that changed - see _reload_now.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    forked = []
+    monkeypatch.setattr(prometheus.shell, "run",
+                        lambda *args, **kwargs: forked.append(args[0]))
+
+    backend = prometheus.Backend()
+    document = {"groups": [{"name": "trinityx_hw", "rules": [
+        {"alert": "A", "expr": 'absent(lshw_device{hostname="node001"})'}]}]}
+    backend._write_rules(str(tmp_path / "trix.hw.node001.rules"), document)
+
+    assert forked == [], f"writing one node's rule file forked {forked}"
