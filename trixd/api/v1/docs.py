@@ -111,9 +111,9 @@ clear text.
 ### Errors
 A refusal or a failure answers its status and `{"message": "..."}` saying why: 400 a \
 request that cannot be acted on, 401 no token or a bad one, 403 a role below the \
-route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its \
-schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd \
-failed, 503 not available on this controller.
+route's minimum, 404 no such object, 409 a conflict, 413 a body larger than `[API] \
+MAX_BODY`, 422 a body that does not match its schema (FastAPI's `detail` list instead of \
+`message`), 502 the service behind trixd failed, 503 not available on this controller.
 """
 
 ACCESS: dict = {

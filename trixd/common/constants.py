@@ -56,6 +56,12 @@ TOKEN_ALGORITHM_SHARED: str = "HS256"
 TOKEN_ALGORITHM_KEYPAIR: str = "EdDSA"
 TOKEN_ALGORITHMS: tuple = (TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHM_KEYPAIR)
 DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
+# The largest request body this daemon will read. The body is read before any token is
+# checked - that is the framework's order, not a choice here - so without a ceiling an
+# unauthenticated caller decides how much memory one request costs. Generous against the
+# largest body the API itself asks for (a rule document, or one bulk set per node) and
+# small against what a caller can otherwise send.
+DEFAULT_MAX_BODY: int = 8 * 1024 * 1024
 MINIMUM_SECRET_LENGTH: int = 32
 
 # Luna reads back id, scope and node; id 0 is the administrator its ini names.

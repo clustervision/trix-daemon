@@ -35,13 +35,14 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-from trixd.common.constants import (DEFAULT_TOKEN_ALGORITHM, TOKEN_ALGORITHM_SHARED,
-                                   TOKEN_ALGORITHMS)
+from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM,
+                                   TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
 DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
+_SIZE = re.compile(r"^\s*(\d+)\s*([kmg]?)\s*$", re.IGNORECASE)
 _FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400}
 
 
@@ -80,6 +81,7 @@ class ApiSettings(BaseModel):
     expiry: int = 3600
     username: str = ""
     password: str = ""
+    max_body: int = DEFAULT_MAX_BODY
 
 
 class TokenSettings(BaseModel):
@@ -176,6 +178,17 @@ class Settings(BaseModel):
     ignored: list = Field(default_factory=list)
 
 
+def size(value: str, fallback: int, bare: int = 1) -> int:
+    """
+    A byte count, where K, M and G are powers of 1024. The same shape as seconds().
+    """
+    found = _SIZE.match(str(value or ""))
+    if not found:
+        return fallback
+    scale = {"": bare, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[found.group(2).lower()]
+    return int(found.group(1)) * scale
+
+
 def _csv(value: str) -> list:
     """
     A comma separated setting as a list, without the blanks.
@@ -266,7 +279,8 @@ def load(path: str = "") -> Settings:
         # A bare EXPIRY counts in hours, as luna.ini's does.
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
-        password=get("API", "PASSWORD", ""))
+        password=get("API", "PASSWORD", ""),
+        max_body=size(get("API", "MAX_BODY", ""), DEFAULT_MAX_BODY))
     secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),

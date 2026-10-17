@@ -47,6 +47,22 @@ GRANTED: str = "granted"
 REFUSED: str = "refused"
 
 DETAIL_LIMIT: int = 1024
+# How wide each text column actually is, read from the model rather than repeated here. A
+# value wider than its column is not a caller's mistake to pass on: on an engine that
+# enforces the width the insert raises, and because rows are written in batches of up to
+# LIMIT, one oversized row takes every unrelated row in that batch with it. `principal` and
+# `object` come from the request, so an unauthenticated caller decides their length.
+_WIDTHS: dict = {name: column.type.length
+                 for name, column in models.Audit.__table__.columns.items()
+                 if getattr(column.type, "length", None)}
+
+
+def _fits(field: str, value: str) -> str:
+    """
+    The value, cut to the width of the column it goes in.
+    """
+    limit = _WIDTHS.get(field)
+    return value if limit is None or len(value) <= limit else value[:limit]
 # One commit per batch rather than per request: the cost a busy daemon would otherwise pay.
 BATCH_ROWS: int = 500
 BATCH_WAIT: float = 0.5
@@ -70,8 +86,10 @@ def _entry(principal: str, action: str, object_name: str, outcome: str, detail: 
     What a row holds, captured when it happened.
     """
     return {"at": datetime.now(timezone.utc).replace(tzinfo=None),
-            "principal": principal or "anonymous", "action": action,
-            "object": object_name or "", "outcome": outcome,
+            "principal": _fits("principal", principal or "anonymous"),
+            "action": _fits("action", action),
+            "object": _fits("object", object_name or ""),
+            "outcome": _fits("outcome", outcome),
             "detail": (detail or "")[:DETAIL_LIMIT]}
 
 

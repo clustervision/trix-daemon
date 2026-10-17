@@ -94,6 +94,14 @@ class PluginRefused(Conflict):
     """
 
 
+class TooLarge(TrixdError):
+    """
+    A request body bigger than this daemon will read.
+    """
+
+    status_code = 413
+
+
 class BackendFailure(TrixdError):
     """
     The thing behind the plugin failed: obol, systemctl, a render, Luna.

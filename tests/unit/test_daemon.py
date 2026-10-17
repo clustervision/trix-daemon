@@ -2120,3 +2120,83 @@ def test_unplugging_the_node_source_makes_a_node_sign_in_refuse(rig, client):
         assert "no node source is loaded" in after.text, after.text
     finally:
         loader.load(rig, "luna")
+
+
+def test_a_body_past_the_ceiling_is_refused_before_anything_reads_it(rig, client, monkeypatch):
+    """
+    The framework reads the whole body before it solves a route's dependencies, so the gate
+    runs after it and cannot bound this. Without a ceiling an unauthenticated caller decides
+    how much memory one request costs: a sign-in is public, and the body was read in full
+    and only then answered 401.
+
+    Both shapes, because a check on the declared length alone is walked past by not
+    declaring one.
+    """
+    from trixd.common.settings import current as settings
+
+    monkeypatch.setattr(settings().api, "max_body", 2048)
+
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "tester", "password": "x" * 4096})
+    assert answer.status_code == 413, answer.text
+    assert "MAX_BODY" in answer.json()["message"], answer.json()
+
+    def chunks():
+        """
+        A body that declares no length.
+        """
+        for _ in range(8):
+            yield b"z" * 512
+
+    answer = client.post(f"{API_PREFIX}/auth/token", content=chunks())
+    assert answer.status_code == 413, answer.text
+
+    # Still serving: the ceiling refuses the request, it does not refuse the route.
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "tester", "password": "secret"})
+    assert answer.status_code == 201, answer.text
+
+
+def test_a_refused_body_leaves_no_audit_row_to_grow(rig, client, monkeypatch):
+    """
+    What the ceiling is really for. A failed sign-in writes an audit row whose principal is
+    whatever the caller sent, so an unauthenticated caller could put a body-sized value in
+    the security record - once per attempt, kept for ninety days. Refused before the handler
+    runs, so there is no row at all, and anything that does reach the table is cut to the
+    width of its column rather than being offered to the database oversized.
+    """
+    from trixd.common.settings import current as settings
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    monkeypatch.setattr(settings().api, "max_body", 2048)
+    audit.flush()
+    handle = database.session()
+    try:
+        before = handle.query(models.Audit).count()
+    finally:
+        handle.close()
+
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": "n" * 8192, "password": "wrong"})
+    assert answer.status_code == 413, answer.text
+
+    audit.flush()
+    handle = database.session()
+    try:
+        assert handle.query(models.Audit).count() == before, "a refused body still wrote a row"
+    finally:
+        handle.close()
+
+    # And the net underneath it: a value that does reach the trail fits its column, so one
+    # oversized row cannot fail the insert and take a whole batch of unrelated rows with it.
+    audit.refused("m" * 8192, "GET", "o" * 8192, "testing the width")
+    audit.flush()
+    handle = database.session()
+    try:
+        widest = handle.query(models.Audit).order_by(models.Audit.id.desc()).first()
+    finally:
+        handle.close()
+    columns = models.Audit.__table__.columns
+    assert len(widest.principal) == columns["principal"].type.length, len(widest.principal)
+    assert len(widest.object) == columns["object"].type.length, len(widest.object)

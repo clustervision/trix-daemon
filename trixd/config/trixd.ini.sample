@@ -31,9 +31,14 @@ KEYFILE =
 EXPIRY = 1h
 USERNAME = trixd
 PASSWORD = trixd
+MAX_BODY = 8M
 ; PROTOCOL is the scheme trixd serves and a peer is reached on, https or http. A site
 ; serving plain HTTP sets it to http here; it was followed from luna.ini before.
 ; BIND carries TLS on CERTFILE and KEYFILE: the cluster pair Luna also serves.
+; MAX_BODY is the largest request body trixd will read, with K, M and G as powers of 1024
+; and a bare number meaning bytes. The body is read before any token is checked, so this
+; is what an unauthenticated caller can cost; 0 lifts the ceiling. Raise it if a bulk set
+; or a rule document is refused, which answers 413 and says the limit.
 ; INSECURE_BIND is plain HTTP on every address, for nodes; it is clear text on the network.
 ; 127.0.0.1:8051 keeps it on the controller alone.
 
