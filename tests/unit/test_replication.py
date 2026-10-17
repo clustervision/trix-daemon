@@ -1043,12 +1043,13 @@ def test_exactly_one_side_wins_a_tie(rig):
 
     one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
     two = {"key": ["tied"], "origin": "ctrl2", "role": "manager"}
-    assert _wins_tie(two, one) != _wins_tie(one, two)
+    assert _wins_tie("principal", two, one) != _wins_tie("principal", one, two)
 
     # Same origin as well: a digest still separates them, so there is always an answer.
     same_one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
     same_two = {"key": ["tied"], "origin": "ctrl1", "role": "manager"}
-    assert _wins_tie(same_two, same_one) != _wins_tie(same_one, same_two)
+    assert (_wins_tie("principal", same_two, same_one)
+            != _wins_tie("principal", same_one, same_two))
 
 
 def test_a_pass_that_cannot_converge_is_said_and_counted(rig):
@@ -1403,11 +1404,20 @@ def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
         handle.commit()
         peer.commit()
 
-        result = tables.merge_table(handle, "principal",
-                                    tables.export_table(peer, "principal"))
+        # Both ways, as a pass on each controller does: a veto that only looked at the
+        # incoming document left the side holding the unsound row keeping it, so the tie
+        # resolved differently on the two and the pair stayed apart - and this test asserted
+        # only that the local row survived, which was true on one of them.
+        tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+
         held = handle.scalar(select(models.Principal).where(models.Principal.name == "odd"))
+        theirs = peer.scalar(select(models.Principal).where(models.Principal.name == "odd"))
         assert held.role == "operator", "a role off the ladder arrived through the tie"
-        assert result["updated"] == 0, result
+        assert theirs.role == "operator", \
+            f"the peer kept {theirs.role!r}: the unsound row has to lose on both sides"
+        assert (tables.table_hash(handle, "principal")
+                == tables.table_hash(peer, "principal")), "the pair stayed apart"
     finally:
         handle.close()
         peer.close()
@@ -1418,8 +1428,16 @@ def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
     A queued row is cleared by nothing: the next action for a node clears only a refusal,
     and the reap collects only a refusal. So a decline rode the sweep for ever and held its
     node's later actions with it - and the new action that was meant to clear it was held
-    too. After enough passes it is terminal, which is what gives it both exits.
+    too. Declining for long enough makes it terminal, which is what gives it both exits.
+
+    A span, not a count of attempts: `attempts` counts every outcome, so eleven passes
+    against a peer being patched plus one decline used to be enough, and a decline is often
+    a moment of Luna lag that the next pass clears. So both halves are asserted here - a
+    fresh row that is declined once stays queued, and one declining for longer than it is
+    asked for goes terminal.
     """
+    from datetime import timedelta
+
     from sqlalchemy import select
 
     from trixd.core.replication import outbox
@@ -1444,8 +1462,18 @@ def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
     # Driven through the real send, so the message the decline is recognised by is the one
     # the send produces: the two are a pair, and a test that built the message itself would
     # pass while a reworded one broke the escalation.
-    for _ in range(outbox.DECLINED_PASSES):
-        outbox.drain("ctrl2")
+    outbox.drain("ctrl2")
+    handle = database.session()
+    try:
+        young = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert young.state == outbox.QUEUED, \
+            f"one decline on a fresh row made it {young.state}"
+        young.created = (datetime_now()
+                         - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60))
+        handle.commit()
+    finally:
+        handle.close()
+    outbox.drain("ctrl2")
 
     handle = database.session()
     try:

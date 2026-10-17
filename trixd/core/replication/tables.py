@@ -35,6 +35,7 @@ from json import dumps
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+from sqlalchemy.orm.attributes import flag_modified
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import ROLE_NONE, ROLES
@@ -167,6 +168,24 @@ def _role_of(document: dict) -> str:
     return ROLE_NONE
 
 
+def _apply(row, columns: dict, document: dict) -> None:
+    """
+    Write a peer's document onto a local row.
+
+    `updated_at` is forced into the statement. Assigning a column the value it already holds
+    leaves it clean, so it is left out of the UPDATE and the column's `onupdate` stamps it
+    with now instead - and the peer's timestamp has to travel with the row, or the two
+    copies never hash the same and every pass copies the row back again. That is the
+    ping-pong the stamp exists to prevent, arriving through the one case where the two
+    timestamps already agree.
+    """
+    for column, value in columns.items():
+        setattr(row, column, value)
+    row.version = int(document.get("version") or 1)
+    row.origin = document.get("origin", "")
+    flag_modified(row, "updated_at")
+
+
 def _columns(handle: Session, table: str, document: dict) -> dict:
     """
     The column values for a document.
@@ -190,15 +209,25 @@ def _digest(document: dict) -> str:
     return hashlib.sha256(dumps(document, sort_keys=True, default=str).encode()).hexdigest()
 
 
-def _wins_tie(incoming: dict, ours: dict) -> bool:
+def _wins_tie(table: str, incoming: dict, ours: dict) -> bool:
     """
     Which of two documents with the same version and the same timestamp is kept.
 
     Both controllers run this over the same pair of documents and must reach the same
     answer, or each keeps its own and the pair never converges - which is what keeping the
-    local row always did. The origin decides, being the field that differs by definition;
-    where even that is equal, a digest of the document does, so there is always an answer.
+    local row always did.
+
+    So a document this daemon would not write as it stands loses, whichever side it is on.
+    Vetoing only the *incoming* one read as safe and was not: the controller holding the
+    unsound row kept it either way, while the other took or kept by origin, so the tie
+    resolved differently on the two and the pair stayed apart - decided by nothing but
+    which controller's name sorts higher.
+
+    Otherwise the origin decides, being the field that differs by definition; where even
+    that is equal, a digest of the document does, so there is always an answer.
     """
+    if _writable(table, incoming) != _writable(table, ours):
+        return _writable(table, incoming)
     mine = str(ours.get("origin") or "")
     theirs = str(incoming.get("origin") or "")
     if theirs != mine:
@@ -206,32 +235,16 @@ def _wins_tie(incoming: dict, ours: dict) -> bool:
     return _digest(incoming) > _digest(ours)
 
 
-def _takeable(table: str, incoming: dict, ours: dict) -> bool:
+def _writable(table: str, document: dict) -> bool:
     """
-    Whether taking the peer's document would actually make the two rows agree.
+    Whether a document is one this daemon would write down as it stands.
 
-    A tie is only worth resolving if it resolves. The merge writes `_columns`, which is not
-    the document: a role this daemon would not grant is written as none, so the row would
-    still differ from the document at the same version and time - a tie remade on every
-    pass, with the same write and the same claim in the log each time.
-
-    The field sets differing is the same problem arriving during an upgrade, and worse: the
-    build with the extra field would take a document that does not carry it and write that
-    column back to its default, from a peer that knows nothing about it. Keeping the local
-    row is right there, and the newer side's own write will carry the pair forward.
+    The merge writes `_columns`, which is not the document: a role off the ladder is written
+    as none, so the row would still differ from the document at the same version and time -
+    a tie remade on every pass, with the same write and the same claim in the log each time.
     """
-    if set(incoming) != set(ours):
-        LOGGER.warning("conflict on %s %s: the peer's document carries %s and ours %s, so "
-                       "the tie is not resolved here and the local row stands", table,
-                       incoming.get("key"), sorted(incoming), sorted(ours))
-        return False
-    if table == "principal" and (incoming.get("role") or ROLE_NONE) not in ROLES:
-        LOGGER.warning("conflict on %s %s: the peer names role %r, which this daemon would "
-                       "write as %s - so taking it would not settle the tie; the local row "
-                       "stands", table, incoming.get("key"),
-                       incoming.get("role"), ROLE_NONE)
-        return False
-    return True
+    return not (table == "principal"
+                and (document.get("role") or ROLE_NONE) not in ROLES)
 
 
 def _newer(incoming: dict, row) -> bool:
@@ -268,10 +281,7 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
             touched.add(tuple(document["key"][:2]))
             continue
         if _newer(document, row):
-            for column, value in columns.items():
-                setattr(row, column, value)
-            row.version = int(document.get("version") or 1)
-            row.origin = document.get("origin", "")
+            _apply(row, columns, document)
             updated += 1
             touched.add(tuple(document["key"][:2]))
         elif (int(document.get("version") or 1) == int(row.version or 1)
@@ -279,20 +289,26 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
               and document != to_document(handle, table, row)):
             conflicts += 1
             mine = to_document(handle, table, row)
-            if not _takeable(table, document, mine):
-                # _takeable has said which of its two reasons it was.
+            if set(document) != set(mine):
+                # One build carries a field the other does not, which only a pair part way
+                # through an upgrade can produce. Neither side is newer, so nothing here can
+                # settle it - taking the shorter document would write the field it lacks
+                # back to its default, and the build without the field cannot write it at
+                # all, so no choice converges. The local row stands and the pair is left
+                # visibly apart: the sweep counts it and health says not_converging.
+                LOGGER.error("conflict on %s %s: the peer's document carries %s and ours "
+                             "%s, so neither side can settle it; the local row stands and "
+                             "the pair stays apart until one of them is written again",
+                             table, document["key"], sorted(document), sorted(mine))
                 continue
-            if not _wins_tie(document, mine):
+            if not _wins_tie(table, document, mine):
                 LOGGER.warning("conflict on %s %s: same version and time, different "
                                "content; the local row wins the tie", table, document["key"])
                 continue
             # Nothing else can separate them, and keeping the local row on both controllers
             # left the two copies different for ever: neither side is newer, so neither
             # takes the other's and no later pass resolves it.
-            for column, value in columns.items():
-                setattr(row, column, value)
-            row.version = int(document.get("version") or 1)
-            row.origin = document.get("origin", "")
+            _apply(row, columns, document)
             updated += 1
             touched.add(tuple(document["key"][:2]))
             LOGGER.warning("conflict on %s %s: same version and time, different content; "
