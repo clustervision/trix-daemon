@@ -111,7 +111,19 @@ def after(method: str, path: str, body: bytes, status: int) -> None:
                                       json.dumps(found["payload"]), "pass-through")
             LOGGER.info("%s at Luna for %s, queued as %s", found["event"],
                         found["payload"]["name"], identifier)
-            return
+            if tasks.handler(SOURCE) is not None:
+                # Left to the dispatcher, which wakes the renders once the handlers have
+                # acted. Beside them is wrong: a reconcile running next to a hook can
+                # retire a file that hook is about to move.
+                return
+            # Nothing answers for this source, so the hook can never run and there is
+            # nothing to order the renders behind. Said loudly, because the queued task
+            # fails with `nothing handles luna` and records that in its own row only - so
+            # a rename, a group move or a delete answered 200, logged two lines that both
+            # read as success, and left genders and slurm naming the node as it was.
+            LOGGER.error("nothing answers for %s, so the hooks for this change cannot run; "
+                         "waking the renders directly instead. A plugin that declares a "
+                         "hook on %s events is what registers the dispatcher", SOURCE, SOURCE)
         touched = changed_object(method, path, status)
         if touched:
             renders().notify(f"luna.{touched}")

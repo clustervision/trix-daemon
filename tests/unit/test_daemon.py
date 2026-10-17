@@ -2379,3 +2379,46 @@ def test_a_render_replaced_by_a_reload_does_not_produce_afterwards(rig):
             "the table is not serving the replacement"
     finally:
         engine.forget("swapped")
+
+
+def test_a_rename_through_the_pass_through_wakes_the_renders_too(rig, client, headers,
+                                                                 monkeypatch):
+    """
+    A change that queues a hook must also wake the renders that read it. It used to return
+    once the hook was queued and leave the renders to the dispatcher, which answers for a
+    source only while some loaded plugin declares a hook on it - and one shipped plugin
+    declares any. With that plugin disabled the route answered 200, the task failed with
+    `nothing handles luna` and nothing logged it, and genders and slurm went on naming the
+    node as it was. A change touching no watched field on the same route did re-render,
+    which is the wrong way round.
+
+    Driven with no plugin registered for the queue, which is the case that was silent. The
+    other case is pinned next door by test_the_renders_wake_after_the_hooks_have_run: where
+    a handler does exist the renders are left to it, because a reconcile running beside a
+    hook can retire a file that hook is about to move.
+    """
+    from types import SimpleNamespace
+
+    from trixd.core import tasks
+    from trixd.core.render.engine import current as renders
+
+    woken = []
+    monkeypatch.setattr(renders(), "notify", lambda changed="": woken.append(changed) or [])
+
+    def luna_says(method, url, **kwargs):
+        """
+        Luna accepting the rename.
+        """
+        return SimpleNamespace(content=b"", status_code=204, headers={})
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", luna_says)
+
+    assert tasks.handler("luna") is None, \
+        "a plugin answers for the queue here, so this is the ordered case and not the silent one"
+    answer = client.post(f"{API_PREFIX}/luna/config/node/node001",
+                         json={"config": {"node": {"node001": {"newnodename": "node002"}}}},
+                         headers=headers)
+    assert answer.status_code == 204, answer.text
+
+    assert "luna.node" in woken, \
+        f"a rename queued its hook and woke no render: {woken}"
