@@ -406,10 +406,11 @@ class Backend:
                 moved.append(os.path.basename(path))
             if changed:
                 rewritten.append(os.path.basename(target))
+        answer = {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten}
         if moved or rewritten:
-            self.reload()
+            answer["reloaded"] = self.reload_reported()
             LOGGER.info("hardware rules for %s: moved %s, rewritten %s", node, moved, rewritten)
-        return {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten}
+        return answer
 
     def rename_hw_rules(self, node: str, body: dict = None) -> dict:
         """
@@ -427,9 +428,10 @@ class Backend:
         Retire the files that name a node that is gone: out of the glob Prometheus loads.
         """
         retired = [name for name in (self._retire(path) for path in self._hw_paths(node)) if name]
+        answer = {"node": node, "retired": retired}
         if retired:
-            self.reload()
-        return {"node": node, "retired": retired}
+            answer["reloaded"] = self.reload_reported()
+        return answer
 
     def node_updated(self, name: str, newnodename: str = "", group: str = "") -> str:
         """
@@ -748,9 +750,10 @@ class Backend:
         stored = declarations.read(PLUGIN, "rules", "", None)
         written = self._write_rule_documents(stored) if stored is not None else []
         reconciled = self._reconcile_hw_rules(luna().nodes())
+        answer = {"written": written, **reconciled}
         if written or reconciled["repaired"] or reconciled["retired"]:
-            self.reload()
-        return {"written": written, **reconciled}
+            answer["reloaded"] = self.reload_reported()
+        return answer
 
     def _reconcile_hw_rules(self, nodes: dict) -> dict:
         """
@@ -867,12 +870,19 @@ class Backend:
             LOGGER.error("reload failed: %s", result.err or result.out)
         return result.ok, result.err or result.out
 
-    def reload(self) -> bool:
+    def reload_reported(self) -> dict:
         """
-        A reload that callers at the same moment share; each gets the outcome of one that
-        started after its own write.
+        Reload, and say in the answer whether Prometheus took it.
+
+        These paths have no caller waiting on the reload, and the files are written either
+        way - a refusal must not turn a completed write into a failure. But dropping the
+        outcome left the one case that matters invisible: Prometheus refused the files, kept
+        its previous configuration, and the answer said the rules were in place.
         """
-        return RELOADS.run(self._reload_now)[0]
+        ok, message = RELOADS.run(self._reload_now)
+        if ok:
+            return {"ok": True}
+        return {"ok": False, "message": str(message)[:500]}
 
     def reload_or_fail(self, what: str) -> None:
         """

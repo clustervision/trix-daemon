@@ -1669,3 +1669,30 @@ def test_writing_a_rule_file_forks_nothing(rig, monkeypatch, tmp_path):
     backend._write_rules(str(tmp_path / "trix.hw.node001.rules"), document)
 
     assert forked == [], f"writing one node's rule file forked {forked}"
+
+
+def test_a_refused_reload_reaches_the_answer_where_nobody_is_waiting(rig, monkeypatch,
+                                                                     tmp_path):
+    """
+    Three paths reloaded and dropped the outcome. The files are written either way, so a
+    refusal must not turn a completed write into a failure - but dropping it left the one
+    case that matters invisible: Prometheus refused the files, went on serving its previous
+    configuration, and the answer said the rules were retired.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = prometheus.Backend()
+    monkeypatch.setattr(backend, "_rules_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(backend, "_reload_now", lambda: (False, "exit 1: refused"))
+    # One file to retire, so the path that reloads is the one taken.
+    written = os.path.join(str(tmp_path), prometheus.HW_RULES.format(host="node001"))
+    with open(written, "w", encoding="utf-8") as handle:
+        handle.write("---\ngroups: []\n")
+
+    answer = backend.remove_hw_rules("node001")
+
+    assert answer["retired"], "nothing was retired, so the reload path was not taken"
+    reloaded = answer.get("reloaded")
+    assert reloaded is not None, f"the reload outcome was dropped: {answer}"
+    assert reloaded["ok"] is False, answer
+    assert "refused" in reloaded["message"], answer
