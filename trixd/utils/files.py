@@ -48,6 +48,7 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
     Write through a temporary file and rename, so a reader never sees a partial one.
     """
     directory = os.path.dirname(path) or "."
+    temporary = ""
     try:
         os.makedirs(directory, exist_ok=True)
         handle, temporary = tempfile.mkstemp(dir=directory, prefix=".trixd-", suffix=".tmp")
@@ -56,6 +57,13 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
         os.chmod(temporary, mode)
         os.replace(temporary, path)
     except OSError as error:
+        # The name is unpredictable, so a failed write leaves one nothing will ever find
+        # again - and a disk that is full fails every pass, leaving another each time.
+        if temporary and os.path.exists(temporary):
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
         raise BackendFailure(f"cannot write {path}: {error}") from None
     LOGGER.debug("wrote %s", path)
     return path
