@@ -494,6 +494,50 @@ def test_the_reconcile_removes_nothing_when_luna_lists_no_nodes(rig, tmp_path, m
     assert kept.read_text(encoding="utf-8") == before
 
 
+def test_the_targets_render_keeps_what_it_served_when_luna_lists_no_nodes(
+        rig, tmp_path, monkeypatch):
+    """
+    The same rule the reconcile above follows, for the document Prometheus discovers from:
+    an empty answer is not a cluster with no nodes, and a document without them stops every
+    node metric at once. The render refuses, and what was already served stays.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    nodes = {"node001": {"hostname": "node001.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, nodes)
+    item = renders().register("prometheus", "renders/targets",
+                              Render(inputs=["luna.node"], coalesce="1s"),
+                              backend.render_targets)
+    try:
+        assert renders().run(item) is True, "the first render produced nothing"
+        served = item.document
+        assert [entry for entry in served if "node001.cluster" in entry["targets"][0]], \
+            "node001 was never in the document, so emptying it would prove nothing"
+
+        nodes.clear()
+
+        assert renders().run(item) is False, "a document with no nodes in it was produced"
+        assert item.document == served, "the targets already served were replaced"
+    finally:
+        renders().forget("prometheus")
+
+
+def test_forgetting_an_exporter_name_too_long_for_the_column_is_refused(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    The write path refuses it; answering 200 to the same name only because this is the
+    delete would say the request was understood.
+    """
+    from trixd.common.errors import BadRequest
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    with pytest.raises(BadRequest):
+        backend.remove_exporter("e" * 256)
+    with pytest.raises(BadRequest):
+        backend.remove_applied("")
+
+
 def test_two_repairs_may_meet_on_one_file(rig, tmp_path, monkeypatch):
     """
     The worker and a render can reach the same file; the one that finds it gone carries on.

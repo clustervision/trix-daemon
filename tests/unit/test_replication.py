@@ -764,9 +764,11 @@ def test_a_forgotten_declaration_does_not_come_back_from_the_peer(rig, tmp_path)
 
         assert declarations.forget("prometheus", "exporter-scope", "node:node001") is True
         handle.expire_all()
-        # A sweep in each direction, as the pair does every thirty seconds.
-        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        # A sweep in each direction, as the pair does every thirty seconds. The peer's own
+        # document goes first, while it still holds the live row: the other order overwrites
+        # the peer before the reverse sweep runs, and then nothing is being tested.
         tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
 
         theirs = peer.scalar(select(models.Declaration).where(
             models.Declaration.name == "node:node001"))
@@ -779,6 +781,34 @@ def test_a_forgotten_declaration_does_not_come_back_from_the_peer(rig, tmp_path)
     finally:
         handle.close()
         peer.close()
+
+
+def test_forgetting_a_declaration_that_is_already_a_marker_still_moves_it_on(rig):
+    """
+    The marker can be newer here than at a peer that still holds the row live, and the pair
+    then sits at equal versions with different content, which no sweep breaks. Issuing the
+    delete again is the way out, so the second call bumps rather than answering nothing.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node003", {"ipmi": False})
+    assert declarations.forget("prometheus", "exporter-scope", "node:node003") is True
+    handle = database.session()
+    try:
+        marked = handle.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node003"))
+        first = marked.version
+
+        assert declarations.forget("prometheus", "exporter-scope", "node:node003") is False
+
+        handle.expire_all()
+        marked = handle.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node003"))
+        assert marked.deleted, "the row stopped being a marker"
+        assert marked.version > first, \
+            "a delete issued again left the version where it was, so the tie cannot be broken"
+    finally:
+        handle.close()
 
 
 def test_writing_a_forgotten_key_again_brings_it_back(rig):

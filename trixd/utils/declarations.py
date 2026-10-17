@@ -59,7 +59,17 @@ def forget(plugin: str, kind: str, name: str) -> bool:
         row = handle.scalar(select(models.Declaration).where(
             models.Declaration.plugin == plugin, models.Declaration.kind == kind,
             models.Declaration.name == name))
-        if row is None or row.deleted:
+        if row is None:
+            return False
+        if row.deleted:
+            # Marked here already, but the peer may still hold a live row at this version.
+            # Bumping is what lets the delete, issued again, settle that; a silent no-op
+            # leaves the operator no way to break the tie.
+            row.version = (row.version or 0) + 1
+            row.origin = _origin()
+            handle.commit()
+            LOGGER.info("declaration %s/%s/%s was already forgotten, re-marked at version %s",
+                        plugin, kind, name or "-", row.version)
             return False
         row.deleted = True
         row.body = {}

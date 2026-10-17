@@ -41,7 +41,8 @@ import urllib3
 import yaml
 
 from trixd.common import logging as trixlog
-from trixd.common.errors import BackendFailure, BadRequest, NotFound, TrixdError
+from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
+                                 TrixdError)
 from trixd.core.render.engine import current as renders
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.prometheus import exporters
@@ -505,8 +506,13 @@ class Backend:
         """
         Mark one document deleted and wake the render that read it.
         """
+        # The same bound the write path applies: a name this long is a caller's mistake either
+        # way, and answering 200 to it only because this is the delete would hide that.
+        if not name or len(name) > 255:
+            raise BadRequest("a name is needed, of at most 255 characters")
         gone = declarations.forget(PLUGIN, kind, name)
-        renders().notify(f"{PLUGIN}.{kind}")
+        if gone:
+            renders().notify(f"{PLUGIN}.{kind}")
         return gone
 
     def remove_exporter(self, exporter: str) -> dict:
@@ -609,6 +615,11 @@ class Backend:
         """
         baseline, definitions, scopes = self._exporter_inputs()
         nodes = luna().nodes()
+        if not nodes:
+            # As the other renders do: an empty answer is not a cluster with no nodes, and a
+            # document without them empties service discovery for every node at once. Failing
+            # here keeps the last document being served.
+            raise ServiceUnavailable("no nodes yet, so the targets already served are kept")
         targets = []
         for name, node in nodes.items():
             address = _provision_address(node) or node.get("hostname") or name
