@@ -328,6 +328,29 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     return QUEUED, "no answer", NO_ANSWER
 
 
+# Rows one of this process's two senders has in flight, so the other does not send them too.
+_sending: set = set()
+
+
+def _claim(row_id: int) -> bool:
+    """
+    Take one row for sending, or say somebody else already has it.
+    """
+    with _lock:
+        if row_id in _sending:
+            return False
+        _sending.add(row_id)
+        return True
+
+
+def _release(row_id: int) -> None:
+    """
+    Give the row back, sent or not.
+    """
+    with _lock:
+        _sending.discard(row_id)
+
+
 def _finish(row_id: int, state: str, message: str) -> None:
     """
     Write down what happened to one row, counting the attempt.
@@ -397,7 +420,15 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
         held = _Held(row)
     finally:
         handle.close()
-    state, message, learned = _send(peer, held, may_sign_in)
+    if not _claim(row_id):
+        # The other sender has this row in flight. Both live in this process - the sweep's
+        # drain and a caller's inline attempt - and both read the row as queued before
+        # either marks it, so the same call went to the peer twice.
+        return QUEUED, ANSWERED
+    try:
+        state, message, learned = _send(peer, held, may_sign_in)
+    finally:
+        _release(row_id)
     if state == DONE:
         record_success(peer)
     elif learned == NO_ANSWER:

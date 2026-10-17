@@ -1169,6 +1169,48 @@ def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, mo
 
 
 
+def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):
+    """
+    Delivery is at-least-once: the sender gives the apply three seconds and offers the row
+    again every pass until it hears otherwise. The call was replayed rather than the answer,
+    so a peer slower than that had the write applied again at every pass - and the second
+    answer came back saying it changed nothing, which the sender cannot tell from the peer
+    declining to do the work.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.plugins.registry import current as registry
+    from trixd.core.replication import applied
+
+    applied.forget_all()
+    _crossing_plugin(rig)
+    entry = registry().plugins["crossing"]
+    ran = []
+    standing = entry.backend.thing
+
+    def counting(node: str, body: dict = None) -> dict:
+        """The same handler, counting how many times the peer's call reached it."""
+        ran.append(node)
+        return standing(node, body)
+
+    entry.backend.thing = counting
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 3},
+                "origin": "ctrl1", "request_id": "r-repeat"}
+    try:
+        first = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+        again = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+    finally:
+        entry.backend.thing = standing
+        applied.forget_all()
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 200, again.text
+    assert ran == ["node001"], f"the call ran {len(ran)} times"
+    assert again.json() == first.json(), "the repeat answered something else"
+
+
 def test_a_difference_that_is_moving_is_not_called_unconverged(rig):
     """
     A table differing at the end of a pass is ordinary: our row may simply be the newer one,
@@ -1236,3 +1278,72 @@ def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
         peer.close()
 
 
+def test_a_declined_apply_is_not_remembered(rig, client, headers):
+    """
+    A decline is offered again, and the row carries the same request id every pass - so
+    remembering the answer would hand every retry the decline for as long as the record
+    lives, and the peer would stay behind for that node.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.plugins.registry import current as registry
+    from trixd.core.replication import applied
+
+    applied.forget_all()
+    _crossing_plugin(rig)
+    entry = registry().plugins["crossing"]
+    ran = []
+
+    def declining(node: str, body: dict = None) -> dict:
+        """A handler that cannot act: the node is not in this controller's Luna."""
+        ran.append(node)
+        return {"node": node, "skipped": "not in Luna"}
+
+    standing = entry.backend.thing
+    entry.backend.thing = declining
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 1},
+                "origin": "ctrl1", "request_id": "r-declined"}
+    try:
+        first = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+        again = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+    finally:
+        entry.backend.thing = standing
+        applied.forget_all()
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 200, again.text
+    assert ran == ["node001", "node001"], \
+        f"the handler ran {len(ran)} times: a decline must be offered again, not answered " \
+        f"from the record"
+
+
+def test_two_senders_do_not_deliver_one_row_twice(rig, monkeypatch):
+    """
+    Both senders live in this process - the sweep's drain and a caller's inline attempt -
+    and both read the row as queued before either marks it, so the same call went to the
+    peer twice and only the peer's own record stood between that and the write happening
+    twice.
+    """
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-race", "tester")
+    tried = []
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (tried.append(row.path),
+                                                             (outbox.DONE, "",
+                                                              outbox.ANSWERED))[1])
+
+    assert outbox._claim(row_id), "nothing held the row yet"
+    try:
+        # The other sender, arriving while the first is still in flight.
+        outbox._attempt("ctrl2", row_id)
+    finally:
+        outbox._release(row_id)
+    assert tried == [], "the row was offered while the other sender had it in flight"
+
+    # Once it is given back, the row is sent as usual.
+    outbox._attempt("ctrl2", row_id)
+    assert len(tried) == 1, tried

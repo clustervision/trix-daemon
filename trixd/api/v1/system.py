@@ -47,7 +47,7 @@ from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
-from trixd.core.replication import outbox, tables
+from trixd.core.replication import applied, outbox, tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
 from trixd.core.render import triggers
@@ -418,7 +418,14 @@ def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
                  "The named handler is called directly rather than the route being "
                  "re-entered, so nothing is written down to send onwards: there is no loop "
                  "to prevent and no hop count to get wrong. rootus only, which is the "
-                 "account the pair already shares for replication."),
+                 "account the pair already shares for replication.\n\n"
+                 "Two conventions a replicating handler's answer carries. `skipped`, as a "
+                 "non-empty string, means the handler declined to act - the node is not in "
+                 "this controller's Luna, say - and the sender then treats the call as not "
+                 "done and offers it again rather than recording it as applied; it is a "
+                 "reserved key, and a count of skipped items must not use it. Offering the "
+                 "same call again is answered with the answer given the first time, since "
+                 "delivery is at-least-once and the sender waits three seconds."),
              responses=docs.answers({"applied": "prometheus hw-rules/<node>",
                                      "origin": "dev2-rocky9-controller1"},
                                     "What was applied",
@@ -433,6 +440,16 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     """
     Find the endpoint the peer names, check its manifest allows this, and call its handler.
     """
+    already = applied.recorded(body.origin, body.request_id)
+    if already is not None:
+        # Delivery is at-least-once: the sender gives this three seconds and offers the row
+        # again at every pass until it hears otherwise. Answering with what was answered
+        # then is what makes a slow apply harmless; running it again is how one write lands
+        # repeatedly, and how the second answer comes back saying it changed nothing.
+        LOGGER.info("%s %s %s was already applied for %s (%s), so the answer is the one "
+                    "given then", body.method, body.plugin, body.path, body.origin,
+                    body.request_id)
+        return already
     entry = registry().plugins.get(body.plugin)
     if entry is None or entry.state != PLUGIN_STATE_LOADED:
         raise NotFound(f"no plugin named {body.plugin} is loaded here")
@@ -485,8 +502,18 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     answer = handler(**{key: value for key, value in supplied.items() if key in accepted})
     LOGGER.info("applied %s %s %s for %s (%s)", body.method, body.plugin, body.path,
                 body.origin, body.request_id)
-    return {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
-            "result": answer if isinstance(answer, (dict, list)) else str(answer)}
+    given = {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
+             "result": answer if isinstance(answer, (dict, list)) else str(answer)}
+    turned_down = applied.declined(answer)
+    if turned_down:
+        # Not remembered. The sender is meant to offer this again - a decline here is often
+        # a moment of Luna lag - and answering every retry from the record would hold the
+        # decline for as long as the record lives.
+        LOGGER.warning("did not apply %s %s %s for %s: %s", body.method, body.plugin,
+                       body.path, body.origin, turned_down)
+    else:
+        applied.record(body.origin, body.request_id, given)
+    return given
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now",
