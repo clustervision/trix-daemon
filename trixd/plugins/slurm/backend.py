@@ -115,6 +115,23 @@ class Backend:
             LOGGER.info("no nodes yet, so nothing to write")
             return {"nodes": 0, "files": []}
 
+        # A node Luna holds with no group renders as `NodeSet= Nodes=<node>` and
+        # `PartitionName= Nodes=`, which slurm will not load - and scontrol reconfigure is
+        # run over it, so one node created before its group was assigned took the node and
+        # partition configuration of every other node with it. Left out and named, rather
+        # than refusing the lot: the nodes that do have a group are configurable without it.
+        # Only here. node_set is the genders plugin's too, and a node with no group is an
+        # ordinary line in a genders file.
+        skipped = sorted(one["name"] for one in fullset if not one["group"])
+        if skipped:
+            LOGGER.error("no group in Luna, so left out of the slurm configuration: %s",
+                         ", ".join(skipped))
+            fullset = [one for one in fullset if one["group"]]
+        if not fullset:
+            LOGGER.error("every node Luna holds is without a group, so there is nothing to "
+                         "configure slurm with")
+            return {"nodes": 0, "files": [], "skipped": skipped}
+
         files = {
             "nodes": settings["nodes_file"],
             "partitions": settings["partitions_file"],
@@ -134,10 +151,12 @@ class Backend:
             LOGGER.info("the slurm blocks are unchanged for %d node(s), so slurm is not "
                         "reconfigured", len(fullset))
             return {"nodes": len(fullset), "files": sorted(files.values()),
-                    "reconfigured": False, "changed": False}
+                    "reconfigured": False, "changed": False,
+                    **({"skipped": skipped} if skipped else {})}
         result = shell.run(settings["reconfigure"].split(), timeout=60)
         if not result.ok:
             LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
         LOGGER.info("wrote the slurm blocks for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "files": sorted(files.values()),
-                "reconfigured": result.ok, "changed": True}
+                "reconfigured": result.ok, "changed": True,
+                **({"skipped": skipped} if skipped else {})}

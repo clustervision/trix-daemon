@@ -1049,10 +1049,11 @@ def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch, tmp_pa
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": None}},
+    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": "compute"}},
                   tmp_path)
     answer = Backend().render_config()
-    assert seen["nodes"] == [{"name": "node001", "group": ""}, {"name": "node002", "group": "gpu"}]
+    assert seen["nodes"] == [{"name": "node001", "group": "compute"},
+                             {"name": "node002", "group": "gpu"}]
     assert set(seen["configs"]) == {"nodes", "partitions", "gres"}
     assert seen["manager"] == "TrinityX"
     assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
@@ -1119,7 +1120,10 @@ def test_slurm_without_its_generator_says_so(rig, monkeypatch):
     from trixd.plugins.slurm import backend as slurm
 
     monkeypatch.setitem(sys.modules, "trinityx_config_slurm", None)
-    monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: {"n": {}}))
+    # With a group: a node without one is left out before the generator is reached, as an
+    # empty Luna already was, and this test is about the package rather than the group.
+    monkeypatch.setattr(slurm, "luna",
+                        lambda: SimpleNamespace(nodes=lambda: {"n": {"group": "a"}}))
     with pytest.raises(BackendFailure, match="not installed on this controller"):
         slurm.Backend().render_config()
 
@@ -1333,3 +1337,48 @@ def test_genders_says_why_it_wrote_nothing(rig, monkeypatch):
     monkeypatch.setitem(sys.modules, "trinityx_config_genders", None)
     with pytest.raises(BackendFailure, match="not installed on this controller"):
         genders.Backend().render_genders()
+
+
+def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkeypatch, tmp_path):
+    """
+    A node Luna holds with no group renders as `NodeSet= Nodes=<node>` and `PartitionName=
+    Nodes=`, which slurm will not load - and scontrol reconfigure is run over it, so one
+    node created before its group was assigned took the node and partition configuration of
+    every other node with it. A node without a group is ordinary, so this is left out and
+    named rather than refusing the write for the nodes that do have one.
+    """
+    from trixd.plugins.slurm import backend as slurm
+    from trixd.plugins.slurm.backend import Backend
+
+    seen = _slurm(monkeypatch, {"node001": {"group": "compute"},
+                                "node002": {"group": None},
+                                "node003": {"group": ""}}, tmp_path)
+    answer = Backend().render_config()
+
+    assert seen["nodes"] == [{"name": "node001", "group": "compute"}], seen["nodes"]
+    assert answer["nodes"] == 1, answer
+    assert answer["skipped"] == ["node002", "node003"], answer
+    assert answer["changed"] is True, "the node that does have a group was not configured"
+
+    # node_set is the genders plugin's too, and a node with no group is an ordinary line in
+    # a genders file - so the skipping belongs to this render and not to the shared reader.
+    assert slurm.node_set() == [{"name": "node001", "group": "compute"},
+                                {"name": "node002", "group": ""},
+                                {"name": "node003", "group": ""}], \
+        "the shared node list dropped a node, which takes it out of the genders file too"
+
+
+def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch, tmp_path):
+    """
+    Nothing to configure slurm with, which is not the same as no nodes: the generator is not
+    called at all rather than handed an empty set, and the names are in the answer.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    seen = _slurm(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}},
+                  tmp_path)
+    answer = Backend().render_config()
+
+    assert answer == {"nodes": 0, "files": [], "skipped": ["node001", "node002"]}, answer
+    assert "nodes" not in seen, "the generator was called with nothing to write"
+    assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
