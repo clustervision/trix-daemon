@@ -46,6 +46,17 @@ BLOCK_END: str = "# --- end {manager} managed block ---"
 def write(path: str, content: str, mode: int = 0o644) -> str:
     """
     Write through a temporary file and rename, so a reader never sees a partial one.
+
+    The contents reach the disk before the rename is asked for. Without that, the rename
+    can survive a power loss while the data does not, and what is left under the real name
+    is a file of zeroes - which is the one outcome the rename was supposed to rule out.
+
+    The directory is deliberately not synced afterwards. That would make the rename itself
+    durable, which is not what this protects against: a rename lost in a crash leaves the
+    previous contents, and every file written through here is derived from Luna or from the
+    database, so the next pass puts it back. Measured on ext4, per file: 0.07 ms with no
+    sync, 1.65 ms syncing the file, 2.58 ms syncing the directory as well - and this runs
+    once per node, so the difference is seconds across a cluster.
     """
     directory = os.path.dirname(path) or "."
     temporary = ""
@@ -54,6 +65,8 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
         handle, temporary = tempfile.mkstemp(dir=directory, prefix=".trixd-", suffix=".tmp")
         with os.fdopen(handle, "w", encoding="utf-8") as target:
             target.write(content)
+            target.flush()
+            os.fsync(target.fileno())
         os.chmod(temporary, mode)
         os.replace(temporary, path)
     except OSError as error:
@@ -101,6 +114,17 @@ def set_managed_block(path: str, manager: str, content: str, mode: int = 0o644) 
         head = existing.split(start)[0]
         tail = existing.split(end, 1)[1].lstrip("\n")
         updated = f"{head}{block}{tail}"
+    elif start in existing or end in existing:
+        # One marker without the other, which only an edit from outside can produce: the
+        # write is atomic. Where our block ended cannot be known from here, and both guesses
+        # are worse than stopping - appending a second block leaves two start markers, so a
+        # consumer reading from the first start to the first end gets the stale content and
+        # the new marker with it, while cutting to the end of the file would take whatever a
+        # site put after the damage. Said loudly instead, with the file left as it is.
+        missing = end if start in existing else start
+        raise BackendFailure(f"{path} holds one {manager} marker without the other: "
+                             f"{missing.strip()!r} is missing, so where the block ends "
+                             f"cannot be told. Nothing was written; repair the file")
     else:
         separator = "" if not existing or existing.endswith("\n") else "\n"
         updated = f"{existing}{separator}{block}"
