@@ -69,8 +69,6 @@ ORDER: tuple = tuple(models.REPLICATED)
 MODELS: dict = _models()
 
 
-
-
 def _stamp(value) -> str:
     """
     The version and time a row was last written.
@@ -185,6 +183,57 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
             "deleted": bool(document.get("deleted", False))}
 
 
+def _digest(document: dict) -> str:
+    """
+    A document as one comparable string, for deciding a tie that nothing else can.
+    """
+    return hashlib.sha256(dumps(document, sort_keys=True, default=str).encode()).hexdigest()
+
+
+def _wins_tie(incoming: dict, ours: dict) -> bool:
+    """
+    Which of two documents with the same version and the same timestamp is kept.
+
+    Both controllers run this over the same pair of documents and must reach the same
+    answer, or each keeps its own and the pair never converges - which is what keeping the
+    local row always did. The origin decides, being the field that differs by definition;
+    where even that is equal, a digest of the document does, so there is always an answer.
+    """
+    mine = str(ours.get("origin") or "")
+    theirs = str(incoming.get("origin") or "")
+    if theirs != mine:
+        return theirs > mine
+    return _digest(incoming) > _digest(ours)
+
+
+def _takeable(table: str, incoming: dict, ours: dict) -> bool:
+    """
+    Whether taking the peer's document would actually make the two rows agree.
+
+    A tie is only worth resolving if it resolves. The merge writes `_columns`, which is not
+    the document: a role this daemon would not grant is written as none, so the row would
+    still differ from the document at the same version and time - a tie remade on every
+    pass, with the same write and the same claim in the log each time.
+
+    The field sets differing is the same problem arriving during an upgrade, and worse: the
+    build with the extra field would take a document that does not carry it and write that
+    column back to its default, from a peer that knows nothing about it. Keeping the local
+    row is right there, and the newer side's own write will carry the pair forward.
+    """
+    if set(incoming) != set(ours):
+        LOGGER.warning("conflict on %s %s: the peer's document carries %s and ours %s, so "
+                       "the tie is not resolved here and the local row stands", table,
+                       incoming.get("key"), sorted(incoming), sorted(ours))
+        return False
+    if table == "principal" and (incoming.get("role") or ROLE_NONE) not in ROLES:
+        LOGGER.warning("conflict on %s %s: the peer names role %r, which this daemon would "
+                       "write as %s - so taking it would not settle the tie; the local row "
+                       "stands", table, incoming.get("key"),
+                       incoming.get("role"), ROLE_NONE)
+        return False
+    return True
+
+
 def _newer(incoming: dict, row) -> bool:
     """
     Last writer wins, by version first and then by the timestamp.
@@ -229,8 +278,26 @@ def merge_table(handle: Session, table: str, documents: list) -> dict:
               and str(document.get("updated_at") or "") == _stamp(row.updated_at)
               and document != to_document(handle, table, row)):
             conflicts += 1
+            mine = to_document(handle, table, row)
+            if not _takeable(table, document, mine):
+                # _takeable has said which of its two reasons it was.
+                continue
+            if not _wins_tie(document, mine):
+                LOGGER.warning("conflict on %s %s: same version and time, different "
+                               "content; the local row wins the tie", table, document["key"])
+                continue
+            # Nothing else can separate them, and keeping the local row on both controllers
+            # left the two copies different for ever: neither side is newer, so neither
+            # takes the other's and no later pass resolves it.
+            for column, value in columns.items():
+                setattr(row, column, value)
+            row.version = int(document.get("version") or 1)
+            row.origin = document.get("origin", "")
+            updated += 1
+            touched.add(tuple(document["key"][:2]))
             LOGGER.warning("conflict on %s %s: same version and time, different content; "
-                           "keeping the local row", table, document["key"])
+                           "taking the peer's, which both controllers decide the same way",
+                           table, document["key"])
     handle.commit()
     if table == "principal" and (added or updated):
         # A role or a disable from the peer applies on the next request, not after the cache.

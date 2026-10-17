@@ -1011,6 +1011,54 @@ def test_the_replicated_tables_are_stated_in_one_place(rig):
         assert tables.MODELS[name].__tablename__ == name
 
 
+def test_an_exact_tie_resolves_the_same_way_on_both_controllers(rig, tmp_path):
+    """
+    Same version and same timestamp with different content: neither row is newer, so each
+    controller kept its own and the two copies then stayed different for ever, with a
+    warning on both sides and no pass able to resolve it. The origin decides instead,
+    which both sides read the same way.
+    """
+    from datetime import datetime
+
+    peer = _peer(tmp_path)
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="tied", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        peer.add(models.Principal(name="tied", role="manager", origin="ctrl2",
+                                  version=4, updated_at=stamped))
+        handle.commit()
+        peer.commit()
+
+        ours = tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+
+        assert ours["conflicts"] == 1, ours
+        assert (tables.table_hash(handle, "principal")
+                == tables.table_hash(peer, "principal")), "the tie left the pair diverged"
+        held = handle.scalar(select(models.Principal).where(models.Principal.name == "tied"))
+        assert held.role == "manager" and held.origin == "ctrl2"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_exactly_one_side_wins_a_tie(rig):
+    """
+    The property that makes it converge: run over the same pair from either controller,
+    the answer names the same document. Keeping the local row satisfies neither side.
+    """
+    from trixd.core.replication.tables import _wins_tie
+
+    one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
+    two = {"key": ["tied"], "origin": "ctrl2", "role": "manager"}
+    assert _wins_tie(two, one) != _wins_tie(one, two)
+
+    # Same origin as well: a digest still separates them, so there is always an answer.
+    same_one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
+    same_two = {"key": ["tied"], "origin": "ctrl1", "role": "manager"}
+    assert _wins_tie(same_two, same_one) != _wins_tie(same_one, same_two)
 
 
 
@@ -1020,5 +1068,35 @@ def test_the_replicated_tables_are_stated_in_one_place(rig):
 
 
 
+
+def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
+    """
+    The merge writes columns, not the document: a role this daemon would not grant is
+    written as none, so the row would still differ from the document at the same version
+    and time - a tie remade on every pass, with the same write and the same claim each time.
+    """
+    from datetime import datetime
+
+    peer = _peer(tmp_path)
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="odd", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        # rootus is the ini account, not a role on the ladder; the API refuses it, and the
+        # merge writes it as none - so taking this document cannot settle the tie.
+        peer.add(models.Principal(name="odd", role="rootus", origin="ctrl2",
+                                  version=4, updated_at=stamped))
+        handle.commit()
+        peer.commit()
+
+        result = tables.merge_table(handle, "principal",
+                                    tables.export_table(peer, "principal"))
+        held = handle.scalar(select(models.Principal).where(models.Principal.name == "odd"))
+        assert held.role == "operator", "a role off the ladder arrived through the tie"
+        assert result["updated"] == 0, result
+    finally:
+        handle.close()
+        peer.close()
 
 
