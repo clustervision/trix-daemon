@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import hashlib
+
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
 from trixd.plugins.luna.client import current as luna
@@ -55,9 +57,29 @@ def _generator():
     try:
         from trinityx_config_slurm import Generate
     except ImportError as error:
+        # Both ways out are named, because the installer enables this plugin on every
+        # cluster while the generator it needs is installed only where slurm is the
+        # workload manager. On such a cluster the right answer is not to install anything.
         raise BackendFailure(
-            f"trinityx_config_slurm is not installed on this controller: {error}") from None
+            f"trinityx_config_slurm is not installed on this controller, so the slurm "
+            f"blocks cannot be written ({error}). Install it where slurm is the workload "
+            f"manager, or take slurm out of [PLUGINS] ENABLED where it is not") from None
     return Generate()
+
+
+def _digests(paths) -> dict:
+    """
+    What each managed file hashes to now. A file that is not there yet hashes to nothing,
+    so its first write counts as a change.
+    """
+    found = {}
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                found[path] = hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            found[path] = ""
+    return found
 
 
 def node_set() -> list:
@@ -98,14 +120,24 @@ class Backend:
             "partitions": settings["partitions_file"],
             "gres": settings["gres_file"],
         }
+        before = _digests(files.values())
         written = _generator().all_configs(nodes=fullset, configs=files,
                                            manager=settings["manager"])
         if not written:
             raise BackendFailure("the slurm generator reported a failure")
 
+        # Only for a real change, as the Prometheus plugin already does for its reload. This
+        # ran on every pass: at start-up, where it is the one thing slow enough to put the
+        # whole start over the lifespan timeout, and again on every node event, so a boot
+        # storm reconfigured slurm once per node for files that had not moved.
+        if _digests(files.values()) == before:
+            LOGGER.info("the slurm blocks are unchanged for %d node(s), so slurm is not "
+                        "reconfigured", len(fullset))
+            return {"nodes": len(fullset), "files": sorted(files.values()),
+                    "reconfigured": False, "changed": False}
         result = shell.run(settings["reconfigure"].split(), timeout=60)
         if not result.ok:
             LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
         LOGGER.info("wrote the slurm blocks for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "files": sorted(files.values()),
-                "reconfigured": result.ok}
+                "reconfigured": result.ok, "changed": True}

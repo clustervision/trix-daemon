@@ -77,6 +77,13 @@ def build_config(config):
     served.workers = 1
     served.accesslog = "-"
     served.errorlog = "-"
+    # Chosen rather than inherited. Start-up runs the migrations, loads every plugin, takes
+    # each trigger's baseline and produces every render inside the lifespan, and some of
+    # that reaches Luna - which has a timeout of its own. The default is 60s, and exceeding
+    # it kills the process, which systemd restarts five seconds later, which starts again
+    # and exceeds it again: a loop that never trips the start limiter because each attempt
+    # is far longer than the interval it is measured over.
+    served.startup_timeout = 300
     served.graceful_timeout = 10
     # Hypercorn closes an idle connection after 5s, racing a client about to reuse it.
     served.keep_alive_timeout = 75

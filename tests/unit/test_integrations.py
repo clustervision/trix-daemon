@@ -998,13 +998,25 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
     ]
 
 
-def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) -> dict:
+def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,
+           content: str = "one") -> dict:
     """
     The slurm plugin on a stand-in generator package, Luna and scontrol.
+
+    The stand-in writes the files it is handed, as the real generator does. It did not, and
+    that mattered once the reconfigure became conditional on their content: a generator that
+    writes nothing leaves them unchanged for ever, so a test built on it would have pinned
+    the opposite of what happens in production.
     """
     from trixd.plugins.slurm import backend as slurm
+    from trixd.utils import declarations
 
     seen = {}
+    declarations.write("slurm", "config", "", {
+        **slurm.DEFAULT_CONFIG,
+        "nodes_file": str(tmp_path / "slurm-nodes.conf"),
+        "partitions_file": str(tmp_path / "slurm-partitions.conf"),
+        "gres_file": str(tmp_path / "slurm-gres.conf")})
 
     class Generate:
         """
@@ -1013,9 +1025,13 @@ def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) 
 
         def all_configs(self, nodes, configs, manager):
             """
-            Remember the call and report success or failure.
+            Remember the call, write what it was asked to, and report success or failure.
             """
             seen.update(nodes=nodes, configs=configs, manager=manager)
+            if wrote:
+                for path in configs.values():
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(content)
             return wrote
 
     package = ModuleType("trinityx_config_slurm")
@@ -1027,13 +1043,14 @@ def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) 
     return seen
 
 
-def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch):
+def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch, tmp_path):
     """
     Sorted node and group pairs, the three files, then scontrol reconfigure.
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": None}})
+    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": None}},
+                  tmp_path)
     answer = Backend().render_config()
     assert seen["nodes"] == [{"name": "node001", "group": ""}, {"name": "node002", "group": "gpu"}]
     assert set(seen["configs"]) == {"nodes", "partitions", "gres"}
@@ -1042,21 +1059,56 @@ def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch):
     assert answer["nodes"] == 2 and answer["reconfigured"] is True
 
 
-def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch):
+def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatch,
+                                                                 tmp_path):
+    """
+    scontrol reconfigure ran on every pass. At start-up that is the one thing slow enough
+    to put the whole start over the lifespan timeout, and on a boot storm it ran once per
+    node event for files that had not moved. The Prometheus plugin already reloads only for
+    a change; this is the same rule for the one call that restarts something.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    nodes = {"node001": {"group": "a"}}
+    seen = _slurm(monkeypatch, nodes, tmp_path)
+
+    first = Backend().render_config()
+    assert first["reconfigured"] is True, "the first pass wrote the files and must reconfigure"
+    assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
+
+    # The same nodes again, so the generator writes the same bytes. The behaviour is
+    # asserted before the reported value, and through get(): a build without the fix has
+    # no such key, and reaching for it would error in place of asserting, which reads as
+    # proof and is not.
+    seen.pop("ran")
+    again = Backend().render_config()
+    assert "ran" not in seen, "slurm was reconfigured for files that had not changed"
+    assert again.get("reconfigured") is False, again
+    assert again.get("changed") is False, again
+
+    # And a real change still reconfigures, so this is not simply switched off.
+    _slurm(monkeypatch, nodes, tmp_path, content="two")
+    moved = Backend().render_config()
+    assert moved.get("reconfigured") is True, moved
+    assert moved.get("changed") is True, moved
+
+
+def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch,
+                                                                     tmp_path):
     """
     No nodes is not an error; a failing generator is; a failing reconfigure is reported.
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {})
+    seen = _slurm(monkeypatch, {}, tmp_path)
     assert Backend().render_config() == {"nodes": 0, "files": []}
     assert "nodes" not in seen, "the generator ran with no nodes"
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, wrote=False)
+    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, wrote=False)
     with pytest.raises(BackendFailure, match="generator reported a failure"):
         Backend().render_config()
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, reconfigured=1)
+    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, reconfigured=1)
     assert Backend().render_config()["reconfigured"] is False
 
 
