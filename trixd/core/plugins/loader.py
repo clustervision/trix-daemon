@@ -216,10 +216,7 @@ def _register_renders(plugin: str, found: list) -> None:
     """
     Replace a plugin's renders with the new ones, once the plugin is certain to load.
     """
-    engine = renders()
-    engine.forget(plugin)
-    for path, spec, producer in found:
-        engine.register(plugin, path, spec, producer)
+    renders().replace(plugin, found)
 
 
 def _bind_hooks(manifest, backend) -> dict:

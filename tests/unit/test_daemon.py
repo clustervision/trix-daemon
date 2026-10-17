@@ -1198,6 +1198,57 @@ def test_a_render_registered_after_the_first_pass_produces_itself(rig, monkeypat
         engine.forget("reloaded")
 
 
+def test_a_reload_never_leaves_a_render_unanswerable(rig, tmp_path):
+    """
+    Reloading a plugin replaced its renders, and for a moment there was nothing to read:
+    forgetting first leaves no render at all, declaring first leaves one that has produced
+    nothing. Either way a plugin that is working answers 404 through its own reload, which
+    Prometheus sees as service discovery going away.
+
+    The new renders now produce before they are swapped in, so the ones they replace keep
+    serving until then. The render itself reports what a reader would have got while it
+    ran, which is the only way to observe the window without racing it.
+    """
+    record = tmp_path / "seen.txt"
+    plugin = tmp_path / "plugins" / "swapper"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: swapper\nbackend: backend\nendpoints:\n"
+        "  - path: renders/thing\n    methods: [GET]\n    minimum: none\n"
+        "    handler: render_thing\n    render:\n      inputs: [luna.node]\n"
+        "      serve: json\n", encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'RECORD = r"' + str(record) + '"\n\n\n'
+        "class Backend:\n"
+        '    """Notes what a reader would have been given while it was producing."""\n\n'
+        "    def render_thing(self):\n"
+        '        """The render, which asks what is readable right now."""\n'
+        "        from trixd.core.render.engine import current as renders\n"
+        "        try:\n"
+        '            got = repr(renders().reader("swapper", "renders/thing")())\n'
+        "        except Exception as error:\n"
+        "            got = type(error).__name__\n"
+        '        with open(RECORD, "a", encoding="utf-8") as handle:\n'
+        '            handle.write(got + "\\n")\n'
+        '        return {"which": "produced"}\n', encoding="utf-8")
+
+    try:
+        loader.load(rig, "swapper")
+        loader.load(rig, "swapper")
+    finally:
+        # Unloaded, or its render stays in the engine for the rest of the session: its
+        # inputs name luna.node, so a later test's hook wakes it and the dispatcher says
+        # so. The rig does not reset the engine, and a leaked render is not inert.
+        loader.unload(rig, "swapper")
+
+    seen = record.read_text(encoding="utf-8").split("\n")[:-1]
+    assert len(seen) == 2, f"expected one line per load, got {seen}"
+    # Nothing was serving before the first load, so that one has nothing to find.
+    assert seen[0] == "NotFound", seen
+    assert seen[1] == repr({"which": "produced"}), \
+        f"the render being replaced stopped answering during the reload: {seen}"
+
+
 def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers):
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.

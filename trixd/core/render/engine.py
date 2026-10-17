@@ -106,20 +106,51 @@ class Engine:
                 if timer is not None:
                     timer.cancel()
 
+    def _declare(self, plugin: str, path: str, spec, producer) -> Render:
+        """
+        Put one render in the table. The caller holds the lock and decides what produces it.
+        """
+        item = Render(plugin, path, spec, producer)
+        self.renders[item.key] = item
+        LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
+        return item
+
     def register(self, plugin: str, path: str, spec, producer) -> Render:
         """
         Take a render and the backend method that produces it.
         """
         with self.lock:
-            item = Render(plugin, path, spec, producer)
-            self.renders[item.key] = item
-            LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
+            item = self._declare(plugin, path, spec, producer)
         # A reload builds new render objects holding no document, and nothing runs them
         # until one of their inputs changes - which for a plugin whose inputs are quiet
         # could be a long time. Outside the lock: run takes it itself.
         if self.reconciled:
             self.run(item)
         return item
+
+    def replace(self, plugin: str, found: list) -> list:
+        """
+        Swap everything one plugin declares for a new set, with nothing unanswerable in
+        between.
+
+        The new renders produce before they are swapped in, so whatever was serving keeps
+        serving until they hold a document. Forgetting first leaves a poll with no render
+        to read; declaring first leaves it one that has produced nothing. Either way a
+        plugin that is working answers 404 through a reload, which is not something an
+        operator reloading a plugin expects to be visible to Prometheus.
+        """
+        items = [Render(plugin, path, spec, producer) for path, spec, producer in found]
+        # Outside the lock, and before the swap: producing can call Luna, and the renders
+        # these replace are still the ones being read.
+        if self.reconciled:
+            for item in items:
+                self.run(item)
+        with self.lock:
+            self.forget(plugin)
+            for item in items:
+                self.renders[item.key] = item
+                LOGGER.debug("render %s declared, inputs %s", item.key, item.spec.inputs)
+        return items
 
     def reader(self, plugin: str, path: str):
         """
