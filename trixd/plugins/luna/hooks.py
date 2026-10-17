@@ -34,13 +34,16 @@ import re
 
 from trixd.common import logging as trixlog
 from trixd.core import tasks
-from trixd.core.plugins.registry import current as registry
 from trixd.core.render.engine import current as renders
 
 LOGGER = trixlog.get("luna.hooks")
 
 # What this plugin publishes, and the queue those run on. A plugin that wants one of
 # these names it in its manifest; nothing in the daemon holds this list.
+#
+# What acts on them is the core's, not this plugin's: see core/hooks.py. A plugin that
+# declares a hook on one of these events wants it whether or not trixd is proxying Luna at
+# that moment, so unplugging this plugin must not stop it being delivered.
 SOURCE: str = "luna"
 # The node pair the pass-through recognises itself, and the group pair Luna's own config
 # hooks push. Nothing subscribes to the group events yet; they still wake the renders
@@ -114,31 +117,3 @@ def after(method: str, path: str, body: bytes, status: int) -> None:
             renders().notify(f"luna.{touched}")
     except Exception as error:
         LOGGER.error("after %s %s: %s", method, path, error)
-
-
-def run(task: str, param: str = "") -> str:
-    """
-    The task behind a queued change: every plugin that declared it acts, then the renders wake.
-    """
-    payload = json.loads(param or "{}")
-    outcomes = []
-    # Under the engine's lock, so no render, the hash poller's included, runs mid-hook and
-    # retires a file the hook is moving.
-    with renders().lock:
-        for plugin, handler in registry().hooks_for(task):
-            try:
-                outcomes.append(f"{plugin}: {handler(**payload)}")
-            except Exception as error:
-                LOGGER.error("%s could not act on %s: %s", plugin, task, error)
-                outcomes.append(f"{plugin}: failed: {error}")
-    woken = renders().notify(".".join(task.split(".")[:2]))
-    if woken:
-        outcomes.append(f"woke {', '.join(woken)}")
-    return "; ".join(outcomes) or f"nothing declared {task}"
-
-
-def install() -> None:
-    """
-    Register the task that runs the hooks, before the worker starts requeuing old ones.
-    """
-    tasks.register(SOURCE, run)

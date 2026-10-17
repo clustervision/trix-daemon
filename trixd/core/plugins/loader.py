@@ -49,6 +49,7 @@ from trixd.core.plugins.registry import LoadedPlugin, current as registry
 from trixd.core.plugins.swap import exchange
 from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
+from trixd.core import hooks as dispatch
 from trixd.core import tasks
 from trixd.db import engine as database
 from trixd.db import models
@@ -309,6 +310,9 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.routes = exchange(app, name, router)
     known.put(entry)
     _remember(entry)
+    # The hooks it declared may name a source nothing answered for yet, and dispatch is the
+    # core's rather than the publisher's, so it is settled from the manifests after a load.
+    dispatch.reconcile()
     LOGGER.info("plugin %s loaded from %s with %d routes", name, path, len(entry.routes))
     return entry
 
@@ -332,6 +336,10 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
     entry = known.disable(name)
     _purge(name)
     _remember(entry)
+    # After the unregister above, which takes back the handler under this plugin's own name:
+    # where that name is also a source another loaded plugin declares a hook on, dispatch
+    # for it is put back. Unplugging the publisher used to stop every plugin's hooks.
+    dispatch.reconcile()
     LOGGER.info("plugin %s unplugged", name)
     return entry
 

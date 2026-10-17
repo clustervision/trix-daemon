@@ -1424,7 +1424,7 @@ def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.
     """
-    from trixd.plugins.luna import hooks
+    from trixd.core import hooks
 
     plugin = tmp_path / "plugins" / "watcher"
     plugin.mkdir()
@@ -2054,3 +2054,43 @@ def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
         assert empty.status_code == 400, "an empty set is a caller mistake, not a no-op"
     finally:
         tasks._handlers.pop("switches", None)
+
+
+def test_unplugging_the_publisher_leaves_the_other_plugins_hooks_dispatching(rig, tmp_path):
+    """
+    Dispatch is the core's, not the publisher's. Registered by the luna plugin, unplugging
+    that plugin took the dispatcher with it and silently stopped every other plugin's hooks
+    - and the Prometheus plugin declares hooks on luna.node.update and luna.node.delete, so
+    its hardware rules would drift from Luna with nothing anywhere to say so.
+
+    The queue a change runs on is its source, so what is asserted here is that the queue
+    still has a handler for `luna` once the luna plugin is gone, and that the handler still
+    reaches a plugin that asked for the event.
+    """
+    from trixd.core import tasks
+
+    plugin = tmp_path / "plugins" / "listener"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: listener\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
+        "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'class Backend:\n    """A plugin that wants to hear about Luna nodes."""\n'
+        "    calls = []\n\n"
+        '    def moved(self, name, newnodename="", group=""):\n        """Remember."""\n'
+        "        self.calls.append(name)\n        return 'noted'\n\n"
+        '    def seen(self):\n        """Show."""\n        return {"calls": self.calls}\n',
+        encoding="utf-8")
+    loader.load(rig, "listener")
+    try:
+        # The publisher goes; the subscriber stays.
+        loader.unload(rig, "luna")
+
+        dispatcher = tasks.handler("luna")
+        assert dispatcher is not None, \
+            "no queue answers for luna changes once the luna plugin is unplugged"
+        said = dispatcher("luna.node.update", '{"name": "node001", "newnodename": "n2"}')
+        assert "listener: noted" in said, said
+    finally:
+        loader.unload(rig, "listener")

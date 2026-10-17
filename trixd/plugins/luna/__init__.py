@@ -38,7 +38,7 @@ from trixd.api.v1 import docs
 from trixd.core.render import triggers
 from trixd.core.security import nodes
 from trixd.plugins.luna import config as luna_config
-from trixd.plugins.luna import hashes, hooks
+from trixd.plugins.luna import hashes
 from trixd.plugins.luna.client import current as client
 from trixd.plugins.luna.credentials import (get_credentials, get_token,
                                             get_token_for)
@@ -64,6 +64,5 @@ def _link(request) -> str:
 triggers.register("luna_hashes", hashes.current(), owner="luna")
 nodes.register(client())
 docs.register_placeholder("luna", _link, _PUBLISHED)
-hooks.install()
 
 __all__ = ["client", "get_credentials", "get_token", "get_token_for"]
