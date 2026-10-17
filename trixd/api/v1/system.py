@@ -111,7 +111,9 @@ class Action(BaseModel):
                 "controller is taking the other's row. `owed` counts the replicated calls still "
                 "waiting for a peer, the ones given up on, the peers configured and the "
                 "peers not answering - counts only, and no peer is named, because this "
-                "route takes no token: `GET /system/replication/owed` says where. States "
+                "route takes no token: `GET /system/replication/owed` says where, and "
+                "`oldest_pending` says in seconds how long the oldest waiting call has "
+                "waited, which is what tells a busy queue from a stuck one. States "
                 "and times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
@@ -121,7 +123,8 @@ class Action(BaseModel):
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
                              "replication": {"at": 1791545526.87, "not_converging": 0}},
-                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0}},
+                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0,
+                         "oldest_pending": 0}},
                 "How trixd is doing"))
 def health() -> dict:
     """

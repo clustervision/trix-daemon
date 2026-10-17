@@ -415,10 +415,11 @@ def test_a_dark_peer_stops_being_attempted_after_three_failures(rig, monkeypatch
 
     def refuse(peer, row, may_sign_in=True):
         """
-        A peer that was reached and refused the connection.
+        A peer that is not there: the connection is refused, so nothing came back and the
+        socket is the only thing that has been learned about.
         """
         tried.append(peer)
-        return outbox.QUEUED, "connection refused", True
+        return outbox.QUEUED, "connection refused", outbox.NO_ANSWER
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     original, outbox._send = outbox._send, refuse
@@ -454,8 +455,8 @@ def test_a_call_that_changed_nothing_is_not_replicated(rig, monkeypatch):
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
     original = outbox._send
-    outbox._send = lambda peer, row, may_sign_in=True: (sent.append(peer),
-                                                        (outbox.DONE, "", True))[1]
+    outbox._send = lambda peer, row, may_sign_in=True: (
+        sent.append(peer), (outbox.DONE, "", outbox.ANSWERED))[1]
     try:
         for result, expected in (({"changed": False}, "skipped"),
                                  ({"changed": 0}, "skipped"),
@@ -722,7 +723,8 @@ def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     monkeypatch.setattr(outbox, "_send",
-                        lambda peer, row, may_sign_in=True: (outbox.QUEUED, "away", True))
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
     outbox._failures.clear()
     outbox._open.clear()
     try:
@@ -757,9 +759,9 @@ def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
         A peer that refuses node001's delete outright and takes everything else.
         """
         if row.method == "DELETE" and "node001" in row.payload:
-            return outbox.FAILED, "400: malformed", True
+            return outbox.FAILED, "400: malformed", outbox.ANSWERED
         sent.append(row.payload)
-        return outbox.DONE, "", True
+        return outbox.DONE, "", outbox.ANSWERED
 
     monkeypatch.setattr(outbox, "_send", send)
     # All three are queued before the refusal happens, so node001's repair is one that
@@ -774,9 +776,10 @@ def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
     outbox._failures.clear()
     outbox._open.clear()
     try:
-        # The first pass meets the refusal at the head and stops there; the second one
-        # knows the row is refused and is the pass that holds the rest of the chain.
-        outbox.drain("ctrl2")
+        # One pass: the refusal at the head holds its own node's chain and the rest of what
+        # the peer owes still goes. It used to take two - the first pass stopped dead at the
+        # refusal and sent nothing, so node002 waited an interval for a refusal that was
+        # never anything to do with it.
         result = outbox.drain("ctrl2")
     finally:
         outbox._failures.clear()
@@ -807,8 +810,9 @@ def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatc
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
     monkeypatch.setattr(outbox, "_send",
-                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
-                                                             (outbox.DONE, "", True))[1])
+                        lambda peer, row, may_sign_in=True: (
+                            sent.append(row.payload),
+                            (outbox.DONE, "", outbox.ANSWERED))[1])
     refused = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
                             {"node": "node001"}, {"was": "node000"}, "req", "tester")
     outbox._finish(refused, outbox.FAILED, "400: malformed")
@@ -1096,6 +1100,70 @@ def test_health_says_how_many_tables_are_not_converging(client):
     assert reported["not_converging"] == 0
 
 
+def test_one_row_the_peer_answers_badly_for_does_not_hold_the_others(rig, monkeypatch):
+    """
+    A 5xx is the peer answering, so it says nothing about the next node - and stopping the
+    pass there held everything else owed to that peer, pass after pass, with nothing able
+    to clear it. It holds its own node's chain and no more.
+    """
+    import json as jsonlib
+
+    from trixd.core.replication import outbox
+
+    for node in ("node001", "node002", "node003"):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": node}, {"force": True}, f"req-{node}", "tester")
+
+    def answer(peer, row, may_sign_in=True):
+        """The peer is up, and one node's row goes wrong on it."""
+        if jsonlib.loads(row.payload)["variables"]["node"] == "node001":
+            return outbox.QUEUED, "500: it went wrong here", outbox.ANSWERED
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", answer)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert result["sent"] == 2, result
+    assert result["left"] == 1, result
+
+
+def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, monkeypatch):
+    """
+    The other half of the same branch, and the half that costs real time: nothing came back,
+    so the rest of the queue is not offered. Each attempt is a three-second wait against a
+    peer that is not there, so what this pins is the *number of attempts* - the counts come
+    out the same whether the pass stopped or held every row, which is how the first version
+    of this test passed while the branch it named could not be reached at all.
+    """
+    from trixd.core.replication import outbox
+
+    for node in ("node001", "node002", "node003"):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": node}, {"force": True}, f"dark-{node}", "tester")
+
+    tried = []
+
+    def silence(peer, row, may_sign_in=True):
+        """A peer that is not there: the socket says nothing back."""
+        tried.append(row.path)
+        return outbox.QUEUED, "connection refused", outbox.NO_ANSWER
+
+    monkeypatch.setattr(outbox, "_send", silence)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert len(tried) == 1, f"a dark peer was offered {len(tried)} rows, not one"
+    assert result["sent"] == 0, result
+    assert result["left"] == 3, result
 
 
 

@@ -58,6 +58,14 @@ QUEUED: str = "queued"
 DONE: str = "done"
 FAILED: str = "failed"
 
+# What one attempt learned about the peer, which is not what it learned about the row. A
+# refusal and a 5xx are the peer answering, and say nothing about the next node; only
+# silence is evidence about the peer itself. Keeping these apart is what decides whether a
+# pass carries on and whether the breaker counts it.
+NOT_ATTEMPTED: str = "not-attempted"
+NO_ANSWER: str = "no-answer"
+ANSWERED: str = "answered"
+
 # The caller is waiting on this, so it is seconds rather than the sweep's thirty: the row
 # makes giving up free, and a dark peer must not hold a request thread.
 TIMEOUT: int = 3
@@ -166,12 +174,23 @@ def states() -> dict:
             select(models.Outbox.state, func.count())
             .where(models.Outbox.state.in_((QUEUED, FAILED)))
             .group_by(models.Outbox.state)).all())
+        # A count on its own cannot tell a queue that is busy from one that is stuck: both
+        # are a number of rows. How long the oldest has been waiting can, and it is one
+        # aggregate rather than a row read.
+        oldest = handle.scalar(select(func.min(models.Outbox.created))
+                               .where(models.Outbox.state == QUEUED))
     finally:
         handle.close()
     with _lock:
         down = len(_open)
+    waiting = 0
+    if oldest is not None:
+        # Both are naive UTC, so they are subtracted as datetimes: .timestamp() would read
+        # each as local time, which cancels out except across a daylight-saving change.
+        waiting = max(0, int((datetime.now(timezone.utc).replace(tzinfo=None)
+                              - oldest).total_seconds()))
     return {"pending": counted.get(QUEUED, 0), "failed": counted.get(FAILED, 0),
-            "peers": len(peers()), "not_answering": down}
+            "peers": len(peers()), "not_answering": down, "oldest_pending": waiting}
 
 
 def owed() -> dict:
@@ -261,9 +280,9 @@ def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body
 
 def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     """
-    Offer one action to one peer. Answers (state, message, reached), where reached says
-    whether the peer was actually contacted - having no token to present is not evidence
-    about the peer and must not count towards its breaker.
+    Offer one action to one peer. Answers (state, message, learned), where learned is one of
+    the three above: having no token to present is not evidence about the peer, and a peer
+    that answers badly is not a peer that has stopped answering.
 
     The renewal margin and the certificate are the sweep's, unchanged: a second way to
     authenticate to the same peer is a second thing to get wrong.
@@ -276,7 +295,7 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     """
     verify = trust()
     if not may_sign_in and not held_token(peer):
-        return QUEUED, "no token held for the peer, so the sweep will sign in", False
+        return QUEUED, "no token held for the peer, so the sweep will sign in", NOT_ATTEMPTED
     held = json.loads(row.payload or "{}")
     envelope = {"plugin": row.plugin, "path": row.path, "method": row.method,
                 "variables": held.get("variables") or {}, "body": held.get("body"),
@@ -289,22 +308,24 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
             # Held or nothing: never a sign-in on a request path.
             token = held_token(peer)
             if not token:
-                return QUEUED, "the held token expired, so the sweep will sign in", False
+                return (QUEUED, "the held token expired, so the sweep will sign in",
+                        NOT_ATTEMPTED)
         try:
             answer = requests.post(url, json=envelope, timeout=TIMEOUT, verify=verify,
                                    headers={TOKEN_HEADER: token})
         except Exception as error:
-            return QUEUED, str(error), True
+            # Nothing came back, which is the one thing that is evidence about the peer.
+            return QUEUED, str(error), NO_ANSWER
         if answer.status_code in (401, 403) and attempt == 1:
             continue
         if answer.status_code < 300:
-            return DONE, "", True
+            return DONE, "", ANSWERED
         if answer.status_code >= 500 or answer.status_code in (401, 403):
-            return QUEUED, f"{answer.status_code}: {answer.text[:200]}", True
+            return QUEUED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
         # Any other 4xx is terminal: the action is malformed, or names an endpoint this
         # peer does not serve. No number of passes fixes a version skew.
-        return FAILED, f"{answer.status_code}: {answer.text[:200]}", True
-    return QUEUED, "no answer", True
+        return FAILED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
+    return QUEUED, "no answer", NO_ANSWER
 
 
 def _finish(row_id: int, state: str, message: str) -> None:
@@ -353,9 +374,14 @@ class _Held:
         self.request_id = row.request_id
 
 
-def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> str:
+def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
     """
-    One try at one row, updating the breaker from the outcome.
+    One try at one row, updating the breaker from the outcome. Answers (state, learned).
+
+    What the row learned about the peer is what tells a row the peer answered badly for
+    apart from a peer that has stopped answering. They look the same from the row - neither
+    is done - and they are not the same for the rest of the queue, nor for the breaker: one
+    row refused says nothing about the next node, and nothing at all about the socket.
 
     The row is copied out and the session closed before anything is sent: the pool is five
     connections with ten of overflow, and up to forty threadpool threads can be in here at
@@ -367,17 +393,19 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> str:
     try:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
         if row is None or row.state != QUEUED:
-            return DONE if row is not None else FAILED
+            return (DONE, ANSWERED) if row is not None else (FAILED, ANSWERED)
         held = _Held(row)
     finally:
         handle.close()
-    state, message, reached = _send(peer, held, may_sign_in)
+    state, message, learned = _send(peer, held, may_sign_in)
     if state == DONE:
         record_success(peer)
-    elif state == QUEUED and reached:
+    elif learned == NO_ANSWER:
+        # Only silence counts: a refusal, a 5xx and a decline are all the peer answering,
+        # and blaming the socket for them opened the breaker on a healthy peer.
         record_failure(peer)
     _finish(row_id, state, message)
-    return state
+    return state, learned
 
 
 def replicate(plugin: str, path: str, method: str, variables: dict, body,
@@ -406,7 +434,7 @@ def replicate(plugin: str, path: str, method: str, variables: dict, body,
                 answered[peer] = "peer-down"
                 continue
             # Not on a caller's thread: no sign-in, and a short timeout.
-            answered[peer] = _attempt(peer, row_id, may_sign_in=False)
+            answered[peer] = _attempt(peer, row_id, may_sign_in=False)[0]
         except Exception as error:
             # Not "failed": that word means the peer refused it, and this never reached the
             # peer. Two calls for one target can race on the unique key; the loser says so
@@ -456,8 +484,8 @@ def drain(peer: str) -> dict:
                 for row in waiting]
     finally:
         handle.close()
-    sent, left, refused, blocked, stuck = 0, 0, 0, 0, set()
-    for index, (row_id, state, chain) in enumerate(rows):
+    sent, refused, blocked, holding, stuck = 0, 0, 0, 0, set()
+    for row_id, state, chain in rows:
         if state == FAILED:
             stuck.add(chain)
             refused += 1
@@ -466,19 +494,44 @@ def drain(peer: str) -> dict:
             # Something earlier for this same target was refused; this one assumes it.
             blocked += 1
             continue
-        if _attempt(peer, row_id) == DONE:
+        outcome, learned = _attempt(peer, row_id)
+        if outcome == DONE:
             sent += 1
-        else:
-            # The peer has stopped answering. Everything from here, this row included,
-            # keeps its place for the next pass.
-            left = len(rows) - index
+        elif learned != ANSWERED:
+            # Nothing came back. Everything from here, this row included, keeps its place
+            # for the next pass: offering the rest would be one three-second wait per row
+            # against a peer that is not there, which is the stall the breaker exists to
+            # prevent one layer down.
             break
+        else:
+            # It answered, and answered badly for this row alone - a refusal, a 5xx, or a
+            # body saying it did not apply it. The peer is up, so the rest of what it owes
+            # is still worth offering; stopping here held every other node behind one row,
+            # pass after pass, with nothing able to clear it. This row holds its own node's
+            # chain, because what comes after it assumes it landed.
+            stuck.add(chain)
+            if outcome == FAILED:
+                # Terminal, and counted the same whether this pass met the refusal or read
+                # it from the row: the pass that met it used to report nothing at all.
+                refused += 1
+            else:
+                holding += 1
+    # Everything this peer still owes after the pass, refusals and held rows included:
+    # counting only from the point the pass stopped left out the rows it had held, and
+    # arithmetic over four counters is a thing to get wrong rather than a thing to read.
+    left = len(rows) - sent
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
     if refused:
-        LOGGER.error("%s refused %d action(s), holding %d more for the same node(s); the "
-                     "next action for a held node clears the refusal and the hold",
-                     peer, refused, blocked)
+        LOGGER.error("%s refused %d action(s); the next action for a held node clears the "
+                     "refusal and the hold", peer, refused)
+    if holding:
+        LOGGER.warning("%s did not take %d action(s) it answered for; they keep their place "
+                       "and hold their own node's later actions, and the rest of what it "
+                       "owes was offered", peer, holding)
+    if blocked:
+        LOGGER.warning("%d action(s) at %s are held behind a refusal or a decline for the "
+                       "same node(s)", blocked, peer)
     _prune()
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked}
 
