@@ -1206,6 +1206,89 @@ def test_a_peer_saying_it_skipped_is_not_recorded_as_done(rig, monkeypatch):
         handle.close()
 
 
+def test_a_refusal_nothing_clears_is_let_go_of_with_what_it_held(rig):
+    """
+    A refused row holds its node's later actions until somebody acts on that node again.
+    Where nobody does, that hold was permanent and lived in a row nothing reaped. What was
+    held goes with it rather than being sent: those actions assume it landed.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-stuck", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node001"}, {"was": "node000"}, "req-behind", "tester")
+    # Another node's row, which the refusal was never anything to do with.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req-other", "tester")
+
+    handle = database.session()
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.message = "400: this build serves no such endpoint"
+        # Refused a day ago, and what it holds was queued before that - which is the only
+        # way a row can be behind it: submitting one afterwards clears the refusal.
+        row.finished = now - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        for other in handle.scalars(select(models.Outbox)).all():
+            other.created = now - timedelta(seconds=outbox.KEEP_REFUSED + 120)
+        handle.commit()
+    finally:
+        handle.close()
+
+    assert outbox._reap("ctrl2") == 2
+    handle = database.session()
+    try:
+        left = handle.scalars(select(models.Outbox)).all()
+        assert [row.target.split("=")[1].split("|")[0] for row in left] == ["node002"], \
+            [(row.state, row.target) for row in left]
+    finally:
+        handle.close()
+
+
+def test_a_fresh_refusal_is_kept_as_evidence(rig):
+    """
+    The reap is for a refusal nothing has cleared in a day, not for one somebody may still
+    be reading in health or in owed.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-new", "tester")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.finished = datetime_now()
+        handle.commit()
+    finally:
+        handle.close()
+
+    assert outbox._reap("ctrl2") == 0
+    handle = database.session()
+    try:
+        assert handle.scalar(select(models.Outbox)) is not None
+    finally:
+        handle.close()
+
+
+def datetime_now():
+    """
+    Now, as the outbox stores it: naive UTC.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
 def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):

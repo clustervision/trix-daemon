@@ -39,7 +39,7 @@ import hashlib
 import json
 import threading
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import requests
 from sqlalchemy import delete, func, select
@@ -84,6 +84,11 @@ KEEP_SECONDS: int = 3600
 # terminal state is cleared by nothing and holds its node's later actions for ever.
 DECLINED: str = "the peer did not apply it"
 DECLINED_PASSES: int = 12
+# How long a refusal nothing has cleared is kept. It holds its node's later actions, and
+# only a newer action for that node clears it - so where nobody acts on that node again,
+# the hold is permanent and lives in a row nothing reaps. A day is long enough to be seen
+# in health and in `owed`, and long enough for an upgrade to land on the peer.
+KEEP_REFUSED: int = 86400
 
 # Consecutive transport failures at a peer, and whether its breaker is open. Process-local
 # on purpose: one worker means this is controller-local, the breaker is this process's
@@ -602,8 +607,54 @@ def drain(peer: str) -> dict:
     if blocked:
         LOGGER.warning("%d action(s) at %s are held behind a refusal or a decline for the "
                        "same node(s)", blocked, peer)
+    _reap(peer)
     _prune()
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked}
+
+
+def _reap(peer: str) -> int:
+    """
+    Let go of a refusal nothing has cleared, and of what it was holding.
+
+    What is held behind it goes with it rather than being sent: those actions assume the
+    refused one landed, so offering them now is the quiet wrong state the hold exists to
+    prevent. Dropping them says plainly that the peer is behind for that node until
+    somebody acts on it again - which is also what clears every other refusal.
+    """
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(seconds=KEEP_REFUSED))
+    handle = database.session()
+    try:
+        stale = handle.scalars(select(models.Outbox).where(
+            models.Outbox.peer == peer, models.Outbox.state == FAILED,
+            models.Outbox.finished < cutoff)).all()
+        gone = 0
+        for row in stale:
+            chain = chain_of(row.target)
+            # Only what was already waiting when the refusal was written down. A later row
+            # for this node cannot be held behind it - submitting one clears the refusal -
+            # so taking it would be this reap deleting an intent nobody has sent yet.
+            behind = [other for other in handle.scalars(select(models.Outbox).where(
+                models.Outbox.peer == peer, models.Outbox.plugin == row.plugin,
+                models.Outbox.state == QUEUED,
+                models.Outbox.created < row.finished)).all()
+                if chain_of(other.target) == chain]
+            LOGGER.error("letting go of %s %s, which %s refused and nothing has cleared in "
+                         "%ds, and of %d action(s) it was holding: %s is behind for %s "
+                         "until something acts on it again", row.method, row.path, peer,
+                         KEEP_REFUSED, len(behind), peer, chain)
+            for other in behind:
+                handle.delete(other)
+            handle.delete(row)
+            gone += 1 + len(behind)
+        handle.commit()
+        return gone
+    except Exception as error:
+        handle.rollback()
+        LOGGER.error("could not let go of refused actions for %s: %s", peer, error)
+        return 0
+    finally:
+        handle.close()
 
 
 def _prune() -> None:
