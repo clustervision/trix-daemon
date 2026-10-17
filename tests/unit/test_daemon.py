@@ -438,23 +438,99 @@ def test_the_sources_are_the_four_on_the_board(rig):
     assert found == {"local", "pam", "ldap", "oidc"}, found
 
 
-def test_no_source_authenticates_without_checking_the_password(rig):
+def _probe_local(handle, patch) -> dict:
     """
-    Every source must refuse or decline; none may answer True on the name alone.
+    The local source over a principal whose digest the table holds.
     """
+    from trixd.core.security.sources import local as local_source
+
+    _local_user("probe", "right")
+    return {"source": local_source.Source(handle), "name": "probe",
+            "right": "right", "wrong": "wrong"}
+
+
+def _probe_pam(handle, patch) -> dict:
+    """
+    The PAM source on the stand-in passwd database and PAM stack the suite already has.
+    """
+    from tests.unit.test_integrations import _pam
+
+    source, _ = _pam(patch, {"probe": (1500, "/bin/bash")}, password="right")
+    return {"source": source, "name": "probe", "right": "right", "wrong": "wrong"}
+
+
+def _probe_ldap(handle, patch) -> dict:
+    """
+    The LDAP source against ldap3's own offline directory, where carol binds with right.
+    """
+    from tests.unit.test_integrations import _ldap
+
+    return {"source": _ldap(patch), "name": "carol", "right": "right", "wrong": "wrong"}
+
+
+def _probe_oidc(handle, patch) -> dict:
+    """
+    OpenID Connect has no provider to drive, and so answers for nobody at all yet.
+    """
+    from trixd.core.security.sources import oidc as oidc_source
+
+    return {"source": oidc_source.Source(handle), "declines": True}
+
+
+# One probe per source the chain can import, keyed by the module name it imports. A
+# source with no provider or server to talk to yet is marked declines, and is held to
+# answering for nobody; every other probe hands over a working credential and a wrong
+# one. A source that needs something a unit test cannot stand in for belongs here too,
+# named, with what it needs - not left out, which reads as covered.
+SOURCE_PROBES = {"local": _probe_local, "pam": _probe_pam,
+                 "ldap": _probe_ldap, "oidc": _probe_oidc}
+
+
+def test_no_source_authenticates_without_checking_the_password(rig, monkeypatch):
+    """
+    A source that answers True on the name alone is an open door, so every source the
+    chain can import is driven here: a wrong password and an empty one are refused, and
+    the right one still gets in. The set is read from the package the chain imports
+    from, so a source added later is driven here too or this test says it is not.
+    """
+    import importlib
     import pathlib
 
-    root = pathlib.Path(trixd.__file__).parent / "core" / "security" / "sources"
-    for name in ("local", "pam", "ldap", "oidc"):
-        body = (root / f"{name}.py").read_text(encoding="utf-8")
-        block = body.split("def authenticate")[1].split("\n    def ")[0]
-        # Drop the signature and the docstring: both name the password without using
-        # it, and a check that counts them passes on a source that ignores it.
-        code = block.split('"""')[2] if block.count('"""') >= 2 else block
-        if "return True" not in code:
-            continue
-        before = code.split("return True")[0]
-        assert "password" in before, f"{name} answers True without using the password"
+    from trixd.core.security import chain
+    from trixd.db import engine as database
+
+    package = importlib.import_module(chain.PACKAGE)
+    root = pathlib.Path(package.__file__).parent
+    found = {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
+    assert found == set(SOURCE_PROBES), (
+        f"no probe for {sorted(found - set(SOURCE_PROBES))} and a probe for no source "
+        f"in {sorted(set(SOURCE_PROBES) - found)}: every source the chain can build "
+        f"has to be driven by this test")
+
+    for name in sorted(found):
+        # Each probe's stand-ins are undone before the next source is built.
+        with monkeypatch.context() as patch:
+            handle = database.session()
+            try:
+                probe = SOURCE_PROBES[name](handle, patch)
+                source = probe["source"]
+                if probe.get("declines"):
+                    for credential in ("anything", ""):
+                        verdict, said = source.authenticate("anybody", credential)
+                        assert verdict is None, (
+                            f"{name} answered {verdict} for a name it has no provider "
+                            f"for: {said}. Give it a probe with a credential")
+                    continue
+                person, right, wrong = probe["name"], probe["right"], probe["wrong"]
+                verdict, said = source.authenticate(person, wrong)
+                assert verdict is False, f"{name} answered {verdict} to a wrong password"
+                verdict, said = source.authenticate(person, "")
+                assert verdict is not True, f"{name} accepted an empty password: {said}"
+                verdict, identity = source.authenticate(person, right)
+                assert verdict is True, f"{name} refused the right password: {identity}"
+                assert identity["name"] == person
+            finally:
+                handle.close()
 
 
 def _local_user(name: str, password: str) -> None:
