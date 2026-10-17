@@ -983,45 +983,90 @@ def test_a_failed_reload_is_a_502_that_says_so(rig, tmp_path, monkeypatch):
         backend.set_hw_rules({"nodes": [{"node": "node001", "disabled": True}]})
 
 
-def test_callers_at_the_same_moment_share_one_reload(rig):
+def test_callers_waiting_together_share_a_reload_and_none_gets_an_earlier_one(rig):
     """
-    Thirty callers at once are served by a handful of reloads, never one each, and none is
-    answered by a reload that started before it asked.
+    The two halves of the contract, driven rather than timed.
+
+    A reload covers the tickets taken before it started, so one caller that arrives first
+    gets its own and everyone who asks while it runs shares the next - thirty callers, two
+    reloads, and not one of the twenty-nine answered by the reload that was already running
+    when they asked, because their files were not on disk yet.
+
+    The overlap is arranged with an event instead of a sleep. Asserting a count of reloads
+    after starting thirty threads and hoping they overlap tests how the machine scheduled
+    them: on a loaded box they run one after another, each gets its own reload, and the
+    test fails having found nothing wrong.
     """
     import threading
-    import time
 
     from trixd.plugins.prometheus.backend import SharedReload
 
     shared = SharedReload()
-    started = []
+    gate = threading.Event()
+    running = threading.Event()
+    names = []
 
-    def slow_reload():
+    def held_reload():
         """
-        A reload that takes a moment, as systemctl does.
+        A reload that does not finish until the test lets it, and says which run it was.
         """
-        started.append(time.monotonic())
-        time.sleep(0.2)
-        return True, ""
+        names.append(f"run-{len(names) + 1}")
+        running.set()
+        gate.wait(30)
+        return True, names[-1]
 
-    answers = []
-    asked = {}
+    answers = {}
 
     def caller(number):
         """
-        One writer asking for a reload.
+        One writer asking for a reload after its own write.
         """
-        asked[number] = time.monotonic()
-        answers.append(shared.run(slow_reload))
+        answers[number] = shared.run(held_reload)
 
-    threads = [threading.Thread(target=caller, args=(n,)) for n in range(30)]
-    for thread in threads:
+    first = threading.Thread(target=caller, args=(0,))
+    first.start()
+    assert running.wait(30), "the first caller never reached the reload, so nothing overlaps"
+
+    rest = [threading.Thread(target=caller, args=(number,)) for number in range(1, 30)]
+    for thread in rest:
         thread.start()
-    for thread in threads:
-        thread.join()
-    assert len(answers) == 30 and all(ok for ok, _ in answers)
-    assert shared.runs <= 3, f"{shared.runs} reloads for 30 callers"
-    assert started[-1] >= max(asked.values()) - 0.2 or shared.runs >= 2
+    waiting = _until(lambda: _issued(shared) == 30)
+    assert waiting, f"only {_issued(shared)} of 30 callers had taken a ticket"
+
+    gate.set()
+    first.join(30)
+    for thread in rest:
+        thread.join(30)
+
+    assert len(answers) == 30 and all(ok for ok, _ in answers.values()), answers
+    assert shared.runs == 2, f"{shared.runs} reloads where the first covers only itself"
+    assert answers[0][1] == "run-1", answers[0]
+    served = {number: outcome for number, outcome in answers.items() if number}
+    assert all(said == "run-2" for _, said in served.values()), (
+        "somebody was answered by the reload that was already running when they asked: "
+        f"{sorted(set(said for _, said in served.values()))}")
+
+
+def _issued(shared) -> int:
+    """
+    How many tickets have been taken, read under the lock the counter lives behind.
+    """
+    with shared.condition:
+        return shared.issued
+
+
+def _until(settled, seconds: float = 30.0) -> bool:
+    """
+    Whether something became true inside the deadline, polled rather than slept through.
+    """
+    import time
+
+    deadline = time.monotonic() + seconds
+    while time.monotonic() < deadline:
+        if settled():
+            return True
+        time.sleep(0.01)
+    return settled()
 
 
 def test_the_hardware_rules_of_every_node_can_be_listed(rig, tmp_path, monkeypatch):
