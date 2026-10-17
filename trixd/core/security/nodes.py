@@ -35,18 +35,41 @@ from trixd.common.errors import ServiceUnavailable
 
 LOGGER = trixlog.get("nodes")
 
-# What answers node(name) and enforcing_security(). None until a plugin registers one.
+# What answers node(name) and enforcing_security(), and which plugin offered it. None until
+# a plugin registers one.
 _source = None
+_owner: str = ""
 
 
-def register(source) -> None:
+def register(source, owner: str = "") -> None:
     """
-    Offer the node source. The last plugin to register wins, and says so.
+    Offer the node source. The last plugin to register wins, and says so. The owner is the
+    plugin, so unplugging it takes the source with it, as it does for a trigger.
     """
-    global _source
+    global _source, _owner
     if _source is not None and _source is not source:
         LOGGER.info("the node source was replaced")
     _source = source
+    _owner = owner
+
+
+def forget(owner: str) -> bool:
+    """
+    Drop the node source one plugin offered, for when it is unplugged.
+
+    Without this the source outlived its plugin: a node sign-in went on asking an unplugged
+    plugin's client whether Luna knows the node, and answering a token on what it said. A
+    refusal naming the missing source is the honest answer - a node cannot be verified by a
+    daemon that no longer has any way to know it.
+    """
+    global _source, _owner
+    if not owner or owner != _owner:
+        return False
+    LOGGER.warning("the node source %s offered is gone, so a node sign-in refuses until "
+                   "something offers one again", owner)
+    _source = None
+    _owner = ""
+    return True
 
 
 def current():

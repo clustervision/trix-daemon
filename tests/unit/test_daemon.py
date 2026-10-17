@@ -2094,3 +2094,29 @@ def test_unplugging_the_publisher_leaves_the_other_plugins_hooks_dispatching(rig
         assert "listener: noted" in said, said
     finally:
         loader.unload(rig, "listener")
+
+
+def test_unplugging_the_node_source_makes_a_node_sign_in_refuse(rig, client):
+    """
+    The node source outlived the plugin that offered it: a node sign-in went on asking an
+    unplugged plugin's client whether Luna knows the node, and issuing a token on what it
+    said. Refusing because nothing can answer is the honest reply - and it is loud, where
+    answering on a stale source is silent.
+
+    Owned the way a trigger is, so the loader lets go of it with everything else.
+    """
+    from trixd.common.constants import API_PREFIX
+
+    # The reason, not the status: with the plugin loaded this route already answers 503,
+    # because the rig's Luna host does not resolve. So what distinguishes the two is what
+    # it says, and asserting the status alone would have passed either way.
+    before = client.post(f"{API_PREFIX}/auth/node/node001", json={"tpm_sha256": ""})
+    assert "node source" not in before.text, before.text
+
+    loader.unload(rig, "luna")
+    try:
+        after = client.post(f"{API_PREFIX}/auth/node/node001", json={"tpm_sha256": ""})
+        assert after.status_code == 503, after.text
+        assert "no node source is loaded" in after.text, after.text
+    finally:
+        loader.load(rig, "luna")

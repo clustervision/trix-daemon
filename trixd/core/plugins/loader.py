@@ -49,6 +49,7 @@ from trixd.core.plugins.registry import LoadedPlugin, current as registry
 from trixd.core.plugins.swap import exchange
 from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
+from trixd.core.security import nodes
 from trixd.core import hooks as dispatch
 from trixd.core import tasks
 from trixd.db import engine as database
@@ -333,6 +334,10 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
     # still running.
     tasks.unregister(name)
     triggers.forget(name)
+    # The node source too, where this plugin offered it: a node sign-in asking an unplugged
+    # plugin's client whether Luna knows the node, and issuing a token on the answer, is
+    # worse than refusing because nothing can answer.
+    nodes.forget(name)
     entry = known.disable(name)
     _purge(name)
     _remember(entry)

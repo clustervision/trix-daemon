@@ -62,7 +62,8 @@ def _link(request) -> str:
 
 # Owned, so unplugging this plugin stops the poller rather than leaving it running.
 triggers.register("luna_hashes", hashes.current(), owner="luna")
-nodes.register(client())
+# Owned, as the trigger above is: unplugging this plugin takes the node source with it.
+nodes.register(client(), owner="luna")
 docs.register_placeholder("luna", _link, _PUBLISHED)
 
 __all__ = ["client", "get_credentials", "get_token", "get_token_for"]
