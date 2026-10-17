@@ -1745,3 +1745,60 @@ def test_a_tie_between_documents_of_different_shape_keeps_the_local_row(rig, tmp
         assert held.origin == "ctrl1", held.origin
     finally:
         handle.close()
+
+
+def test_two_controllers_agree_whatever_order_the_rows_went_in(rig, tmp_path):
+    """
+    The export is sorted, and that sort is what makes a table hash mean the same thing on
+    both controllers. Autoincrement is local - the file says so: "the peer inserts its own
+    row and gets its own number" - so the same rows genuinely do sit in different physical
+    order on the two sides.
+
+    Without the sort, two controllers holding identical content hash differently, every
+    sweep fetches the whole table, the comparison never agrees, and no number of rounds
+    resolves it: the rows are already the same, so there is nothing for a merge to change.
+    Permanent divergence, and the most expensive outcome this package has.
+
+    Every two-controller test here seeds one side and derives the other by merging, so both
+    end up in the same physical order and the sort is never load-bearing in them. This one
+    inserts the same rows in different orders on purpose, which is the only way to see it.
+    """
+    from datetime import datetime
+
+    # One moment for every row, on both sides. Without this the documents differ by their
+    # timestamps and the hashes disagree for a reason that has nothing to do with order,
+    # which would make this pass against a broken sort.
+    when = datetime(2026, 10, 17, 12, 0, 0)
+    rows = ("alice", "bob", "carol")
+
+    def seed(handle, order):
+        """
+        The same three principals, inserted in the order given.
+        """
+        for name in order:
+            handle.add(models.Principal(name=name, role="reader", password_digest="",
+                                        enabled=True, version=1, origin="here",
+                                        updated_at=when))
+        handle.commit()
+
+    here = _peer(tmp_path, "one.db")
+    there = _peer(tmp_path, "two.db")
+    try:
+        seed(here, rows)
+        seed(there, tuple(reversed(rows)))
+
+        # The premise: the two really are in different physical order. Read back without an
+        # order_by, so this is what the database holds rather than what we asked for.
+        order_here = [row.name for row in here.scalars(select(models.Principal)).all()]
+        order_there = [row.name for row in there.scalars(select(models.Principal)).all()]
+        assert order_here != order_there, \
+            f"both sides came out in the same order, so this proves nothing: {order_here}"
+        assert sorted(order_here) == sorted(order_there) == sorted(rows), \
+            "the two sides do not hold the same rows"
+
+        assert tables.table_hash(here, "principal") == tables.table_hash(there, "principal"), \
+            ("two controllers holding identical rows disagree on the table hash, so they "
+             "will re-fetch the whole table every sweep and never converge")
+    finally:
+        here.close()
+        there.close()
