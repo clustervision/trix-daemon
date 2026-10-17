@@ -434,6 +434,27 @@ def test_lunas_envelopes_are_unwrapped(rig):
     assert client.nodes() == {}
 
 
+def test_an_unreadable_cluster_answer_means_security_is_enforced(rig):
+    """
+    The flag decides whether a node has to present a measurement, so an answer that cannot
+    be read must not read as "off". A 404, an empty body and a row whose shape has moved all
+    arrive as an empty row; before this they turned attestation off cluster-wide and said
+    nothing, while a transport failure - the louder case - already raised instead.
+    """
+    client, _ = _luna(
+        Answer(body={"config": {"cluster": {"security": False}}}),
+        Answer(body={"config": {"cluster": {"security": True}}}),
+        Answer(404),
+        Answer(body={}),
+        Answer(body={"config": {"cluster": {"name": "trinity"}}}))
+
+    assert client.enforcing_security() is False, "Luna said off and meant it"
+    assert client.enforcing_security() is True, "Luna said on"
+    assert client.enforcing_security() is True, "a 404 read as not enforcing"
+    assert client.enforcing_security() is True, "an empty body read as not enforcing"
+    assert client.enforcing_security() is True, "a row with no flag read as not enforcing"
+
+
 def test_trixd_follows_luna_ini_when_it_changes(rig, tmp_path, monkeypatch):
     """
     A protocol, address or secret changed in luna.ini is what trixd uses next; an empty

@@ -137,8 +137,17 @@ class LunaClient:
     def enforcing_security(self) -> bool:
         """
         Whether Luna is enforcing cluster security, and so whether we must too.
+
+        An answer this cannot read means enforcing: the flag decides whether a node has to
+        present a measurement, and reading "off" from a 404 or a moved shape would turn
+        attestation off cluster-wide with nothing reporting it.
         """
-        return bool(self.cluster().get("security"))
+        held = self.cluster()
+        if not isinstance(held, dict) or "security" not in held:
+            LOGGER.warning("Luna did not say whether the cluster enforces security, so this "
+                           "daemon assumes it does; a node must present a measurement")
+            return True
+        return bool(held["security"])
 
     def groups(self) -> dict:
         """
