@@ -340,6 +340,47 @@ def test_the_signing_secret_falls_back_to_the_file_the_installer_wrote(tmp_path)
     assert configuration.load(str(ini)).tokens.secret_key == "b" * 32
 
 
+def test_a_secret_file_others_can_read_is_said_out_loud(tmp_path):
+    """
+    The secret signs every token this daemon issues, rootus ones included, and on a default
+    install it is the file Luna's key is in too. Its mode was never looked at, while the
+    private key beside it is created 0600 and has a test pinning that.
+
+    Said rather than refused, deliberately: a controller already serving on a loose file
+    should keep serving, and a daemon that will not start is its own outage.
+    """
+    if not POSIX:
+        pytest.skip("modes mean nothing here")
+
+    secret_file = tmp_path / "secret.key"
+    secret_file.write_text("b" * 32 + "\n", encoding="utf-8")
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY =\n"
+                   f"SECRET_FILE = {secret_file}\n", encoding="utf-8")
+
+    def said(mode: int) -> list:
+        """
+        What the key ring logged while loading a secret file at this mode.
+        """
+        os.chmod(secret_file, mode)
+        records = Records()
+        keys.LOGGER.addHandler(records)
+        try:
+            ring = keys.KeyRing(configuration.load(str(ini)).tokens).load()
+            assert ring.signing_key() == "b" * 32, "the secret stopped being read"
+        finally:
+            keys.LOGGER.removeHandler(records)
+        return records.messages
+
+    tight = said(0o600)
+    assert not any(str(secret_file) in message and "mode" in message for message in tight), \
+        f"a 0600 secret file was complained about: {tight}"
+
+    loose = said(0o644)
+    assert any(str(secret_file) in message and "0644" in message for message in loose), \
+        f"a world-readable secret file was not mentioned: {loose}"
+
+
 def test_no_secret_anywhere_stops_the_start_naming_both_places(tmp_path):
     """
     Signing with nothing is the one thing that must not pass quietly.

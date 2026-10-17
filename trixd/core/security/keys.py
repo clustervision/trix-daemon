@@ -85,8 +85,18 @@ class KeyRing:
                 f"{self.algorithm} signs with a shared secret and none was found: set "
                 f"[TOKENS] SECRET_KEY in trixd.ini, or put it in {self.config.secret_file}")
         if len(self.secret) < MINIMUM_SECRET_LENGTH:
-            LOGGER.warning("the shared secret is %d characters long; the installer "
-                           "writes %d", len(self.secret), MINIMUM_SECRET_LENGTH)
+            LOGGER.error("the shared secret is %d characters long where the installer writes "
+                         "%d: it signs every token this daemon issues, rootus ones included",
+                         len(self.secret), MINIMUM_SECRET_LENGTH)
+        # Said rather than refused, so a controller already running on a loose file keeps
+        # serving. Checked whenever the file is there: the settings hold the resolved secret
+        # and not where it came from, and a file holding one is worth a line either way.
+        if self.config.secret_file and os.path.isfile(self.config.secret_file):
+            loose = _unsafe_to_read(self.config.secret_file)
+            if loose:
+                LOGGER.error("%s %s: it holds the secret every token here is signed with, "
+                             "and on a default install the one Luna holds too",
+                             self.config.secret_file, loose)
         LOGGER.info("signing as %s with %s and the secret shared with Luna",
                     self.issuer, self.algorithm)
         return self
@@ -155,6 +165,19 @@ def read_private(path: str):
     if not isinstance(key, ed25519.Ed25519PrivateKey):
         raise TrixdError(f"{path} is not an Ed25519 private key")
     return key
+
+
+def _unsafe_to_read(path: str) -> str:
+    """
+    Why a secret file is readable by more than its owner, or an empty string when it is not.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError as error:
+        return f"could not be checked: {error}"
+    if mode & (stat.S_IRGRP | stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH):
+        return f"is mode {mode:04o}, readable beyond its owner"
+    return ""
 
 
 def _unsafe(path: str) -> str:
