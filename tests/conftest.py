@@ -38,6 +38,8 @@ from fastapi.testclient import TestClient
 from trixd.app import create_app
 from trixd.common import settings as configuration
 from trixd.core.lifespan import start
+from trixd.core.render.engine import current as renders
+from trixd.core.replication import applied
 from trixd.core.security import keys
 from trixd.plugins.luna import hashes
 from trixd.plugins.luna.config import LUNA_INI_ENV
@@ -50,9 +52,14 @@ PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 SHARED_SECRET: str = "004f2af45d3a4e161a7dd2d17fdae47f"
 
 
-def build(tmp_path, algorithm: str = "HS256"):
+def build(tmp_path, algorithm: str = "HS256", monkeypatch=None):
     """
     Write a configuration and bring a daemon up against it.
+
+    `monkeypatch` is how the Luna ini reaches the environment. Assigning it directly left
+    the variable set for whatever ran next: the autouse fixture below clears it before each
+    test, so the leak stayed inside the run, but a test asking what happens with no Luna
+    configuration depended on nothing having built a rig first.
     """
     plugins = tmp_path / "plugins"
     if not plugins.exists():
@@ -64,7 +71,10 @@ def build(tmp_path, algorithm: str = "HS256"):
     luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = https\n"
                         f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",
                         encoding="utf-8")
-    os.environ[LUNA_INI_ENV] = str(luna_ini)
+    if monkeypatch is not None:
+        monkeypatch.setenv(LUNA_INI_ENV, str(luna_ini))
+    else:
+        os.environ[LUNA_INI_ENV] = str(luna_ini)
 
     ini = tmp_path / "trixd.ini"
     ini.write_text(
@@ -100,20 +110,36 @@ def _own_luna_ini(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _own_process_state():
+    """
+    The state that lives in the process rather than in a rig, put back afterwards.
+
+    The render engine and the record of what a peer's calls already applied are both
+    module-level singletons, so one test's renders went on answering - and its trailing
+    timers went on firing - inside the next test's engine. That is how a test passes alone
+    and fails in a full run, and the other way round. Neither belongs to a database or a
+    configuration file, so building a rig does not clear them.
+    """
+    yield
+    renders().forget_all()
+    applied.forget_all()
+
+
 @pytest.fixture()
-def rig(tmp_path):
+def rig(tmp_path, monkeypatch):
     """
     A configured daemon: its own database, the shared secret, its own plugins.
     """
-    return build(tmp_path)
+    return build(tmp_path, monkeypatch=monkeypatch)
 
 
 @pytest.fixture()
-def keypair_rig(tmp_path):
+def keypair_rig(tmp_path, monkeypatch):
     """
     The same daemon with the optional keypair algorithm selected instead.
     """
-    return build(tmp_path, algorithm="EdDSA")
+    return build(tmp_path, algorithm="EdDSA", monkeypatch=monkeypatch)
 
 
 @pytest.fixture()

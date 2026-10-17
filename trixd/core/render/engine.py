@@ -106,6 +106,18 @@ class Engine:
                 if timer is not None:
                     timer.cancel()
 
+    def forget_all(self) -> None:
+        """
+        Drop every render and cancel every timer, for a process that is starting over.
+        """
+        with self.lock:
+            for timer in self.trailing.values():
+                timer.cancel()
+            self.renders.clear()
+            self.pending.clear()
+            self.trailing.clear()
+            self.reconciled = False
+
     def _declare(self, plugin: str, path: str, spec, producer) -> Render:
         """
         Put one render in the table. The caller holds the lock and decides what produces it.
