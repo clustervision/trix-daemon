@@ -91,6 +91,9 @@ class Engine:
         self.lock = threading.RLock()
         self.pending: dict = {}
         self.trailing: dict = {}
+        # Whether the first pass over every render has happened. Before it, start-up will
+        # produce them; after it, a render registered by a reload has to produce its own.
+        self.reconciled: bool = False
 
     def forget(self, plugin: str) -> None:
         """
@@ -111,7 +114,12 @@ class Engine:
             item = Render(plugin, path, spec, producer)
             self.renders[item.key] = item
             LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
-            return item
+        # A reload builds new render objects holding no document, and nothing runs them
+        # until one of their inputs changes - which for a plugin whose inputs are quiet
+        # could be a long time. Outside the lock: run takes it itself.
+        if self.reconciled:
+            self.run(item)
+        return item
 
     def reader(self, plugin: str, path: str):
         """
@@ -125,8 +133,10 @@ class Engine:
             item = self.renders.get(f"{plugin}/{path}")
             if item is None:
                 raise NotFound(f"no render named {plugin}/{path}")
-            if item.document is None:
-                self.run(item)
+            # Deliberately not produced here. A render reads from Luna behind a lock every
+            # render shares, and these endpoints need no token, so a poll arriving while
+            # Luna is away would hold that lock for the whole connect timeout - and the
+            # polls stack. Start-up and a change produce renders; a reader only serves.
             if item.document is None:
                 raise NotFound(f"{plugin}/{path} has not rendered yet: {item.last_error}")
             return item.document
@@ -161,6 +171,7 @@ class Engine:
         for item in list(self.renders.values()):
             if self.run(item):
                 done += 1
+        self.reconciled = True
         return done
 
     def notify(self, changed: str = "") -> list:

@@ -1126,6 +1126,78 @@ def test_a_change_through_the_pass_through_is_queued_for_the_hooks(rig, client, 
         handle.close()
 
 
+def test_a_poll_never_produces_a_render(rig):
+    """
+    A render reads from Luna behind a lock every render shares, and the endpoints that serve
+    one need no token. So a poll that produced the render would hold that lock for the whole
+    connect timeout with Luna away - and polls arrive every scrape interval and stack, until
+    no synchronous endpoint answers, including the one that would unplug the plugin.
+
+    A reader serves what exists and answers 404 otherwise. Prometheus keeps its previous
+    targets on a 404, which is a better answer than an empty set.
+    """
+    from trixd.common.errors import NotFound
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    engine = renders()
+    produced = []
+
+    def producer():
+        """
+        Count the productions, and answer something recognisable.
+        """
+        produced.append(1)
+        return [{"targets": ["counted"]}]
+
+    try:
+        item = engine.register("polled", "renders/thing",
+                               Render(inputs=["luna.node"], coalesce="1s"), producer)
+        # Put it back to holding nothing, whatever registering did, so this is a test of
+        # what a poll does and not of what register does.
+        item.document = None
+        produced.clear()
+        read = engine.reader("polled", "renders/thing")
+
+        with pytest.raises(NotFound):
+            read()
+        with pytest.raises(NotFound):
+            read()
+        assert produced == [], "a poll produced the render"
+
+        assert engine.run(item) is True
+        assert produced == [1]
+        assert read() == [{"targets": ["counted"]}]
+        assert produced == [1], "serving produced it again"
+    finally:
+        engine.forget("polled")
+
+
+def test_a_render_registered_after_the_first_pass_produces_itself(rig, monkeypatch):
+    """
+    A reload builds new render objects holding no document, and the first pass has long
+    gone, so nothing would run them until one of their inputs changed - which for a plugin
+    with quiet inputs could be a long time, and now that a poll does not produce one
+    either, that window is a 404 rather than a stale answer.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    engine = renders()
+    produced = []
+    # raising=False so this runs against a build that has no such attribute: otherwise the
+    # test errors in setup and proves only that the attribute is new.
+    monkeypatch.setattr(engine, "reconciled", True, raising=False)
+    try:
+        engine.register("reloaded", "renders/thing",
+                        Render(inputs=["luna.node"], coalesce="1s"),
+                        lambda: produced.append(1) or [{"targets": ["fresh"]}])
+        assert produced == [1], "a render registered after the first pass was left empty"
+        assert engine.reader("reloaded", "renders/thing")() == [{"targets": ["fresh"]}]
+    finally:
+        engine.forget("reloaded")
+
+
 def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers):
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.
@@ -1223,6 +1295,9 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
 
     renders().register("burst", "renders/burst", Render(inputs=["luna.burst"], coalesce="1s"),
                        produce)
+    # Registering produces it, so the burst is counted from a clean slate - this test is
+    # about what a burst renders, not about what registering does.
+    seen.clear()
     renders().notify("luna.burst")
     state["value"] = 2
     renders().notify("luna.burst")
