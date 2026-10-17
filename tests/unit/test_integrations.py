@@ -1187,6 +1187,40 @@ def test_a_subject_nobody_knows_is_refused_whatever_kind_the_token_claims(rig):
     assert answer.status_code == 401, answer.text
 
 
+def test_a_service_token_naming_the_ini_account_is_refused(rig):
+    """
+    The one that matters, and the one the first attempt missed.
+
+    This daemon mints a service token for Luna and signs it with the secret both hold, and
+    the subject it names is DAEMON_NAME - which is exactly what the installer writes as this
+    daemon's own ini account. So removing the kind's role bypass changed nothing on a real
+    install: the token passed as rootus by the ordinary route instead, and whatever read
+    that header on its way to Luna still held everything, the replication export and every
+    principal's password digest with it.
+
+    The subject is taken from the settings rather than written here, because the whole
+    defect was that the two happen to be the same name.
+    """
+    from trixd.common.settings import current as settings
+    from trixd.core.security import tokens
+
+    client = _gated()
+    account = settings().api.username
+    assert account, "the rig has no ini account, so this test proves nothing"
+    theirs = {"x-access-tokens": tokens.mint(account, kind="service")}
+
+    assert client.get("/look", headers=theirs).status_code == 401, \
+        "a service token naming the ini account was accepted"
+    answer = client.patch("/change", headers=theirs)
+    assert answer.status_code == 401, \
+        f"a service token naming the ini account reached a manager route: {answer.text}"
+
+    # The same account as an ordinary user token still works, so this refuses the kind and
+    # not the account.
+    mine = {"x-access-tokens": tokens.mint(account)}
+    assert client.patch("/change", headers=mine).status_code == 200
+
+
 def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     """
     is-active and is-enabled for each catalogued unit, and unknown when they are silent.
