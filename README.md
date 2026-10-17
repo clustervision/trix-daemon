@@ -272,7 +272,8 @@ trixd does it as the ini account.
 Every user route names its minimum, and the gate compares it with the caller's role
 before the handler runs. A refusal is a 403 that says both, as in
 `this needs manager; you hold operator`, and goes to the audit trail. The other
-controller's service token passes every check.
+controller is not an exception: it signs in with the account both controllers are
+configured with and is judged on that account, as any caller holding it would be.
 
 The whole decision is these lines. The position on the ladder is the rank:
 
@@ -285,9 +286,7 @@ MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
 def rank(role: str) -> int:
     return MINIMUMS.index(role) if role in MINIMUMS else 0
 
-def permits(who, minimum: str, kind: str = "") -> tuple:
-    if kind == TOKEN_KIND_SERVICE:                # the other controller
-        return True, TOKEN_KIND_SERVICE
+def permits(who, minimum: str) -> tuple:
     held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):   # the trixd.ini account
         return True, held

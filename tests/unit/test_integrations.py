@@ -1060,19 +1060,21 @@ def test_the_gate_reads_either_header_and_refuses_no_token(rig, token):
     assert client.get("/look", headers={"x-access-tokens": "not.a.token"}).status_code == 401
 
 
-def test_a_subject_nobody_knows_is_refused_and_the_peer_is_not(rig):
+def test_a_subject_nobody_knows_is_refused_whatever_kind_the_token_claims(rig):
     """
-    A signed token for a name no source resolves is 401; the peer's service token,
-    which names no user, passes a manager route.
+    A signed token for a name no source resolves is 401, and claiming to be a service
+    does not change that. It used to: naming no user passed every check, including a
+    manager route, so anything that read one of those headers was an administrator here.
     """
     from trixd.core.security import tokens
 
     client = _gated()
     ghost = {"x-access-tokens": tokens.mint("ghost-of-nobody")}
     assert client.get("/look", headers=ghost).status_code == 401
-    peer = {"x-access-tokens": tokens.mint("trixd", kind="service")}
-    answer = client.patch("/change", headers=peer)
-    assert answer.status_code == 200, answer.text
+    service = {"x-access-tokens": tokens.mint("ghost-of-nobody", kind="service")}
+    assert client.get("/look", headers=service).status_code == 401
+    answer = client.patch("/change", headers=service)
+    assert answer.status_code == 401, answer.text
 
 
 def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
