@@ -504,3 +504,98 @@ def test_finished_tasks_are_forgotten_after_a_while(rig):
     finally:
         handle.close()
     assert left == ["new-done", "old-queued"]
+
+
+def test_the_contents_reach_the_disk_before_the_rename(tmp_path, monkeypatch):
+    """
+    Without that, a power loss can leave the rename behind while the data is still in the
+    page cache, and what stands under the real name is a file of zeroes - the one outcome
+    writing through a temporary file and renaming was supposed to rule out.
+
+    The order is what matters, so the order is what is asserted. The directory is
+    deliberately not synced: that would make the rename durable, and a rename lost in a
+    crash leaves the previous contents, which every caller here can regenerate.
+    """
+    from trixd.utils import files
+
+    order = []
+    real_fsync, real_replace = os.fsync, os.replace
+
+    def noting_fsync(fileno):
+        """Remember that the data was pushed out, and do it."""
+        order.append("fsync")
+        return real_fsync(fileno)
+
+    def noting_replace(source, target):
+        """Remember that the name was moved into place, and do it."""
+        order.append("replace")
+        return real_replace(source, target)
+
+    monkeypatch.setattr(os, "fsync", noting_fsync)
+    monkeypatch.setattr(os, "replace", noting_replace)
+
+    files.write(str(tmp_path / "settings.yml"), "key: value\n")
+
+    assert order[:1] == ["fsync"], f"the order was {order}"
+    assert "replace" in order, f"nothing was renamed into place: {order}"
+    assert order.index("fsync") < order.index("replace"), order
+    assert order.count("fsync") == 1, \
+        f"{order.count('fsync')} syncs: the directory sync costs 0.9 ms a file and buys " \
+        f"durability of the rename, which is not what this protects against"
+
+
+def test_a_file_with_one_marker_missing_is_refused_rather_than_doubled(tmp_path):
+    """
+    A block whose end marker somebody removed used to get a second block appended, leaving
+    two start markers - and a consumer reading from the first start to the first end then
+    read the stale content with the new marker inside it.
+
+    Where our block ended cannot be told from here, and both guesses are worse than
+    stopping: appending doubles the block, and cutting to the end of the file takes whatever
+    a site put after the damage. So nothing is written and the file is left alone.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.utils import files
+
+    path = tmp_path / "genders"
+    files.set_managed_block(str(path), "TrinityX", "node001 all")
+
+    # Somebody removed the end marker and wrote a line of their own after it.
+    end = files.BLOCK_END.format(manager="TrinityX")
+    path.write_text(path.read_text().replace(end + "\n", "") + "site_own_line here\n",
+                    encoding="utf-8")
+    before = path.read_text(encoding="utf-8")
+
+    with pytest.raises(BackendFailure, match="marker"):
+        files.set_managed_block(str(path), "TrinityX", "node002 all")
+
+    after = path.read_text(encoding="utf-8")
+    assert after == before, "the file was changed by a write that was supposed to refuse"
+    assert after.count(files.BLOCK_START.format(manager="TrinityX")) == 1, after
+    assert "site_own_line here" in after
+
+
+def test_the_connection_pool_holds_every_caller_that_can_arrive(rig):
+    """
+    A synchronous handler runs in Starlette's threadpool, so that pool's capacity is how
+    many callers can be inside a handler at once, each wanting a connection. Left at the
+    dialect default - five with ten of overflow - the sixteenth waited pool_timeout seconds
+    and was then refused outright, so a boot storm queued and then failed.
+
+    Both numbers are read at run time rather than written down here, so raising one without
+    the other is caught: they are set in different places and nothing else connects them.
+    """
+    import anyio
+    from anyio.to_thread import current_default_thread_limiter
+
+    from trixd.db import engine as database
+
+    async def threadpool_capacity():
+        """Readable only from inside an event loop, which is where a handler runs."""
+        return int(current_default_thread_limiter().total_tokens)
+
+    callers = anyio.run(threadpool_capacity)
+    room = database.engine().pool.size()
+    assert room >= callers, \
+        f"{callers} callers can be in a handler at once and the pool holds {room}: the " \
+        f"ones beyond it wait {database.POOL_TIMEOUT_SECONDS}s and are then refused"
