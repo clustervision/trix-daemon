@@ -74,16 +74,24 @@ def _loggable(argv) -> list:
     return shown
 
 
-def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False) -> Result:
+def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False,
+        secret_input: str = "") -> Result:
     """
     Run a command as an argument list. Never a shell string, always a timeout.
+
+    `secret_input` is written to the command's standard input instead of being passed as an
+    argument, for a value that must not appear in /proc. The child is started in its own
+    session so it has no terminal to read from in preference: a prompt reads standard input
+    only when there is no tty, and whether the daemon has one is not something to depend on.
     """
     if not argv or not isinstance(argv, (list, tuple)):
         raise BackendFailure("a command must be given as an argument list")
     LOGGER.debug("running %s", " ".join(_loggable(argv)))
     try:
         done = subprocess.run([str(item) for item in argv], capture_output=True,
-                              timeout=timeout, check=False)
+                              timeout=timeout, check=False,
+                              input=secret_input.encode() if secret_input else None,
+                              start_new_session=bool(secret_input))
     except FileNotFoundError:
         raise BackendFailure(f"{argv[0]} is not installed") from None
     except subprocess.TimeoutExpired:

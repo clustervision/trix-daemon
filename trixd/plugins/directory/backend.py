@@ -38,8 +38,10 @@ LOGGER = trixlog.get("directory")
 OBOL: str = "obol"
 TIMEOUT: int = 30
 
+# The password is deliberately absent: obol would take it as --password, where it sits in
+# /proc for the life of the call, readable by anyone with a login on the controller. It goes
+# in through _apart below instead.
 USER_FLAGS: dict = {
-    "password": "--password",
     "uid": "--uid",
     "gid": "--gid",
     "shell": "--shell",
@@ -56,6 +58,23 @@ GROUP_FLAGS: dict = {
     "gid": "--gid",
     "members": "--users",
 }
+
+
+def _apart(body: dict, mapping: dict) -> tuple:
+    """
+    The obol arguments, and the password to hand over on standard input rather than in them.
+
+    obol takes a password as an argument or from a prompt. An argument is world-readable
+    while the command runs, so the prompt is used and the value goes down a pipe. The log
+    masking beside this is what says the value was always known to be secret; it covered
+    the log and not the process table.
+    """
+    sent = dict(body or {})
+    password = sent.pop("password", None)
+    argv = _flags(sent, mapping)
+    if password:
+        argv.append("--prompt-password")
+    return argv, (f"{password}\n" if password else "")
 
 
 def _flags(body: dict, mapping: dict) -> list:
@@ -113,7 +132,9 @@ class Backend:
             raise BadRequest("username is required")
         if shell.run([OBOL, "-J", "user", "show", name], TIMEOUT).ok:
             raise BadRequest(f"user {name} already exists")
-        shell.run([OBOL, "user", "add", name] + _flags(body, USER_FLAGS), TIMEOUT, check=True)
+        argv, secret = _apart(body, USER_FLAGS)
+        shell.run([OBOL, "user", "add", name] + argv, TIMEOUT, check=True,
+                  secret_input=secret)
         LOGGER.info("created user %s", name)
         return self.get_user(name)
 
@@ -123,10 +144,11 @@ class Backend:
         """
         if not shell.run([OBOL, "-J", "user", "show", name], TIMEOUT).ok:
             raise NotFound(f"no user named {name}")
-        argv = _flags(body, USER_FLAGS)
+        argv, secret = _apart(body, USER_FLAGS)
         if not argv:
             raise BadRequest("nothing to change")
-        shell.run([OBOL, "user", "modify", name] + argv, TIMEOUT, check=True)
+        shell.run([OBOL, "user", "modify", name] + argv, TIMEOUT, check=True,
+                  secret_input=secret)
         LOGGER.info("updated user %s", name)
         return self.get_user(name)
 

@@ -315,6 +315,31 @@ def test_with_no_secret_trixd_signs_in_and_keeps_what_it_got(rig, tmp_path, monk
         assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
 
 
+def test_the_token_cache_tightens_a_directory_that_was_already_there(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    The test above lets trixd create the directory, and says so - that was the only case the
+    0700 promise held for. makedirs applies its mode when it creates and not otherwise, and
+    the Luna command line creates this directory first on most boxes, so in practice the
+    0600 file sat in whatever permissions were already there.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    path = str(loose / "token")
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, path)
+    issued = _signed("l" * 32)
+    monkeypatch.setattr(credentials.requests, "post",
+                        lambda url, **kwargs: Answer(201, body={"token": issued}))
+
+    assert credentials.get_token() == issued
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(loose).st_mode) == 0o700, \
+            "a directory that already existed was left as it was found"
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
 def test_luna_away_with_nothing_held_is_unavailable_not_a_wrong_token(rig, tmp_path, monkeypatch):
     """
     A render answers 503 and records the failure; it never renders from a token it
@@ -883,6 +908,47 @@ def test_a_new_user_reaches_obol_as_flags(rig, monkeypatch):
                            "shell": None})
     added = [call for call in calls if "add" in call][0]
     assert added == ["obol", "user", "add", "dave", "--uid", "1600", "--groups", "hpc,gpu"]
+
+
+def test_a_password_does_not_reach_obol_as_an_argument(rig, monkeypatch):
+    """
+    An argument sits in /proc for the life of the call, readable by any local user - and a
+    controller has interactive logins, with /trinity/home exported. obol will take a prompt
+    instead, so the value goes down a pipe and never into the process table.
+
+    The masking table beside the runner is the evidence this value was always known to be
+    secret: it covered the log and left the argument list alone.
+    """
+    from trixd.plugins.directory import backend as directory
+    from trixd.plugins.directory.backend import Backend
+
+    seen = []
+    existing = set()
+
+    def run(argv, *args, **kwargs):
+        """
+        Record the call with whatever was handed to standard input, and behave as obol
+        does either side of the add: show fails until the user is there.
+        """
+        seen.append((list(argv), kwargs.get("secret_input")))
+        verb = argv[2] if argv[1] != "-J" else argv[3]
+        name = argv[3] if argv[1] != "-J" else argv[4]
+        if verb == "show" and name not in existing:
+            return Ran("", 1, "not found")
+        if verb == "add":
+            existing.add(name)
+        return Ran("{}")
+
+    monkeypatch.setattr(directory.shell, "run", run)
+    monkeypatch.setattr(directory.shell, "run_json", lambda argv, *a, **k: {"uid": argv[-1]})
+    Backend().create_user({"username": "dave", "password": "a long passphrase", "uid": 1600})
+
+    added_argv, secret = [entry for entry in seen if "add" in entry[0]][0]
+    assert "a long passphrase" not in added_argv, "the password went into the argument list"
+    assert "--password" not in added_argv, "obol was still told to take it as an argument"
+    assert "--prompt-password" in added_argv, "obol was not asked to prompt for it"
+    assert secret == "a long passphrase\n", "the password was not handed over on stdin"
+    assert "--uid" in added_argv and "1600" in added_argv, "the other fields stopped arriving"
 
 
 def test_the_directory_refuses_what_obol_would_get_wrong(rig, monkeypatch):
