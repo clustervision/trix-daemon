@@ -37,9 +37,13 @@ from fastapi.testclient import TestClient
 
 from trixd.app import create_app
 from trixd.common import settings as configuration
+from trixd.core import tasks
 from trixd.core.lifespan import start
+from trixd.core.plugins.registry import current as registry
+from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
-from trixd.core.replication import applied
+from trixd.core.replication import applied, outbox
+from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
 from trixd.plugins.luna import hashes
 from trixd.plugins.luna.config import LUNA_INI_ENV
@@ -115,15 +119,27 @@ def _own_process_state():
     """
     The state that lives in the process rather than in a rig, put back afterwards.
 
-    The render engine and the record of what a peer's calls already applied are both
-    module-level singletons, so one test's renders went on answering - and its trailing
-    timers went on firing - inside the next test's engine. That is how a test passes alone
-    and fails in a full run, and the other way round. Neither belongs to a database or a
-    configuration file, so building a rig does not clear them.
+    These are module-level singletons, so one test's leavings are in the next test's way:
+    that is how a test passes alone and fails in a full run, and the other way round.
+    Building a rig does not clear any of them, because none belongs to a database or a
+    configuration file.
+
+    The plugin registry is the one that actually bites. A test that loads a plugin of its
+    own leaves it registered, so its hooks go on being dispatched into the next test's run -
+    which shows up as a hook answering for a plugin that test never loaded. Taken out the
+    way `unload` does, minus the route table, which is a fresh app per test anyway.
     """
+    standing = set(registry().plugins)
     yield
+    for name in set(registry().plugins) - standing:
+        tasks.unregister(name)
+        triggers.forget(name)
+        registry().plugins.pop(name, None)
     renders().forget_all()
     applied.forget_all()
+    sweep().stubborn.clear()
+    outbox._failures.clear()
+    outbox._open.clear()
 
 
 @pytest.fixture()
