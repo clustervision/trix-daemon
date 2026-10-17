@@ -2301,7 +2301,10 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
             self.messages.append(record.getMessage())
 
     said = Said()
-    for module in (worker, rendering):
+    # Every logger that carries one of these guards, audit's included. Attached to two of
+    # the three, audit's line could not reach this collector at all and its entry below was
+    # satisfied by another module's message.
+    for module in (worker, rendering, audit):
         module.LOGGER.addHandler(said)
         monkeypatch.setattr(module.LOGGER, "level", logging.DEBUG)
     monkeypatch.setattr(database, "session", refuse)
@@ -2317,16 +2320,19 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
         renders()._record(item)
         audit._write([audit._entry("someone", "GET", "/thing", "granted", "")])
     finally:
-        for module in (worker, rendering):
+        for module in (worker, rendering, audit):
             module.LOGGER.removeHandler(said)
         renders().forget("noted")
 
     # Named rather than counted: registering the render produces it, so the engine's guard
     # fires more than once, and a count would say four was wrong without saying which.
     for guard in ("to run task", "to prune finished tasks", "to requeue interrupted tasks",
-                  "to record render state", "to record"):
-        assert any(f"could not take a session {guard}" in one for one in said.messages), \
-            f"the guard for {guard!r} said nothing: {said.messages}"
+                  "to record render state", "audit row"):
+        matched = [one for one in said.messages if guard in one]
+        assert matched, f"the guard for {guard!r} said nothing: {said.messages}"
+        assert len(set(matched)) == 1, \
+            (f"{guard!r} matches more than one guard's message, so it does not pin its own: "
+             f"{sorted(set(matched))}")
 
     # The list above is of guards, not of threads, so it cannot learn about a fifth worker
     # on its own. The threads themselves are derived: each of these runs for the life of the
