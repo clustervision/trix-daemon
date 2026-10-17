@@ -273,6 +273,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if manifest.plugin != name:
             raise PluginRefused(
                 f"manifest calls itself {manifest.plugin} but sits at {name}")
+        # Only the command-line check looked for these, and a reload does not run it.
+        twice = manifests.duplicates(manifest)
+        if twice:
+            raise PluginRefused(twice[0])
 
         models_for_plugin = manifests.build_models(manifest)
         found_renders = _collect_renders(manifest, backend)

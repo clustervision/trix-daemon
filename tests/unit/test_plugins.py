@@ -662,6 +662,88 @@ def test_a_site_plugin_lives_outside_the_package_and_loads(rig, client, headers)
     assert client.get(f"{API_PREFIX}/hello", headers=headers).status_code == 200
 
 
+def test_a_manifest_that_could_not_work_is_refused_at_load(rig):
+    """
+    Four shapes that were accepted and then went wrong somewhere the author would not look.
+
+    A duplicate path and verb: Starlette matches the first, so the second handler is dead
+    code its author believes is serving. A render with a path variable or a query parameter:
+    the reader takes no arguments, so one document answers for every value and the producer
+    is never told which was asked for. A node endpoint whose path carries none of the names
+    the gate binds to: the binding is skipped in silence and one node's token is good for
+    another node's data. A path variable called body, caller or request: the handler is
+    handed the path's value where it expects the caller and answers 500 on its first call.
+
+    Each was reachable only through the command-line check, which a reload does not run, or
+    through nothing at all.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend"}
+    for endpoints, because in (
+            ([{"path": "renders/thing/<network>", "methods": ["GET"], "minimum": "none",
+               "handler": "render_thing",
+               "render": {"inputs": ["luna.node"], "serve": "json"}}], "path variable"),
+            ([{"path": "renders/thing", "methods": ["GET"], "minimum": "none",
+               "handler": "render_thing", "query": {"since": {"type": "string"}},
+               "render": {"inputs": ["luna.node"], "serve": "json"}}], "query parameter"),
+            ([{"path": "rules/<thing>", "methods": ["PATCH"], "handler": "write",
+               "token": "node"}], "node token"),
+            ([{"path": "metrics/<caller>", "methods": ["GET"], "handler": "read",
+               "public": True}], "path variable caller")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse({**base, "endpoints": endpoints})
+        assert because in str(refusal.value), (because, str(refusal.value))
+
+    # And the shapes that must still load, so this cannot pass by refusing everything: a
+    # node endpoint that does carry the variable, and a render with neither.
+    sound = manifests.parse({**base, "endpoints": [
+        {"path": "rules/<node>", "methods": ["PATCH"], "handler": "write", "token": "node"},
+        {"path": "renders/thing", "methods": ["GET"], "minimum": "none",
+         "handler": "render_thing",
+         "render": {"inputs": ["luna.node"], "serve": "json"}},
+        {"path": "nodes", "methods": ["GET", "POST"], "handler": "nodes",
+         "minimum": "manager"}]})
+    assert manifests.duplicates(sound) == [], "one path with two verbs is not a duplicate"
+
+    # A duplicate is collected rather than raised, because the command-line check lists
+    # every problem it can find in one run and a refusal from the parse ends that at the
+    # first one. The load path refuses on what it collects, which is the next test.
+    twice = manifests.parse({**base, "endpoints": [
+        {"path": "nodes", "methods": ["POST"], "handler": "create", "minimum": "manager"},
+        {"path": "nodes", "methods": ["POST"], "handler": "replace", "minimum": "manager"}]})
+    assert manifests.duplicates(twice) == ["POST nodes is declared twice"], \
+        manifests.duplicates(twice)
+
+
+def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
+    """
+    Starlette matches the first of two routes with the same path and verb, so the second
+    handler is dead code its author believes is serving. Only the command-line check found
+    it, and a reload does not run that - so the way this actually reaches anyone is a
+    reload that says it loaded.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import loader
+
+    plugin = tmp_path / "plugins" / "twofold"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: twofold\nbackend: backend\nendpoints:\n"
+        "  - path: nodes\n    methods: [POST]\n    minimum: manager\n    handler: create\n"
+        "  - path: nodes\n    methods: [POST]\n    minimum: manager\n    handler: replace\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'class Backend:\n    """Two handlers for one route."""\n\n'
+        '    def create(self, body: dict = None):\n        """One."""\n        return {}\n\n'
+        '    def replace(self, body: dict = None):\n        """The other."""\n        return {}\n',
+        encoding="utf-8")
+
+    with pytest.raises(PluginRefused, match="declared twice"):
+        loader.load(rig, "twofold")
+
+
 def test_a_site_plugin_cannot_take_a_shipped_name(rig):
     """
     A site copy of services would replace shipped code unseen, so the shipped one wins.

@@ -34,14 +34,14 @@ from fastapi.routing import APIRoute
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import ROLE_NONE, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trixd.common.constants import (NODE_PATH_PARAMS, ROLE_NONE, TOKEN_KIND_NODE,
+                                   TOKEN_KIND_USER)
 from trixd.common.errors import Forbidden, Unauthenticated
 from trixd.core.security import access, audit, principals, tokens
 from trixd.db import engine
 
 LOGGER = trixlog.get("gate")
 
-NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 # The two headers a token may come in, declared as schemes so the document offers one
 # Authorize for both. Neither refuses on its own: the gate decides.
 TOKEN_HEADER = APIKeyHeader(

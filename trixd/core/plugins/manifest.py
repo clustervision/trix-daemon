@@ -37,8 +37,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE,
-                                   TOKEN_KIND_USER)
+from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS,
+                                   NODE_PATH_PARAMS, TOKEN_KIND_NODE, TOKEN_KIND_USER)
 from trixd.common.errors import PluginRefused
 
 # <name> is one path segment; <path:name> is the rest of the path, slashes and all.
@@ -211,6 +211,22 @@ def parse(document: dict) -> Manifest:
                 if blocked:
                     raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
                                         f"also replicate")
+        if endpoint.render is not None and (endpoint.variables or endpoint.query):
+            # A render is served by a reader that takes no arguments, so a variable or a
+            # query parameter is accepted and then ignored: one document answers for every
+            # value of it, the producer is never told which was asked for, and the author's
+            # only signal is wrong data at a customer.
+            unusable = "a path variable" if endpoint.variables else "a query parameter"
+            raise PluginRefused(f"{endpoint.path or '/'} is a render, so it cannot take "
+                                f"{unusable}: the reader is given none")
+        if endpoint.token == TOKEN_KIND_NODE and not any(
+                key in endpoint.variables for key in NODE_PATH_PARAMS):
+            # The gate binds a node token to the node its path names, and looks for it under
+            # one of these names only. With none of them there the binding is skipped in
+            # silence and one node's token is accepted for another node's data.
+            raise PluginRefused(
+                f"{endpoint.path or '/'} takes a node token, so its path has to carry one "
+                f"of {', '.join(NODE_PATH_PARAMS)} for the gate to bind it to")
         if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
             raise PluginRefused(
                 f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
@@ -225,6 +241,26 @@ def parse(document: dict) -> Manifest:
     return manifest
 
 
+def duplicates(manifest: Manifest) -> list:
+    """
+    Every path and verb this manifest declares more than once.
+
+    Starlette matches the first of two routes with the same path and verb, so the second
+    handler is dead code its author believes is serving. Collected rather than raised: the
+    command-line check lists every problem it can find at once so an author fixes them in
+    one pass, and a refusal from the parse ends that collection at the first one. The load
+    path refuses on whatever comes back here.
+    """
+    seen, twice = set(), []
+    for endpoint in manifest.endpoints:
+        for verb in endpoint.methods:
+            key = (endpoint.route_path, verb.upper())
+            if key in seen:
+                twice.append(f"{verb.upper()} {endpoint.path or '/'} is declared twice")
+            seen.add(key)
+    return twice
+
+
 def _check_docs(endpoint: Endpoint) -> None:
     """
     Refuse documentation that the document could not show truthfully.
@@ -233,6 +269,13 @@ def _check_docs(endpoint: Endpoint) -> None:
     unknown = [name for name in endpoint.params if name not in endpoint.variables]
     if unknown:
         raise PluginRefused(f"{where} documents {', '.join(unknown)}, which its path does not have")
+    # A query parameter by one of these names is already refused below. A path variable by
+    # one of them was not, and for a public endpoint nothing else catches it: the handler is
+    # handed the path's value where it expects the caller, and answers 500 on its first call.
+    taken = [name for name in endpoint.variables if name in RESERVED_ARGUMENTS]
+    if taken:
+        raise PluginRefused(f"{where} names path variable {', '.join(taken)}, which is how a "
+                            f"handler is given its body, its caller or the request")
     for name, item in endpoint.query.items():
         if (not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name) or name in RESERVED_ARGUMENTS
                 or name in endpoint.variables):

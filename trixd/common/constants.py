@@ -73,6 +73,9 @@ TOKEN_KIND_SERVICE: str = "service"
 # Where the ini account is known from: trixd.ini itself, never a source or a row.
 SOURCE_INI: str = "ini"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
+# The path variables the gate will bind a node token to. A node endpoint whose path
+# carries none of them is refused at load, so this is read in two places and lives here.
+NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 
 # The ladder, lowest first. A principal with no role holds a token and nothing more.
 ROLE_NONE: str = "none"

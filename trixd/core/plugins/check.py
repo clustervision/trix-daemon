@@ -70,14 +70,11 @@ def check(path: str) -> list:
     except Exception as error:
         return problems + [f"the backend does not import: {error}"]
 
-    seen = set()
+    # Through the shared collector, which the load path refuses on. Collected here rather
+    # than raised, so one run still names every problem it can find.
+    problems += manifests.duplicates(manifest)
     for endpoint in manifest.endpoints:
         where = endpoint.path or "/"
-        for verb in endpoint.methods:
-            key = (endpoint.route_path, verb.upper())
-            if key in seen:
-                problems.append(f"{verb.upper()} {where} is declared twice")
-            seen.add(key)
         if endpoint.render is not None:
             slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
             method = endpoint.handler or f"render_{slug}"
