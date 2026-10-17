@@ -1395,7 +1395,6 @@ def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
     from trixd.plugins.services import backend as services
 
     reads = []
-    real = services.Backend._units
 
     def counted(self) -> dict:
         """
@@ -1412,7 +1411,6 @@ def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
 
     assert len(answer["services"]) == 12, answer
     assert len(reads) == 1, f"the catalogue was read {len(reads)} times for 12 services"
-    assert real is not counted, "the real method was not restored by monkeypatch"
 
 
 def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, monkeypatch):

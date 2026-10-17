@@ -97,7 +97,17 @@ def _write(entries: list) -> None:
     """
     Commit a batch in one session; a failure is logged, never raised into a request.
     """
-    own = database.session()
+    try:
+        own = database.session()
+    except Exception as error:
+        # Outside the try that was meant to hold it, this one line could reach the writer
+        # loop, which has nothing to catch it - one thread, nothing restarts it. The trail
+        # survives, because record() falls back to a synchronous write when the writer is
+        # gone, but the batch in hand is lost and every row after it pays its own commit on
+        # a request thread, which batching exists to avoid.
+        LOGGER.error("could not take a session to record %d audit row(s): %s",
+                     len(entries), error)
+        return
     try:
         own.add_all([_row(entry) for entry in entries])
         own.commit()

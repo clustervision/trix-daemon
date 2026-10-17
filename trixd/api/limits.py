@@ -31,11 +31,17 @@ __status__      = "Production"
 
 import json
 
+from starlette.requests import ClientDisconnect
+from starlette.responses import JSONResponse
+
 from trixd.common import logging as trixlog
 from trixd.common.errors import TooLarge
 from trixd.common.settings import current as settings
 
 LOGGER = trixlog.get("limits")
+
+# Where the per-request tally is left for the refusal handler below to find.
+SCOPE_STATE: str = "trixd.body_limit"
 
 
 class BodyLimit:
@@ -82,6 +88,10 @@ class BodyLimit:
         # while it parses the body and becomes "there was an error parsing the body", which
         # is a 400 blaming the caller's syntax for a refusal this made.
         state = {"seen": 0, "over": False, "answered": False}
+        # Left on the scope so the handler below can tell our refusal from a caller that
+        # really did go away: a route reading its own body sees the cut as a disconnect,
+        # and that exception leaves this middleware before any response is sent.
+        scope[SCOPE_STATE] = state
         await self.app(scope, _counted(receive, maximum, scope, state),
                        _guarded(send, maximum, state))
 
@@ -157,8 +167,31 @@ async def _refuse(send, maximum: int) -> None:
     await send({"type": "http.response.body", "body": body})
 
 
+async def _disconnected(request, error):
+    """
+    A read that stopped because the ceiling cut it, answered as the ceiling rather than as
+    a failure.
+
+    A route that reads its own body - the pass-through to Luna is the one - gets the cut as
+    a disconnect rather than as a body the framework was parsing, and that exception travels
+    out past the middleware, where the server's own handler answers 500 in plain text. This
+    is the same refusal, reached the other way: the handlers run inside the middleware, so
+    this is the last point that still knows the cut was ours.
+    """
+    state = request.scope.get(SCOPE_STATE) or {}
+    if not state.get("over"):
+        # A caller that really did go away. Nothing is listening for an answer, and
+        # pretending this was a refusal would put a wrong line in the log.
+        raise error
+    maximum = settings().api.max_body
+    return JSONResponse(status_code=TooLarge.status_code,
+                        content={"message": f"the request body is larger than {maximum} "
+                                            f"bytes, which is what [API] MAX_BODY allows"})
+
+
 def register(app) -> None:
     """
     Put the ceiling outside everything else, so it is paid before any of it.
     """
     app.add_middleware(BodyLimit)
+    app.add_exception_handler(ClientDisconnect, _disconnected)

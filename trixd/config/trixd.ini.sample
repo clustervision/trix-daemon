@@ -38,7 +38,8 @@ MAX_BODY = 8M
 ; MAX_BODY is the largest request body trixd will read, with K, M and G as powers of 1024
 ; and a bare number meaning bytes. The body is read before any token is checked, so this
 ; is what an unauthenticated caller can cost; 0 lifts the ceiling. Raise it if a bulk set
-; or a rule document is refused, which answers 413 and says the limit.
+; or a rule document is refused, which answers 413 and says the limit. It bounds the
+; pass-through to Luna as well, so it bounds every Luna call made through this daemon.
 ; INSECURE_BIND is plain HTTP on every address, for nodes; it is clear text on the network.
 ; 127.0.0.1:8051 keeps it on the controller alone.
 

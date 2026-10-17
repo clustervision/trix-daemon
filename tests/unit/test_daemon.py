@@ -2156,6 +2156,15 @@ def test_a_body_past_the_ceiling_is_refused_before_anything_reads_it(rig, client
                          json={"username": "tester", "password": "secret"})
     assert answer.status_code == 201, answer.text
 
+    # A route that reads its own body rather than declaring one - the pass-through to Luna
+    # is the only one - reaches the cut as a disconnect, and that exception leaves the
+    # middleware before any response is sent. Answered 500 in plain text until it was
+    # handled on the way out, which is neither the status the document publishes nor the
+    # shape every other refusal uses.
+    answer = client.post(f"{API_PREFIX}/luna/config/node/node001", content=chunks())
+    assert answer.status_code == 413, f"{answer.status_code}: {answer.text[:120]}"
+    assert "MAX_BODY" in answer.json()["message"], answer.json()
+
 
 def test_a_refused_body_leaves_no_audit_row_to_grow(rig, client, monkeypatch):
     """
@@ -2259,6 +2268,8 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     """
     import logging
 
+    import trixd
+
     from trixd.core import tasks as worker
     from trixd.core.plugins.manifest import Render
     from trixd.core.render import engine as rendering
@@ -2304,6 +2315,7 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
                                   Render(inputs=["luna.node"], coalesce="0s"),
                                   lambda: {"ok": 1})
         renders()._record(item)
+        audit._write([audit._entry("someone", "GET", "/thing", "granted", "")])
     finally:
         for module in (worker, rendering):
             module.LOGGER.removeHandler(said)
@@ -2312,9 +2324,32 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     # Named rather than counted: registering the render produces it, so the engine's guard
     # fires more than once, and a count would say four was wrong without saying which.
     for guard in ("to run task", "to prune finished tasks", "to requeue interrupted tasks",
-                  "to record render state"):
+                  "to record render state", "to record"):
         assert any(f"could not take a session {guard}" in one for one in said.messages), \
             f"the guard for {guard!r} said nothing: {said.messages}"
+
+    # The list above is of guards, not of threads, so it cannot learn about a fifth worker
+    # on its own. The threads themselves are derived: each of these runs for the life of the
+    # daemon with nothing to restart it, so one added later has to be considered here rather
+    # than quietly going unguarded.
+    import ast as syntax
+
+    workers = set()
+    for folder, _, files in os.walk(os.path.dirname(trixd.__file__)):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            tree = syntax.parse(open(os.path.join(folder, name), encoding="utf-8").read())
+            for node in syntax.walk(tree):
+                if (isinstance(node, syntax.Call) and isinstance(node.func, syntax.Attribute)
+                        and node.func.attr == "Thread"):
+                    for word in node.keywords:
+                        if word.arg == "name" and isinstance(word.value, syntax.Constant):
+                            workers.add(word.value.value)
+    assert workers == {"trixd-tasks", "trixd-audit", "trixd-sweep", "trixd-hashes"}, \
+        (f"the set of long-lived threads changed: {sorted(workers)}. Each runs with nothing "
+         f"to restart it, so decide whether the new one's loop survives a failure, then "
+         f"update this set")
 
 
 def test_a_render_replaced_by_a_reload_does_not_produce_afterwards(rig):

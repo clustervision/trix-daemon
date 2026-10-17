@@ -51,7 +51,7 @@ sits on the boot path.
 | manifest | a plugin's declaration of its routes, their minimums, schemas and renders |
 | render | an output computed from inputs, such as the Prometheus target list or a slurm file, redone when an input changes |
 | declaration | a settings document a plugin stores, kept in the `declaration` table |
-| pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged |
+| pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged, up to `[API] MAX_BODY` |
 | Luna hook | what a plugin does after a node is renamed or deleted through the pass-through (`luna_hooks` in its manifest) |
 | node token | a token a booted node gets for itself, confined to that node (Luna's "provision" scope) |
 | service token | a short-lived token one controller's trixd gives the other's, for replication |
@@ -83,6 +83,10 @@ sits on the boot path.
    `/api/v1/luna/config/node/node001` to Luna as `/config/node/node001`, at the address
    Luna's own `luna.ini` names, with the method, query, headers and body as sent, less
    the connection headers, and returns Luna's answer unchanged. Luna decides who may.
+   The one limit is `[API] MAX_BODY`, which bounds every request this daemon reads and so
+   bounds Luna's whole API through here as well: a body past it is answered 413 and never
+   forwarded. It defaults to 8 MiB, which is well above anything the TrinityX tooling
+   sends; raise it if a site has a Luna call that legitimately exceeds it.
 2. After the answer has left, `trixd/plugins/luna/hooks.py` looks at what was asked. A
    successful rename, group move or delete is queued as a task (`trixd/core/tasks.py`).
 3. The task worker runs every plugin's `luna_hooks` handler for it; the prometheus
