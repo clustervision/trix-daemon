@@ -1215,21 +1215,61 @@ def test_a_controller_resolves_on_its_own_ladder_and_not_the_nodes(rig, tmp_path
     """
     The two ladders are separate on purpose: a rule written for every node must not land on a
     controller, which is not one of Luna's nodes.
+
+    The cluster scope moves an interval on `node`, the one exporter both baselines carry, because
+    a deviation on a name the controllers baseline lacks is a no-op there by construction - it
+    could leak for years and this would still pass. A node is resolved from the same rows as
+    well, so the row is known to do something on the ladder it was written for.
     """
     from trixd.plugins.prometheus import exporters
 
     baseline = exporters.factory(_factory_file(tmp_path))
-    rows = {"cluster": {"lshw": False},
+    rows = {"cluster": {"node": {"interval": "9m"}},
             "controllers": {"ha": {"interval": "1m"}},
             "ctrl2.cluster": {"ha": False}}
 
     one = exporters.for_controller("ctrl1.cluster", baseline, {}, rows)
     two = exporters.for_controller("ctrl2.cluster", baseline, {}, rows)
+    on_a_node = exporters.for_node("node001", "compute", baseline, {}, rows)
 
     assert one["ha"]["interval"] == "1m", "the controllers scope did not apply"
     assert "ha" not in two, "a controller's own row did not override the controllers scope"
-    assert "node" in one and "node" in two
-    assert "lshw" not in baseline["controllers"], "the node baseline leaked into the controllers"
+    assert "node" in one and "node" in two, "the controllers baseline lost its own node exporter"
+    assert on_a_node["node"]["interval"] == "9m", \
+        "the cluster scope did not reach a node, so a leak onto a controller would not show here"
+    for hostname, resolved in (("ctrl1.cluster", one), ("ctrl2.cluster", two)):
+        assert resolved["node"].get("interval") is None, \
+            f"the cluster scope leaked onto {hostname}: its node exporter carries the interval " \
+            f"{resolved['node'].get('interval')!r} that was written for every node"
+        assert "lshw" not in resolved, \
+            f"an exporter from the nodes baseline was scraped on {hostname}"
+
+
+def test_a_rule_written_for_every_controller_does_not_reach_a_node(rig, tmp_path):
+    """
+    The same separation in the other direction: the controllers scope and a controller's own row
+    are read on the controller ladder alone, so neither reaches one of Luna's nodes.
+
+    Both rows move a timeout on `node`, the one exporter both baselines carry - a name the nodes
+    baseline lacks would arrive on a node without a port and be dropped by the render, so it
+    would leak in silence. The controller's own row is keyed on a bare hostname, which is how a
+    controller writes its scope, and it is given the node's own name so that a ladder reading the
+    wrong row has somewhere to land.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+    rows = {"controllers": {"node": {"timeout": "11s"}},
+            "node001": {"node": {"timeout": "12s"}}}
+
+    assert exporters.for_controller("node001", baseline, {}, rows)["node"]["timeout"] == "12s", \
+        "neither controller row applied, so a leak onto a node would not show here"
+
+    resolved = exporters.for_node("node001", "compute", baseline, {}, rows)
+
+    assert resolved["node"].get("timeout") is None, \
+        "a rule written for a controller reached a node: its node exporter carries the " \
+        f"timeout {resolved['node'].get('timeout')!r}"
 
 
 def test_the_factory_file_is_read_again_only_when_it_moves(rig, tmp_path, monkeypatch):
