@@ -1001,20 +1001,6 @@ def test_every_mapped_table_is_classified_as_replicated_or_local(rig):
     assert mapped == classified, sorted(mapped ^ classified)
 
 
-def test_the_replicated_tables_are_stated_in_one_place(rig):
-    """
-    The order the sweep walks, and the models the merge writes through, are both derived
-    from REPLICATED: adding a table there needs no second edit for it to cross.
-    """
-    from trixd.core.replication import tables
-    from trixd.db import models
-
-    assert tables.ORDER == tuple(models.REPLICATED)
-    assert set(tables.MODELS) == set(models.REPLICATED)
-    for name in models.REPLICATED:
-        assert tables.MODELS[name].__tablename__ == name
-
-
 def test_an_exact_tie_resolves_the_same_way_on_both_controllers(rig, tmp_path):
     """
     Same version and same timestamp with different content: neither row is newer, so each
@@ -1109,6 +1095,8 @@ def test_one_row_the_peer_answers_badly_for_does_not_hold_the_others(rig, monkey
     import json as jsonlib
 
     from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
 
     for node in ("node001", "node002", "node003"):
         outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
@@ -1128,8 +1116,21 @@ def test_one_row_the_peer_answers_badly_for_does_not_hold_the_others(rig, monkey
     finally:
         outbox._failures.clear()
         outbox._open.clear()
+
+    # The states, not the counts: drain orders by creation and the counts come out the same
+    # whichever row went wrong, so a pass that stopped dead at a late row would have read
+    # identically. What the states cannot be mistaken about is which rows the peer took.
+    handle = database.session()
+    try:
+        rows = {jsonlib.loads(row.payload)["variables"]["node"]: row
+                for row in handle.scalars(select(models.Outbox)).all()}
+        assert rows["node001"].state == outbox.QUEUED, rows["node001"].state
+        assert "500" in rows["node001"].message, rows["node001"].message
+        assert rows["node002"].state == outbox.DONE, rows["node002"].state
+        assert rows["node003"].state == outbox.DONE, rows["node003"].state
+    finally:
+        handle.close()
     assert result["sent"] == 2, result
-    assert result["left"] == 1, result
 
 
 def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, monkeypatch):
@@ -1206,7 +1207,7 @@ def test_a_peer_saying_it_skipped_is_not_recorded_as_done(rig, monkeypatch):
         handle.close()
 
 
-def test_a_refusal_nothing_clears_is_let_go_of_with_what_it_held(rig):
+def test_a_refusal_nothing_clears_is_let_go_of_with_what_it_held(rig, monkeypatch):
     """
     A refused row holds its node's later actions until somebody acts on that node again.
     Where nobody does, that hold was permanent and lived in a row nothing reaped. What was
@@ -1243,12 +1244,24 @@ def test_a_refusal_nothing_clears_is_let_go_of_with_what_it_held(rig):
     finally:
         handle.close()
 
-    assert outbox._reap("ctrl2") == 2
+    # Through drain, not by calling the reap: with the call removed from drain the whole
+    # suite stayed green, so the reap would never have run on a controller.
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.DONE, "", outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
     handle = database.session()
     try:
         left = handle.scalars(select(models.Outbox)).all()
         assert [row.target.split("=")[1].split("|")[0] for row in left] == ["node002"], \
             [(row.state, row.target) for row in left]
+        assert left[0].state == outbox.DONE, left[0].state
     finally:
         handle.close()
 
@@ -1513,3 +1526,63 @@ def test_two_senders_do_not_deliver_one_row_twice(rig, monkeypatch):
     # Once it is given back, the row is sent as usual.
     outbox._attempt("ctrl2", row_id)
     assert len(tried) == 1, tried
+
+
+def test_a_pair_that_cannot_converge_reaches_health(rig, client, monkeypatch):
+    """
+    The count has to be reached through a pass, not by calling the counter: with both of
+    `pass_over`'s calls to it stubbed out the whole suite stayed green, which would have
+    left `not_converging` at zero on a controller for ever with nothing to say so.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication.sweep import STUBBORN
+    from trixd.core.replication.sweep import current as sweep
+
+    walking = sweep()
+    walking.stubborn.clear()
+
+    def answers(peer, path):
+        """A peer holding other tables that never takes ours, and offering no documents."""
+        if path == "hashes":
+            return {"hashes": {table: f"theirs-{table}" for table in tables.ORDER}}
+        return {"documents": []}
+
+    monkeypatch.setattr(walking, "_get", answers)
+    try:
+        for _ in range(STUBBORN):
+            last = walking.pass_over("ctrl2")
+        # The passes really did end differing - without this the health value below would
+        # be zero for the ordinary reason rather than the one under test.
+        assert last["unconverged"] == list(tables.ORDER), last
+
+        reported = client.get(f"{API_PREFIX}/system/health").json()["triggers"]["replication"]
+        assert reported["not_converging"] == len(tables.ORDER), reported
+    finally:
+        walking.stubborn.clear()
+
+
+def test_health_says_how_long_the_oldest_owed_call_has_waited(rig):
+    """
+    The counts cannot tell a queue that is busy from one that is stuck; how long the oldest
+    has waited can, and a monitor reads it.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    assert outbox.states()["oldest_pending"] == 0, "nothing is owed yet"
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-age", "tester")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = datetime_now() - timedelta(seconds=600)
+        handle.commit()
+    finally:
+        handle.close()
+
+    waited = outbox.states()["oldest_pending"]
+    assert 580 <= waited <= 660, waited

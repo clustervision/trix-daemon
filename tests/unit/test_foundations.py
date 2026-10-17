@@ -300,7 +300,9 @@ def test_a_trust_directory_others_may_write_is_not_believed(tmp_path):
     os.chmod(trust, 0o777)
     assert keys.read_trust(str(trust)) == {}, "a world-writable trust directory was believed"
 
-    os.chmod(trust, 0o700)
+    # Back to the mode the installer leaves: group-readable is fine, group-writable is not,
+    # and what the rest of this test is about is the mode of the key inside it.
+    os.chmod(trust, 0o755)
     os.chmod(trust / "peer.pub", 0o666)
     assert keys.read_trust(str(trust)) == {}, "a world-writable key was believed"
 
