@@ -2253,9 +2253,16 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     """
     Each of these takes its session outside the try that was meant to hold it, which made
     that one line the only thing in them that could reach the worker loop. The render
-    engine's own note-keeping guards the same call for the same reason.
+    engine's own note-keeping guards the same call for the same reason, so it is exercised
+    here too - the docstring used to claim that and the test did not do it, and the engine's
+    was the one of the four that returned in silence.
     """
+    import logging
+
     from trixd.core import tasks as worker
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render import engine as rendering
+    from trixd.core.render.engine import current as renders
     from trixd.db import engine as database
 
     def refuse():
@@ -2264,9 +2271,111 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
         """
         raise RuntimeError("the database is not there")
 
-    monkeypatch.setattr(database, "session", refuse)
+    class Said(logging.Handler):
+        """
+        Every line these guards emit, kept for the assertion below.
+        """
 
-    # None of these may raise; each says so and returns.
-    worker._run_one("whatever")
-    worker._prune()
-    worker._requeue()
+        def __init__(self) -> None:
+            """
+            An empty list.
+            """
+            super().__init__(logging.DEBUG)
+            self.messages = []
+
+        def emit(self, record) -> None:
+            """
+            Keep the formatted message.
+            """
+            self.messages.append(record.getMessage())
+
+    said = Said()
+    for module in (worker, rendering):
+        module.LOGGER.addHandler(said)
+        monkeypatch.setattr(module.LOGGER, "level", logging.DEBUG)
+    monkeypatch.setattr(database, "session", refuse)
+    try:
+        # None of these may raise; each says so and returns.
+        worker._run_one("whatever")
+        worker._prune()
+        worker._requeue()
+
+        item = renders().register("noted", "renders/thing",
+                                  Render(inputs=["luna.node"], coalesce="0s"),
+                                  lambda: {"ok": 1})
+        renders()._record(item)
+    finally:
+        for module in (worker, rendering):
+            module.LOGGER.removeHandler(said)
+        renders().forget("noted")
+
+    # Named rather than counted: registering the render produces it, so the engine's guard
+    # fires more than once, and a count would say four was wrong without saying which.
+    for guard in ("to run task", "to prune finished tasks", "to requeue interrupted tasks",
+                  "to record render state"):
+        assert any(f"could not take a session {guard}" in one for one in said.messages), \
+            f"the guard for {guard!r} said nothing: {said.messages}"
+
+
+def test_a_render_replaced_by_a_reload_does_not_produce_afterwards(rig):
+    """
+    notify swept the render table and then produced from the reference it had taken, so a
+    reload landing in between left the unplugged render producing after its replacement had
+    already written - and the output left on disk was the old code's. The trailing timer
+    looks the render up again under the lock for exactly this reason; the sweep did not.
+
+    Driven rather than raced: the swap is performed from inside the matching check, which is
+    the one place guaranteed to run between the sweep taking its reference and the render
+    being produced.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    engine = renders()
+    ran = []
+
+    def old_producer():
+        """
+        The render that a reload is about to unplug.
+        """
+        ran.append("old")
+        return {"from": "old"}
+
+    def new_producer():
+        """
+        What replaces it.
+        """
+        ran.append("new")
+        return {"from": "new"}
+
+    spec = Render(inputs=["luna.node"], coalesce="0s")
+    try:
+        item = engine.register("swapped", "renders/thing", spec, old_producer)
+
+        swaps = []
+
+        def wants_and_swap(self, changed: str) -> bool:
+            """
+            Say yes, and swap the plugin's renders while the sweep holds this reference.
+            """
+            if not swaps:
+                swaps.append(1)
+                engine.replace("swapped", [("renders/thing", spec, new_producer)])
+            return True
+
+        monkeypatch_target = type(item)
+        original = monkeypatch_target.wants
+        monkeypatch_target.wants = wants_and_swap
+        try:
+            ran.clear()
+            engine.notify("luna.node")
+        finally:
+            monkeypatch_target.wants = original
+
+        assert swaps == [1], "the swap never happened, so nothing was held across it"
+        assert "old" not in ran, \
+            f"the unplugged render produced after it was replaced: {ran}"
+        assert engine.reader("swapped", "renders/thing")() == {"from": "new"}, \
+            "the table is not serving the replacement"
+    finally:
+        engine.forget("swapped")

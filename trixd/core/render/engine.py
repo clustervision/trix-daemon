@@ -241,9 +241,18 @@ class Engine:
                 # Inside the window: once more when it closes, so a burst's last change is drawn.
                 self._trail(item.key, item.coalesce - (now - last))
                 continue
-            self.pending[item.key] = now
+            with self.lock:
+                # Looked up again under the lock, as the trailing timer does for the same
+                # reason: a reload can have replaced this render since the sweep above took
+                # its reference, and producing from the one being held then writes output
+                # from code that has been unplugged - after its replacement has written, so
+                # what is left on disk is the old render's.
+                current = self.renders.get(item.key)
+                if current is None:
+                    continue
+                self.pending[item.key] = now
             woken.append(item.key)
-            self.run(item)
+            self.run(current)
         return woken
 
     def _trail(self, key: str, delay: float) -> None:
@@ -286,7 +295,12 @@ class Engine:
         """
         try:
             handle = database.session()
-        except Exception:
+        except Exception as error:
+            # Said, as the three task functions that guard this same call all say it. This
+            # was the one of the four that returned in silence, so a note nobody could write
+            # looked exactly like a render nobody had run.
+            LOGGER.warning("could not take a session to record render state for %s: %s",
+                           item.key, error)
             return
         try:
             row = handle.scalar(select(models.RenderState)
