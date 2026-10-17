@@ -101,7 +101,13 @@ def run(argv: list, timeout: int = DEFAULT_TIMEOUT, check: bool = False,
                     done.stdout.decode("utf-8", "replace").strip(),
                     done.stderr.decode("utf-8", "replace").strip())
     if check and not result.ok:
-        raise BackendFailure(f"{argv[0]} failed: {result.err or result.out}")
+        # The child's own output goes to the journal and not into the answer. The masking
+        # beside this covers what we put on the command line; a child can also echo its own
+        # configuration - obol prints its bind credentials on some failures - and that is a
+        # value we never see and so cannot mask. An error body leaves the machine.
+        LOGGER.error("%s exited %s: %s", argv[0], result.code, result.err or result.out)
+        raise BackendFailure(f"{argv[0]} failed with exit status {result.code}; "
+                             f"the reason is in the journal")
     return result
 
 

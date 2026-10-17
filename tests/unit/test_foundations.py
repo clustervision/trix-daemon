@@ -97,11 +97,13 @@ def test_a_command_reports_its_code_and_both_streams():
 
 def test_a_failing_command_raises_only_when_checked():
     """
-    check=True turns a non-zero exit into an error that carries what the command said.
+    check=True turns a non-zero exit into an error naming the exit status. What the command
+    itself said goes to the journal and not into the error, which leaves the machine; the
+    test below pins that.
     """
     argv = _python("import sys; print('it broke', file=sys.stderr); sys.exit(1)")
     assert not shell.run(argv).ok
-    with pytest.raises(BackendFailure, match="it broke"):
+    with pytest.raises(BackendFailure, match="exit status 1"):
         shell.run(argv, check=True)
 
 
@@ -338,6 +340,29 @@ def test_the_signing_secret_falls_back_to_the_file_the_installer_wrote(tmp_path)
     ini.write_text(f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY =\n"
                    f"SECRET_FILE = {secret_file}\n", encoding="utf-8")
     assert configuration.load(str(ini)).tokens.secret_key == "b" * 32
+
+
+def test_a_failing_command_does_not_hand_back_what_the_child_said():
+    """
+    The child's own output went into the error body, which leaves the machine. The masking
+    beside the runner covers what we put on the command line; a child can also print its
+    own configuration - obol shows its bind credentials on some failures - and that is a
+    value trixd never sees and so cannot mask. So the output stays in the journal and the
+    caller is told where to look.
+    """
+    records = Records()
+    shell.LOGGER.addHandler(records)
+    try:
+        with pytest.raises(BackendFailure) as raised:
+            shell.run(["sh", "-c", "echo 'bind_dn=cn=admin bind_pass=hunter2' >&2; exit 3"],
+                      10, check=True)
+    finally:
+        shell.LOGGER.removeHandler(records)
+
+    assert "hunter2" not in str(raised.value), f"the child's output reached the caller: {raised.value}"
+    assert "exit status 3" in str(raised.value), raised.value
+    assert any("hunter2" in message for message in records.messages), \
+        f"the reason did not reach the journal either: {records.messages}"
 
 
 def test_following_a_personal_luna_ini_is_said_once(tmp_path, monkeypatch):
