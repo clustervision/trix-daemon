@@ -119,6 +119,12 @@ class LunaHashes:
         if INTERVAL <= 0:
             LOGGER.info("the Luna hash fallback is switched off")
             return False
+        if self.thread is not None and self.thread.is_alive():
+            # Already polling. Said here as well as refused by the registry, because two
+            # threads on one `seen` lose a change rather than merely duplicating work:
+            # whichever assigns last decides what the other compared against.
+            LOGGER.info("the Luna hash fallback is already running")
+            return False
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="trixd-hashes", daemon=True)
         self.thread.start()

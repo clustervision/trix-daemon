@@ -1187,15 +1187,26 @@ def test_a_render_registered_after_the_first_pass_produces_itself(rig, monkeypat
     produced = []
     # raising=False so this runs against a build that has no such attribute: otherwise the
     # test errors in setup and proves only that the attribute is new.
-    monkeypatch.setattr(engine, "reconciled", True, raising=False)
+    #
+    # Both sides of the gate, because the rig has already made its first pass: setting the
+    # flag true and asserting a production tells you nothing, since an implementation that
+    # produced unconditionally would pass it too.
+    monkeypatch.setattr(engine, "reconciled", False, raising=False)
     try:
+        engine.register("early", "renders/thing",
+                        Render(inputs=["luna.node"], coalesce="1s"),
+                        lambda: produced.append("early") or [{"targets": ["early"]}])
+        assert produced == [], "it produced before the first pass had been made"
+
+        monkeypatch.setattr(engine, "reconciled", True, raising=False)
         engine.register("reloaded", "renders/thing",
                         Render(inputs=["luna.node"], coalesce="1s"),
-                        lambda: produced.append(1) or [{"targets": ["fresh"]}])
-        assert produced == [1], "a render registered after the first pass was left empty"
+                        lambda: produced.append("late") or [{"targets": ["fresh"]}])
+        assert produced == ["late"], "a render registered after the first pass was left empty"
         assert engine.reader("reloaded", "renders/thing")() == [{"targets": ["fresh"]}]
     finally:
         engine.forget("reloaded")
+        engine.forget("early")
 
 
 def test_a_reload_never_leaves_a_render_unanswerable(rig, tmp_path):
@@ -1286,6 +1297,53 @@ class _Poller:
         return {"answering": True}
 
 
+def test_a_reload_whose_producer_fails_keeps_what_was_serving(rig):
+    """
+    The swap took whatever the new render held, and a producer that raises leaves it holding
+    nothing - so a reload while Luna is away replaced a document that was answering with a
+    404. That is the outcome the ordering was introduced to prevent, caused by the fix.
+
+    The new render keeps what its predecessor was serving and tries again on the next
+    change, which is what run() already does for a render that is not being replaced.
+    """
+    from trixd.common.errors import NotFound
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    engine = renders()
+    spec = Render(inputs=["luna.node"], coalesce="1s")
+
+    def served():
+        """
+        What a poll is given, as a value either way: an unproduced render raises, and this
+        test is about what is being served, so the refusal is a result and not an error.
+        """
+        try:
+            return engine.reader("flaky", "renders/thing")()
+        except NotFound as refusal:
+            return f"nothing: {refusal}"
+
+    try:
+        engine.replace("flaky", [("renders/thing", spec, lambda: {"which": "serving"})])
+        assert served() == {"which": "serving"}, "nothing was serving to begin with"
+
+        def away():
+            """
+            A producer that cannot reach Luna.
+            """
+            raise RuntimeError("Luna is not answering")
+
+        engine.replace("flaky", [("renders/thing", spec, away)])
+        assert served() == {"which": "serving"}, \
+            "a reload whose producer failed emptied what was answering"
+
+        # And the new producer is the one that runs next, not the old one.
+        engine.replace("flaky", [("renders/thing", spec, lambda: {"which": "new"})])
+        assert served() == {"which": "new"}
+    finally:
+        engine.forget("flaky")
+
+
 def test_unplugging_a_plugin_stops_what_it_registered(rig):
     """
     Unplugging let go of the routes and the renders and nothing else. The task handler
@@ -1344,8 +1402,20 @@ def test_a_replaced_trigger_is_stopped_and_a_late_one_is_started(rig, monkeypatc
         triggers.register("late", _Poller("third", log))
         assert log.get("started") == ["third"], \
             f"a trigger registered after start-up was never started: {log}"
+
+        # The same object offering itself again, which is what reloading a plugin whose
+        # trigger is a module-level singleton does - the module holding it is not one the
+        # reload purges. It is already running, and starting it again leaves a second
+        # thread on the same state, with another on every reload after that.
+        same = _Poller("fourth", log)
+        triggers.register("same", same)
+        triggers.register("same", same)
+        assert log["started"].count("fourth") == 1, \
+            f"registering the same trigger again started a second one: {log}"
+        assert "fourth" not in log.get("stopped", []), \
+            f"the same object was stopped as though it had been replaced: {log}"
     finally:
-        for name in ("swapped", "late"):
+        for name in ("swapped", "late", "same"):
             getattr(triggers, "_triggers", {}).pop(name, None)
             getattr(triggers, "_owners", {}).pop(name, None)
 

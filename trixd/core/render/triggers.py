@@ -78,7 +78,14 @@ def register(name: str, trigger, owner: str = "") -> None:
     the replacement that had never started.
     """
     held = _triggers.get(name)
-    if held is not None and held is not trigger:
+    if held is trigger:
+        # The same object offering itself again, which is what reloading a plugin whose
+        # trigger is a module-level singleton does: the module holding it is not one the
+        # reload purges, so the object outlives the reload and is already running. Starting
+        # it again would leave a second thread on the same state, and each reload another.
+        _owners[name] = owner
+        return
+    if held is not None:
         LOGGER.info("trigger %s replaced", name)
         _stop(name, held)
     _triggers[name] = trigger
@@ -106,7 +113,7 @@ def baseline_all() -> None:
     Take every trigger's baseline before the reconcile, so a change landing after it
     is seen as a change rather than absorbed into the first reading.
     """
-    for name, trigger in _triggers.items():
+    for name, trigger in list(_triggers.items()):
         try:
             trigger.baseline()
         except Exception as error:
@@ -138,7 +145,9 @@ def states() -> dict:
     What each trigger is doing, for the health endpoint.
     """
     found = {}
-    for name, trigger in _triggers.items():
+    # A copy: health is served from a request thread while an unload pops entries from the
+    # loader's, and iterating the dict itself raises when its size changes.
+    for name, trigger in list(_triggers.items()):
         try:
             found[name] = trigger.state()
         except Exception as error:

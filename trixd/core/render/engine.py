@@ -133,23 +133,33 @@ class Engine:
         Swap everything one plugin declares for a new set, with nothing unanswerable in
         between.
 
-        The new renders produce before they are swapped in, so whatever was serving keeps
-        serving until they hold a document. Forgetting first leaves a poll with no render
-        to read; declaring first leaves it one that has produced nothing. Either way a
-        plugin that is working answers 404 through a reload, which is not something an
-        operator reloading a plugin expects to be visible to Prometheus.
+        The new renders produce before they are swapped in, so the ones they replace are
+        still the ones being read while that happens. Forgetting first leaves a poll with
+        no render to read; declaring first leaves it one that has produced nothing.
+
+        A new producer that fails inherits the document its predecessor was serving, so a
+        reload while Luna is away does not empty what was answering. The next change tries
+        again, against the new code.
         """
         items = [Render(plugin, path, spec, producer) for path, spec, producer in found]
-        # Outside the lock, and before the swap: producing can call Luna, and the renders
-        # these replace are still the ones being read.
+        with self.lock:
+            standing = {key: item for key, item in self.renders.items()
+                        if key.startswith(f"{plugin}/")}
+        # Outside the lock: producing can call Luna, and run takes the lock itself.
         if self.reconciled:
             for item in items:
-                self.run(item)
+                if self.run(item):
+                    continue
+                was = standing.get(item.key)
+                if was is not None and was.document is not None:
+                    item.document = was.document
+                    item.rendered_at = was.rendered_at
+                    LOGGER.warning("render %s could not be produced on reload, so it keeps "
+                                   "what was being served", item.key)
         with self.lock:
             self.forget(plugin)
             for item in items:
                 self.renders[item.key] = item
-                LOGGER.debug("render %s declared, inputs %s", item.key, item.spec.inputs)
         return items
 
     def reader(self, plugin: str, path: str):
