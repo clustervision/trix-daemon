@@ -102,8 +102,22 @@ def test_a_public_route_answers_anyone(stack, operation, who):
     assert answer.status_code != 500, answer.text
     if not path.startswith("/auth/"):
         assert answer.status_code not in (401, 403), answer.text
-    else:
-        assert answer.status_code in (401, 422), answer.text
+        return
+
+    # A sign-in route refuses a wrong credential with a 401 of its own, and the gate refuses
+    # a missing token with a 401 as well - so the status alone cannot tell a route that is
+    # public from one that has quietly been given a guard. What separates them is that a
+    # public route does not look at the token: it must answer the same to everyone, and the
+    # body it sends back must be the same answer, not a different refusal.
+    assert answer.status_code in (401, 422), answer.text
+    anonymous = _send(stack, verb, path, _token(stack, "anonymous"))
+    assert answer.status_code == anonymous.status_code, (
+        f"{verb} {path} answered {who} {answer.status_code} and anonymous "
+        f"{anonymous.status_code}: a public route does not read the token, so one of these "
+        f"is the gate refusing")
+    assert answer.text == anonymous.text, (
+        f"{verb} {path} gave {who} a different answer from anonymous, so something is "
+        f"reading the caller: {answer.text[:120]} against {anonymous.text[:120]}")
 
 
 test_a_public_route_answers_anyone.access = ("public",)
