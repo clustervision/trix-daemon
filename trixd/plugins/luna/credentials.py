@@ -42,9 +42,10 @@ import urllib3
 from trixd.common import logging as trixlog
 from trixd.common.constants import (DAEMON_NAME, LUNA_CLAIM_ID, LUNA_SUPERUSER_ID,
                                     TOKEN_ALGORITHM_SHARED, TOKEN_KIND_SERVICE)
-from trixd.common.errors import ServiceUnavailable, Unauthenticated
+from trixd.common.errors import ServiceUnavailable, TrixdError, Unauthenticated
 from trixd.core.security import keys
 from trixd.plugins.luna import config as luna_config
+from trixd.utils import files
 
 LOGGER = trixlog.get("luna.credentials")
 
@@ -217,26 +218,25 @@ def _read_file() -> str:
 
 def _write_file(token: str) -> None:
     """
-    Keep what cost a request to Luna, so a restart does not ask again. Created 0600 in a
-    0700 directory, and replaced atomically so a reader never sees half a token. Failing
-    to cache is not failing: the token is good and is held in memory.
+    Keep what cost a request to Luna, so a restart does not ask again. Failing to cache is
+    not failing: the token is good and is held in memory.
     """
     global _warned_unwritable
     path = token_path()
-    temporary = f"{path}.{os.getpid()}"
+    directory = os.path.dirname(path) or "."
     try:
-        os.makedirs(os.path.dirname(path), mode=0o700, exist_ok=True)
-        descriptor = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
-            handle.write(token + "\n")
-        os.replace(temporary, path)
+        os.makedirs(directory, mode=0o700, exist_ok=True)
+        # makedirs applies its mode only when it creates the directory, and the Luna command
+        # line creates this one first on most boxes - so on every box but a clean install the
+        # 0600 file sat in whatever directory was already there. Set it every time.
+        os.chmod(directory, 0o700)
+        # Through the shared writer, which names its temporary file unpredictably. The old
+        # name was the path plus this process's id, opened without O_EXCL: a symlink waiting
+        # at that name would have been followed and written through, as root.
+        files.write(path, token + "\n", mode=0o600)
         _warned_unwritable = False
-    except OSError as error:
+    except (OSError, TrixdError) as error:
         if not _warned_unwritable:
             LOGGER.warning("could not cache the Luna token at %s: %s; it is held in "
                            "memory and fetched again after a restart", path, error)
             _warned_unwritable = True
-        try:
-            os.unlink(temporary)
-        except OSError:
-            pass
