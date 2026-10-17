@@ -30,6 +30,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import ast
 import glob
 import os
 import re
@@ -40,6 +41,10 @@ import zipfile
 import pytest
 
 from trixd.common.constants import DAEMON_RELEASE
+
+# What the daemon's own environment variables start with, which is what makes dropping them
+# enough to build against a clean environment. Asserted below rather than assumed.
+DAEMON_ENV_PREFIX = "TRIXD_"
 
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = "This code is part of the TrinityX software suite"
@@ -168,8 +173,16 @@ def test_the_published_schemas_match_the_code(tmp_path):
     """
     import json
 
+    # Built against an environment with the daemon's own variables taken out. The build is
+    # a subprocess, so it inherits whatever an earlier test left behind - and the Luna ini
+    # one is set directly rather than through monkeypatch, so it outlives the test that set
+    # it. Inherited, this compares the document this suite's leftovers produce rather than
+    # the one the code does, and it does so only when the whole suite runs.
+    clean = {name: value for name, value in os.environ.items()
+             if not name.startswith(DAEMON_ENV_PREFIX)}
     built = subprocess.run([sys.executable, os.path.join(ROOT, "tools", "build_schemas.py"),
-                            str(tmp_path)], capture_output=True, text=True, cwd=ROOT)
+                            str(tmp_path)], capture_output=True, text=True, cwd=ROOT,
+                           env=clean)
     assert built.returncode == 0, built.stderr[-500:]
     for name in ("openapi.json", "manifest.schema.json"):
         with open(os.path.join(ROOT, "docs", name), encoding="utf-8") as handle:
@@ -248,3 +261,72 @@ def test_the_luna_plugin_is_reachable_as_one_module():
             if isinstance(node, ast.ImportFrom) and node.level:
                 offenders.append(f"{name}:{node.lineno} imports relatively")
     assert offenders == [], "\n".join(offenders)
+
+
+def test_every_environment_variable_the_daemon_reads_carries_the_prefix():
+    """
+    What makes dropping TRIXD_* enough to build against a clean environment. A variable read
+    under some other name would survive that, steer the build, and say nothing - which is
+    the order-dependent failure the clean environment exists to stop, in a narrower form.
+
+    Read from the shipped tree rather than listed, so a variable added later has to carry
+    the prefix or change this. Both shapes are caught: a name passed straight to the
+    environment, and a module constant named <SOMETHING>_ENV holding one.
+    """
+    import trixd
+
+    root = os.path.dirname(trixd.__file__)
+    reads = {}
+    for folder, _, files in os.walk(root):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            source = os.path.join(folder, name)
+            with open(source, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read(), filename=source)
+            where = os.path.relpath(source, os.path.dirname(root))
+            for node in ast.walk(tree):
+                asked = None
+                if isinstance(node, ast.Call) and node.args:
+                    called = node.func
+                    reading = (isinstance(called, ast.Attribute)
+                               and called.attr in ("get", "getenv"))
+                    if reading and isinstance(node.args[0], ast.Constant):
+                        asked = node.args[0].value
+                        # environ.get and getenv, not every .get in the tree.
+                        if not _reads_the_environment(called):
+                            asked = None
+                elif isinstance(node, ast.Subscript) and _reads_the_environment(node.value):
+                    if isinstance(node.slice, ast.Constant):
+                        asked = node.slice.value
+                elif isinstance(node, (ast.Assign, ast.AnnAssign)):
+                    asked = _named_env_constant(node)
+                if isinstance(asked, str) and asked:
+                    reads.setdefault(asked, f"{where}:{node.lineno}")
+
+    assert reads, "no environment variable was found at all, so this proves nothing"
+    stray = {name: where for name, where in reads.items()
+             if not name.startswith(DAEMON_ENV_PREFIX)}
+    assert not stray, (
+        f"these are read without the {DAEMON_ENV_PREFIX} prefix, so taking that prefix out "
+        f"does not give a clean environment: {stray}")
+
+
+def _reads_the_environment(node) -> bool:
+    """
+    Whether this expression is os.environ or os itself, as os.getenv is reached through.
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr in ("environ", "getenv") or _reads_the_environment(node.value)
+    return isinstance(node, ast.Name) and node.id in ("os", "environ")
+
+
+def _named_env_constant(node):
+    """
+    The string a constant named <SOMETHING>_ENV holds, which is how two of them are reached.
+    """
+    targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+    names = [one.id for one in targets if isinstance(one, ast.Name)]
+    if not any(name.endswith("_ENV") for name in names):
+        return None
+    return node.value.value if isinstance(node.value, ast.Constant) else None
