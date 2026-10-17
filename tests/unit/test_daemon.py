@@ -2200,3 +2200,73 @@ def test_a_refused_body_leaves_no_audit_row_to_grow(rig, client, monkeypatch):
     columns = models.Audit.__table__.columns
     assert len(widest.principal) == columns["principal"].type.length, len(widest.principal)
     assert len(widest.object) == columns["object"].type.length, len(widest.object)
+
+
+def test_one_failed_task_does_not_end_the_task_worker(rig, monkeypatch):
+    """
+    One worker, nothing starts a second, and the loop had nothing to catch an exception. So
+    anything reaching it ended every queued action for the life of the daemon: submit went
+    on answering `queued`, nothing ran it, and the only trace was the interpreter's own
+    excepthook rather than a line from this daemon. It recovered on the next restart.
+
+    Driven through the real worker thread, so the thing being pinned is the thread still
+    being there afterwards rather than a function returning.
+    """
+    from trixd.core import tasks as worker
+
+    ran = []
+
+    def handler(task: str, param: str = "") -> str:
+        """
+        One task, remembered.
+        """
+        ran.append(task)
+        return "ok"
+
+    worker.register("probe", handler)
+    assert worker.drain(), "the queue was not empty to begin with, so this proves nothing"
+
+    worker.submit("probe", "before", "", "tester")
+    assert worker.drain(), "the worker was not running before the failure"
+    assert ran == ["before"], ran
+
+    # Something inside the worker fails in a way the handler's own catch does not cover.
+    real = worker._run_one
+
+    def explode(identifier: str) -> None:
+        """
+        A failure in the worker's own plumbing rather than in a task.
+        """
+        raise RuntimeError("the database is not there")
+
+    monkeypatch.setattr(worker, "_run_one", explode)
+    worker.submit("probe", "during", "", "tester")
+    assert worker.drain(), "the worker never let go of the task it could not run"
+
+    monkeypatch.setattr(worker, "_run_one", real)
+    worker.submit("probe", "after", "", "tester")
+    assert worker.drain(), "the worker is gone: every queued action now waits for a restart"
+    assert ran == ["before", "after"], ran
+
+
+def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypatch):
+    """
+    Each of these takes its session outside the try that was meant to hold it, which made
+    that one line the only thing in them that could reach the worker loop. The render
+    engine's own note-keeping guards the same call for the same reason.
+    """
+    from trixd.core import tasks as worker
+    from trixd.db import engine as database
+
+    def refuse():
+        """
+        A database that has gone away.
+        """
+        raise RuntimeError("the database is not there")
+
+    monkeypatch.setattr(database, "session", refuse)
+
+    # None of these may raise; each says so and returns.
+    worker._run_one("whatever")
+    worker._prune()
+    worker._requeue()
