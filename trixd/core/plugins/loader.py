@@ -133,6 +133,10 @@ def _install(name: str) -> None:
     try:
         install()
     except Exception as error:
+        # A sequence of registrations, so one failing part way through leaves the ones
+        # before it: a trigger polling, or a node source answering, for a refused plugin.
+        triggers.forget(name)
+        nodes.forget(name)
         raise PluginRefused(f"{name} could not plug itself in: {error}") from None
 
 
@@ -315,6 +319,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if clash:
             raise PluginRefused(
                 f"{clash[0]} is already served by {taken[clash[0]]}")
+
+        # Inside the try, because it can fail: plugged in after the routes went live, a
+        # plugin that refused was already serving them and the reconcile never ran.
+        _install(name)
     except Exception as error:
         # Whatever is already serving keeps serving. The caller decides whether
         # that is fatal: at startup it is not, at the control endpoint it is.
@@ -334,7 +342,6 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.routes = exchange(app, name, router)
     known.put(entry)
     _remember(entry)
-    _install(name)
     # The hooks it declared may name a source nothing answered for yet, and dispatch is the
     # core's rather than the publisher's, so it is settled from the manifests after a load.
     dispatch.reconcile()

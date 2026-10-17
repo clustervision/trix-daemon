@@ -2083,3 +2083,78 @@ def test_listing_the_hardware_rules_answers_for_the_whole_estate_by_default(
     assert [entry["node"] for entry in answer] == held, "not every node held was answered for"
     assert all(entry["exists"] and "document" in entry and entry["document"] for entry in answer), (
         "the default answer no longer carries each node's rule file")
+
+
+def _plugin_whose_install_fails(tmp_path, name: str, before: str = "") -> None:
+    """
+    A plugin on disk that loads, whose install() runs `before` and then raises.
+    """
+    from trixd.core.plugins import scaffold
+
+    scaffold.new(name, str(tmp_path / "plugins"))
+    (tmp_path / "plugins" / name / "__init__.py").write_text(
+        'class Poll:\n    """A trigger that is started, stopped and asked its state."""\n\n'
+        '    def state(self) -> dict:\n        """What health would publish."""\n'
+        '        return {"answering": True}\n\n'
+        '    def start(self) -> None:\n        """Asked to begin."""\n\n'
+        '    def shutdown(self) -> None:\n        """Asked to stop."""\n\n\n'
+        'def install() -> None:\n'
+        '    """Plug in, as far as it gets."""\n'
+        f'{before}'
+        '    raise RuntimeError("this plugin cannot plug itself in")\n',
+        encoding="utf-8")
+
+
+def test_a_plugin_whose_install_fails_is_not_left_serving(rig, client, headers, tmp_path):
+    """
+    install() ran after the routes had been exchanged and the registry already said
+    loaded, so a plugin that refused was serving every route it declared while the caller
+    was told it had not loaded.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED, PLUGIN_STATE_REFUSED
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import loader
+    from trixd.core.plugins.registry import current as registry
+
+    _plugin_whose_install_fails(tmp_path, "refuser")
+
+    with pytest.raises(PluginRefused, match="could not plug itself in"):
+        loader.load(rig, "refuser")
+
+    serving = [route.path for route in rig.router.routes
+               if getattr(route, "path", "").startswith(f"{API_PREFIX}/refuser")]
+    assert serving == [], f"refused and serving {serving}"
+    assert registry().get("refuser").state != PLUGIN_STATE_LOADED, \
+        "the registry says loaded, so its hooks are dispatched and a reload is skipped"
+    shown = {entry["name"]: entry["state"] for entry
+             in client.get(f"{API_PREFIX}/system/plugins", headers=headers).json()["plugins"]}
+    assert shown.get("refuser") == PLUGIN_STATE_REFUSED, shown
+
+
+def test_an_install_that_fails_part_way_leaves_nothing_registered(rig, tmp_path, monkeypatch):
+    """
+    install() is a sequence - luna offers a trigger, then a node source, then its
+    documentation link - so a failure in the middle of it left what came before behind:
+    a trigger polling, and a node source answering sign-ins, for a refused plugin.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import loader
+    from trixd.core.render import triggers
+    from trixd.core.security import nodes
+
+    # Put back afterwards: this install takes the node source over from the rig's own luna
+    # plugin before it fails, and nothing else restores it between tests.
+    monkeypatch.setattr(nodes, "_source", nodes._source)
+    monkeypatch.setattr(nodes, "_owner", nodes._owner)
+
+    _plugin_whose_install_fails(tmp_path, "halfway", before=(
+        "    from trixd.core.render import triggers\n"
+        "    from trixd.core.security import nodes\n"
+        '    triggers.register("halfway_poll", Poll(), owner="halfway")\n'
+        '    nodes.register(object(), owner="halfway")\n'))
+
+    with pytest.raises(PluginRefused, match="could not plug itself in"):
+        loader.load(rig, "halfway")
+
+    assert "halfway_poll" not in triggers.states(), "its trigger is still polling"
+    assert nodes._owner != "halfway", "its node source still answers a node sign-in"
