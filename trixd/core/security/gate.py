@@ -116,6 +116,11 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
                 audit.refused(claims.subject, request.method, target,
                               f"node token for {claims.node}")
                 raise Forbidden("token is not valid for this node")
+            # A refusal above is recorded and a grant was not, so the trail showed only the
+            # node calls that failed. These writes matter: a node's own token sets its
+            # hardware rules, and the trail is where that is answerable for.
+            audit.granted(claims.subject, request.method, target or _target(request),
+                          "on a node token")
             return Caller(claims, None, ROLE_NONE)
 
         if claims.kind == TOKEN_KIND_NODE:

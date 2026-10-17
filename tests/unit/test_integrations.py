@@ -1081,6 +1081,29 @@ def test_the_gate_reads_either_header_and_refuses_no_token(rig, token):
     assert client.get("/look", headers={"x-access-tokens": "not.a.token"}).status_code == 401
 
 
+def test_a_node_call_the_gate_allows_is_in_the_trail(rig):
+    """
+    A node token refused on another node's route was recorded; one that was allowed was not,
+    so the trail held only the node calls that failed. A node's own token writes that node's
+    hardware rules, which includes switching its alerting off, and that has to be answerable
+    for - "the gate refused nobody" and "nothing happened" looked identical.
+    """
+    from trixd.core.security import audit, tokens
+
+    client = _gated()
+    own = {"x-access-tokens": tokens.mint("node001", kind="node", node="node001")}
+    assert client.patch("/hw-rules/node001", headers=own).status_code == 200
+    assert client.patch("/hw-rules/node002", headers=own).status_code == 403
+
+    rows = [row for row in audit.read(limit=50) if row["object"].startswith("node00")]
+    granted = [row for row in rows if row["outcome"] == "granted"]
+    refused = [row for row in rows if row["outcome"] == "refused"]
+    assert granted, "an allowed node call left nothing in the trail"
+    assert granted[0]["object"] == "node001", granted[0]
+    assert granted[0]["principal"] == "node001", granted[0]
+    assert refused, "the refusal stopped being recorded"
+
+
 def test_a_subject_nobody_knows_is_refused_whatever_kind_the_token_claims(rig):
     """
     A signed token for a name no source resolves is 401, and claiming to be a service
