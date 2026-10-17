@@ -1413,3 +1413,29 @@ def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
     assert len(answer["services"]) == 12, answer
     assert len(reads) == 1, f"the catalogue was read {len(reads)} times for 12 services"
     assert real is not counted, "the real method was not restored by monkeypatch"
+
+
+def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, monkeypatch):
+    """
+    The poller surviving a failed pass is deliberate and stays. What was wrong is that
+    nothing said the pass had failed: `answering` stayed true and `last_pass` went on
+    advancing, so a Luna erroring on every pass published the same state as one being read
+    successfully - on the unauthenticated health route, which is what a monitor acts on.
+
+    Note the direction. A passive controller, where an empty answer is normal and harmless,
+    correctly reports false. It was the broken case that read as healthy.
+    """
+    poller, _ = _hashes(monkeypatch, {"node": "1"}, requests.ConnectionError("away"),
+                        {"node": "1"})
+
+    assert poller.once() == [], "the first reading is a baseline"
+    assert poller.state()["answering"] is True, \
+        "a good pass does not report answering, so this proves nothing"
+
+    assert poller.once() == [], "a failed pass is skipped, not fatal"
+    assert poller.state()["answering"] is False, \
+        "every pass is failing and it still reports itself answering"
+    assert poller.seen == {"node": "1"}, "a failed pass threw away the baseline"
+
+    assert poller.once() == [], "the poller did not carry on after the failure"
+    assert poller.state()["answering"] is True, "it never recovers once a pass has failed"

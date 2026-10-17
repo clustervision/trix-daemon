@@ -59,6 +59,7 @@ class LunaHashes:
         self.seen: dict = {}
         self.last_pass: float = 0.0
         self.quiet: bool = False
+        self.failing: bool = False
 
     def once(self) -> list:
         """
@@ -68,8 +69,15 @@ class LunaHashes:
         try:
             current = luna().table_hashes()
         except Exception as error:
+            # Remembered, not only logged. The pass surviving a failure is deliberate and
+            # stays; what was wrong is that nothing said it had failed, so a Luna that
+            # errored on every pass published the same answering state as one that was
+            # being read successfully - and that state is the unauthenticated health
+            # route, which is the signal a monitor acts on.
+            self.failing = True
             LOGGER.warning("could not read Luna table hashes: %s", error)
             return []
+        self.failing = False
 
         if not current:
             # Luna answers this only on the HA master, so empty is normal here and
@@ -144,7 +152,7 @@ class LunaHashes:
         return {"interval": INTERVAL,
                 "last_pass": self.last_pass,
                 "tables_seen": len(self.seen),
-                "answering": not self.quiet and bool(self.seen)}
+                "answering": not self.quiet and not self.failing and bool(self.seen)}
 
 
 _hashes: LunaHashes = LunaHashes()
