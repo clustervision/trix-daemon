@@ -493,6 +493,14 @@ class Backend:
         want = {"hostname": host, "luna_group": record.get("group") or ""}
         target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
         paths = (self._hw_paths(was) + self._hw_paths(node)) if was else self._hw_paths(node)
+        # The file under the name this node answers to now. _hw_paths does not return it
+        # when a file under the name asked for exists, because an exact match is the whole
+        # answer there - and here the name asked for is the node's while the file is written
+        # under its hostname. Without this, a repair discards the older file as superseded
+        # and never looks at the live one, so a relabel that was due silently does not
+        # happen and the node's alerts go on matching a group it has left.
+        if os.path.isfile(target) and target not in paths:
+            paths.append(target)
         moved, rewritten, superseded = [], [], []
         for path in dict.fromkeys(paths):
             if not os.path.isfile(path):
@@ -520,7 +528,7 @@ class Backend:
             if changed:
                 rewritten.append(os.path.basename(target))
         answer = {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten,
-                  "superseded": superseded}
+                  **({"superseded": superseded} if superseded else {})}
         if moved or rewritten or superseded:
             answer["reloaded"] = self.reload_reported()
             LOGGER.info("hardware rules for %s: moved %s, rewritten %s, superseded %s",

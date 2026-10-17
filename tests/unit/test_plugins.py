@@ -30,6 +30,7 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import os
+from types import SimpleNamespace
 
 import pytest
 
@@ -832,6 +833,15 @@ def test_unplugging_the_luna_plugin_removes_the_route_to_luna(rig, client, heade
     assert client.get(f"{API_PREFIX}/luna/config/node", headers=headers).status_code == 404
     assert client.post(f"{API_PREFIX}/system/plugins/luna/reload",
                        headers=headers).status_code == 200
+
+
+def prometheus_module():
+    """
+    The prometheus backend module, for a test that needs its constants.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    return prometheus
 
 
 def _hw_backend(tmp_path, monkeypatch, reload_ok=True):
@@ -2203,3 +2213,51 @@ def test_an_install_that_fails_part_way_leaves_nothing_registered(rig, tmp_path,
 
     assert "halfway_poll" not in triggers.states(), "its trigger is still polling"
     assert nodes._owner != "halfway", "its node source still answers a node sign-in"
+
+
+def test_a_repair_relabels_the_live_file_when_an_older_one_sits_beside_it(rig, tmp_path,
+                                                                          monkeypatch):
+    """
+    Two files for the SAME node: one under the name it answers to now, one under the name it
+    was written under before. Both are this node's, which is what makes this different from
+    the short-name case next door, where the second file belongs to a different node.
+
+    The older one is discarded, and the live one is still relabelled. Resolving a node to a
+    file answers on the name asked for alone when a file carries it, and a repair asks by the
+    node's name while files are written under its hostname - so the live file was not looked
+    at at all, the older one was discarded as superseded, and a relabel that was due did not
+    happen. The expression is what the alerts match on, so the node's hardware alerting goes
+    on matching a group it has left, and the answer says `rewritten: []` rather than saying so.
+    """
+    import yaml
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    directory = backend._rules_dir()
+    live = os.path.join(directory, prometheus_module().HW_RULES.format(host="node001.cluster"))
+    older = os.path.join(directory, prometheus_module().HW_RULES.format(host="node001"))
+    assert os.path.isfile(live), "the fixture did not write the file under Luna's hostname"
+
+    # The same node, under the name it used to be written as.
+    with open(live, encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+    with open(older, "w", encoding="utf-8") as handle:
+        yaml.safe_dump(document, handle)
+
+    # Luna moves it to another group.
+    monkeypatch.setattr(backend, "_host_of", lambda node: "node001.cluster")
+    monkeypatch.setattr(prometheus_module(), "luna",
+                        lambda: SimpleNamespace(node=lambda name: {
+                            "hostname": "node001.cluster", "group": "gpu"}))
+
+    answer = backend.repair_hw_rules("node001")
+
+    assert not os.path.isfile(older), "the older file was left beside the live one"
+    assert answer["superseded"] == [os.path.basename(older)], answer
+    with open(live, encoding="utf-8") as handle:
+        rules = yaml.safe_load(handle)
+    expressions = [rule["expr"] for group in rules["groups"] for rule in group["rules"]]
+    assert all('luna_group="gpu"' in one for one in expressions), \
+        f"the live file was never relabelled, so its alerts still match the old group: {expressions}"
+    assert answer["rewritten"] == [os.path.basename(live)], \
+        f"the relabel happened but was not reported: {answer}"
