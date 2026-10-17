@@ -117,10 +117,11 @@ class Backend:
         """
         Every controllable service with its current state.
         """
-        answer = {}
-        for name in sorted(self._units()):
-            answer[name] = self._state(self._units()[name])
-        return {"services": answer}
+        # Read once. Each call is a database session and a query, and this made one per
+        # service on top of the one for the listing, so the cost grew with the catalogue
+        # for an answer that is the same throughout the call.
+        units = self._units()
+        return {"services": {name: self._state(units[name]) for name in sorted(units)}}
 
     def status(self, name: str) -> dict:
         """

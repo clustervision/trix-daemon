@@ -1382,3 +1382,34 @@ def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch
     assert answer == {"nodes": 0, "files": [], "skipped": ["node001", "node002"]}, answer
     assert "nodes" not in seen, "the generator was called with nothing to write"
     assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
+
+
+def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
+    """
+    The catalogue was read once for the ordering and again for every service in it, and each
+    read is its own database session and query - so a listing cost one query per service for
+    an answer that cannot change during the call. One read, whatever the catalogue holds.
+
+    Counted rather than timed, so it says the same thing on a loaded box.
+    """
+    from trixd.plugins.services import backend as services
+
+    reads = []
+    real = services.Backend._units
+
+    def counted(self) -> dict:
+        """
+        The catalogue, remembering that it was asked for.
+        """
+        reads.append(1)
+        return {f"svc{n}": f"svc{n}.service" for n in range(12)}
+
+    monkeypatch.setattr(services.Backend, "_units", counted)
+    monkeypatch.setattr(services.shell, "run",
+                        lambda argv, **kwargs: Ran("active", 0, ""))
+
+    answer = services.Backend().list_services()
+
+    assert len(answer["services"]) == 12, answer
+    assert len(reads) == 1, f"the catalogue was read {len(reads)} times for 12 services"
+    assert real is not counted, "the real method was not restored by monkeypatch"

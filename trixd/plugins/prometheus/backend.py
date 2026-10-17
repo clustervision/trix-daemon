@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import copy
 import glob
 import os
 import re
@@ -426,7 +427,11 @@ class Backend:
         paths = self._hw_paths(node)
         before = _read_yaml(paths[0]) if paths else None
         if paths and not body.get("force"):
-            path, document = paths[0], _read_yaml(paths[0])
+            # Copied rather than parsed a second time. Two independent documents are needed
+            # - the one below is mutated in place and compared against `before` - but a
+            # parse of one node's file costs an order of magnitude more than the copy, and
+            # this is paid once per node on every boot.
+            path, document = paths[0], copy.deepcopy(before)
         else:
             host = self._host_of(node)
             path = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
