@@ -1166,6 +1166,45 @@ def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, mo
     assert result["left"] == 3, result
 
 
+def test_a_peer_saying_it_skipped_is_not_recorded_as_done(rig, monkeypatch):
+    """
+    The peer answers 200 and its body says it did not do the work - the node is not in its
+    own Luna. That was read as done and pruned an hour later, so the only account of the
+    peer being behind for that node was gone.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node001"}, {"force": True}, "req-skip", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    result = outbox.drain("ctrl2")
+    assert result["sent"] == 0, result
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox))
+        assert row is not None, "the row was pruned, so nothing says the peer is behind"
+        assert row.state == outbox.QUEUED, row.state
+        assert "not in Luna" in row.message, row.message
+    finally:
+        handle.close()
+
 
 
 
@@ -1276,6 +1315,50 @@ def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
     finally:
         handle.close()
         peer.close()
+
+
+def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
+    """
+    A queued row is cleared by nothing: the next action for a node clears only a refusal,
+    and the reap collects only a refusal. So a decline rode the sweep for ever and held its
+    node's later actions with it - and the new action that was meant to clear it was held
+    too. After enough passes it is terminal, which is what gives it both exits.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-decline", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    # Driven through the real send, so the message the decline is recognised by is the one
+    # the send produces: the two are a pair, and a test that built the message itself would
+    # pass while a reworded one broke the escalation.
+    for _ in range(outbox.DECLINED_PASSES):
+        outbox.drain("ctrl2")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert row.state == outbox.FAILED, \
+            f"after {row.attempts} declines the row is still {row.state}, so nothing " \
+            f"will ever clear it"
+    finally:
+        handle.close()
 
 
 def test_a_declined_apply_is_not_remembered(rig, client, headers):

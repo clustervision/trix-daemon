@@ -47,6 +47,7 @@ from sqlalchemy import delete, func, select
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.settings import current as settings
+from trixd.core.replication import applied
 from trixd.core.replication.sweep import held_token, trust
 from trixd.core.replication.sweep import _token as peer_token
 from trixd.db import engine as database
@@ -77,6 +78,12 @@ TIMEOUT: int = 3
 LOUD_AFTER: int = 12
 # How long a finished row is kept, so a caller that polls slowly still sees it.
 KEEP_SECONDS: int = 3600
+# What a message says when the peer answered and declined to do the work, and how many
+# passes that is offered again for. A decline can be a moment of Luna lag on the peer, which
+# the next pass clears; it can also be a node that peer will never know, and a row with no
+# terminal state is cleared by nothing and holds its node's later actions for ever.
+DECLINED: str = "the peer did not apply it"
+DECLINED_PASSES: int = 12
 
 # Consecutive transport failures at a peer, and whether its breaker is open. Process-local
 # on purpose: one worker means this is controller-local, the breaker is this process's
@@ -319,6 +326,13 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
         if answer.status_code in (401, 403) and attempt == 1:
             continue
         if answer.status_code < 300:
+            declined = _skipped(answer)
+            if declined:
+                # Not done, so it keeps its place and holds its own node's chain: whatever
+                # comes after it assumes it landed. It rides the sweep like any other owed
+                # row, bounded by DECLINED_PASSES, after which it is terminal and so can be
+                # cleared by the next action for that node and reaped.
+                return QUEUED, f"{DECLINED}: {declined}", ANSWERED
             return DONE, "", ANSWERED
         if answer.status_code >= 500 or answer.status_code in (401, 403):
             return QUEUED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
@@ -326,6 +340,23 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
         # peer does not serve. No number of passes fixes a version skew.
         return FAILED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
     return QUEUED, "no answer", NO_ANSWER
+
+
+def _skipped(answer) -> str:
+    """
+    What the peer said it did not do, or empty when it did the work.
+
+    A success and the work having happened are not the same answer: a handler that finds
+    the node absent from its own Luna says so in the body and answers 200, and recording
+    that as done left no account of it anywhere. `changed: False` is not this - that is the
+    peer already holding what was asked for, which is done, and is the ordinary answer when
+    both controllers write one shared file.
+    """
+    try:
+        held = answer.json() or {}
+    except ValueError:
+        return ""
+    return applied.declined(held.get("result"))
 
 
 # Rows one of this process's two senders has in flight, so the other does not send them too.
@@ -362,6 +393,14 @@ def _finish(row_id: int, state: str, message: str) -> None:
             return
         row.attempts += 1
         row.message = message[:2048]
+        if (state == QUEUED and message.startswith(DECLINED)
+                and row.attempts >= DECLINED_PASSES):
+            # Asked enough times. Terminal is what gives it an exit: the next action for
+            # this node clears it, and a day later it is reaped - neither of which looks at
+            # a queued row, so a decline kept asking for ever and held the node with it.
+            state = FAILED
+            LOGGER.error("%s has declined %s %s %d times, so it is not asked again: %s",
+                         row.peer, row.method, row.path, row.attempts, message)
         if state == QUEUED and row.attempts and row.attempts % LOUD_AFTER == 0:
             # Said, not abandoned: it keeps riding the sweep until the peer takes it.
             LOGGER.error("%s has owed %s a %s %s for %d passes now: %s", row.origin,
