@@ -1647,6 +1647,82 @@ def test_a_hardware_string_cannot_break_the_selector(rig, monkeypatch):
         assert value == quoted(awkward), f"{key} carries {value!r}, not the whole string"
 
 
+def test_a_brace_inside_a_label_value_is_part_of_the_value(rig, tmp_path, monkeypatch):
+    """
+    What the write-time check must not refuse. A brace and a comma are ordinary characters
+    inside a quoted value - {3,} in a matcher's regex is a bounded repetition, not the end
+    of the selector - so a check that reads to the first closing brace sees the rest of the
+    value as text outside every matcher and refuses legitimate PromQL. These four have to
+    be written.
+
+    Both directions in one test, because a check that accepts everything reads exactly like
+    a check that works: the value that closes its quote early is what this one exists for,
+    and it is still refused.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.prometheus import backend as prometheus
+
+    legitimate = ['node_filesystem_avail_bytes{mountpoint=~"/var/lib/.{3,}"} < 1e9',
+                  'up{instance=~"node00{1,3}"} == 0',
+                  'absent(lshw_device{product="Mem{DDR4}"})',
+                  'rate(http_requests_total{code="200"}[5m]) > 0']
+    for expr in legitimate:
+        assert prometheus.unaccounted(expr) == "", f"{expr} leaves text no matcher accounts for"
+
+    # The write path itself, not only the check: the document reaches the file.
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    path = os.path.join(str(tmp_path), prometheus.GENERIC_RULES)
+    backend._write_rules(path, {"groups": [{"name": "generic", "rules": [
+        {"alert": f"A{number}", "expr": expr}
+        for number, expr in enumerate(legitimate)]}]})
+    held = open(path, encoding="utf-8").read()
+    assert "node00{1,3}" in held, f"a legitimate document was not written: {held}"
+
+    # An inch mark in a product string, interpolated without the escape: the rest of the
+    # value is left outside every matcher, which is the break the check exists for.
+    with pytest.raises(BackendFailure) as refused:
+        backend._write_rules(path, {"groups": [{"name": "generic", "rules": [
+            {"alert": "B",
+             "expr": 'absent(lshw_device{product="2.5" SATA SSD",vendor="V"})'}]}]})
+    said = refused.value.message
+    assert 'SATA SSD"' in said, said
+    assert prometheus.GENERIC_RULES in said, said
+    # Only what is true: text outside the matchers says a value is not quoted as it was
+    # meant to be, and says nothing about what Prometheus does with the file it is in.
+    assert "refuse the whole file" not in said, said
+    assert open(path, encoding="utf-8").read() == held, "the refused document was written"
+
+
+def test_a_refused_rule_document_is_not_stored(rig, tmp_path, monkeypatch):
+    """
+    The declaration was written before the documents were rendered, so a PATCH answered 500
+    stored the document anyway. From there it replicates to the peer, and every later
+    render raises on it before reaching the per-node hardware reconcile underneath - on
+    both controllers, until someone sends a rule document again. The render engine keeps
+    the previous output and logs that it did, so nothing says the reconcile has stopped.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node002": {"hostname": "node002.cluster",
+                                           "group": "compute"}})
+    kept = {"groups": [{"name": "generic", "rules": [
+        {"alert": "A", "expr": 'absent(lshw_device{hostname="node002.cluster"})'}]}]}
+    backend.rules(body=kept)
+
+    with pytest.raises(BackendFailure):
+        backend.rules(body={"groups": [{"name": "generic", "rules": [
+            {"alert": "B", "expr": 'absent(lshw_device{product="2.5" SATA SSD"})'}]}]})
+
+    assert backend.rules() == kept, "the refused document was stored"
+
+    # And a render reaches the hardware files: one naming a node Luna no longer has is
+    # retired, which is the reconcile the stored document used to raise in front of.
+    _hw_file(tmp_path, "node001.cluster", "compute")
+    outcome = backend.render_rule_files()
+    assert outcome["retired"] == ["trix.hw.node001.cluster.rules"], outcome
+
+
 def test_writing_a_rule_file_forks_nothing(rig, monkeypatch, tmp_path):
     """
     The check at write time is in process, and has to stay that way. A fork is about 35 ms

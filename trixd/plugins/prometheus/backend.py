@@ -102,8 +102,22 @@ INFINIBAND_LABELS: tuple = COMPONENT_LABELS[:-1]
 NODE_LABELS: tuple = ("hostname", "luna_group")
 # One label matcher inside a selector: name, operator, quoted value with escapes.
 MATCHER = re.compile(r'(\w+)\s*(=~|!~|!=|=)\s*"((?:[^"\\]|\\.)*)"')
-# The braces of one selector. PromQL does not nest them.
-SELECTOR = re.compile(r"\{([^{}]*)\}")
+# A selector is read matcher by matcher rather than matched as a whole, because a brace and a
+# comma are ordinary characters inside a quoted value: {3,} in a matcher's regex is a bounded
+# repetition, not the end of the selector.
+# The separators before one matcher and its name and operator, in one step: the scan pays
+# for this per matcher, over every rule of every node's file.
+MATCHER_HEAD = re.compile(r"[\s,]*(\w+)\s*(?:=~|!~|!=|=)\s*")
+# What stands between two matchers, and the space around them.
+SEPARATORS = re.compile(r"[\s,]*")
+# A quoted value, by its opening quote. PromQL takes all three; a backtick string is raw, so
+# a backslash in one is a character rather than an escape.
+STRINGS: dict = {'"': re.compile(r'"(?:[^"\\]|\\.)*"'),
+                 "'": re.compile(r"'(?:[^'\\]|\\.)*'"),
+                 "`": re.compile(r"`[^`]*`")}
+# Where the next selector or string can begin, so the scan steps to it rather than through
+# every character before it.
+OPENINGS = re.compile("[{" + re.escape("".join(STRINGS)) + "]")
 # Prometheus's own checker, which ships beside it. Where it lands depends on how Prometheus
 # was installed - the package puts it in /usr/bin, a tarball in /usr/local/bin - so both are
 # looked at before PATH. A cluster without it loses the check, not the write.
@@ -141,6 +155,52 @@ def _promtool_refuses(paths: list) -> str:
     return (result.err or result.out or "promtool refused the rules").strip()[:500]
 
 
+def _past_string(text: str, start: int) -> int:
+    """
+    Where the quoted value that opens here ends, or -1 when nothing closes it.
+    """
+    found = STRINGS[text[start]].match(text, start)
+    return found.end() if found else -1
+
+
+def _past_matcher(text: str, start: int) -> int:
+    """
+    Where the label matcher that starts here ends, or -1 when this is not one.
+
+    Its value is read as a string rather than up to the next comma or brace, because both
+    are ordinary inside one and a matcher's regex is where they turn up.
+    """
+    head = MATCHER_HEAD.match(text, start)
+    if head is None or head.end() >= len(text) or text[head.end()] not in STRINGS:
+        return -1
+    return _past_string(text, head.end())
+
+
+def _selector(text: str, start: int) -> tuple:
+    """
+    What no matcher accounts for inside the selector opened just before start, and where
+    that selector ended.
+    """
+    leftover, position = [], start
+    while position < len(text):
+        ended = _past_matcher(text, position)
+        if ended >= 0:
+            position = ended
+            continue
+        position = SEPARATORS.match(text, position).end()
+        if position >= len(text):
+            break
+        if text[position] == "}":
+            return ", ".join(leftover), position + 1
+        # Not a matcher, so this reads to the next separator as text nothing accounts for:
+        # a value that closed its quote early leaves the rest of itself here.
+        run = position
+        while position < len(text) and text[position] not in ",}":
+            position += 1
+        leftover.append(text[run:position].strip())
+    return ", ".join(leftover), len(text)
+
+
 def unaccounted(expr: str) -> str:
     """
     What is left inside a selector once its matchers have been read, which is nothing when
@@ -150,12 +210,42 @@ def unaccounted(expr: str) -> str:
     accounts for, and that is exactly what Prometheus refuses. Counting the matchers does
     not catch it: the pattern re-synchronises, so a broken selector still parses as the
     right number of them, each truncated.
+
+    The braces are found by scanning, because a brace is ordinary inside a quoted value -
+    a bounded repetition in a matcher's regex, a vendor's product string, or a string
+    argument to label_replace outside any selector at all.
     """
-    for inside in SELECTOR.findall(expr or ""):
-        left = MATCHER.sub("", inside).strip(" ,\t")
+    text = expr or ""
+    position = 0
+    while True:
+        opening = OPENINGS.search(text, position)
+        if opening is None:
+            return ""
+        position = opening.start()
+        if text[position] != "{":
+            # A string outside any selector, whose braces and commas are no more structural
+            # than those inside a value. Unterminated, nothing after it can be read.
+            position = _past_string(text, position)
+            if position < 0:
+                return ""
+            continue
+        left, position = _selector(text, position + 1)
         if left:
             return left[:120]
-    return ""
+
+
+def _refuse_unparsable(document, what: str) -> None:
+    """
+    Refuse a document whose selectors do not hold together, before anything is written.
+    """
+    for group in (document or {}).get("groups") or []:
+        for rule in group.get("rules") or []:
+            left = unaccounted(str(rule.get("expr") or ""))
+            if left:
+                raise BackendFailure(
+                    f"{what} will not be written: a selector carries {left!r} outside any "
+                    f"label matcher, which is what a value that closes its quote early "
+                    f"leaves behind")
 
 
 def quoted(value) -> str:
@@ -223,6 +313,12 @@ class Backend:
         The generic and service alert rules, as documents rather than files.
         """
         if body:
+            # Refused before it is stored, not when the files are written: the declaration
+            # table replicates, so a document the writer refuses would reach the peer as
+            # well and leave every later render raising here instead of reaching the
+            # hardware reconcile below it - on both controllers, until someone sends this
+            # again.
+            _refuse_unparsable(body, "the rules sent")
             stored = declarations.write(PLUGIN, "rules", "", body)
             self._write_rule_documents(stored)
             self.reload_or_fail("rules written")
@@ -374,14 +470,7 @@ class Backend:
         pass that has to return to idle. What promtool adds beyond this is the same for
         every node, so it is paid once per reload instead - see _reload_now.
         """
-        for group in (document or {}).get("groups") or []:
-            for rule in group.get("rules") or []:
-                left = unaccounted(str(rule.get("expr") or ""))
-                if left:
-                    raise BackendFailure(
-                        f"the rules for {os.path.basename(path)} would not parse: a label "
-                        f"value leaves {left!r} outside any matcher, so Prometheus would "
-                        f"refuse the whole file")
+        _refuse_unparsable(document, f"the rules for {os.path.basename(path)}")
         written = files.write_yaml(path, document)
         with self.pending_lock:
             self.pending_check.add(path)
