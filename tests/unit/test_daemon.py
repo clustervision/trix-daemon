@@ -545,6 +545,53 @@ def test_a_node_token_is_not_issued_on_the_node_name_alone(rig, client, monkeypa
     assert answer.status_code == 201
 
 
+def test_a_known_user_is_not_enough_to_become_a_node(rig, client, headers, monkeypatch):
+    """
+    Being resolvable is not authority to be a node. This mints the node's own identity and
+    Luna honours it as such, so any account the chain knows - a person with a shell on the
+    controller - could have asked for any node and been given it, on both daemons. The
+    daemon's own account still may, and so does a role that says it may act for a node.
+    """
+    from trixd.api.v1 import auth as auth_routes
+
+    class Stub:
+        """
+        A Luna that knows the node and does not enforce a measurement.
+        """
+
+        def node(self, name):
+            """
+            The node as this stubbed Luna holds it.
+            """
+            return {"name": name, "tpm_sha256": ""}
+
+        def enforcing_security(self):
+            """
+            Whether this stubbed Luna enforces a measurement.
+            """
+            return False
+
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
+    for name, role in (("bystander", "none"), ("looker", "reader"), ("doer", "operator")):
+        made = client.put(f"{API_PREFIX}/identity/users/{name}", headers=headers,
+                          json={"role": role, "password": "a long passphrase"})
+        assert made.status_code in (200, 201), made.text
+
+    def asking(name):
+        """
+        That user asking for node001's token.
+        """
+        return client.post(f"{API_PREFIX}/auth/node/node001",
+                           json={"username": name, "password": "a long passphrase"})
+
+    assert asking("bystander").status_code == 401, "role none became a node"
+    assert asking("looker").status_code == 401, "a reader became a node"
+    assert asking("doer").status_code == 201, "an operator may act for a node and could not"
+    assert client.post(f"{API_PREFIX}/auth/node/node001",
+                       json={"username": "tester", "password": "secret"}
+                       ).status_code == 201, "the daemon's own account was refused"
+
+
 def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, client, monkeypatch):
     """
     With the cluster flag set, only the recorded measurement opens the door.
