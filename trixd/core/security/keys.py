@@ -30,6 +30,7 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import os
+import stat
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -156,6 +157,25 @@ def read_private(path: str):
     return key
 
 
+def _unsafe(path: str) -> str:
+    """
+    Why a path holding trust cannot be believed, or an empty string when it can.
+
+    A key in here decides which issuers this daemon accepts, so whoever can write one in
+    decides that. Ownership and mode are the whole protection and neither was looked at,
+    while the private key beside it is created 0600 and has a test pinning the mode.
+    """
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        return str(error)
+    if info.st_uid not in (0, os.geteuid()):
+        return f"owned by uid {info.st_uid}"
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"writable beyond its owner, mode {stat.S_IMODE(info.st_mode):04o}"
+    return ""
+
+
 def read_trust(directory: str) -> dict:
     """
     Every <key-id>.pub in the trust directory, indexed by key identifier.
@@ -164,10 +184,21 @@ def read_trust(directory: str) -> dict:
     if not os.path.isdir(directory):
         LOGGER.warning("no trust directory at %s: only our own tokens will verify", directory)
         return trusted
+    # The whole directory, before any key in it: if others may write here they choose what
+    # this daemon trusts, and which file they chose is not the interesting part.
+    unsafe = _unsafe(directory)
+    if unsafe:
+        LOGGER.error("refusing the trust directory %s: %s; only our own tokens will verify",
+                     directory, unsafe)
+        return trusted
     for name in sorted(os.listdir(directory)):
         if not name.endswith(PUBLIC_SUFFIX):
             continue
         path = os.path.join(directory, name)
+        unsafe = _unsafe(path)
+        if unsafe:
+            LOGGER.error("ignoring %s: %s", path, unsafe)
+            continue
         try:
             with open(path, "rb") as handle:
                 key = serialization.load_pem_public_key(handle.read())

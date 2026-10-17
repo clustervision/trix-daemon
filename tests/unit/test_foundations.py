@@ -273,6 +273,37 @@ def test_a_trust_directory_ignores_what_is_not_a_public_key(tmp_path):
     assert keys.read_trust(str(tmp_path / "absent")) == {}
 
 
+def test_a_trust_directory_others_may_write_is_not_believed(tmp_path):
+    """
+    A key here decides which issuers this daemon accepts, so whoever can write one in
+    decides that - and in the keypair mode a trusted key may assert anything it likes.
+    Ownership and mode were the whole protection and neither was looked at, while the
+    private key beside it is created 0600 and has a test pinning that.
+
+    The directory is refused as a whole rather than file by file: if others may write
+    there, which file they chose is not the interesting part.
+    """
+    if not POSIX:
+        pytest.skip("modes mean nothing here")
+
+    trust = tmp_path / "trust"
+    trust.mkdir()
+    keys.generate(str(tmp_path / "peer.ed25519"), str(trust / "peer.pub"))
+    assert list(keys.read_trust(str(trust))) == ["peer"], "a sound directory stopped loading"
+
+    os.chmod(trust, 0o777)
+    assert keys.read_trust(str(trust)) == {}, "a world-writable trust directory was believed"
+
+    os.chmod(trust, 0o755)
+    os.chmod(trust / "peer.pub", 0o666)
+    assert keys.read_trust(str(trust)) == {}, "a world-writable key was believed"
+
+    # What the generator actually writes must still load: 0644 is readable by others,
+    # which is fine, and writable by none of them, which is the part that matters.
+    os.chmod(trust / "peer.pub", 0o644)
+    assert list(keys.read_trust(str(trust))) == ["peer"], "a generated key stopped loading"
+
+
 def test_a_missing_private_key_says_who_makes_it(tmp_path):
     """
     The daemon never makes its own key; the message points at the installer.
