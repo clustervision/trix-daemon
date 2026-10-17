@@ -39,6 +39,14 @@ from trixd.common.errors import BackendFailure
 
 LOGGER = trixlog.get("files")
 
+# libyaml's safe dumper where it is installed, as the per-node read path beside it already
+# takes libyaml's loader: the same bytes, around seven times faster, and this writes one file
+# per node. It ships inside PyYAML, which is already declared, so there is nothing further to
+# install and nothing further to mirror for an airgapped site - and where PyYAML was built
+# without libyaml the attribute is absent and the pure-Python dumper is used, which is why
+# this is read rather than assumed.
+SAFE_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
+
 BLOCK_START: str = "# --- {manager} managed block, do not edit by hand ---"
 BLOCK_END: str = "# --- end {manager} managed block ---"
 
@@ -86,8 +94,8 @@ def write_yaml(path: str, document, mode: int = 0o644) -> str:
     """
     The same, for a document.
     """
-    return write(path, yaml.safe_dump(document, default_flow_style=False, sort_keys=False,
-                                      explicit_start=True), mode)
+    return write(path, yaml.dump(document, Dumper=SAFE_DUMPER, default_flow_style=False,
+                                 sort_keys=False, explicit_start=True), mode)
 
 
 def read_text(path: str, fallback: str = "") -> str:

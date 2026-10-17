@@ -599,3 +599,46 @@ def test_the_connection_pool_holds_every_caller_that_can_arrive(rig):
     assert room >= callers, \
         f"{callers} callers can be in a handler at once and the pool holds {room}: the " \
         f"ones beyond it wait {database.POOL_TIMEOUT_SECONDS}s and are then refused"
+
+
+def test_the_yaml_writer_takes_libyaml_and_writes_the_same_bytes(tmp_path):
+    """
+    The per-node read path was deliberately given libyaml's loader and the writer beside it
+    was left on the pure-Python dumper, which is most of what a pass writing one file per
+    node costs. Both of them now, wherever libyaml is there.
+
+    The bytes are compared against the pure-Python dumper rather than against a fixture,
+    because what matters in swapping a dumper is not the speed, it is whether the format
+    moves. Documents are compared here as parsed documents and stamped by size, so a
+    different line break, a reordered key or a different quoting style would be invisible to
+    this daemon and visible in a file somebody reads on a controller. Long values and every
+    scalar type the rule documents carry, because wrapping is where two dumpers differ.
+    """
+    import yaml
+
+    from trixd.utils import files
+
+    # Reached for tolerantly: asked for directly, a build without it fails this test in its
+    # own setup with an AttributeError, which says nothing about what the writer does.
+    assert getattr(files, "SAFE_DUMPER", None) is getattr(yaml, "CSafeDumper",
+                                                          yaml.SafeDumper), \
+        "the writer is not taking libyaml's dumper where it is installed"
+
+    document = {"groups": [{"name": "trix.hw.node001.cluster", "rules": [
+        {"alert": "ComponentMissing",
+         "expr": 'lshw_device{hostname="node001.cluster",luna_group="compute",'
+                 'class="memory",description="DIMM 0",product="P",vendor="V",'
+                 'serial="S0"} == 0',
+         "for": "5m",
+         "labels": {"nhc": True, "disabled": False, "severity": "warning", "count": 3},
+         "annotations": {"summary": "a component Luna holds for this node is not reported",
+                         "empty": "", "none": None}}]}]}
+
+    path = files.write_yaml(str(tmp_path / "trix.hw.node001.cluster.rules"), document)
+    with open(path, encoding="utf-8") as handle:
+        written = handle.read()
+
+    assert written == yaml.safe_dump(document, default_flow_style=False, sort_keys=False,
+                                     explicit_start=True), \
+        "the dumper changed the bytes, which this daemon cannot see and a reader can"
+    assert yaml.safe_load(written) == document, "it does not read back as what was written"
