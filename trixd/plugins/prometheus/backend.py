@@ -300,7 +300,17 @@ class Backend:
         held = {_hw_host(path): path for path in sorted(glob.glob(pattern))}
         answer = []
         for host in (asked or sorted(held)):
-            path = held.get(host) or next((held[h] for h in held if _names_node(h, host)), "")
+            # The same rule as _hw_paths, which this does not go through: an exact name is
+            # the answer, and where there is none, one candidate may be taken and two are a
+            # refusal. Taking the first of two listed one node's rules under another's name.
+            path = held.get(host)
+            if path is None:
+                shared = [held[name] for name in held if _names_node(name, host)]
+                if len(shared) > 1:
+                    LOGGER.error("%s could be any of %s, which share its short name, so "
+                                 "none of them is listed for it", host,
+                                 [os.path.basename(one) for one in shared])
+                path = shared[0] if len(shared) == 1 else ""
             if not path:
                 answer.append({"node": host, "exists": False})
                 continue
@@ -389,7 +399,7 @@ class Backend:
         want = {"hostname": host, "luna_group": record.get("group") or ""}
         target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
         paths = (self._hw_paths(was) + self._hw_paths(node)) if was else self._hw_paths(node)
-        moved, rewritten = [], []
+        moved, rewritten, superseded = [], [], []
         for path in dict.fromkeys(paths):
             if not os.path.isfile(path):
                 continue
@@ -400,16 +410,27 @@ class Backend:
             changed = _relabel_document(document, want)
             if path == target and not changed:
                 continue
+            if path != target and os.path.isfile(target):
+                # The node already has a file under the name it answers to now, so this one
+                # is what it was called before. Writing it to the target promoted the old
+                # name's contents over whatever has been written since - which is what the
+                # reconcile was taught not to do, and this path, which the rename hook takes
+                # automatically, was still doing.
+                _discard(path)
+                superseded.append(os.path.basename(path))
+                continue
             self._write_rules(target, document)
             if path != target:
                 _discard(path)
                 moved.append(os.path.basename(path))
             if changed:
                 rewritten.append(os.path.basename(target))
-        answer = {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten}
-        if moved or rewritten:
+        answer = {"node": node, "hostname": host, "moved": moved, "rewritten": rewritten,
+                  "superseded": superseded}
+        if moved or rewritten or superseded:
             answer["reloaded"] = self.reload_reported()
-            LOGGER.info("hardware rules for %s: moved %s, rewritten %s", node, moved, rewritten)
+            LOGGER.info("hardware rules for %s: moved %s, rewritten %s, superseded %s",
+                        node, moved, rewritten, superseded)
         return answer
 
     def rename_hw_rules(self, node: str, body: dict = None) -> dict:
@@ -470,9 +491,34 @@ class Backend:
     def _hw_paths(self, node: str) -> list:
         """
         The rule files that name this node, by full hostname or by short name.
+
+        A file under the node's own name is unambiguous and is the whole answer: another
+        file sharing only its short name may belong to a different node, and must not be
+        read, rewritten or retired because somebody asked about this one.
+
+        With no such file - a node whose file is under the name it used to answer to, or
+        under its full hostname when the caller asked by the short one - there may be a
+        single candidate, and that is taken. Two is a refusal. Two nodes whose names differ
+        only past the first dot share a short name, and taking the first of them is how one
+        node's rules were served, rewritten and retired on another node's behalf: the
+        mistake the reconcile was taught not to make, left standing on every other route.
+
+        The refusal is loud and returns nothing, so a caller gets "no rules held for this
+        node" rather than another node's. Whoever reads the log can see which two files.
         """
-        pattern = os.path.join(self._rules_dir(), HW_RULES.format(host="*"))
-        return sorted(path for path in glob.glob(pattern) if _names_node(_hw_host(path), node))
+        directory = self._rules_dir()
+        own = os.path.join(directory, HW_RULES.format(host=node))
+        if os.path.isfile(own):
+            return [own]
+        pattern = os.path.join(directory, HW_RULES.format(host="*"))
+        found = sorted(path for path in glob.glob(pattern)
+                       if _names_node(_hw_host(path), node))
+        if len(found) > 1:
+            LOGGER.error("%s could be any of %s, which share its short name, so none of "
+                         "them is taken for it: name the node as its file does", node,
+                         [os.path.basename(path) for path in found])
+            return []
+        return found
 
     def _generate_hw_rules(self, host: str) -> dict:
         """

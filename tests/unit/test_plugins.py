@@ -1816,3 +1816,194 @@ def test_a_plugin_nobody_enabled_plugs_nothing_in(tmp_path, monkeypatch):
         "never loaded luna would still issue node tokens"
     assert set(triggers.states()) - standing == set(), \
         f"it also started {sorted(set(triggers.states()) - standing)}"
+
+
+OTHER_NODE_HOST = "node001.aaa"
+OTHER_NODE_FILE = f"trix.hw.{OTHER_NODE_HOST}.rules"
+OTHER_NODE_MARKER = "a_different_node_owns_this"
+
+
+def _plant_a_short_name_twin(backend):
+    """
+    A rule file belonging to a *different* node that happens to share node001's short name.
+
+    Two nodes whose hostnames differ only past the first dot have the same short name, which
+    is what makes a bare short name ambiguous. It sorts before node001's own file, so any
+    entry point that takes the first match takes this one.
+    """
+    import os
+
+    import yaml
+
+    path = os.path.join(backend._rules_dir(), OTHER_NODE_FILE)
+    with open(path, "w", encoding="utf-8") as handle:
+        yaml.safe_dump({"groups": [{"name": OTHER_NODE_MARKER, "rules": [
+            {"alert": "SomethingElse", "expr": f'up{{hostname="{OTHER_NODE_MARKER}"}} == 0',
+             "labels": {"hostname": OTHER_NODE_MARKER, "luna_group": "other"}}]}]}, handle)
+    return path
+
+
+def _rule_file_digests(backend):
+    """
+    Every rule file's full contents, live and retired, by name.
+
+    The whole file, not the alert expressions: a relabel rewrites only `labels`, so anything
+    comparing expressions alone cannot see one node's file being rewritten for another.
+    """
+    import hashlib
+    import os
+
+    directory = backend._rules_dir()
+    found = {}
+    for root, _, names in os.walk(directory):
+        for name in names:
+            path = os.path.join(root, name)
+            with open(path, "rb") as handle:
+                found[os.path.relpath(path, directory)] = hashlib.sha256(handle.read()).hexdigest()
+    return found
+
+
+def _hw_rules_entry_points():
+    """
+    Every caller-facing way into the hardware rule files, derived from the manifest.
+
+    Returned as {handler: how_to_call}. Derived rather than listed so an endpoint or hook
+    added to the manifest arrives here without a file to remember to edit - the test below
+    fails naming it until it is either asserted or excluded on purpose.
+    """
+    import os
+
+    import yaml
+
+    from trixd.plugins import prometheus
+
+    manifest = yaml.safe_load(
+        open(os.path.join(os.path.dirname(prometheus.__file__), "manifest.yaml"),
+             encoding="utf-8"))
+    handlers = {entry["handler"] for entry in manifest["endpoints"]
+                if str(entry.get("path", "")).startswith("hw-rules")}
+    handlers |= set((manifest.get("hooks") or {}).values())
+    return handlers
+
+
+# How each one is asked about node001 by its bare short name, which both files answer to.
+# import_hw_rules is called twice: force decides whether the file found is rewritten or a
+# fresh one generated, and only the first of those reads the file it found.
+ASK_BY_SHORT_NAME = {
+    "get_hw_rules": [lambda api: api.get_hw_rules("node001")],
+    "list_hw_rules": [lambda api: api.list_hw_rules(
+        __import__("types").SimpleNamespace(query_params={"nodes": "node001"}))],
+    "import_hw_rules": [lambda api: api.import_hw_rules("node001", {}),
+                        lambda api: api.import_hw_rules("node001", {"force": True})],
+    "set_hw_rules": [lambda api: api.set_hw_rules({"nodes": [{"node": "node001"}]})],
+    "repair_hw_rules": [lambda api: api.repair_hw_rules("node001")],
+    "rename_hw_rules": [lambda api: api.rename_hw_rules("node001", {"was": "node001"})],
+    "remove_hw_rules": [lambda api: api.remove_hw_rules("node001")],
+    "node_updated": [lambda api: api.node_updated("node001")],
+    "node_deleted": [lambda api: api.node_deleted("node001")],
+}
+
+# _reconcile_hw_rules is deliberately not among them. It takes no name from a caller: it
+# works from Luna's whole node list, and a file sharing a short name with a node Luna holds
+# is treated there as the name that node answered to before a rename, so discarding it is
+# that pass's documented job. Its own ambiguity guard is the node list, and it is covered
+# where two nodes in Luna share one short name.
+NOT_ASKED_BY_NAME = {"_reconcile_hw_rules"}
+
+
+def test_no_hardware_rules_route_touches_a_node_that_merely_shares_a_short_name(
+        rig, tmp_path, monkeypatch):
+    """
+    A bare short name that two rule files answer to is refused, on every route, not served.
+
+    Two nodes whose hostnames differ only past the first dot share a short name. Taking the
+    first match is how one node's rules were read, rewritten and retired because somebody
+    asked about another - and the reconcile pass was taught not to do it while every other
+    entry point still did. Enumerated from the manifest so the next route added has to say
+    which it is.
+
+    `import_hw_rules` with force is the one row that was already right: force never writes
+    to the file it matched, only to the name Luna resolves, so the match cannot send it
+    astray. It is asserted anyway - the route is in the class, and that has to stay true.
+    """
+    import glob
+
+    from trixd.common.errors import NotFound, TrixdError
+
+    declared = _hw_rules_entry_points()
+    covered = set(ASK_BY_SHORT_NAME) | NOT_ASKED_BY_NAME
+    assert declared <= covered, (
+        f"the manifest declares {sorted(declared - covered)} as a way into the hardware "
+        f"rules, and this test does not ask it by a short name: add it to "
+        f"ASK_BY_SHORT_NAME, or to NOT_ASKED_BY_NAME with the reason")
+
+    damage = []
+    for handler, calls in sorted(ASK_BY_SHORT_NAME.items()):
+        for index, call in enumerate(calls):
+            directory = tmp_path / f"{handler}-{index}"
+            directory.mkdir()
+            backend, _ = _hw_backend(directory, monkeypatch)
+            backend.import_hw_rules("node001", {})
+            twin = _plant_a_short_name_twin(backend)
+            assert backend._host_of("node001") == "node001.cluster", (
+                "Luna does not resolve the bare short name here, so this proves nothing")
+            assert os.path.basename(sorted(glob.glob(
+                os.path.join(backend._rules_dir(), "trix.hw.*.rules")))[0]) == OTHER_NODE_FILE, (
+                "the other node's file no longer sorts first, so taking the first match "
+                "would take the right one by luck and this would pass either way")
+            before = _rule_file_digests(backend)
+
+            try:
+                answer = repr(call(backend))
+            except (NotFound, TrixdError) as refusal:
+                answer = repr(refusal)
+
+            after = _rule_file_digests(backend)
+            moved = {name for name in set(before) | set(after)
+                     if before.get(name) != after.get(name)}
+            # Collected rather than asserted one at a time: a resolver that goes wrong
+            # goes wrong on several routes at once, and the first one to fail says the
+            # least about how far it reaches.
+            if OTHER_NODE_FILE in moved:
+                damage.append(f"{handler}[{index}] rewrote or retired {OTHER_NODE_FILE}")
+            if not os.path.isfile(twin):
+                damage.append(f"{handler}[{index}] retired another node's rule file")
+            # Two ways it shows in an answer: the document itself, and the host a write
+            # reports back. A write that finds the wrong file and rewrites it unchanged
+            # moves no byte and reports that node001's rules are in order - naming the
+            # other node's host as it does so, which is the only trace left.
+            if OTHER_NODE_MARKER in answer or OTHER_NODE_HOST in answer:
+                damage.append(f"{handler}[{index}] answered for {OTHER_NODE_HOST}: "
+                              f"{answer[:120]}")
+
+    assert not damage, ("asked about node001 by a short name two rule files answer to, "
+                        "these touched or served the other node's:\n  " + "\n  ".join(damage))
+
+
+def test_listing_the_hardware_rules_answers_for_the_whole_estate_by_default(
+        rig, tmp_path, monkeypatch):
+    """
+    No arguments means every node held, each with its document.
+
+    There are consumers that need the estate in one answer, so the full document for every
+    node is the contract rather than an oversight. Narrowing the default - to counts, or to
+    a page - would not fail for them: they would get a thinner answer and no error, which is
+    the worst way for this to break. Pinned here because the size of that answer reads like
+    a defect to anyone meeting it for the first time, and it is not one.
+    """
+    import glob
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus.backend import _hw_host
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    _plant_a_short_name_twin(backend)
+    held = sorted(_hw_host(path) for path in
+                  glob.glob(os.path.join(backend._rules_dir(), "trix.hw.*.rules")))
+
+    answer = backend.list_hw_rules(SimpleNamespace(query_params={}))["nodes"]
+
+    assert [entry["node"] for entry in answer] == held, "not every node held was answered for"
+    assert all(entry["exists"] and "document" in entry and entry["document"] for entry in answer), (
+        "the default answer no longer carries each node's rule file")
