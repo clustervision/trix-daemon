@@ -106,7 +106,9 @@ class Action(BaseModel):
                 "trixd or its plugin started, and whether that run worked. `triggers` carries one "
                 "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
                 "hashes, which it does on an HA master only, and `replication` when the last "
-                "sweep ran, 0 for never. `owed` counts the replicated calls still "
+                "sweep ran, 0 for never, with `not_converging` counting the peer and table "
+                "pairs that have still differed after several passes - which means neither "
+                "controller is taking the other's row. `owed` counts the replicated calls still "
                 "waiting for a peer, the ones given up on, the peers configured and the "
                 "peers not answering - counts only, and no peer is named, because this "
                 "route takes no token: `GET /system/replication/owed` says where. States "
@@ -118,7 +120,7 @@ class Action(BaseModel):
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
-                             "replication": {"at": 1791545526.87}},
+                             "replication": {"at": 1791545526.87, "not_converging": 0}},
                 "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0}},
                 "How trixd is doing"))
 def health() -> dict:
@@ -134,7 +136,8 @@ def health() -> dict:
             "triggers": {**{name: {"answering": state.get("answering", False),
                                    "last_pass": state.get("last_pass", 0)}
                             for name, state in triggers.states().items()},
-                         "replication": {"at": (sweep().last or {}).get("at", 0)}},
+                         "replication": {"at": (sweep().last or {}).get("at", 0),
+                                         "not_converging": sweep().stalled()}},
             "owed": outbox.states()}
 
 

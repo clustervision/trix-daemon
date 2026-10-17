@@ -1061,12 +1061,80 @@ def test_exactly_one_side_wins_a_tie(rig):
     assert _wins_tie(same_two, same_one) != _wins_tie(same_one, same_two)
 
 
+def test_a_pass_that_cannot_converge_is_said_and_counted(rig):
+    """
+    Taking everything the peer had that was newer is not the same as agreeing with it.
+    A pass that still differed afterwards reported success and said nothing, so the only
+    sign was the whole table being fetched again every interval, for ever.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    both = ["principal", "declaration"]
+    theirs = {"principal": "aaa", "declaration": "same"}
+    ours = {"principal": "bbb", "declaration": "same"}
+
+    for _ in range(STUBBORN - 1):
+        walking._converged("peer1", both, ["principal"], theirs, ours)
+        assert walking.stalled() == 0, "one differing pass is ordinary and stays quiet"
+    walking._converged("peer1", both, ["principal"], theirs, ours)
+    assert walking.stalled() == 1, "a table differing pass after pass was never reported"
+
+    # And it stops being said once the pair agrees, without a restart.
+    walking._converged("peer1", both, [], theirs, theirs)
+    assert walking.stalled() == 0
+
+
+def test_health_says_how_many_tables_are_not_converging(client):
+    """
+    The counts are what a monitor reads; a pair that cannot converge was in none of them.
+    """
+    answer = client.get(f"{API_PREFIX}/system/health")
+    assert answer.status_code == 200
+    reported = answer.json()["triggers"]["replication"]
+    assert "not_converging" in reported, reported
+    assert reported["not_converging"] == 0
 
 
 
 
 
 
+
+def test_a_difference_that_is_moving_is_not_called_unconverged(rig):
+    """
+    A table differing at the end of a pass is ordinary: our row may simply be the newer one,
+    and the peer takes it on its own next pass. Counting passes alone therefore called a
+    healthy pair with a trickle of local writes unconverged after three of them, and said so
+    as an error. The count only grows while neither side has moved.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    for step in range(STUBBORN + 2):
+        # A local write every pass, so our hash is never the one it was.
+        walking._converged("peer1", ["principal"], ["principal"],
+                           {"principal": "theirs"}, {"principal": f"ours-{step}"})
+    assert walking.stalled() == 0, "a pair that is still moving was called unconverged"
+
+
+def test_a_peer_that_answers_no_hashes_does_not_clear_the_count(rig):
+    """
+    Both attempts refused leaves no hashes to compare, which is not the same as nothing
+    differing - and it cleared the count for exactly the table nobody could look at, so
+    health read zero while the divergence stood.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    theirs, ours = {"principal": "aaa"}, {"principal": "bbb"}
+    for _ in range(STUBBORN):
+        walking._converged("peer1", ["principal"], ["principal"], theirs, ours)
+    assert walking.stalled() == 1
+
+    # A pass that could compare nothing: no table is comparable, so none is judged.
+    walking._converged("peer1", [], [], {}, ours)
+    assert walking.stalled() == 1, "the count went when the hashes could not be compared"
 
 
 def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
