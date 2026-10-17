@@ -268,6 +268,9 @@ def test_a_trust_directory_ignores_what_is_not_a_public_key(tmp_path):
     A stray file, a broken key and a missing directory are skipped, not fatal.
     """
     (tmp_path / "trust").mkdir()
+    # The mode is asserted on, so it is set rather than inherited: mkdir takes the umask,
+    # which is 0002 on a developer's account and 0022 on the controllers.
+    os.chmod(tmp_path / "trust", 0o700)
     keys.generate(str(tmp_path / "peer.ed25519"), str(tmp_path / "trust" / "peer.pub"))
     (tmp_path / "trust" / "broken.pub").write_text("not a key", encoding="utf-8")
     (tmp_path / "trust" / "notes.txt").write_text("hello", encoding="utf-8")
@@ -290,13 +293,14 @@ def test_a_trust_directory_others_may_write_is_not_believed(tmp_path):
 
     trust = tmp_path / "trust"
     trust.mkdir()
+    os.chmod(trust, 0o700)
     keys.generate(str(tmp_path / "peer.ed25519"), str(trust / "peer.pub"))
     assert list(keys.read_trust(str(trust))) == ["peer"], "a sound directory stopped loading"
 
     os.chmod(trust, 0o777)
     assert keys.read_trust(str(trust)) == {}, "a world-writable trust directory was believed"
 
-    os.chmod(trust, 0o755)
+    os.chmod(trust, 0o700)
     os.chmod(trust / "peer.pub", 0o666)
     assert keys.read_trust(str(trust)) == {}, "a world-writable key was believed"
 
