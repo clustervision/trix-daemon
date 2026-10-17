@@ -113,6 +113,29 @@ def _scan(directory: str) -> dict:
     return found
 
 
+def _install(name: str) -> None:
+    """
+    Let a plugin plug itself in, once it has loaded.
+
+    Anything a plugin offers the daemon - a node source, a trigger, a documentation link -
+    belongs here and not in its package's import. Another plugin reaching for this one's
+    client imports its package on the way, so an import that registers plugs in a plugin
+    nobody enabled: it polls, it answers, and the control surface neither shows it nor can
+    stop it. A plugin with nothing to offer needs no install.
+    """
+    # Looked up rather than passed down: the import just above put it here, under the same
+    # prefix for a package and for a single-file plugin, so the shape of what loaded does
+    # not have to travel through every return on the way.
+    package = sys.modules.get(f"{MODULE_PREFIX}{name}")
+    install = getattr(package, "install", None)
+    if install is None:
+        return
+    try:
+        install()
+    except Exception as error:
+        raise PluginRefused(f"{name} could not plug itself in: {error}") from None
+
+
 def _purge(name: str) -> None:
     """
     Drop the plugin's modules so a re-plug genuinely runs the new code.
@@ -311,6 +334,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.routes = exchange(app, name, router)
     known.put(entry)
     _remember(entry)
+    _install(name)
     # The hooks it declared may name a source nothing answered for yet, and dispatch is the
     # core's rather than the publisher's, so it is settled from the manifests after a load.
     dispatch.reconcile()

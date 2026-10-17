@@ -1777,3 +1777,42 @@ def _read_yaml_file(path: str) -> dict:
     import yaml
     with open(path, encoding="utf-8") as handle:
         return yaml.safe_load(handle)
+
+
+def test_a_plugin_nobody_enabled_plugs_nothing_in(tmp_path, monkeypatch):
+    """
+    Another plugin reaching for the Luna client imports the luna package on the way, and
+    that import used to register the node source and start the Luna poller. So a daemon with
+    luna in neither ENABLED nor the plugin directory still polled Luna and still minted
+    provision-scoped node tokens, while /system/plugins named neither - and nothing on the
+    control surface could stop it, because the import resolves against the Python package
+    path rather than the configured directory.
+
+    Anything a plugin offers the daemon belongs in its install(), which the loader calls
+    once the plugin has loaded. Asserted on the registries rather than through a rig,
+    because what is under test is the import itself.
+    """
+    import importlib
+    import sys
+
+    from trixd.core.render import triggers
+    from trixd.core.security import nodes
+
+    # A fresh import of both, with the registries empty, is the condition a daemon starts
+    # in. Without dropping them the modules are already imported by an earlier test and the
+    # side effect - if it came back - would have happened long ago.
+    for module in [name for name in list(sys.modules)
+                   if name.startswith("trixd.plugins.luna")
+                   or name.startswith("trixd.plugins.prometheus")]:
+        sys.modules.pop(module, None)
+    monkeypatch.setattr(nodes, "_source", None)
+    monkeypatch.setattr(nodes, "_owner", "")
+    standing = set(triggers.states())
+
+    importlib.import_module("trixd.plugins.prometheus.backend")
+
+    assert nodes._source is None, \
+        "importing another plugin's backend registered a node source, so a daemon that " \
+        "never loaded luna would still issue node tokens"
+    assert set(triggers.states()) - standing == set(), \
+        f"it also started {sorted(set(triggers.states()) - standing)}"
