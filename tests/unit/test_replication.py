@@ -1802,3 +1802,77 @@ def test_two_controllers_agree_whatever_order_the_rows_went_in(rig, tmp_path):
     finally:
         here.close()
         there.close()
+
+
+def test_a_row_refused_since_the_snapshot_is_not_sent_anyway(rig, monkeypatch):
+    """
+    A drain takes a snapshot and then works through it, which is up to three seconds a row -
+    minutes with a queue of any size. A caller's own inline attempt can refuse a row inside
+    that window, so the state in the snapshot is stale by the time the row is reached.
+
+    Re-read, rather than trusted. Taking the snapshot's word counts a refused row as sent,
+    leaves its chain unheld, and offers the next action for that node over a prerequisite
+    the peer rejected - and the pass reports a clean `sent` with no refusals, so nothing
+    says it happened.
+
+    The refusal has to arrive from a second actor, which is what makes this different from
+    the pass next door: a refusal that happens inside _send leaves the row queued in the
+    snapshot and queued when it is read back, so it never exercises the re-read.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    offered = []
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer that takes everything. While it handles node002, somebody else refuses
+        node001's delete - a caller's inline attempt, landing inside the drain's window.
+        """
+        offered.append((row.method, row.path, row.payload))
+        if "node002" in row.payload:
+            handle = database.session()
+            try:
+                stale = handle.scalar(select(models.Outbox).where(
+                    models.Outbox.request_id == "req-delete"))
+                stale.state = outbox.FAILED
+                stale.message = "400: the peer refused it"
+                handle.commit()
+            finally:
+                handle.close()
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", send)
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node002"}, None, "req-other", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req-delete", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                  {"node": "node001"}, None, "req-repair", "tester")
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    assert any("node002" in one[2] for one in offered), \
+        "node002 never went, so the second actor never ran and this proves nothing"
+    assert not any(one[0] == "DELETE" and "node001" in one[2] for one in offered), \
+        f"a row refused since the snapshot was offered to the peer anyway: {offered}"
+    assert not any("repair" in one[1] for one in offered), \
+        f"the next action for that node went over a refused prerequisite: {offered}"
+    assert result["blocked"] == 1, f"node001's chain was not held: {result}"
+
+    handle = database.session()
+    try:
+        states = {row.request_id: row.state for row in handle.scalars(
+            select(models.Outbox).where(models.Outbox.peer == "ctrl2")).all()}
+    finally:
+        handle.close()
+    assert states.get("req-delete") == outbox.FAILED, \
+        f"the refusal was overwritten by the drain: {states}"
+    assert states.get("req-repair") == outbox.QUEUED, \
+        f"the action behind it did not stay queued: {states}"
