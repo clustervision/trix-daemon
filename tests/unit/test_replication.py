@@ -1614,3 +1614,134 @@ def test_health_says_how_long_the_oldest_owed_call_has_waited(rig):
 
     waited = outbox.states()["oldest_pending"]
     assert 580 <= waited <= 660, waited
+
+
+def test_the_reap_leaves_an_intent_newer_than_the_refusal_it_lets_go_of(rig):
+    """
+    The reap drops what a refusal was holding, because those actions assume it landed. A row
+    submitted *after* the refusal was written down is not one of them - submitting it cleared
+    the refusal, so it is the newer statement of what the node should be - and deleting it
+    would be the reap throwing away an intent nobody has sent yet.
+
+    The other reap test ages every row behind the refusal, so this case never arises there.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-stuck", "tester")
+    later = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                          {"node": "node001"}, None, "req-later", "tester")
+
+    handle = database.session()
+    try:
+        now = datetime_now()
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.message = "400: this build serves no such endpoint"
+        row.finished = now - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        # Written down after the refusal was, which is the whole point.
+        after = handle.scalar(select(models.Outbox).where(models.Outbox.id == later))
+        after.created = now
+        handle.commit()
+    finally:
+        handle.close()
+
+    assert outbox._reap("ctrl2") == 1, "the newer intent was let go of with the refusal"
+
+    handle = database.session()
+    try:
+        left = handle.scalars(select(models.Outbox)).all()
+        assert [row.id for row in left] == [later], [(r.id, r.state) for r in left]
+    finally:
+        handle.close()
+
+
+def test_a_pass_reports_what_is_still_owed_after_it(rig, monkeypatch):
+    """
+    `left` is what the peer still owes once the pass is over, so it is counted after the
+    reap rather than before: counted before, it included the rows the same pass had just
+    let go of, and a caller reading POST /system/replication/sweep was told the peer owed
+    actions that no longer existed.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-old", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req-other", "tester")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.finished = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        handle.commit()
+    finally:
+        handle.close()
+
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.DONE, "", outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    handle = database.session()
+    try:
+        owed = handle.scalars(select(models.Outbox).where(
+            models.Outbox.state.in_((outbox.QUEUED, outbox.FAILED)))).all()
+    finally:
+        handle.close()
+    assert result["left"] == len(owed), \
+        f"the pass says {result['left']} still owed and the table holds {len(owed)}"
+
+
+def test_a_tie_between_documents_of_different_shape_keeps_the_local_row(rig, tmp_path):
+    """
+    Part way through an upgrade one build's document carries a field the other's does not.
+    At an exact tie nothing can settle that: taking the shorter document writes the field it
+    lacks back to its default, and the build without the field cannot write it at all, so no
+    choice converges. The local row stands and the pair is left visibly apart - which the
+    sweep counts and health reports as not_converging.
+
+    Pinned because it is the one branch of the tie a shipped build cannot reach, so nothing
+    else here would notice it going.
+    """
+    from datetime import datetime
+
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="shaped", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        handle.commit()
+
+        mine = tables.export_table(handle, "principal")[0]
+        # What the other build sends: the same row, and a field this one has never seen.
+        incoming = {**mine, "role": "manager", "origin": "ctrl2", "nickname": "extra"}
+        outcome = tables.merge_table(handle, "principal", [incoming])
+
+        held = handle.scalar(select(models.Principal).where(
+            models.Principal.name == "shaped"))
+        assert outcome["conflicts"] == 1, outcome
+        assert outcome["updated"] == 0, outcome
+        assert held.role == "operator", \
+            f"took a document of a different shape: role is now {held.role!r}"
+        assert held.origin == "ctrl1", held.origin
+    finally:
+        handle.close()

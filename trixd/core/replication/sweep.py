@@ -158,9 +158,11 @@ class Sweep:
                 # The token the peer gave us is no longer good to it: ask for another.
                 continue
             if answer.status_code >= 400:
+                # A refusal that survives the renewal included, which is why there is no
+                # path out of here that answers nothing: it raises, and the caller is left
+                # before it can read that as the peer being up.
                 raise RuntimeError(f"{peer} answered {answer.status_code}")
             return answer.json()
-        return None
 
     def _trust(self):
         """
@@ -222,22 +224,20 @@ class Sweep:
 
         handle = database.session()
         try:
-            answered = self._get(peer, "hashes")
-            theirs = (answered or {}).get("hashes") or {}
             # It answered, so it is up: that closes its breaker whether or not anything was
             # owed to it. Waiting for a replicated row to drain would leave health
             # reporting a healthy peer as not answering until one happened along.
             #
-            # None means it did not answer: _get gives that back when both attempts were
-            # refused, and a refusal surviving a renewal is the one failure that should
-            # keep the breaker shut, not open it. Reading None as success made a credential
-            # mismatch oscillate - closed by every pass, reopened by the next three calls.
-            if answered is not None:
-                outbox.record_success(peer)
+            # Reaching this line is the whole of the test. A refusal that survives the
+            # renewal raises out of _get, so a credential mismatch never gets here - which
+            # it must not, or the breaker is closed by every pass and reopened by the next
+            # three calls.
+            theirs = (self._get(peer, "hashes") or {}).get("hashes") or {}
+            outbox.record_success(peer)
             ours = tables.hashes(handle)
             comparable = [table for table in tables.ORDER if theirs.get(table)]
             absent = [table for table in tables.ORDER if table not in comparable]
-            if absent and answered is not None:
+            if absent:
                 LOGGER.warning("%s sent no hash for %s, so %s not compared this pass",
                                peer, ", ".join(absent),
                                "they were" if len(absent) > 1 else "it was")
@@ -270,7 +270,11 @@ class Sweep:
         from trixd.core.replication import outbox
 
         results = []
-        configured = settings().replication.peers
+        # The outbox's list, which is empty when replication is switched off: reading the
+        # peers straight out of the settings meant `ENABLED = no` stopped the timer and left
+        # health saying peers: 0, while POST /system/replication/sweep still reconciled and
+        # still drained the outbox across.
+        configured = outbox.peers()
         self.forget(configured)
         for peer in configured:
             try:

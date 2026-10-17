@@ -620,10 +620,13 @@ def drain(peer: str) -> dict:
                 refused += 1
             else:
                 holding += 1
-    # Everything this peer still owes after the pass, refusals and held rows included:
-    # counting only from the point the pass stopped left out the rows it had held, and
-    # arithmetic over four counters is a thing to get wrong rather than a thing to read.
-    left = len(rows) - sent
+    reaped = _reap(peer)
+    _prune()
+    # Everything this peer still owes after the pass, refusals and held rows included, and
+    # after the reap: counted before it, this included the rows the same pass had just let
+    # go of. Counting only from the point the pass stopped left out the rows it had held,
+    # and arithmetic over four counters is a thing to get wrong rather than to read.
+    left = max(0, len(rows) - sent - reaped)
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
     if refused:
@@ -639,8 +642,6 @@ def drain(peer: str) -> dict:
     if in_flight:
         LOGGER.info("%d action(s) for %s were already being sent by this daemon's other "
                     "sender, so this pass left them alone", in_flight, peer)
-    _reap(peer)
-    _prune()
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked,
             "in_flight": in_flight}
 

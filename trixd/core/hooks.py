@@ -128,13 +128,3 @@ def reconcile() -> list:
         _dispatching.discard(source)
     LOGGER.info("hooks dispatched for %s", ", ".join(sorted(_dispatching)) or "nothing")
     return sorted(_dispatching)
-
-
-def forget_all() -> None:
-    """
-    Stop answering for everything. For a process starting over.
-    """
-    for source in list(_dispatching):
-        if tasks.handler(source) is run:
-            tasks.unregister(source)
-    _dispatching.clear()

@@ -196,7 +196,10 @@ class PluginState(Base):
 
 # Which tables cross to the peer and which are this controller's own. Every mapped table
 # is in one of them: the outbox was in neither, which is what a parallel list does.
-# Principals first: a merge of declarations wakes the renders that read them, and a render
-# reading a principal should not meet a cache the principal merge has not cleared yet.
+#
+# The order is the one the sweep walks, and nothing depends on it: no render reads a
+# principal, and the two tables have no reference between them. It is written the way it
+# was before this list became the single source, so that deriving the order changed no
+# behaviour along with it - not because principals must go first.
 REPLICATED: tuple = ("principal", "declaration")
 LOCAL: tuple = ("audit", "render_state", "plugin_state", "task", "outbox")

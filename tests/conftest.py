@@ -43,6 +43,7 @@ from trixd.core.plugins.registry import current as registry
 from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
 from trixd.core.replication import applied, outbox
+from trixd.core.replication import sweep as replication_sweep
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
 from trixd.plugins.luna import hashes
@@ -124,10 +125,20 @@ def _own_process_state():
     Building a rig does not clear any of them, because none belongs to a database or a
     configuration file.
 
-    The plugin registry is the one that actually bites. A test that loads a plugin of its
-    own leaves it registered, so its hooks go on being dispatched into the next test's run -
-    which shows up as a hook answering for a plugin that test never loaded. Taken out the
-    way `unload` does, minus the route table, which is a fresh app per test anyway.
+    Two of these earn their keep and the rest are insurance. The plugin registry is the one
+    that actually bites: a test that loads a plugin of its own leaves it registered, so its
+    hooks go on being dispatched into the next test's run - which shows up as a hook
+    answering for a plugin that test never loaded. Taken out the way `unload` does, minus
+    the route table, which is a fresh app per test anyway.
+
+    The other is the outbox's in-flight set. A claim left behind makes the next test's
+    sender skip that row and report nothing owed, with no error anywhere - and row ids
+    restart at one in every fresh rig, so it is always row one that disappears. It cost the
+    reviewer who found it three probes that stopped reproducing their own defects.
+
+    The rest - the render engine, the applied record, the stall counts, the breaker, the
+    sweep's last pass and its peer tokens - are cleared because they are process state that
+    no rig owns, not because a test fails without them today.
     """
     standing = set(registry().plugins)
     yield
@@ -138,8 +149,11 @@ def _own_process_state():
     renders().forget_all()
     applied.forget_all()
     sweep().stubborn.clear()
+    sweep().last = {}
+    replication_sweep._tokens.clear()
     outbox._failures.clear()
     outbox._open.clear()
+    outbox._sending.clear()
 
 
 @pytest.fixture()
