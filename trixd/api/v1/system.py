@@ -448,9 +448,16 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     # not know, or omits one it now requires, and a refusal naming it beats the 500 a handler
     # reaching for a missing key produces - which the sender can only read as "retry for ever".
     model = (entry.models or {}).get(endpoint.body_schema) if endpoint.body_schema else None
+    checked = None
     if model is not None:
         try:
-            model(**(body.body or {}))
+            # Kept, not discarded. The ordinary route hands the handler what the model
+            # produced, so a declared integer arrives as an integer and an optional field
+            # the sender omitted arrives as None. Validating and then passing the raw body
+            # on left the handler a string where it expected a number, and a missing key
+            # where the route it was written against guarantees one - which is the 500 this
+            # check exists to stop.
+            checked = model(**(body.body or {})).model_dump()
         except ValidationError as error:
             raise BadRequest(f"{body.plugin} {body.method} {body.path} does not accept the "
                              f"body {body.origin} sent: {error}") from error
@@ -464,7 +471,9 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
                       f"node endpoint reached through apply for {body.origin}")
 
     supplied = dict(body.variables or {})
-    if body.body is not None:
+    if checked is not None:
+        supplied["body"] = checked
+    elif body.body is not None:
         supplied["body"] = body.body
     accepted = inspect.signature(handler).parameters
     answer = handler(**{key: value for key, value in supplied.items() if key in accepted})
