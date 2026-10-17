@@ -217,7 +217,7 @@ def test_one_table_carries_the_whole_of_rbac(rig):
                        "version", "origin", "updated_at"}, columns
     for gone in ("Usergroup", "Membership", "UsergroupMap", "Permission"):
         assert not hasattr(models, gone), gone
-    assert models.REPLICATED == ("declaration", "principal")
+    assert set(models.REPLICATED) == {"declaration", "principal"}
 
 
 def test_the_declaration_carries_no_permissions(rig):
@@ -982,3 +982,43 @@ def test_a_hard_delete_comes_back_from_the_peer(rig, tmp_path):
     finally:
         handle.close()
         peer.close()
+
+
+def test_every_mapped_table_is_classified_as_replicated_or_local(rig):
+    """
+    A table in neither list does not replicate, and nothing says so: the sweep iterates
+    the list, so the pass reports clean while the table never crosses. The outbox was
+    such a table, and this is the list that learns about the next one for free.
+    """
+    from trixd.db import models
+
+    mapped = {mapper.class_.__tablename__ for mapper in models.Base.registry.mappers}
+    classified = set(models.REPLICATED) | set(models.LOCAL)
+    assert mapped == classified, sorted(mapped ^ classified)
+
+
+def test_the_replicated_tables_are_stated_in_one_place(rig):
+    """
+    The order the sweep walks, and the models the merge writes through, are both derived
+    from REPLICATED: adding a table there needs no second edit for it to cross.
+    """
+    from trixd.core.replication import tables
+    from trixd.db import models
+
+    assert tables.ORDER == tuple(models.REPLICATED)
+    assert set(tables.MODELS) == set(models.REPLICATED)
+    for name in models.REPLICATED:
+        assert tables.MODELS[name].__tablename__ == name
+
+
+
+
+
+
+
+
+
+
+
+
+

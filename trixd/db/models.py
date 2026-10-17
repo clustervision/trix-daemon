@@ -194,5 +194,9 @@ class PluginState(Base):
     reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
-REPLICATED: tuple = ("declaration", "principal")
-LOCAL: tuple = ("audit", "render_state", "plugin_state", "task")
+# Which tables cross to the peer and which are this controller's own. Every mapped table
+# is in one of them: the outbox was in neither, which is what a parallel list does.
+# Principals first: a merge of declarations wakes the renders that read them, and a render
+# reading a principal should not meet a cache the principal merge has not cleared yet.
+REPLICATED: tuple = ("principal", "declaration")
+LOCAL: tuple = ("audit", "render_state", "plugin_state", "task", "outbox")

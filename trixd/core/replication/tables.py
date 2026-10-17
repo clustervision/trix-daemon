@@ -46,12 +46,29 @@ LOGGER = trixlog.get("replication")
 
 # Autoincrement is local: the peer inserts its own row and gets its own number, so
 # a document is addressed by the columns the request was made with and never by id.
-ORDER: tuple = ("principal", "declaration")
+#
+# Both are derived from models.REPLICATED, which sits beside models.LOCAL and is the one
+# place a table is said to replicate. A tuple here and a mapping beside it were two more
+# hand-kept lists of the same thing, and a table left out of one of them is skipped
+# silently - the pass still reports clean, so the first sign is a pair already diverged.
 
-MODELS: dict = {
-    "principal": models.Principal,
-    "declaration": models.Declaration,
-}
+
+def _models() -> dict:
+    """
+    The model class behind each replicated table, found by the table name it declares.
+    """
+    classes = {mapper.class_.__tablename__: mapper.class_
+               for mapper in models.Base.registry.mappers}
+    unknown = [name for name in models.REPLICATED if name not in classes]
+    if unknown:
+        raise RuntimeError(f"REPLICATED names {', '.join(unknown)}, which no model declares")
+    return {name: classes[name] for name in models.REPLICATED}
+
+
+ORDER: tuple = tuple(models.REPLICATED)
+MODELS: dict = _models()
+
+
 
 
 def _stamp(value) -> str:
