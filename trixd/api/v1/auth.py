@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import hmac
+
 from fastapi import APIRouter, Body, Depends, Path
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -139,7 +141,10 @@ def issue_node(node: str = Path(description="The node, as Luna names it",
         if not expected:
             LOGGER.warning("node %s has no measurement and the cluster enforces one", node)
             raise Unauthenticated(f"{node} has no measurement recorded")
-        if body.tpm_sha256 != expected:
+        # Compared the way the ini password beside it is: this value is the node's only
+        # authenticator on this path. Bytes, not str - compare_digest refuses a non-ASCII
+        # str, and the measurement comes off the wire.
+        if not hmac.compare_digest((body.tpm_sha256 or "").encode(), expected.encode()):
             LOGGER.warning("node %s presented a measurement that does not match", node)
             audit.refused(node, "auth.node", node, "the measurement does not match")
             raise Unauthenticated("the measurement does not match")

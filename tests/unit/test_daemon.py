@@ -141,6 +141,25 @@ def test_a_token_luna_minted_is_accepted_here(rig):
     assert claims.node == "node001"
 
 
+def test_a_token_with_no_expiry_is_refused(rig):
+    """
+    Verification honoured an expiry when the token carried one and said nothing when it did
+    not, so a token minted without one never expired - correctly signed, valid until the
+    secret is rotated, and only cut by disabling the user. The sweep already refuses to hold
+    such a token; this is the same demand where tokens arrive.
+
+    Signed with the secret shared with Luna, because that is the realistic source of one:
+    anything that may mint for either daemon could omit it.
+    """
+    forever = jwt.encode({"id": 0}, SHARED_SECRET, "HS256")
+    with pytest.raises(Unauthenticated):
+        tokens.verify(forever)
+
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=300)
+    bounded = jwt.encode({"id": 0, "exp": expiry}, SHARED_SECRET, "HS256")
+    assert tokens.verify(bounded).subject == "tester", "a token with an expiry was refused"
+
+
 def test_a_token_signed_with_another_secret_is_refused(rig):
     """
     Sharing a secret with Luna is not sharing it with everybody.
@@ -590,6 +609,40 @@ def test_a_known_user_is_not_enough_to_become_a_node(rig, client, headers, monke
     assert client.post(f"{API_PREFIX}/auth/node/node001",
                        json={"username": "tester", "password": "secret"}
                        ).status_code == 201, "the daemon's own account was refused"
+
+
+def test_a_measurement_that_is_not_ascii_is_refused_rather_than_crashing(rig, client,
+                                                                           monkeypatch):
+    """
+    The measurement is compared in constant time now, and the obvious way to write that
+    refuses a non-ASCII str outright - which would turn a wrong measurement from a refusal
+    into a 500. It arrives off the wire, so it is compared as bytes.
+    """
+    from trixd.api.v1 import auth as auth_routes
+
+    class Stub:
+        """
+        A Luna enforcing security, holding one measurement for the node.
+        """
+
+        def node(self, name):
+            """
+            The node as this stubbed Luna holds it.
+            """
+            return {"name": name, "tpm_sha256": "abc123"}
+
+        def enforcing_security(self):
+            """
+            Whether this stubbed Luna enforces a measurement.
+            """
+            return True
+
+    monkeypatch.setattr(auth_routes.nodes, "current", lambda: Stub())
+    answer = client.post(f"{API_PREFIX}/auth/node/node001",
+                         json={"tpm_sha256": "abc123\u00e9"})
+    assert answer.status_code == 401, answer.text
+    assert client.post(f"{API_PREFIX}/auth/node/node001",
+                       json={"tpm_sha256": "abc123"}).status_code == 201
 
 
 def test_a_node_token_needs_a_matching_measurement_when_security_is_on(rig, client, monkeypatch):

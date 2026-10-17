@@ -140,7 +140,11 @@ def verify(token: str) -> Claims:
         raise Unauthenticated("token was signed by an issuer this daemon does not trust")
 
     try:
-        payload = jwt.decode(token, verifying, algorithms=[ring.algorithm])
+        # An expiry is required, not merely honoured when present: PyJWT checks exp only if
+        # the token carries one, so a token minted without it would never expire. The sweep
+        # already demands one of a token it holds; this is the same demand on arrival.
+        payload = jwt.decode(token, verifying, algorithms=[ring.algorithm],
+                             options={"require": ["exp"]})
     except jwt.ExpiredSignatureError:
         raise Unauthenticated("token has expired") from None
     except jwt.PyJWTError:
