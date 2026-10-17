@@ -340,6 +340,39 @@ def test_the_signing_secret_falls_back_to_the_file_the_installer_wrote(tmp_path)
     assert configuration.load(str(ini)).tokens.secret_key == "b" * 32
 
 
+def test_following_a_personal_luna_ini_is_said_once(tmp_path, monkeypatch):
+    """
+    Which luna.ini is followed decides which cluster this daemon reads. A command-line
+    login as root leaves a personal one behind, and the daemon then takes that cluster's
+    nodes and renders this controller's genders and slurm files from them, with nothing
+    saying why. The preference is kept; it is no longer silent.
+
+    Once, not per call: the path is re-read whenever the file's timestamp moves.
+    """
+    from trixd.plugins.luna import config as luna_config
+
+    monkeypatch.delenv(luna_config.LUNA_INI_ENV, raising=False)
+    monkeypatch.setenv("HOME", str(tmp_path))
+    personal = tmp_path / ".luna" / "luna.ini"
+    personal.parent.mkdir(parents=True)
+    personal.write_text("[API]\nENDPOINT = elsewhere:7050\n", encoding="utf-8")
+    # raising=False so this still runs against a build without the variable: otherwise
+    # the test errors in setup instead of asserting, and proves only that it is new.
+    monkeypatch.setattr(luna_config, "_said_personal", "", raising=False)
+
+    records = Records()
+    luna_config.LOGGER.addHandler(records)
+    try:
+        assert luna_config.chosen_path() == str(personal)
+        assert luna_config.chosen_path() == str(personal)
+    finally:
+        luna_config.LOGGER.removeHandler(records)
+
+    said = [message for message in records.messages if str(personal) in message]
+    assert len(said) == 1, f"expected one line about the personal file, got {said}"
+    assert luna_config.DEFAULT_LUNA_INI in said[0], said[0]
+
+
 def test_a_secret_file_others_can_read_is_said_out_loud(tmp_path):
     """
     The secret signs every token this daemon issues, rootus ones included, and on a default
