@@ -879,6 +879,33 @@ def test_a_forgotten_declaration_does_not_come_back_from_the_peer(rig, tmp_path)
         peer.close()
 
 
+def test_a_peer_cannot_name_a_role_this_daemon_does_not_grant(rig):
+    """
+    The API refuses a role off the ladder, and the ladder leaves out rootus deliberately -
+    that is the ini account, not a role anyone is given. The merge took the peer's string as
+    it came, so a compromised or impersonated peer could write rootus into a principal row
+    and outrank manager on every route, in a value no API here would show as invalid.
+    """
+    handle = database.session()
+    try:
+        tables.merge_table(handle, "principal", [
+            {"key": ["climber"], "role": "rootus", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"},
+            {"key": ["gibberish"], "role": "king", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"},
+            {"key": ["ordinary"], "role": "manager", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"}])
+        held = {row.name: row.role for row in handle.scalars(
+            select(models.Principal).where(
+                models.Principal.name.in_(["climber", "gibberish", "ordinary"]))).all()}
+    finally:
+        handle.close()
+
+    assert held["climber"] == "none", "a peer wrote rootus into a principal row"
+    assert held["gibberish"] == "none", "a peer wrote a role off the ladder"
+    assert held["ordinary"] == "manager", "a role this daemon does grant was not kept"
+
+
 def test_forgetting_a_declaration_that_is_already_a_marker_still_moves_it_on(rig):
     """
     The marker can be newer here than at a peer that still holds the row live, and the pair

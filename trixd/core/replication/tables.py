@@ -37,7 +37,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import ROLE_NONE
+from trixd.common.constants import ROLE_NONE, ROLES
 from trixd.core.render.engine import current as renders
 from trixd.core.security import principals
 from trixd.db import models
@@ -136,6 +136,22 @@ def _find(handle: Session, table: str, key: list):
                                              model.name == key[2]))
 
 
+def _role_of(document: dict) -> str:
+    """
+    The role a peer's document names, where it is one this daemon would grant.
+
+    The API refuses a role off the ladder, and the ladder deliberately excludes rootus: that
+    is the ini account, not a role anyone is given. The merge took the string as it came, so
+    a peer could write a value no route here accepts - and rootus outranks manager.
+    """
+    named = document.get("role", ROLE_NONE) or ROLE_NONE
+    if named in ROLES:
+        return named
+    LOGGER.warning("a peer named role %r for %s, which is not a role this daemon grants; "
+                   "recorded as %s", named, document.get("key"), ROLE_NONE)
+    return ROLE_NONE
+
+
 def _columns(handle: Session, table: str, document: dict) -> dict:
     """
     The column values for a document.
@@ -145,7 +161,7 @@ def _columns(handle: Session, table: str, document: dict) -> dict:
         return {"name": key[0],
                 "password_digest": document.get("password_digest", ""),
                 "enabled": bool(document.get("enabled", True)),
-                "role": document.get("role", ROLE_NONE),
+                "role": _role_of(document),
                 "deleted": bool(document.get("deleted", False))}
     return {"plugin": key[0], "kind": key[1], "name": key[2],
             "body": dict(document.get("body") or {}),
