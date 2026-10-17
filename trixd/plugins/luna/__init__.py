@@ -60,7 +60,8 @@ def _link(request) -> str:
     return f"{config.protocol}://{host}:{port}"
 
 
-triggers.register("luna_hashes", hashes.current())
+# Owned, so unplugging this plugin stops the poller rather than leaving it running.
+triggers.register("luna_hashes", hashes.current(), owner="luna")
 nodes.register(client())
 docs.register_placeholder("luna", _link, _PUBLISHED)
 hooks.install()

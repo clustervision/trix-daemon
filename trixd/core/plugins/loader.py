@@ -47,7 +47,9 @@ from trixd.common.settings import current as settings, seconds
 from trixd.core.plugins import binder, manifest as manifests
 from trixd.core.plugins.registry import LoadedPlugin, current as registry
 from trixd.core.plugins.swap import exchange
+from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
+from trixd.core import tasks
 from trixd.db import engine as database
 from trixd.db import models
 
@@ -317,6 +319,12 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
         raise NotFound(f"no plugin named {name}")
     exchange(app, name, None)
     renders().forget(name)
+    # Routes and renders were the only things let go of. Its task handler stayed, so the
+    # daemon still accepted notifications for it and dispatched them into unplugged code,
+    # and its triggers kept polling and kept waking renders - a disabled plugin that was
+    # still running.
+    tasks.unregister(name)
+    triggers.forget(name)
     entry = known.disable(name)
     _purge(name)
     _remember(entry)

@@ -1249,6 +1249,107 @@ def test_a_reload_never_leaves_a_render_unanswerable(rig, tmp_path):
         f"the render being replaced stopped answering during the reload: {seen}"
 
 
+class _Poller:
+    """
+    A background trigger that records what was asked of it.
+    """
+
+    def __init__(self, name: str, log: dict) -> None:
+        """
+        Named, so the record says which one.
+        """
+        self.name = name
+        self.log = log
+
+    def baseline(self) -> None:
+        """
+        Nothing to measure.
+        """
+
+    def start(self) -> bool:
+        """
+        Note that it was started.
+        """
+        self.log.setdefault("started", []).append(self.name)
+        return True
+
+    def shutdown(self) -> None:
+        """
+        Note that it was stopped.
+        """
+        self.log.setdefault("stopped", []).append(self.name)
+
+    def state(self) -> dict:
+        """
+        What health would publish for it.
+        """
+        return {"answering": True}
+
+
+def test_unplugging_a_plugin_stops_what_it_registered(rig):
+    """
+    Unplugging let go of the routes and the renders and nothing else. The task handler
+    stayed, so the daemon still accepted a notification naming one of that plugin's events
+    and dispatched it into code that had been unplugged; and its trigger kept polling and
+    kept waking renders. A disabled plugin was still running.
+    """
+    from trixd.core import tasks
+    from trixd.core.render import triggers
+
+    log = {}
+    triggers.register("services_poller", _Poller("mine", log))
+    # The owner is recorded straight into the table rather than passed, so this test runs
+    # against a build that has no such parameter: there it writes into a throwaway dict
+    # and the assertions below still fail for the reason they name, instead of erroring.
+    getattr(triggers, "_owners", {})["services_poller"] = "services"
+    try:
+        assert tasks.handler("services") is not None, "the handler was not there to begin with"
+        assert "services_poller" in triggers.states()
+
+        loader.unload(rig, "services")
+
+        assert tasks.handler("services") is None, \
+            "a disabled plugin still answers for its own tasks"
+        assert log.get("stopped") == ["mine"], \
+            f"its trigger was left running: {log}"
+        assert "services_poller" not in triggers.states(), "health still lists it"
+    finally:
+        getattr(triggers, "_triggers", {}).pop("services_poller", None)
+        getattr(triggers, "_owners", {}).pop("services_poller", None)
+
+
+def test_a_replaced_trigger_is_stopped_and_a_late_one_is_started(rig, monkeypatch):
+    """
+    Registering the same name twice replaced the entry and left the first object running,
+    with nothing referencing it - so nothing could stop it, its baseline was the one still
+    driving the renders, and health reported the replacement, which had never been started.
+    Start happens once at start-up, so a trigger arriving from a later reload never did.
+    """
+    from trixd.core.render import triggers
+
+    log = {}
+    # The rig has already started the daemon's triggers, so this has to be put back to
+    # what it is beforehand. raising=False so it also runs against a build with no such
+    # flag, where it is simply ignored and the assertions still mean what they say.
+    monkeypatch.setattr(triggers, "_running", False, raising=False)
+    try:
+        triggers.register("swapped", _Poller("first", log))
+        assert log.get("started") is None, "it started before the daemon had"
+
+        triggers.register("swapped", _Poller("second", log))
+        assert log.get("stopped") == ["first"], \
+            f"the trigger that was replaced was left running: {log}"
+
+        monkeypatch.setattr(triggers, "_running", True, raising=False)
+        triggers.register("late", _Poller("third", log))
+        assert log.get("started") == ["third"], \
+            f"a trigger registered after start-up was never started: {log}"
+    finally:
+        for name in ("swapped", "late"):
+            getattr(triggers, "_triggers", {}).pop(name, None)
+            getattr(triggers, "_owners", {}).pop(name, None)
+
+
 def test_a_plugin_declares_the_changes_it_acts_on(rig, tmp_path, client, headers):
     """
     The manifest names the event and the handler; the dispatcher hands the payload to it.

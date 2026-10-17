@@ -71,6 +71,17 @@ def register(subsystem: str, handler) -> None:
     _handlers[subsystem] = handler
 
 
+def unregister(subsystem: str) -> bool:
+    """
+    Take back what runs a task of this kind, for when its plugin is unplugged.
+
+    Without this a disabled plugin still answered for its subsystem: a notify naming one
+    of its events was accepted instead of refused, and dispatched into code that had been
+    unplugged, taking the render lock on the way.
+    """
+    return _handlers.pop(subsystem, None) is not None
+
+
 def handler(subsystem: str):
     """
     What runs a task of this kind, or None when nothing registered for it. A caller
