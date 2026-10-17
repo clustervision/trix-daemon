@@ -501,6 +501,102 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
     assert null_body.status_code != 422, null_body.text
 
 
+def _crossing_plugin(rig) -> None:
+    """
+    A site plugin whose one endpoint declares replicate, takes a node and requires a field.
+
+    Written here rather than borrowed from a shipped plugin: the only shipped one that
+    declares replicate is not in the test rig's ENABLED list, and a test of what apply
+    accepts should not depend on which plugin happens to carry the flag this release.
+    """
+    import os
+
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader
+
+    site = os.path.join(settings().plugins.site_directory, "crossing")
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+        handle.write(
+            "plugin: crossing\n"
+            "backend: backend\n"
+            "description: One endpoint that declares replicate, for testing apply.\n"
+            "schemas:\n"
+            "  shape:\n"
+            "    count:\n"
+            "      type: integer\n"
+            "      description: A number the handler is given\n"
+            "endpoints:\n"
+            "  - path: thing/<node>\n"
+            "    methods: [PATCH]\n"
+            "    token: node\n"
+            "    handler: thing\n"
+            "    schema: shape\n"
+            "    replicate: true\n"
+            "    summary: A replicating node endpoint\n")
+    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+        handle.write("class Backend:\n"
+                     "    def thing(self, node: str, body: dict = None) -> dict:\n"
+                     '        return {"node": node, "count": (body or {}).get("count")}\n')
+    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+        handle.write("")
+    assert loader.load(rig, "crossing").state == "loaded"
+
+
+def test_apply_refuses_a_body_the_endpoint_does_not_declare(rig, client, headers):
+    """
+    The route handed the handler whatever the peer sent, unchecked, so a body this build's
+    schema would refuse reached the handler and came back a 500 - which the outbox reads as
+    the peer having stopped answering, holding everything queued behind it. A refusal names
+    the field, and is terminal, so the sender stops instead.
+
+    Both directions of a version-skewed pair: a field of the wrong type, and a required one
+    the sender never knew about.
+    """
+    from trixd.common.constants import API_PREFIX
+
+    _crossing_plugin(rig)
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "origin": "ctrl1"}
+
+    wrong = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                        json={**envelope, "body": {"count": "lots"}, "request_id": "r-type"})
+    assert wrong.status_code == 400, wrong.text
+    assert "count" in wrong.text, wrong.text
+
+    absent = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                         json={**envelope, "body": None, "request_id": "r-absent"})
+    assert absent.status_code == 400, absent.text
+
+    good = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                       json={**envelope, "body": {"count": 3}, "request_id": "r-good"})
+    assert good.status_code == 200, good.text
+    assert good.json()["result"]["count"] == 3, good.text
+
+
+def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
+    """
+    No user token reaches a node endpoint, not even rootus, and this route does - which is
+    the whole job, since the peer applies on the node's behalf. The peer and a person share
+    the account the pair is configured with, so nothing here can tell them apart; what can
+    be done is to record that a node endpoint was reached this way, and that was not done.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.security import audit
+
+    _crossing_plugin(rig)
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+        "variables": {"node": "node001"}, "body": {"count": 1},
+        "origin": "ctrl1", "request_id": "r-trail"})
+    assert answer.status_code == 200, answer.text
+
+    applied = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert applied, "nothing in the trail says a node endpoint was reached through apply"
+    assert applied[0]["object"] == "node001", applied[0]
+    assert "ctrl1" in applied[0]["detail"], applied[0]
+
+
 def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
     """
     Four shapes where replicating is always wrong, refused at load rather than discovered in

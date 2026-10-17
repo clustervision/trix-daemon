@@ -36,13 +36,13 @@ from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    HOOK_EVENT_PARTS, PLUGIN_STATE_LOADED, ROLE_OPERATOR,
-                                   ROLE_READER, ROLE_ROOTUS)
+                                   ROLE_READER, ROLE_ROOTUS, TOKEN_KIND_NODE)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core import tasks
 from trixd.core.plugins import loader
@@ -442,6 +442,26 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     handler = getattr(entry.backend, endpoint.handler, None)
     if handler is None:
         raise NotFound(f"{body.plugin} has no handler {endpoint.handler}")
+
+    # The body the endpoint declares, checked against the model the binder bound rather than
+    # a second one written beside it. A peer a release ahead sends a field this build does
+    # not know, or omits one it now requires, and a refusal naming it beats the 500 a handler
+    # reaching for a missing key produces - which the sender can only read as "retry for ever".
+    model = (entry.models or {}).get(endpoint.body_schema) if endpoint.body_schema else None
+    if model is not None:
+        try:
+            model(**(body.body or {}))
+        except ValidationError as error:
+            raise BadRequest(f"{body.plugin} {body.method} {body.path} does not accept the "
+                             f"body {body.origin} sent: {error}") from error
+
+    if endpoint.token == TOKEN_KIND_NODE:
+        # No user token reaches a node endpoint, not even rootus; this route does, because
+        # applying for the node is the whole job. The peer and a person share the account,
+        # so the two cannot be told apart here - the trail is what is left.
+        audit.granted(caller.name, "replication.apply",
+                      str((body.variables or {}).get("node", body.path)),
+                      f"node endpoint reached through apply for {body.origin}")
 
     supplied = dict(body.variables or {})
     if body.body is not None:
