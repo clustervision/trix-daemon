@@ -751,7 +751,7 @@ class Backend:
         written = self._write_rule_documents(stored) if stored is not None else []
         reconciled = self._reconcile_hw_rules(luna().nodes())
         answer = {"written": written, **reconciled}
-        if written or reconciled["repaired"] or reconciled["retired"]:
+        if written or any(reconciled[kind] for kind in ("repaired", "retired", "superseded")):
             answer["reloaded"] = self.reload_reported()
         return answer
 
@@ -760,18 +760,37 @@ class Backend:
         Every hardware file names a node Luna has, under its current host and group, or it
         is retired. An empty node list is left alone, so nothing goes on Luna saying nothing.
         """
-        repaired, retired = [], []
+        repaired, retired, superseded = [], [], []
         if not nodes:
-            return {"repaired": repaired, "retired": retired}
-        by_host = {}
+            return {"repaired": repaired, "retired": retired, "superseded": superseded}
+        # Which node a file's host name belongs to, and the names that cannot say. Two
+        # nodes whose names differ only past the first dot share a short name, and taking
+        # the first of them relabelled one node's file to the other and discarded the
+        # loser's - two genuinely different nodes merged onto one file.
+        by_host, ambiguous = {}, set()
         for name, record in nodes.items():
-            by_host.setdefault(name.split(".")[0], name)
-            by_host[record.get("hostname") or name] = name
+            for key in (name.split(".")[0], record.get("hostname") or name):
+                if by_host.get(key, name) != name:
+                    ambiguous.add(key)
+                by_host.setdefault(key, name)
+        # A name more than one node answers to is dropped rather than left pointing at
+        # whichever node was seen first: the lookup below then finds nothing, which is the
+        # honest answer, instead of a guess that reads like a fact.
+        for key in ambiguous:
+            by_host.pop(key, None)
         # Read once: the setting lives in the database, and this loop runs per node.
         directory = self._rules_dir()
         for path in sorted(glob.glob(os.path.join(directory, HW_RULES.format(host="*")))):
             host = _hw_host(path)
             name = by_host.get(host) or by_host.get(host.split(".")[0])
+            if name is None and {host, host.split(".")[0]} & ambiguous:
+                # Whose file this is cannot be told from its name, and relabelling it to
+                # either node would move one node's rules onto another. Left exactly as it
+                # is: a wrong answer here is worse than an old file.
+                LOGGER.error("%s names %s, which more than one node answers to, so it is "
+                             "left alone rather than relabelled to one of them",
+                             os.path.basename(path), host)
+                continue
             if name is None:
                 gone = self._retire(path)
                 if gone:
@@ -782,6 +801,15 @@ class Backend:
                     "luna_group": record.get("group") or ""}
             target = os.path.join(directory, HW_RULES.format(host=want["hostname"]))
             if path == target and self.seen.get(path) == _stamp(path, want):
+                continue
+            if path != target and os.path.isfile(target):
+                # The node already has a file under the host name it answers to now, so this
+                # one is what it was called before. Reading it and writing it to the target
+                # promoted the name it had over whatever has been written since the rename,
+                # and the stamp that write set then made the loop skip the real file.
+                _discard(path)
+                self.seen.pop(path, None)
+                superseded.append(os.path.basename(path))
                 continue
             try:
                 document = _read_yaml(path)
@@ -797,9 +825,10 @@ class Backend:
                 _discard(path)
                 self.seen.pop(path, None)
             repaired.append(os.path.basename(target))
-        if repaired or retired:
-            LOGGER.info("hardware rules reconciled: repaired %s, retired %s", repaired, retired)
-        return {"repaired": repaired, "retired": retired}
+        if repaired or retired or superseded:
+            LOGGER.info("hardware rules reconciled: repaired %s, retired %s, superseded %s",
+                        repaired, retired, superseded)
+        return {"repaired": repaired, "retired": retired, "superseded": superseded}
 
     def _write_rule_documents(self, stored: dict) -> list:
         """

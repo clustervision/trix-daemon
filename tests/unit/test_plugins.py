@@ -35,6 +35,7 @@ import pytest
 
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import BadRequest, NotFound
+from trixd.utils import files
 
 
 class Ran:
@@ -1696,3 +1697,83 @@ def test_a_refused_reload_reaches_the_answer_where_nobody_is_waiting(rig, monkey
     assert reloaded is not None, f"the reload outcome was dropped: {answer}"
     assert reloaded["ok"] is False, answer
     assert "refused" in reloaded["message"], answer
+
+
+def test_a_renamed_nodes_old_file_does_not_overwrite_its_new_one(rig, monkeypatch, tmp_path):
+    """
+    After a rename a node has a file under the name it answers to now, and one under the
+    name it had. The reconcile read the old one, relabelled it and wrote it to the new one -
+    promoting what the node was called over whatever has been written since - and the stamp
+    that write set then made the loop skip the real file.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = prometheus.Backend()
+    monkeypatch.setattr(backend, "_rules_dir", lambda: str(tmp_path))
+    # The file under the node's short name is the one that maps to it and yet is not where
+    # it belongs - a file whose name answers to no node is retired by another path entirely,
+    # so naming the old file something unrelated would not reach this code at all.
+    stale = os.path.join(str(tmp_path), prometheus.HW_RULES.format(host="node001"))
+    fresh = os.path.join(str(tmp_path),
+                         prometheus.HW_RULES.format(host="node001.example.com"))
+
+    def document(marker):
+        """One rule naming a host, so which file won is readable afterwards."""
+        return {"groups": [{"name": prometheus.HW_GROUP, "rules": [{
+            "alert": prometheus.HW_ALERT, "serial": marker,
+            "expr": f'absent(lshw_device{{hostname="{marker}",luna_group="compute"}})'}]}]}
+
+    files.write_yaml(stale, document("short-name"))
+    files.write_yaml(fresh, document("node001.example.com"))
+
+    outcome = backend._reconcile_hw_rules(
+        {"node001": {"hostname": "node001.example.com", "group": "compute"}})
+
+    # The precondition: the stale file was recognised as this node's and dealt with, rather
+    # than retired as a file naming nobody - which is a different path and would prove
+    # nothing about this one.
+    assert outcome["superseded"] == [os.path.basename(stale)], outcome
+    assert outcome["retired"] == [], outcome
+
+    kept = _read_yaml_file(fresh)["groups"][0]["rules"][0]
+    assert kept["serial"] == "node001.example.com", \
+        f"the file the node answers to now carries {kept['serial']!r}, from the stale one"
+    assert not os.path.isfile(stale), "the stale file is still there"
+
+
+def test_two_nodes_sharing_a_short_name_do_not_collapse_onto_one_file(rig, monkeypatch,
+                                                                     tmp_path):
+    """
+    Two nodes whose names differ only past the first dot share a short name. Taking the
+    first of them relabelled one node's file to the other and discarded the loser's, so two
+    genuinely different nodes ended up as one. Neither file is touched instead: a wrong
+    answer here moves one node's rules onto another, which is worse than an old file.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = prometheus.Backend()
+    monkeypatch.setattr(backend, "_rules_dir", lambda: str(tmp_path))
+    path = os.path.join(str(tmp_path), prometheus.HW_RULES.format(host="node001"))
+    files.write_yaml(path, {"groups": [{"name": prometheus.HW_GROUP, "rules": [{
+        "alert": prometheus.HW_ALERT,
+        "expr": 'absent(lshw_device{hostname="node001",luna_group="first"})'}]}]})
+
+    outcome = backend._reconcile_hw_rules({
+        "node001.one.example": {"hostname": "node001.one.example", "group": "first"},
+        "node001.two.example": {"hostname": "node001.two.example", "group": "second"},
+    })
+
+    assert os.path.isfile(path), "the file of a node that cannot be identified was discarded"
+    assert outcome["repaired"] == [], outcome
+    assert outcome["retired"] == [], outcome
+    expr = _read_yaml_file(path)["groups"][0]["rules"][0]["expr"]
+    assert 'luna_group="first"' in expr, f"the file was relabelled to a guess: {expr}"
+
+
+def _read_yaml_file(path: str) -> dict:
+    """
+    One document off disk, for reading back what a reconcile left.
+    """
+    import yaml
+    with open(path, encoding="utf-8") as handle:
+        return yaml.safe_load(handle)
