@@ -138,13 +138,21 @@ def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
 def _shape(document: dict) -> dict:
     """
     What the API promises, without the formatting a library version may change: each path
-    and verb, its summary, who may call it, whether it takes a body, and its parameters.
+    and verb, its summary and description, who may call it, whether it takes a body, and
+    its parameters.
+
+    The description is in here because it is the published text a reader believes, and it
+    is assembled from the manifest by this repository rather than formatted by the library
+    - so comparing it catches a document that still describes what an endpoint used to do,
+    which comparing structure alone cannot. That had happened: the committed document was
+    still saying a node signs in with a username and password after the terms had changed.
     """
     shape = {}
     for path, operations in document["paths"].items():
         for verb, operation in operations.items():
             shape[f"{verb.upper()} {path}"] = {
                 "summary": operation.get("summary", ""),
+                "description": operation.get("description", ""),
                 "access": operation.get("x-trixd-access", ""),
                 "minimum": operation.get("x-trixd-minimum", ""),
                 "body": "requestBody" in operation,

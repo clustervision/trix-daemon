@@ -1104,7 +1104,7 @@
   "paths": {
     "/api/v1/auth/node/{node}": {
       "post": {
-        "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise a username and password. Never on the node name alone.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
+        "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise the daemon's own account, or one holding a role that may act for a node. Never on the node name alone, and never on being merely a known user: this token is the node's identity, and Luna honours it as such.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
         "operationId": "issue_node_api_v1_auth_node__node__post",
         "parameters": [
           {
@@ -6132,7 +6132,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never, with `not_converging` counting the peer and table pairs that have still differed after several passes - which means neither controller is taking the other's row. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where, and `oldest_pending` says in seconds how long the oldest waiting call has waited, which is what tells a busy queue from a stuck one. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -6143,6 +6143,7 @@
                   "owed": {
                     "failed": 0,
                     "not_answering": 0,
+                    "oldest_pending": 0,
                     "peers": 1,
                     "pending": 0
                   },
@@ -6166,7 +6167,8 @@
                       "last_pass": 1791545823.43
                     },
                     "replication": {
-                      "at": 1791545526.87
+                      "at": 1791545526.87,
+                      "not_converging": 0
                     }
                   }
                 },
@@ -6583,7 +6585,7 @@
     },
     "/api/v1/system/replication/apply": {
       "post": {
-        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\nTwo conventions a replicating handler's answer carries. `skipped`, as a non-empty string, means the handler declined to act - the node is not in this controller's Luna, say - and the sender then treats the call as not done and offers it again rather than recording it as applied; it is a reserved key, and a count of skipped items must not use it. Offering the same call again is answered with the answer given the first time, since delivery is at-least-once and the sender waits three seconds.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_apply_api_v1_system_replication_apply_post",
         "requestBody": {
           "content": {
