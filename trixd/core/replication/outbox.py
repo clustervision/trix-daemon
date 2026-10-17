@@ -460,11 +460,12 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
     is done - and they are not the same for the rest of the queue, nor for the breaker: one
     row refused says nothing about the next node, and nothing at all about the socket.
 
-    The row is copied out and the session closed before anything is sent: the pool is five
-    connections with ten of overflow, and up to forty threadpool threads can be in here at
-    once against a slow peer. Holding one across a network wait would starve every other
-    caller of the database, which is the same stall the breaker exists to prevent one
-    layer down.
+    The row is copied out and the session closed before anything is sent. The pool holds one
+    connection per caller thread and no overflow, and every one of those threads can be in
+    here at once against a slow peer, so a connection held across a network wait is a
+    connection another caller waits out - the same stall the breaker exists to prevent one
+    layer down. The sizes live in `trixd/db/engine.py`; they are not repeated here because
+    a number in a comment is the first thing to go stale.
     """
     handle = database.session()
     try:
