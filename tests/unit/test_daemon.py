@@ -2422,3 +2422,68 @@ def test_a_rename_through_the_pass_through_wakes_the_renders_too(rig, client, he
 
     assert "luna.node" in woken, \
         f"a rename queued its hook and woke no render: {woken}"
+
+
+def test_a_render_wakes_only_on_the_inputs_it_declares(rig):
+    """
+    The whole input filter could be stubbed to accept every change with both suites green,
+    so nothing held it: a render would run on every change rather than on its own, each
+    producer call going out to Luna under the lock every render shares.
+
+    Driven from the shipped manifests rather than invented inputs, and asserting what must
+    NOT wake as well as what must - a filter that accepts everything passes any test that
+    only checks the positive half.
+    """
+    import glob as globbing
+
+    import yaml
+
+    from trixd.core.plugins.manifest import Render as Spec
+    from trixd.core.render.engine import Render
+
+    declared = {}
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    for found in sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/manifest.yaml"))):
+        document = yaml.safe_load(open(found, encoding="utf-8"))
+        for endpoint in document.get("endpoints") or []:
+            if endpoint.get("render"):
+                key = f"{document['plugin']}/{endpoint['path']}"
+                declared[key] = (document["plugin"],
+                                 list(endpoint["render"].get("inputs") or []))
+    assert len(declared) >= 4, f"the manifests declared no renders to check: {declared}"
+
+    items = {key: Render(plugin, key.split("/", 1)[1], Spec(inputs=inputs, coalesce="2s"),
+                         lambda: None)
+             for key, (plugin, inputs) in declared.items()}
+
+    def woken(changed):
+        """
+        Which shipped renders a change wakes.
+        """
+        return {key for key, item in items.items() if item.wants(changed)}
+
+    for key, (plugin, inputs) in declared.items():
+        for one in inputs:
+            named = one if "." in one else f"{plugin}.{one}"
+            assert items[key].wants(named), f"{key} declares {one} and does not wake on it"
+
+    # The half a filter that accepts everything fails: a render must not wake on an object
+    # it never declared. Taken from what the manifests actually say rather than assumed.
+    every = {one if "." in one else f"{plugin}.{one}"
+             for plugin, inputs in declared.values() for one in inputs}
+    for name in sorted(every):
+        for key, (plugin, inputs) in declared.items():
+            mine = {one if "." in one else f"{plugin}.{one}" for one in inputs}
+            if any(name == one or name.startswith(f"{one}.") or one.startswith(f"{name}.")
+                   for one in mine):
+                continue
+            assert key not in woken(name), \
+                f"{key} woke on {name}, which it does not declare and nothing of its does"
+
+    # A change named by its source alone reaches everything under it; one nobody declares
+    # reaches nothing.
+    assert woken("luna") == {key for key, (_, inputs) in declared.items()
+                             if any(str(one).startswith("luna.") for one in inputs)}, \
+        "a change named by its source alone did not reach what declares that source"
+    assert woken("luna.cluster") == set(), \
+        "something declares a cluster input now, so the import decision needs revisiting"
