@@ -130,8 +130,9 @@ pip install -e .
 mkdir -p dev
 ```
 
-trixd reads Luna's address and the token secret from Luna's own `luna.ini`. On a
-workstation there is no Luna, so write a small one, `dev/luna.ini`, and point at it:
+The Luna plugin reads Luna's address, and the secret for the token it presents to Luna,
+from Luna's own `luna.ini`. On a workstation there is no Luna, so write a small one,
+`dev/luna.ini`, and point at it:
 
 ```ini
 [API]
@@ -314,9 +315,15 @@ read nothing until rootus gives them a role.
 ## Tokens, here and at Luna
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with
-`{"token": "..."}`, valid for `[API] EXPIRY`. Tokens are HS256 over the secret Luna
-signs with too, so either daemon verifies a token the other minted. trixd reads that
-secret from Luna's `luna.ini`, so there is one copy of it.
+`{"token": "..."}`, valid for `[API] EXPIRY`. trixd signs and verifies those with its
+own material, from `[TOKENS]`: a shared secret, `SECRET_KEY` or `SECRET_FILE`, or a
+keypair. The secret in Luna's `luna.ini` is a separate one, read by the Luna plugin for
+the token it presents to Luna, so there are two - and a token one daemon minted verifies
+at the other only where the installer has written the same value into both.
+
+The key ring is read once, when the daemon starts. Changing what trixd signs with
+therefore takes a restart; until then it goes on accepting tokens signed with the old
+material, whatever `luna.ini` now says.
 
 trixd's own calls to Luna, the ones its plugins make to read nodes and groups, carry a
 token trixd signs itself with that secret, as Luna's administrator, `id` 0. No Luna

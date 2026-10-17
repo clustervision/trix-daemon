@@ -173,9 +173,14 @@ def plugins(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
 
 @router.get("/audit", summary="Who did what here, newest first",
             description=(
-                "The audit trail: every decision the gate made and every change, with who, "
-                "the verb or action, the object, and the outcome. For a refusal, `detail` "
-                "says what the route needed and what the caller held. Rows are kept for "
+                "The audit trail: every decision the gate reached about a caller it could "
+                "identify, granted and refused alike, every change, and a sign-in whose "
+                "password was wrong - with who, the verb or action, the object, and the "
+                "outcome. For a refusal, `detail` says what the route needed and what the "
+                "caller held. A credential that did not verify at all is not here: a token "
+                "missing, malformed, expired, signed by an issuer this daemon does not "
+                "trust, or of the wrong kind is refused before the gate knows who is "
+                "asking, and leaves its trace in the log instead. Rows are kept for "
                 "`[AUDIT] KEEP`, 90 days by default."),
             responses=docs.answers({"audit": [{
                 "at": "2026-10-09T11:37:43.532228+00:00", "principal": "alice",

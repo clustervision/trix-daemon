@@ -48,7 +48,8 @@ def register(source, owner: str = "") -> None:
     """
     global _source, _owner
     if _source is not None and _source is not source:
-        LOGGER.info("the node source was replaced")
+        LOGGER.info("the node source offered by %s replaced %s's", owner or "nothing",
+                    _owner or "an unnamed plugin")
     _source = source
     _owner = owner
 

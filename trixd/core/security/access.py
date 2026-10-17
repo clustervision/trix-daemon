@@ -39,7 +39,12 @@ LOGGER = trixlog.get("access")
 def is_rootus(name: str) -> bool:
     """
     The account the ini names, checked against nothing. It is the break glass and
-    the system user, and every use of it is in the audit trail.
+    the system user.
+
+    Every use of it that goes through the gate is in the audit trail. The route to Luna is
+    not guarded, so it is the one place this account does the most - the caller's own
+    headers are forwarded and Luna honours the ini account as its administrator - and
+    leaves nothing here. Luna's own log is where that is answerable for.
     """
     return bool(name) and name == settings().api.username
 
@@ -47,6 +52,12 @@ def is_rootus(name: str) -> bool:
 def rank(role: str) -> int:
     """
     Where a role sits on the ladder; anything unknown sits at the bottom.
+
+    Safe for the role a caller holds, which is what the bottom is for, and not for the
+    minimum a route asks: a minimum nobody recognises would sit at the bottom too and
+    admit everyone. Nothing can reach that today - a manifest minimum is checked against
+    the ladder when the plugin loads, and the core's routes pass constants - so this is a
+    note about which direction holds, not a hole.
     """
     return MINIMUMS.index(role) if role in MINIMUMS else 0
 
