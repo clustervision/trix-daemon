@@ -1000,6 +1000,35 @@ def test_a_failed_reload_is_a_502_that_says_so(rig, tmp_path, monkeypatch):
         backend.set_hw_rules({"nodes": [{"node": "node001", "disabled": True}]})
 
 
+def test_a_regenerate_writes_the_name_luna_resolves_even_when_the_rules_are_identical(
+        rig, tmp_path, monkeypatch):
+    """
+    Identical content is not a reason to leave a node's rules under the old name.
+
+    This is the ordinary case rather than a corner: a regenerate reads the same hardware and
+    produces the same document byte for byte, and what has changed is only the name the file
+    carries. Compared on the documents alone, force then reports the rules in order and
+    writes nothing, so the node keeps answering under a name Luna no longer resolves and
+    nothing moves it - which is also what would leave the file above unretired.
+    """
+    import shutil
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    target = tmp_path / "trix.hw.node001.cluster.rules"
+    was = tmp_path / "trix.hw.node001.rules"
+    # The document a regenerate produces, under the name the node answered to before: the
+    # comparison has to look past content that is equal and a name that is not.
+    shutil.move(str(target), str(was))
+
+    answer = backend.import_hw_rules("node001", {"force": True})
+
+    assert target.is_file(), (
+        "force compared the documents alone and left this node's rules under a name Luna "
+        "no longer resolves, with nothing written and nothing moved")
+    assert answer["changed"] is True and answer["hostname"] == "node001.cluster"
+
+
 def test_callers_waiting_together_share_a_reload_and_none_gets_an_earlier_one(rig):
     """
     The two halves of the contract, driven rather than timed.
@@ -1201,6 +1230,27 @@ def test_a_scope_switches_one_off_and_declares_one_the_factory_never_heard_of(ri
 
     assert "lshw" not in resolved, "a scope could not switch a factory exporter off"
     assert resolved["storcli"] == {"port": 14211}, "a scope could not declare its own exporter"
+    assert "lshw" in exporters.for_node("node001", "compute", baseline, {}, rows), \
+        "switching it off for one group took it from another"
+
+
+def test_a_deviation_written_as_nothing_switches_the_exporter_off(rig, tmp_path):
+    """
+    `lshw:` with nothing under it is off, exactly as `false` is.
+
+    yaml reads a key with nothing under it as null, and a scope stored as JSON carries a
+    null the same way, so this is what an operator who clears a value leaves behind. Read
+    instead as a value this does not understand, it warns and keeps the exporter as the
+    baseline has it - on, in the one place somebody had just switched it off.
+    """
+    from trixd.plugins.prometheus import exporters
+
+    baseline = exporters.factory(_factory_file(tmp_path))
+    rows = {"group:gpu": {"lshw": None}}
+
+    resolved = exporters.for_node("node001", "gpu", baseline, {}, rows)
+
+    assert "lshw" not in resolved, "a deviation of null left the exporter on"
     assert "lshw" in exporters.for_node("node001", "compute", baseline, {}, rows), \
         "switching it off for one group took it from another"
 
@@ -1533,6 +1583,44 @@ def test_a_port_where_a_mapping_belongs_does_not_stop_discovery(rig, tmp_path, m
     assert {entry["labels"]["exporter"] for entry in rendered} == {"node", "ipmi", "nvidia",
                                                                    "slurm_job", "lshw"}, \
         "the file was refused but the shipped baseline did not take over"
+
+
+def test_an_exporter_with_no_port_cannot_take_the_whole_document_down(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    An entry with no port is left out of the render, not rendered without one.
+
+    A target is an address and a port, and the render reads that port directly, so an entry
+    reaching it without one raises - and a raise there is not one exporter missing but the
+    whole document: http_sd is answered nothing and every node on the cluster leaves the
+    scrape pool at once. Two ordinary things produce such an entry, and neither is refused
+    where it is read: a port in the file that is not a number, which is dropped while the
+    rest of the entry is kept, and a scope naming an exporter nothing has given a port.
+    """
+    from trixd.utils import declarations
+
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    backend.config({"exporters_file": _factory_file(tmp_path, {
+        "nodes": {"node": {"port": "14200"}, "lshw": {"port": 14208}},
+        "controllers": {"ha": {"port": 14205}},
+        "hosts": {"controller1": {"address": "10.141.255.254"}}})})
+    declarations.write("prometheus", "exporter-scope", "cluster",
+                       {"telegraf": {"interval": "30s"}})
+
+    try:
+        document = backend.render_targets()
+    except Exception as error:                      # pylint: disable=broad-except
+        # Named here rather than left to the traceback: what this pins is that the render
+        # survives such an entry at all, so the failure has to say so rather than read as
+        # an accident of the harness.
+        pytest.fail(f"an exporter with no port took service discovery down: {error!r}")
+
+    assert sorted(entry["labels"]["exporter"] for entry in document) == ["ha", "lshw"], (
+        "service discovery lost the exporters that do have a port, or rendered one that "
+        "has none")
+    assert all(":" in entry["targets"][0] and not entry["targets"][0].endswith(":")
+               for entry in document), "a target was rendered without a port"
 
 
 def test_an_interval_reaches_prometheus_or_it_is_not_a_feature(rig, tmp_path, monkeypatch):
