@@ -49,6 +49,14 @@ ACTIONS: tuple = ("start", "stop", "restart", "reload", "status")
 # A unit or service name: never a leading dash, so it cannot reach systemctl as an option.
 UNIT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._:-]*$")
 
+# What one `systemctl show` is asked for. Both names are read because a record answers
+# under the name systemd resolved to, which for an alias is not the one asked for.
+PROPERTIES: tuple = ("Id", "Names", "LoadState", "ActiveState", "UnitFileState")
+# systemd's own word for a unit it has no file for. UnitFileState is empty for one of those
+# and empty for a scope as well, so the load state is what the two are told apart by.
+NOT_FOUND: str = "not-found"
+UNKNOWN: str = "unknown"
+
 
 def run_task(action: str, unit: str) -> str:
     """
@@ -85,6 +93,30 @@ DEFAULT_CATALOGUE: dict = {
         "dirsrv": "dirsrv@local",
     },
 }
+
+
+def _records(shown: str) -> dict:
+    """
+    Each unit's state out of one `systemctl show`, under every name systemd gives it.
+
+    Keyed by name rather than by position because `systemctl is-enabled` over several units
+    prints one state line for the whole call when it cannot answer for one of them, which
+    reads as another unit's state and says nothing. `show` answers for each unit by name.
+    """
+    found = {}
+    for block in (shown or "").split("\n\n"):
+        fields = dict(line.split("=", 1) for line in block.splitlines() if "=" in line)
+        if not fields:
+            continue
+        if fields.get("LoadState") == NOT_FOUND:
+            state = {"active": NOT_FOUND, "enabled": NOT_FOUND}
+        else:
+            state = {"active": fields.get("ActiveState") or UNKNOWN,
+                     "enabled": fields.get("UnitFileState") or UNKNOWN}
+        for name in [fields.get("Id", ""), *(fields.get("Names") or "").split()]:
+            if name:
+                found[name] = state
+    return found
 
 
 tasks.register(PLUGIN, run_task)
@@ -129,7 +161,8 @@ class Backend:
         # service on top of the one for the listing, so the cost grew with the catalogue
         # for an answer that is the same throughout the call.
         units = self._units()
-        return {"services": {name: self._state(units[name]) for name in sorted(units)}}
+        states = self._states(units.values())
+        return {"services": {name: states[units[name]] for name in sorted(units)}}
 
     def status(self, name: str) -> dict:
         """
@@ -164,10 +197,27 @@ class Backend:
             raise NotFound(f"no request named {request_id}")
         return found
 
+    def _states(self, units) -> dict:
+        """
+        What systemd says about several units, in one call however many there are.
+
+        This was two commands per unit, so a catalogue of 200 was 400 subprocesses with a
+        minute of timeout each, run one after another on the thread holding the request.
+        """
+        wanted = list(dict.fromkeys(units))
+        if not wanted:
+            return {}
+        shown = shell.run([_command(), "show", "-p", ",".join(PROPERTIES), *wanted],
+                          timeout=TIMEOUT)
+        found = _records(shown.out)
+        unknown = {"active": UNKNOWN, "enabled": UNKNOWN}
+        # A catalogue may name an alias, which systemd answers for under its real name, and
+        # a name with no suffix, which systemd answers for as a service.
+        return {unit: dict(found.get(unit) or found.get(f"{unit}.service") or unknown)
+                for unit in wanted}
+
     def _state(self, unit: str) -> dict:
         """
         What systemd says about a unit right now.
         """
-        active = shell.run([_command(), "is-active", unit], timeout=TIMEOUT)
-        enabled = shell.run([_command(), "is-enabled", unit], timeout=TIMEOUT)
-        return {"active": active.out or "unknown", "enabled": enabled.out or "unknown"}
+        return self._states([unit])[unit]

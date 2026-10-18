@@ -1279,17 +1279,18 @@ def test_a_service_token_naming_the_ini_account_is_refused(rig):
 
 def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     """
-    is-active and is-enabled for each catalogued unit, and unknown when they are silent.
+    A unit's ActiveState and UnitFileState, and unknown for one systemd answered nothing for.
     """
     from trixd.plugins.services import backend as services
 
     def systemctl(argv, **kwargs):
         """
-        dirsrv@local is running and enabled; anything else says nothing.
+        dirsrv@local is running and enabled; systemd answers for nothing else.
         """
-        if argv[-1] == "dirsrv@local":
-            return Ran("active" if argv[1] == "is-active" else "enabled")
-        return Ran("", 3)
+        if "dirsrv@local" not in argv:
+            return Ran("", 3)
+        return Ran("Id=dirsrv@local.service\nNames=dirsrv@local.service\n"
+                   "LoadState=loaded\nActiveState=active\nUnitFileState=enabled")
 
     monkeypatch.setattr(services.shell, "run", systemctl)
     listed = services.Backend().list_services()["services"]
@@ -1298,6 +1299,82 @@ def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     assert services.Backend().act("dirsrv", "STATUS")["unit"] == "dirsrv@local"
     with pytest.raises(NotFound):
         services.Backend().status("sshd")
+
+
+def test_a_listing_asks_systemd_once_and_maps_each_record_by_name(rig, monkeypatch):
+    """
+    One `systemctl show` for the whole catalogue rather than is-active and is-enabled per
+    unit: 200 services were 400 subprocesses, each with its own minute of timeout, taken one
+    after another on the thread holding the request.
+
+    Mapped by the name in the record and never by position, which is why `show` is the right
+    command: `systemctl is-enabled` over three units whose middle one is unknown prints one
+    state line for the whole call, so a positional read hands one service another's state
+    and nothing says it happened. The records here come back in a different order from the
+    one they were asked in, so a positional read cannot pass.
+
+    Counted rather than timed, so it says the same thing on a loaded box.
+    """
+    from trixd.plugins.services import backend as services
+
+    # What systemd answers for three units whose middle one it has no unit file for. Every
+    # unit's state differs, so a mapping that slipped cannot come out right by accident.
+    shown = ("Id=gamma.service\nNames=gamma.service\nLoadState=loaded\n"
+             "ActiveState=failed\nUnitFileState=disabled\n"
+             "\n"
+             "Id=alpha.service\nNames=alpha.service\nLoadState=loaded\n"
+             "ActiveState=active\nUnitFileState=enabled\n"
+             "\n"
+             "Id=beta.service\nNames=beta.service\nLoadState=not-found\n"
+             "ActiveState=inactive\nUnitFileState=")
+    ran = []
+
+    def systemctl(argv, **kwargs):
+        """
+        Record the call and answer as one show over the whole list does.
+        """
+        ran.append(argv)
+        return Ran(shown)
+
+    monkeypatch.setattr(services.shell, "run", systemctl)
+    monkeypatch.setattr(services.Backend, "_units",
+                        lambda self: {"a": "alpha", "b": "beta", "c": "gamma"})
+
+    listed = services.Backend().list_services()["services"]
+
+    assert len(ran) == 1, f"{len(ran)} subprocesses to list 3 services: {ran}"
+    assert listed["a"] == {"active": "active", "enabled": "enabled"}, listed
+    assert listed["c"] == {"active": "failed", "enabled": "disabled"}, listed
+    # A unit systemd has no unit file for is not a unit that is stopped, and the pair of
+    # commands this replaces could not tell them apart: both read inactive and unknown.
+    assert listed["b"] == {"active": "not-found", "enabled": "not-found"}, listed
+    assert ran[0][1] == "show", ran[0]
+    assert ran[0][-3:] == ["alpha", "beta", "gamma"], ran[0]
+
+
+def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
+    """
+    `act` checks both before it queues, but the worker is reachable without going through
+    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
+    catalogue can be rewritten between an action being queued and the worker reaching it.
+    So the checks are in the worker, beside the command they are protecting.
+    """
+    from trixd.plugins.services import backend as services
+
+    ran = []
+    monkeypatch.setattr(services.shell, "run",
+                        lambda argv, **kwargs: ran.append(argv) or Ran("", 0))
+
+    with pytest.raises(NotFound):
+        services.run_task("restart", "sshd")
+    assert ran == [], f"a unit outside the catalogue reached the command: {ran}"
+
+    with pytest.raises(BadRequest):
+        services.run_task("mask", "slurmctld")
+    assert ran == [], f"an action outside the list reached the command: {ran}"
+
+    assert services.run_task("restart", "slurmctld") == "restart slurmctld accepted"
+    assert ran == [["/usr/bin/systemctl", "restart", "slurmctld"]], ran
 
 
 def test_a_queued_service_action_runs_the_configured_command(rig, monkeypatch):
@@ -1437,28 +1514,3 @@ def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, m
 
     assert poller.once() == [], "the poller did not carry on after the failure"
     assert poller.state()["answering"] is True, "it never recovers once a pass has failed"
-
-
-def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
-    """
-    `act` checks both before it queues, but the worker is reachable without going through
-    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
-    catalogue can be rewritten between an action being queued and the worker reaching it.
-    So the checks are in the worker, beside the command they are protecting.
-    """
-    from trixd.plugins.services import backend as services
-
-    ran = []
-    monkeypatch.setattr(services.shell, "run",
-                        lambda argv, **kwargs: ran.append(argv) or Ran("", 0))
-
-    with pytest.raises(NotFound):
-        services.run_task("restart", "sshd")
-    assert ran == [], f"a unit outside the catalogue reached the command: {ran}"
-
-    with pytest.raises(BadRequest):
-        services.run_task("mask", "slurmctld")
-    assert ran == [], f"an action outside the list reached the command: {ran}"
-
-    assert services.run_task("restart", "slurmctld") == "restart slurmctld accepted"
-    assert ran == [["/usr/bin/systemctl", "restart", "slurmctld"]], ran

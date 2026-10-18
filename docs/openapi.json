@@ -5060,7 +5060,7 @@
     },
     "/api/v1/services": {
       "get": {
-        "description": "Each service in the catalogue with what systemd says about its unit now: `active` as\n`systemctl is-active` answers it, `enabled` as `systemctl is-enabled` does. Only\ncatalogued services are listed; a manager keeps the catalogue.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Each service in the catalogue with what systemd says about its unit now: `active` is\nthe unit's `ActiveState` and `enabled` its `UnitFileState`, read for the whole\ncatalogue in one `systemctl show`. A unit systemd has no unit file for reads\n`not-found` for both, which tells it apart from one that is merely stopped; a unit\nsystemd answered nothing at all for reads `unknown` for both. Only catalogued\nservices are listed; a manager keeps the catalogue.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_list_services_get_api_v1_services_get",
         "responses": {
           "200": {
@@ -5397,7 +5397,7 @@
     },
     "/api/v1/services/{name}": {
       "get": {
-        "description": "What systemd says about one catalogued service's unit right now.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "What systemd says about one catalogued service's unit right now. `active` is the\nunit's `ActiveState` and `enabled` its `UnitFileState`; a unit systemd has no unit\nfile for reads `not-found` for both.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_status_get_api_v1_services__name__get",
         "parameters": [
           {
