@@ -428,6 +428,12 @@ def load_all(app: FastAPI) -> dict:
     wanted = settings().plugins.enabled
     disabled = _disabled_names()
     found = discover()
+    if not wanted:
+        # An empty list has always meant every plugin, which is not what "loads only
+        # what ENABLED lists" reads like; say the count rather than change it.
+        LOGGER.warning("[PLUGINS] ENABLED names nothing, which enables every plugin "
+                       "found: %d of them; list the plugins to load to narrow it",
+                       len(found))
     for name in wanted:
         if name not in found:
             # Nothing is recorded for a name with nothing behind it, so it is absent from

@@ -234,6 +234,22 @@ from there. A missing file, an unknown algorithm or an unreadable duration stops
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
+Everything else a `trixd.ini` gets wrong is loud and not fatal: the daemon names it and
+comes up. A file that exists but cannot be read, a mode the daemon has no rights to
+among them, is named with the reason, and the daemon then starts on its built-in
+defaults rather than on what that file says. A section or a key trixd does not read, a
+misspelled `[DATABASE] URL` among them, is named one by one, because the alternative is
+a fresh default database and nothing said; the keys trixd reads are the ones it actually
+asks the file for, so a setting added to the code is covered without a second list to
+remember. `[API] MAX_BODY` takes `K`, `M` and `G` as powers of 1024, with or without a
+`B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
+`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Either one
+unreadable is named along with the value used instead: the default for `MAX_BODY`, and
+on for `ENABLED`, since reading it as off would quietly stop an HA pair reconciling. An
+empty `[API] USERNAME` or `PASSWORD` is named too, because that account is the one
+principal that holds `rootus`: without it the directory, slurm and replication routes
+answer 403 to every caller.
+
 **Nothing about Luna is in `trixd.ini`.** Where Luna answers, its protocol, whether
 its certificate is checked, and the token secret both daemons share are read from
 Luna's own `luna.ini` (`/trinity/local/luna/daemon/config/luna.ini`), and read again
@@ -244,9 +260,11 @@ warning that names them as ignored.
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
 package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
-what `ENABLED` lists, by default all six. slurm and genders write the same blocks
-luna2-daemon's node hook still writes, from the same generator and node list, so the two
-agree; once that hook stops, they are the only writers.
+what `ENABLED` lists, by default all six. An `ENABLED` that names nothing at all is the
+exception: it loads every plugin found rather than none, which is what an installed site
+already runs on, so the count it enabled is logged at startup. slurm and genders write
+the same blocks luna2-daemon's node hook still writes, from the same generator and node
+list, so the two agree; once that hook stops, they are the only writers.
 
 Clients get a `trixd.ini` of their own beside the `luna.ini` the installer writes for
 the alertx CLI, the On Demand apps and the node image. The Luna CLI and the luna2

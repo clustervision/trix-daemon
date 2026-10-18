@@ -1908,6 +1908,165 @@ def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
     assert loaded.tokens.secret_key == "x"
 
 
+# Named rather than reached for through the settings module, so a build that logs
+# nothing here still reaches the assertions instead of failing to set the test up.
+SETTINGS_LOGGER = logmodule.getLogger("trixd.settings")
+
+
+def _loaded(tmp_path, text: str):
+    """
+    A trixd.ini holding text, loaded, with everything the settings logger said.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(text, encoding="utf-8")
+    with _listening(SETTINGS_LOGGER) as records:
+        loaded = configuration.load(str(ini))
+    return loaded, _said(records)
+
+
+def test_a_max_body_trixd_cannot_read_is_named_rather_than_quietly_the_default(tmp_path):
+    """
+    A site tightening the ceiling must not end up with a wider one than its ini says: the
+    default is still used, but the key, the value and the ceiling in force are all said.
+    """
+    from trixd.common.constants import DEFAULT_MAX_BODY
+
+    loaded, said = _loaded(tmp_path, "[API]\nMAX_BODY = not a size\n")
+    assert "MAX_BODY" in said, "an unreadable ceiling was replaced in silence"
+    assert "not a size" in said, "the value that could not be read was not named"
+    assert str(DEFAULT_MAX_BODY) in said, "the ceiling actually in force was not named"
+    assert loaded.api.max_body == DEFAULT_MAX_BODY, "it must still come up on the default"
+
+
+@pytest.mark.parametrize("written,expected", [
+    ("512KB", 512 * 1024), ("64MB", 64 * 1024 ** 2), ("16 MiB", 16 * 1024 ** 2),
+    ("8M", 8 * 1024 ** 2), ("512B", 512), ("1024", 1024), ("0", 0)])
+def test_a_ceiling_an_operator_would_write_is_the_ceiling_they_get(tmp_path, written, expected):
+    """
+    Every natural spelling of a byte count reads as that count. 512KB meaning 8M is the
+    whole defect: the 413 that follows names the very setting the site changed.
+    """
+    loaded, said = _loaded(tmp_path, f"[API]\nMAX_BODY = {written}\n")
+    assert loaded.api.max_body == expected, f"{written} did not read as {expected}"
+    assert "MAX_BODY" not in said, f"{written} is a spelling trixd should read in silence"
+
+
+def test_an_ini_with_no_account_says_nobody_can_hold_rootus(tmp_path):
+    """
+    Empty means no principal holds rootus, so the directory, slurm and replication routes
+    answer 403 to everyone and the sweep signs in to its peer as nobody. The daemon still
+    comes up, as the luna plugin does with a luna.ini that has no account.
+    """
+    loaded, said = _loaded(tmp_path, "[API]\nUSERNAME =\nPASSWORD =\n")
+    assert "USERNAME" in said and "PASSWORD" in said, "an empty ini account was silent"
+    assert "rootus" in said, "the consequence of an empty account was not named"
+    assert loaded.api.username == "" and loaded.api.password == ""
+
+
+@pytest.mark.parametrize("written,expected", [
+    ("Y", True), ("enabled", True), ("on", True), ("TRUE", True), ("1", True),
+    ("n", False), ("disabled", False), ("off", False), ("False", False), ("0", False)])
+def test_replication_reads_the_yes_and_no_an_operator_writes(tmp_path, written, expected):
+    """
+    ENABLED = Y switching replication off on an HA pair is silent divergence: the outbox
+    never drains and the sweep reports no peers where peers are configured.
+    """
+    loaded, said = _loaded(tmp_path, f"[REPLICATION]\nPEERS = other:8050\nENABLED = {written}\n")
+    assert loaded.replication.enabled is expected, f"{written} did not read as {expected}"
+    assert "ENABLED" not in said, f"{written} is a spelling trixd should read in silence"
+
+
+def test_a_replication_switch_trixd_cannot_read_leaves_replication_on(tmp_path):
+    """
+    Reading an unreadable switch as off is the dangerous guess on a pair, so it is named
+    and replication stays on rather than stopping where nobody asked it to.
+    """
+    loaded, said = _loaded(tmp_path, "[REPLICATION]\nPEERS = other:8050\nENABLED = maybe\n")
+    assert loaded.replication.enabled is True, "an unreadable switch must not disable a pair"
+    assert "ENABLED" in said and "maybe" in said, "an unreadable switch was silent"
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root reads a mode 000 file")
+def test_an_ini_that_cannot_be_read_is_named_rather_than_quietly_the_defaults(tmp_path):
+    """
+    isfile() passes and RawConfigParser.read() swallows the OSError, so the daemon would
+    come up on the default bind, database and plugins while the ini said otherwise.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[DATABASE]\nURL = sqlite:////site/own.db\n", encoding="utf-8")
+    ini.chmod(0o000)
+    try:
+        with _listening(SETTINGS_LOGGER) as records:
+            loaded = configuration.load(str(ini))
+    finally:
+        ini.chmod(0o644)
+    said = _said(records)
+    # The precondition first: without this the rest measures a file that was readable.
+    assert "own.db" not in loaded.database.url, "the harness did not actually block the read"
+    assert loaded.database.url == configuration.DatabaseSettings().url
+    assert str(ini) in said, "the file that could not be read was not named"
+    assert "ermission" in said, "why it could not be read was not said"
+
+
+def test_a_key_the_daemon_does_not_read_is_named_one_by_one(tmp_path):
+    """
+    A misspelled [DATABASE] URL brought the daemon up against a fresh default SQLite file
+    with nothing said. The sections trixd ignores on purpose stay quiet.
+    """
+    loaded, said = _loaded(tmp_path, "[DATABASE]\nURLL = sqlite:////site/own.db\n"
+                                     "[NOPE]\nWHAT = ever\n"
+                                     "[LUNA]\nENDPOINT = a:7050\n"
+                                     "[TRIGGERS]\nLUNA_HASHES = 60s\n")
+    # The precondition first: the misspelling really did leave the default in place.
+    assert loaded.database.url == configuration.DatabaseSettings().url
+    assert loaded.ignored == ["[LUNA]", "[TRIGGERS]"], "the ignored list still names them"
+    assert "URLL" in said, "a misspelled key was silent"
+    assert "NOPE" in said, "a section trixd does not read was silent"
+    assert "LUNA" not in said and "TRIGGERS" not in said, \
+        "a section trixd ignores on purpose must not also be complained about"
+
+
+def test_the_shipped_sample_names_no_key_the_daemon_does_not_read():
+    """
+    Loading trixd.ini.sample must say nothing: a key the sample explains and the daemon
+    never asks for is either a stale sample or a setting that was dropped.
+    """
+    sample = os.path.join(os.path.dirname(trixd.__file__), "config", "trixd.ini.sample")
+    with _listening(SETTINGS_LOGGER) as records:
+        configuration.load(sample)
+    said = _said(records)
+    assert "does not read" not in said, said
+
+
+def test_every_setting_the_daemon_reads_is_explained_in_the_shipped_sample(monkeypatch):
+    """
+    The sample explains each key, and the keys are whatever load() asks the ini for, so
+    this is derived from the settings definitions rather than from a list beside them: a
+    setting added to load() fails here until the sample names it too.
+    """
+    sample = os.path.join(os.path.dirname(trixd.__file__), "config", "trixd.ini.sample")
+    shipped = configuration.RawConfigParser()
+    shipped.read(sample)
+    documented = {(name, option) for name in shipped.sections()
+                  for option in shipped.options(name)}
+
+    sections, options = set(), set()
+    had_section = configuration.RawConfigParser.has_section
+    had_option = configuration.RawConfigParser.has_option
+    monkeypatch.setattr(configuration.RawConfigParser, "has_section",
+                        lambda self, name: (sections.add(name), had_section(self, name))[1])
+    monkeypatch.setattr(configuration.RawConfigParser, "has_option",
+                        lambda self, name, option: (options.add((name, option.lower())),
+                                                    had_option(self, name, option))[1])
+    configuration.load(sample)
+
+    skipped = set(getattr(configuration, "IGNORED_SECTIONS", ()))
+    assert not sections - skipped - set(shipped.sections()), \
+        "the daemon reads a section trixd.ini.sample does not carry"
+    assert not options - documented, \
+        "the daemon reads a key trixd.ini.sample does not explain"
+
+
 def test_no_setting_this_daemon_reads_names_luna():
     """
     The daemon's own settings may not know what Luna is. An import of a plugin is caught
@@ -3015,6 +3174,29 @@ def test_a_plugin_in_the_enabled_list_but_not_on_disk_says_so(rig, monkeypatch):
     with _listening(loader.LOGGER) as records:
         assert loader.load_all(rig) == {}, "a missing plugin must not become an entry"
     assert "nosuch" in _said(records), "a plugin asked for and absent was silent"
+
+
+def test_an_empty_enabled_list_says_how_many_plugins_it_enabled(rig, monkeypatch):
+    """
+    An empty [PLUGINS] ENABLED enables every plugin found rather than none, which is the
+    opposite of what "a restart loads only what ENABLED lists" reads like. An installed
+    site already runs on that, so what is added is the count, not a change of mind.
+    """
+    import types
+
+    monkeypatch.setattr(loader, "discover", lambda: {"one": "/one", "two": "/two"})
+    monkeypatch.setattr(loader, "_disabled_names", set)
+    monkeypatch.setattr(loader, "settings", lambda: types.SimpleNamespace(
+        plugins=types.SimpleNamespace(enabled=[])))
+    monkeypatch.setattr(loader, "load", lambda app, name, path:
+                        types.SimpleNamespace(state="loaded"))
+
+    with _listening(loader.LOGGER) as records:
+        assert set(loader.load_all(rig)) == {"one", "two"}, \
+            "an empty list has always meant every plugin; that is the behaviour here"
+    said = _said(records)
+    assert "ENABLED" in said, "an empty enabled list enabling everything was silent"
+    assert "2" in said, "the number of plugins the empty list enabled was not said"
 
 
 def test_a_directory_with_no_manifest_is_not_silently_skipped(tmp_path):

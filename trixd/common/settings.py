@@ -35,15 +35,25 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
+from trixd.common import logging as trixlog
 from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM,
                                    TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
+
+LOGGER = trixlog.get("settings")
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
 DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
 
+# Sections trixd.ini may still name that this daemon does not read. Named at startup as
+# ignored rather than complained about as unknown, and the one place they are listed.
+IGNORED_SECTIONS: tuple = ("LUNA", "TRIGGERS")
+
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
-_SIZE = re.compile(r"^\s*(\d+)\s*([kmg]?)\s*$", re.IGNORECASE)
+# K, M and G with the suffix an operator writes them with: 8M, 64MB and 16MiB alike.
+_SIZE = re.compile(r"^\s*(\d+)\s*([kmg])?i?b?\s*$", re.IGNORECASE)
 _FACTOR = {"s": 1, "m": 60, "h": 3600, "d": 86400}
+_TRUE = ("1", "yes", "y", "true", "t", "on", "enabled", "enable")
+_FALSE = ("0", "no", "n", "false", "f", "off", "disabled", "disable")
 
 
 def seconds(value: str, fallback: int = 3600, bare: int = 1) -> int:
@@ -180,12 +190,17 @@ class Settings(BaseModel):
 
 def size(value: str, fallback: int, bare: int = 1) -> int:
     """
-    A byte count, where K, M and G are powers of 1024. The same shape as seconds().
+    A byte count, where K, M and G are powers of 1024, written with or without a B or
+    iB after them. Empty is the fallback, and anything else unreadable is an error.
     """
-    found = _SIZE.match(str(value or ""))
-    if not found:
+    text = str(value or "").strip()
+    if not text:
         return fallback
-    scale = {"": bare, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[found.group(2).lower()]
+    found = _SIZE.match(text)
+    if not found:
+        raise ValueError(f"{text} is not a size such as 512K, 8M, 64MB or 16MiB")
+    unit = (found.group(2) or "").lower()
+    scale = {"": bare, "k": 1024, "m": 1024 ** 2, "g": 1024 ** 3}[unit]
     return int(found.group(1)) * scale
 
 
@@ -210,11 +225,19 @@ def _algorithm(value: str) -> str:
                      f"{', '.join(TOKEN_ALGORITHMS)}")
 
 
-def _bool(value: str) -> bool:
+def _bool(value: str, fallback: bool = False) -> bool:
     """
-    Accept yes, true, on and 1 as true, anything else as false.
+    Accept what an operator writes for on and for off. Empty is the fallback, and
+    anything else unreadable is an error: reading it as off is the dangerous guess.
     """
-    return str(value or "").strip().lower() in ("1", "yes", "true", "on")
+    text = str(value or "").strip().lower()
+    if not text:
+        return fallback
+    if text in _TRUE:
+        return True
+    if text in _FALSE:
+        return False
+    raise ValueError(f"{text} is not a yes or a no")
 
 
 def _secret(inline: str, path: str) -> str:
@@ -239,6 +262,29 @@ def _protocol(value: str) -> str:
     return wanted
 
 
+def _unknown(parser: RawConfigParser, asked: set, path: str) -> None:
+    """
+    Name every key the ini carries that this daemon does not read, so a misspelled one
+    is not a silent fall back to a default. The known keys are the ones load() just
+    read, so a setting added there is covered without a second list to remember.
+    """
+    sections = {section for section, _ in asked}
+    inherited = set(parser.defaults())
+    for section in parser.sections():
+        if section in IGNORED_SECTIONS:
+            continue
+        if section not in sections:
+            LOGGER.warning("%s has a [%s] section, which trixd does not read; every "
+                           "setting in it is ignored", path, section)
+            continue
+        for option in sorted(parser.options(section)):
+            if option in inherited or (section, option) in asked:
+                continue
+            LOGGER.warning("%s names [%s] %s, which trixd does not read; it is ignored "
+                           "and the default is used, so check it against "
+                           "trixd.ini.sample", path, section, option.upper())
+
+
 def load(path: str = "") -> Settings:
     """
     Read the ini into a Settings object, falling back to the defaults above.
@@ -247,15 +293,58 @@ def load(path: str = "") -> Settings:
     if not os.path.isfile(path):
         raise ValueError(f"{path} does not exist")
     parser = RawConfigParser()
-    parser.read(path)
+    try:
+        with open(path, "r", encoding="utf-8") as handle:
+            text = handle.read()
+    except OSError as error:
+        # isfile() passes and RawConfigParser.read() swallows this, so without the open
+        # a file it cannot read starts the daemon on its defaults without a word.
+        LOGGER.warning("%s cannot be read (%s); trixd is starting on its built-in "
+                       "defaults, so the bind, the database and the plugins are not "
+                       "the ones that file names", path, error)
+        text = ""
+    parser.read_string(text, source=path)
+    asked: set = set()
 
     def get(section: str, option: str, fallback: str = "") -> str:
         """
-        One value from the ini, or the fallback when it says nothing.
+        One value from the ini, or the fallback when it says nothing. Every call records
+        its key, so what the daemon never asked for is whatever the ini has left over.
         """
+        asked.add((section, option.lower()))
         if parser.has_section(section) and parser.has_option(section, option):
             return parser.get(section, option)
         return fallback
+
+    def unreadable(section: str, option: str, value: str, using: str) -> None:
+        """
+        A value the daemon could not read, named with what it is using instead. Loud,
+        because the daemon comes up on something other than what the ini asked for.
+        """
+        LOGGER.warning("[%s] %s is %r, which trixd cannot read; it is using %s instead",
+                       section, option, value, using)
+
+    def capacity(section: str, option: str, fallback: int) -> int:
+        """
+        One byte count from the ini; an unreadable one names itself and is not fatal.
+        """
+        raw = get(section, option, "")
+        try:
+            return size(raw, fallback)
+        except ValueError:
+            unreadable(section, option, raw, f"{fallback} bytes")
+            return fallback
+
+    def flag(section: str, option: str, default: bool) -> bool:
+        """
+        One yes or no from the ini; an unreadable one names itself and is not fatal.
+        """
+        raw = get(section, option, "")
+        try:
+            return _bool(raw, default)
+        except ValueError:
+            unreadable(section, option, raw, "yes" if default else "no")
+            return default
 
     def duration(section: str, option: str, default: str, bare: int = 1) -> int:
         """
@@ -280,7 +369,13 @@ def load(path: str = "") -> Settings:
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""),
-        max_body=size(get("API", "MAX_BODY", ""), DEFAULT_MAX_BODY))
+        max_body=capacity("API", "MAX_BODY", DEFAULT_MAX_BODY))
+    if not data.api.username or not data.api.password:
+        # The same check the luna plugin makes on luna.ini. With no account nobody can
+        # hold rootus, and the sweep signs in to its peer as nobody at all.
+        LOGGER.warning("%s has no [API] USERNAME and PASSWORD, so nobody can hold "
+                       "rootus: the directory, slurm and replication routes answer 403 "
+                       "to every caller and a peer refuses the sweep", path)
     secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
@@ -292,7 +387,7 @@ def load(path: str = "") -> Settings:
         issuer=get("TOKENS", "ISSUER", data.tokens.issuer))
     # Settings this daemon no longer reads here: where Luna answers is Luna's own
     # business, and a plugin's own settings belong to the plugin.
-    data.ignored = [f"[{name}]" for name in ("LUNA", "TRIGGERS")
+    data.ignored = [f"[{name}]" for name in IGNORED_SECTIONS
                     if parser.has_section(name)]
     data.database = DatabaseSettings(url=get("DATABASE", "URL", data.database.url))
     data.auth = AuthSettings(
@@ -309,13 +404,14 @@ def load(path: str = "") -> Settings:
     data.replication = ReplicationSettings(
         peers=_csv(get("REPLICATION", "PEERS", "")),
         interval=duration("REPLICATION", "INTERVAL", "300s"),
-        enabled=_bool(get("REPLICATION", "ENABLED", "yes")),
+        enabled=flag("REPLICATION", "ENABLED", True),
         ca_file=get("REPLICATION", "CA_FILE", data.replication.ca_file))
     data.audit = AuditSettings(keep=duration("AUDIT", "KEEP", "90d"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
         site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),
         enabled=_csv(get("PLUGINS", "ENABLED", "")))
+    _unknown(parser, asked, path)
     return data
 
 
