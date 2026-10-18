@@ -35,8 +35,36 @@ import os
 import time
 
 import pytest
+import yaml
 
 from tests.e2e.stack import MARK
+
+
+def _rules(directory: str, name: str) -> dict:
+    """
+    One rendered rule file, read with the parser Prometheus reads it with.
+
+    A filename is all the daemon's own answer and a listdir can confirm, and both are right
+    about a file Prometheus will refuse: a lost groups: wrapper, an expression the quoting
+    broke, a label the render dropped. promtool is not installed everywhere, so what this
+    can hold the renderer to is that the document parses and that what was asked for is in
+    what came out.
+    """
+    path = os.path.join(directory, name)
+    assert os.path.isfile(path), f"{name} is not in {sorted(os.listdir(directory))}"
+    with open(path, "r", encoding="utf-8") as handle:
+        document = yaml.safe_load(handle)
+    assert isinstance(document, dict) and document.get("groups"), (
+        f"{name} parses as {type(document).__name__} with no groups, so Prometheus would "
+        f"refuse the file the daemon says it wrote: {document}")
+    return document
+
+
+def _every_rule(document: dict) -> list:
+    """
+    Every rule in a document, across its groups.
+    """
+    return [rule for group in document["groups"] for rule in (group.get("rules") or [])]
 
 
 def test_health_version_and_the_published_document(stack):
@@ -205,8 +233,18 @@ def test_a_manager_switches_a_nodes_alerts_and_the_old_file_is_kept(stack):
     same = stack.call("PATCH", "/prometheus/hw-rules", manager,
                       json={"nodes": [{"node": node, "nhc": False}]}).json()["nodes"][0]
     assert off["changed"] is True and same["changed"] is False
-    backups = os.listdir(os.path.join(stack.scratch, "rules", "backup"))
+    rules = os.path.join(stack.scratch, "rules")
+    backups = os.listdir(os.path.join(rules, "backup"))
     assert any(name.startswith(f"trix.hw.{node}") for name in backups)
+
+    # What the file holds, not what it is called: the daemon reported a rule count and the
+    # switch it was asked for, and both have to be in the document Prometheus would load.
+    written = _every_rule(_rules(rules, f"trix.hw.{node}.cluster.rules"))
+    assert len(written) == off["rules"], (
+        f"the daemon reported {off['rules']} rules and the file holds {len(written)}")
+    assert [rule["labels"]["nhc"] for rule in written] == [False] * len(written), (
+        f"nhc was switched off and the rules carry {[rule['labels'] for rule in written]}")
+    assert all(rule.get("expr") for rule in written), written
 
 
 def test_a_node_luna_does_not_know_is_reported_by_name(stack):
@@ -229,16 +267,29 @@ def test_a_node_renamed_through_trixd_keeps_its_rules(stack):
         pytest.skip("renames a node at Luna; tests/e2e/node-rename.sh does it on a controller")
     node, new = stack.nodes[-1], f"{MARK}renamed"
     manager = stack.as_role("manager")
-    stack.call("PATCH", "/prometheus/hw-rules", manager, json={"nodes": [{"node": node, "force": True}]})
+    before = stack.call("PATCH", "/prometheus/hw-rules", manager,
+                        json={"nodes": [{"node": node, "force": True}]}).json()["nodes"][0]
     rename = {"config": {"node": {node: {"newnodename": new}}}}
     assert stack.call("POST", f"/luna/config/node/{node}", stack.rootus(),
                       json=rename).status_code == 204
+    rules = os.path.join(stack.scratch, "rules")
     found = []
     for _ in range(40):
-        found = os.listdir(os.path.join(stack.scratch, "rules"))
+        found = os.listdir(rules)
         if f"trix.hw.{new}.cluster.rules" in found:
             break
         time.sleep(0.25)
     assert f"trix.hw.{new}.cluster.rules" in found, found
+
+    # The file carrying the new name is the rules it had under the old one, pointing at the
+    # name the node answers to now. A move that wrote an empty or unparsable file, or left
+    # the expressions naming the old host, has the right filename and nothing else.
+    carried = _every_rule(_rules(rules, f"trix.hw.{new}.cluster.rules"))
+    assert len(carried) == before["rules"], (
+        f"{before['rules']} rules were written for {node} and {len(carried)} came through "
+        f"the rename")
+    assert all(f'hostname="{new}.cluster"' in rule["expr"] for rule in carried), (
+        f"the file took the new name and its expressions still match the old host: "
+        f"{[rule['expr'] for rule in carried]}")
     back = {"config": {"node": {new: {"newnodename": node}}}}
     assert stack.call("POST", f"/luna/config/node/{new}", stack.rootus(), json=back).status_code == 204
