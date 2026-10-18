@@ -135,7 +135,8 @@ class Backend:
 A handler is given only the arguments it declares:
 
 - a path variable, under its own name;
-- `body`, the validated request body as a dict;
+- `body`, the validated request body as a dict, and `None` on a verb that carries
+  none, which is how one handler serves both a read and a write;
 - `caller`, who is asking: a `trixd.core.security.gate.Caller`, with `.name`,
   `.role`, `.kind` (`user`, `node` or `service`) and `.rootus`.
 
@@ -167,6 +168,7 @@ the reload endpoint answers 409 with the reason.
 | an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
 | an endpoint declares a `minimum` and is `public: true`, `forward: true` or `token: node` | refused; no role is checked on those, so the role would admit everyone |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
+| an endpoint handler takes a positional-only argument the route could not fill | refused; everything is handed over by keyword |
 | a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |

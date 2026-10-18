@@ -34,8 +34,7 @@ import os
 
 from trixd.common.constants import RESERVED_PLUGINS
 from trixd.common.errors import PluginRefused
-from trixd.core.plugins import manifest as manifests
-from trixd.core.plugins.binder import signature_problems
+from trixd.core.plugins import binder, manifest as manifests
 
 
 def check(path: str) -> list:
@@ -74,7 +73,6 @@ def check(path: str) -> list:
     # than raised, so one run still names every problem it can find.
     problems += manifests.duplicates(manifest)
     for endpoint in manifest.endpoints:
-        where = endpoint.path or "/"
         if endpoint.render is not None:
             # The loader's own check rather than a second one beside it: this branch looked
             # for the producer only, so a coalesce the load path refuses passed here and
@@ -84,12 +82,9 @@ def check(path: str) -> list:
             except PluginRefused as error:
                 problems.append(error.message)
             continue
-        handler = getattr(backend, endpoint.handler, None)
-        if not callable(handler):
-            problems.append(f"{where} names handler {endpoint.handler}, which the backend "
-                            "does not have")
-            continue
-        problems += [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
+        # The binder's own check rather than a second one beside it: this was a second
+        # copy of its two refusals, and the wording had already drifted apart from it.
+        problems += binder.endpoint_problems(manifest, backend, endpoint)
     for event, handler in manifest.hooks.items():
         # The loader's own check rather than a second one beside it: this loop looked for
         # the handler only, so a signature the load path refuses passed here. That is the

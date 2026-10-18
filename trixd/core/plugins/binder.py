@@ -51,8 +51,9 @@ SUPPLIED: tuple = ("body", "caller", "request")
 
 def signature_problems(handler, endpoint: Endpoint) -> list:
     """
-    What the binder could not give this handler: a path variable it does not take, or an
-    argument with no default that nothing supplies. Each would be a 500 at the first call.
+    What the binder could not give this handler: a path variable it does not take, an
+    argument it will only take positionally, or an argument with no default that nothing
+    supplies. Each would be a 500 at the first call.
     """
     try:
         accepted = inspect.signature(handler).parameters
@@ -64,11 +65,37 @@ def signature_problems(handler, endpoint: Endpoint) -> list:
                 for name in endpoint.variables if name not in accepted]
     known = set(endpoint.variables) | set(SUPPLIED) | set(endpoint.query)
     for name, item in accepted.items():
-        if item.kind == inspect.Parameter.VAR_POSITIONAL or name in known:
+        if item.kind == inspect.Parameter.VAR_POSITIONAL:
+            continue
+        if item.kind == inspect.Parameter.POSITIONAL_ONLY and name in known:
+            # Everything is handed over by keyword, so this one is never filled: the call
+            # raises before the handler's first line, on every request.
+            problems.append(f"{endpoint.handler} takes {name} positionally only, and a "
+                            f"handler is given its arguments by keyword")
+            continue
+        if name in known:
             continue
         if item.default is inspect.Parameter.empty:
             problems.append(f"{endpoint.handler} needs {name}, which nothing supplies")
     return problems
+
+
+def endpoint_problems(manifest: Manifest, backend, endpoint: Endpoint) -> list:
+    """
+    What one endpoint could not be bound to: a handler the backend does not have, or a
+    signature the route could not call.
+
+    The command-line check calls this too, so what it passes is what the load path accepts.
+    These were two copies of one pair of refusals, and the wording had already drifted.
+    Collected rather than raised, because the check names every problem it finds in one run
+    while the load path refuses on the first.
+    """
+    where = endpoint.path or "/"
+    handler = getattr(backend, endpoint.handler, None)
+    if handler is None or not callable(handler):
+        return [f"{where} names handler {endpoint.handler}, "
+                f"which {manifest.backend} does not have"]
+    return [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
 
 
 def _call(handler, supplied: dict):
@@ -85,12 +112,15 @@ def _arguments(kwargs: dict) -> dict:
     """
     What the backend is handed: path variables, the body as a dict, the caller, and the
     request itself for a handler that asks for it.
+
+    A verb that carries no body hands one anyway, as None: that is how a handler serving
+    both a read and a write tells them apart, and leaving it out answered 500 on the read
+    for a handler that declares `body` without a default.
     """
     caller = kwargs.pop("caller", None)
     body = kwargs.pop("body", None)
     supplied = dict(kwargs)
-    if body is not None:
-        supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
+    supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
     supplied["caller"] = caller
     return supplied
 
@@ -223,14 +253,10 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 raise PluginRefused(f"{endpoint.path} declares a render with no engine")
             handler = renderer.reader(manifest.plugin, endpoint.path)
         else:
-            handler = getattr(backend, endpoint.handler, None)
-            if handler is None or not callable(handler):
-                raise PluginRefused(
-                    f'{endpoint.path or "/"} names handler {endpoint.handler}, '
-                    f"which {manifest.backend} does not have")
-            problems = signature_problems(handler, endpoint)
+            problems = endpoint_problems(manifest, backend, endpoint)
             if problems:
-                raise PluginRefused(f'{endpoint.path or "/"}: {problems[0]}')
+                raise PluginRefused(problems[0])
+            handler = getattr(backend, endpoint.handler)
 
         body_model = models.get(endpoint.body_schema) if endpoint.body_schema else None
         for verb in endpoint.methods:

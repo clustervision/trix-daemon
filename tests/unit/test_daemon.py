@@ -2319,6 +2319,74 @@ def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tm
         loader.load(rig, "mismatch", str(site))
 
 
+def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig, tmp_path):
+    """
+    Every argument is handed over by keyword, so a positional-only parameter is never
+    filled: the route bound, the check called the plugin sound, and the first call raised
+    before the handler's own first line. The hook branch refuses exactly this shape.
+    """
+    from trixd.core.plugins.check import check
+
+    site = tmp_path / "site-plugins" / "strict"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("", encoding="utf-8")
+    (site / "manifest.yaml").write_text(
+        "plugin: strict\nbackend: backend\nendpoints:\n  - path: item/<name>\n"
+        "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
+
+    def backend(signature: str) -> None:
+        """
+        A backend whose handler takes its path variable exactly this way.
+        """
+        (site / "backend.py").write_text(
+            f"class Backend:\n    def show(self, {signature}):\n        return {{}}\n",
+            encoding="utf-8")
+
+    backend("name, /")
+    assert [problem for problem in check(str(site)) if "positionally" in problem], \
+        f"the check passed a handler the route cannot call: {check(str(site))}"
+    with pytest.raises(PluginRefused, match="positionally"):
+        loader.load(rig, "strict", str(site))
+
+    # Not a blanket refusal. The same variable taken by keyword loads, and so does the
+    # extra parameter with a default that lets one handler serve an in-process caller too.
+    backend('name, was=""')
+    assert check(str(site)) == [], "a handler the route can call has to pass the check"
+    assert loader.load(rig, "strict", str(site)).state == "loaded"
+    loader.unload(rig, "strict")
+
+
+def test_a_handler_serving_a_read_and_a_write_is_handed_a_body_on_both(rig, client, headers,
+                                                                      tmp_path):
+    """
+    A schema on a GET is kept deliberately, so one handler can serve a read and a write and
+    tell them apart by the body being None. The read was handed no body at all rather than
+    None, so a handler declaring `body` without a default answered 500 on the read while
+    the write answered 200 - and the signature check calls `body` supplied either way.
+    """
+    site = tmp_path / "site-plugins" / "both"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("", encoding="utf-8")
+    (site / "backend.py").write_text(
+        "class Backend:\n    def setting(self, body):\n        return {'body': body}\n",
+        encoding="utf-8")
+    (site / "manifest.yaml").write_text(
+        "plugin: both\nbackend: backend\nschemas:\n  value:\n    held: {type: string}\n"
+        "endpoints:\n  - path: setting\n    methods: [GET, PATCH]\n    minimum: manager\n"
+        "    handler: setting\n    schema: value\n", encoding="utf-8")
+    assert loader.load(rig, "both", str(site)).state == "loaded"
+    try:
+        read = client.get(f"{API_PREFIX}/both/setting", headers=headers)
+        assert read.status_code == 200, read.text
+        assert read.json()["body"] is None, "the read was handed a body nobody sent"
+        written = client.patch(f"{API_PREFIX}/both/setting", headers=headers,
+                               json={"held": "a value"})
+        assert written.status_code == 200, written.text
+        assert written.json()["body"] == {"held": "a value"}
+    finally:
+        loader.unload(rig, "both")
+
+
 def test_the_check_command_needs_no_daemon_and_says_why(rig, tmp_path, capsys):
     """
     A directory is checked with no trixd.ini at all; a name is found the way the daemon finds it.
@@ -3263,81 +3331,175 @@ def test_the_check_refuses_everything_the_loader_refuses_about_a_render(rig, tmp
     assert check(str(path)) == [], "a render that loads has to pass the check"
 
 
-def test_every_loader_refusal_a_check_could_make_is_shared_with_it():
+def test_every_refusal_on_the_load_path_is_shared_with_the_check():
     """
     An empty list from the check is a promise that the plugin would load, and the promise
-    holds only while the loader's refusals run through functions the check calls too. A
-    refusal added beside one of them - in the loader's own loop rather than in the shared
-    validator that loop calls - is reached from the load path alone. That is how the render
-    branch's defect came back on the hook branch: the fix shared the render check, a
-    refusal landed in the loader afterwards, and the check knew nothing of it.
+    holds only while the load path's refusals run through functions the check calls too. A
+    refusal added beside one of them - in the loader's or the binder's own loop rather than
+    in the shared validator that loop calls - is reached from the load path alone. That is
+    how the render branch's defect came back on the hook branch, and how the binder's pair
+    of refusals came to be a second copy that drifted on the wording.
 
-    Derived rather than listed, because an example test has to be remembered and the whole
-    defect is that it was not: every function in the loader that raises PluginRefused is
-    either reachable from what the check calls, or named below as a refusal no check
-    without a daemon could make. A new refusal anywhere else fails here by construction.
+    Derived rather than listed, and over every module of the plugins package rather than
+    one of them: an earlier version of this test walked the loader alone and claimed a
+    refusal anywhere else failed it by construction, which left the binder's unseen. Each
+    function that raises PluginRefused is either reachable from what the check calls, or
+    named below as a refusal no check without a daemon could make.
+
+    A refusal is attributed to whatever worded it, which is not always what raises it: a
+    raise handing on a list a collector built belongs to the collector, because that is the
+    function the check has to call. And a refusal out of reach is excused one at a time, by
+    a phrase of its own message, rather than its whole function being excused: exempting
+    the function is how two refusals of the binder's sheltered behind an engine guard that
+    had nothing to do with them.
+
+    A raise carrying the message of a refusal already made - the load path's own re-raise -
+    adds no reason of its own and is counted nowhere.
+
+    What it does not catch: a refusal raised outside this package, and a refusal whose
+    wording is built somewhere this reads as neither its own nor a collector's.
     """
     import ast
+    import glob
 
-    from trixd.core.plugins import check as plugin_check
+    from trixd.core import plugins as package
 
-    # The loader's own refusals, with why each is out of a check's reach. Nothing else may
-    # refuse without the check reaching it.
+    # The refusals a check without a daemon cannot make: where each is worded, a phrase of
+    # its message, and why it is out of reach. Nothing else may refuse without the check
+    # reaching the function that words it.
     load_only = {
-        "load": "a reserved name, a manifest sitting under another name, a path already "
-                "served: the check makes its own of the first two, and the last needs a "
-                "route table",
-        "_install": "plugging in writes to the registries of a running daemon",
-        "_from_script": "a single-file plugin, which the check never sees: it wants a "
-                        "manifest.yaml",
+        ("loader", "load", "is reserved"): "the daemon serves that prefix itself, and the "
+                                           "check makes its own refusal for the name",
+        ("loader", "load", "but sits at"): "the check makes its own refusal for this",
+        ("loader", "load", "is already served by"): "a path already taken needs a route "
+                                                    "table to be taken in",
+        ("loader", "_install", "could not plug itself in"): "plugging in writes to the "
+                                                            "registries of a running daemon",
+        ("loader", "_from_script", "has no Plugin class"): "a single-file plugin, which the "
+                                                           "check never sees: it wants a "
+                                                           "manifest.yaml",
+        ("loader", "_from_script", "declares no endpoints"): "the same single-file plugin",
+        ("binder", "build", "declares a render with no engine"): "refuses its caller rather "
+                                                                 "than the plugin: the load "
+                                                                 "path always passes one",
     }
 
-    def _tree(module):
-        """
-        One module's syntax tree, read from the file it was imported from.
-        """
-        with open(module.__file__, encoding="utf-8") as handle:
-            return ast.parse(handle.read())
+    trees, functions, aliases, imported = {}, {}, {}, {}
+    for source in sorted(glob.glob(os.path.join(os.path.dirname(package.__file__), "*.py"))):
+        module = os.path.basename(source)[:-3]
+        with open(source, encoding="utf-8") as handle:
+            trees[module] = ast.parse(handle.read())
+    for module, tree in trees.items():
+        for node in tree.body:
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                functions[(module, node.name)] = node
+        for node in ast.walk(tree):
+            # Both shapes the package imports itself by: the module, under whatever name it
+            # is given, and a function out of a sibling module by its own name.
+            if not isinstance(node, ast.ImportFrom) or not (node.module or "").startswith("trixd"):
+                continue
+            for alias in node.names:
+                if alias.name in trees:
+                    aliases[(module, alias.asname or alias.name)] = alias.name
+                elif node.module.rsplit(".", 1)[-1] in trees:
+                    imported[(module, alias.asname or alias.name)] = (
+                        node.module.rsplit(".", 1)[-1], alias.name)
 
-    functions = {node.name: node for node in _tree(loader).body
-                 if isinstance(node, ast.FunctionDef)}
+    def _refusals(node) -> list:
+        """
+        Every PluginRefused raised anywhere under this node.
+        """
+        return [item for item in ast.walk(node)
+                if isinstance(item, ast.Raise) and isinstance(item.exc, ast.Call)
+                and getattr(item.exc.func, "id", "") == "PluginRefused"]
 
-    def _refuses(node) -> bool:
+    def _calls(module: str, node) -> set:
         """
-        Whether this function raises PluginRefused itself.
+        The package's own functions this node calls, by either shape.
         """
-        return any(isinstance(item, ast.Raise) and isinstance(item.exc, ast.Call)
-                   and getattr(item.exc.func, "id", "") == "PluginRefused"
-                   for item in ast.walk(node))
+        found = set()
+        for item in ast.walk(node):
+            if not isinstance(item, ast.Call):
+                continue
+            if isinstance(item.func, ast.Name):
+                found |= {(module, item.func.id), imported.get((module, item.func.id))}
+            elif isinstance(item.func, ast.Attribute) and isinstance(item.func.value, ast.Name):
+                found.add((aliases.get((module, item.func.value.id)), item.func.attr))
+        return found & set(functions)
 
-    def _calls(node) -> set:
+    def _literal(exc) -> str:
         """
-        The loader's own functions this one calls by name.
+        The fixed words of one message, which is how a refusal is named above.
         """
-        return {item.func.id for item in ast.walk(node)
-                if isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
-                and item.func.id in functions}
+        if isinstance(exc, ast.Constant):
+            return str(exc.value)
+        if isinstance(exc, ast.JoinedStr):
+            return " ".join(" ".join(_literal(part).split()) for part in exc.values)
+        return ""
 
-    reached = {node.attr for node in ast.walk(_tree(plugin_check))
-               if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
-               and node.value.id == "loader" and node.attr in functions}
-    assert reached, "the check reaches into the loader by name, or this test checks nothing"
+    def _wording(module: str, node) -> set:
+        """
+        Each refusal this function raises: where it was worded - here, or in the collector
+        whose list it hands on - and its own fixed words where they are its own.
+        """
+        collected, kept = {}, {}
+        for item in ast.walk(node):
+            if (isinstance(item, ast.Assign) and len(item.targets) == 1
+                    and isinstance(item.targets[0], ast.Name)):
+                for found in _calls(module, item.value):
+                    collected[item.targets[0].id] = found
+                if _literal(item.value):
+                    kept[item.targets[0].id] = _literal(item.value)
+        found = set()
+        for item in _refusals(node):
+            carried = item.exc.args[0] if item.exc.args else None
+            held = carried.value if isinstance(carried, ast.Subscript) else carried
+            held = held.id if isinstance(held, ast.Name) else ""
+            if held in collected:
+                found.add((collected[held], ""))
+            elif _literal(carried) or kept.get(held):
+                found.add(((module, node.name), _literal(carried) or kept[held]))
+        return found
+
+    # A refusal outside a function of the module's own is a refusal this walk cannot see.
+    for module, tree in trees.items():
+        counted = sum(len(_refusals(node)) for (where, _), node in functions.items()
+                      if where == module)
+        assert counted == len(_refusals(tree)), \
+            f"a refusal in {module} sits outside a function of its own, where nothing reads it"
+
+    reached = _calls("check", trees["check"])
+    assert reached, "the check calls into the package by name, or this test checks nothing"
     frontier = list(reached)
     while frontier:
-        for found in _calls(functions[frontier.pop()]):
+        key = frontier.pop()
+        for found in _calls(key[0], functions[key]):
             if found not in reached:
                 reached.add(found)
                 frontier.append(found)
 
-    refusing = {name for name, node in functions.items() if _refuses(node)}
-    assert refusing, "the loader refuses something, or this test checks nothing"
-    assert refusing - reached - set(load_only) == set(), (
-        f"the check cannot reach {', '.join(sorted(refusing - reached - set(load_only)))}, "
-        f"so it passes a plugin the loader refuses: call the same function from the check, "
-        f"or say here why a check without a daemon cannot make that refusal")
-    assert set(load_only) - refusing == set(), (
-        f"{', '.join(sorted(set(load_only) - refusing))} refuses nothing any more, so this "
-        f"list is stale and hides whatever takes its place")
+    refusals = set().union(*(_wording(module, node)
+                             for (module, _), node in functions.items()))
+    assert refusals, "the package refuses something, or this test checks nothing"
+
+    def _excused(where, words) -> list:
+        """
+        The entries above that name this refusal.
+        """
+        return [key for key in load_only if key[:2] == where and words and key[2] in words]
+
+    unreachable = sorted(f"{where[0]}.{where[1]} ({words or 'a refusal it hands on'})"
+                         for where, words in refusals
+                         if where not in reached and not _excused(where, words))
+    assert unreachable == [], (
+        f"the check cannot reach {', '.join(unreachable)}, so it passes a plugin the load "
+        f"path refuses: word the refusal in a function the check calls too, or name it "
+        f"above with why a check without a daemon cannot make it")
+    stale = sorted(f"{key[0]}.{key[1]} ({key[2]})" for key in load_only
+                   if not any(key[:2] == where and key[2] in words for where, words in refusals))
+    assert stale == [], (
+        f"{', '.join(stale)} refuses nothing any more, so these entries are stale and hide "
+        f"whatever takes their place")
 
 
 def test_the_check_refuses_a_hook_handler_the_dispatcher_could_not_call(rig, tmp_path):
