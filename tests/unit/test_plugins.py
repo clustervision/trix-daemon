@@ -726,6 +726,134 @@ def test_a_batch_is_not_recorded_as_applied_for_what_it_did_not_apply(rig, tmp_p
     assert "2 of 3" in still[0]["message"], still[0]["message"]
 
 
+def _a_sentence(node) -> bool:
+    """
+    Whether one expression can only be a string.
+
+    Conservative on purpose: an expression this cannot see through counts as not a
+    sentence, because what it guards is a decline the sender never reads.
+    """
+    import ast
+
+    if isinstance(node, ast.Constant):
+        return isinstance(node.value, str)
+    if isinstance(node, ast.JoinedStr):
+        return True
+    if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
+        # One string operand is enough: the other being a list is a TypeError at the
+        # handler, not a decline that reads as applied at the sender.
+        return _a_sentence(node.left) or _a_sentence(node.right)
+    if isinstance(node, ast.IfExp):
+        return _a_sentence(node.body) and _a_sentence(node.orelse)
+    if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute) and node.func.attr in ("join", "format"):
+            return True
+        return isinstance(node.func, ast.Name) and node.func.id == "str"
+    return False
+
+
+def _skipped_answers(source: str) -> list:
+    """
+    Every `skipped` one module answers, as (function, line, the value expression).
+
+    A dict literal, a dict(skipped=...) and an assignment into the key, which is every
+    shape the tree writes one in.
+    """
+    import ast
+
+    found = []
+    for node in ast.walk(ast.parse(source)):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for inner in ast.walk(node):
+            if isinstance(inner, ast.Dict):
+                found += [(node.name, value.lineno, value)
+                          for key, value in zip(inner.keys, inner.values)
+                          if isinstance(key, ast.Constant) and key.value == "skipped"]
+            elif isinstance(inner, ast.keyword) and inner.arg == "skipped":
+                found.append((node.name, inner.value.lineno, inner.value))
+            elif isinstance(inner, ast.Assign) and any(
+                    isinstance(target, ast.Subscript)
+                    and isinstance(target.slice, ast.Constant)
+                    and target.slice.value == "skipped" for target in inner.targets):
+                found.append((node.name, inner.value.lineno, inner.value))
+    return found
+
+
+def test_a_sentence_is_told_from_a_list_before_the_tree_is_swept():
+    """
+    The sweep below is worth exactly what the reader behind it is worth: one that called
+    every expression a string would pass over any tree at all, including the one this is
+    here to refuse. Pinned in both directions, on the shapes a handler writes.
+    """
+    for text, sentence in (('{"skipped": "not in Luna"}', True),
+                           ('{"skipped": f"{len(no)} of {len(all)}"}', True),
+                           ('{"skipped": f"{len(no)} of {len(all)}: " + "; ".join(why)}', True),
+                           ('{"skipped": str(left_out)}', True),
+                           ('{"skipped": "left out: %s" % left_out}', True),
+                           ('{"skipped": left_out}', False),
+                           ('{"skipped": ["node001", "node002"]}', False),
+                           ('{"skipped": len(left_out)}', False),
+                           ('{"skipped": sorted(one["name"] for one in left_out)}', False),
+                           ('answer["skipped"] = left_out', False),
+                           ('dict(nodes=0, skipped=left_out)', False)):
+        answers = _skipped_answers(f"def handler(answer):\n    {text}\n")
+        assert len(answers) == 1, f"{text} was not read as one answer: {answers}"
+        assert _a_sentence(answers[0][2]) is sentence, text
+
+
+def test_no_replicating_handler_answers_skipped_as_anything_but_a_sentence():
+    """
+    A decline reaches the sender through the reserved `skipped` string and nowhere else, so
+    a handler answering a list or a count on a replicating endpoint declines where nothing
+    can see it and the call is recorded as applied on both controllers. Both sides are read
+    from the tree - which endpoints replicate from every shipped manifest, what their
+    handlers answer from every module of those plugins - so the next endpoint to declare
+    `replicate`, and the next handler to answer `skipped`, arrive here with nothing to
+    remember.
+    """
+    import ast
+    import glob
+    import os
+
+    import yaml
+
+    import trixd
+    from trixd.core.plugins.manifest import parse
+
+    manifests = sorted(glob.glob(os.path.join(
+        os.path.dirname(trixd.__file__), "plugins", "*", "manifest.yaml")))
+    assert manifests, "no shipped plugin was found, so this proves nothing"
+
+    replicating = {}
+    for path in manifests:
+        with open(path, encoding="utf-8") as handle:
+            declared = parse(yaml.safe_load(handle))
+        handlers = {endpoint.handler for endpoint in declared.endpoints
+                    if endpoint.replicate and endpoint.handler}
+        if handlers:
+            replicating[os.path.dirname(path)] = handlers
+    assert replicating, "no shipped endpoint declares replicate, so this proves nothing"
+
+    answers, offenders = [], []
+    for directory, handlers in sorted(replicating.items()):
+        for module in sorted(glob.glob(os.path.join(directory, "**", "*.py"),
+                                       recursive=True)):
+            with open(module, encoding="utf-8") as handle:
+                source = handle.read()
+            for function, line, value in _skipped_answers(source):
+                if function not in handlers:
+                    continue
+                answers.append(f"{function} at {module}:{line}")
+                if not _a_sentence(value):
+                    offenders.append(f"{function} at {module}:{line} answers "
+                                     f"skipped as {ast.unparse(value)}")
+    assert answers, ("no replicating handler answers skipped at all, so this proves "
+                     "nothing: either the reserved key went out of use or a handler is "
+                     "no longer where its plugin's manifest says it is")
+    assert offenders == [], ("a replicating handler declines where the sender cannot read "
+                             "it:\n" + "\n".join(sorted(offenders)))
+
 def test_a_node_name_that_could_leave_the_rules_directory_is_refused(rig, tmp_path, monkeypatch):
     """
     The name ends up in a file name, so anything but a plain host name is a 400.
