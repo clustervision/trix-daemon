@@ -20,11 +20,12 @@
 """
 What this controller has already applied for a peer, so a repeat answers rather than runs.
 
-Delivery is at-least-once: the sender gives a call three seconds, and a peer that applies
-it more slowly than that keeps the row and offers it again at every pass. The call was
-being replayed rather than the answer, which is how the same write lands repeatedly and
-how a second application comes back saying it changed nothing - an answer the sender then
-cannot tell from the peer declining to do the work.
+Delivery is at-least-once: how long the sender waits depends on which path offers the
+call - brief on a caller's own request thread, the sweep's longer wait when a pass drains
+the row - and a peer that applies more slowly than that keeps the row and offers it again
+at every pass. The call was being replayed rather than the answer, which is how the same
+write lands repeatedly and how a second application comes back saying it changed nothing -
+an answer the sender then cannot tell from the peer declining to do the work.
 
 Held in memory and not in a table on purpose: a repeat arrives within a sweep interval of
 the first, which is minutes, and the cost of forgetting one across a restart is the

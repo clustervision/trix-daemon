@@ -435,7 +435,8 @@ def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
                  "done and offers it again rather than recording it as applied; it is a "
                  "reserved key, and a count of skipped items must not use it. Offering the "
                  "same call again is answered with the answer given the first time, since "
-                 "delivery is at-least-once and the sender waits three seconds."),
+                 "delivery is at-least-once and the sender's wait is bounded: brief when "
+                 "a caller's own request offers the call, longer on a sweep pass."),
              responses=docs.answers({"applied": "prometheus hw-rules/<node>",
                                      "origin": "dev2-rocky9-controller1"},
                                     "What was applied",
@@ -452,10 +453,10 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     """
     already = applied.recorded(body.origin, body.request_id)
     if already is not None:
-        # Delivery is at-least-once: the sender gives this three seconds and offers the row
-        # again at every pass until it hears otherwise. Answering with what was answered
-        # then is what makes a slow apply harmless; running it again is how one write lands
-        # repeatedly, and how the second answer comes back saying it changed nothing.
+        # Delivery is at-least-once: a sender whose wait ran out - brief on a caller's
+        # request thread, longer on a sweep pass - offers the row again at every pass.
+        # Answering as we answered then is what makes a slow apply harmless; running it
+        # again is how one write lands repeatedly.
         LOGGER.info("%s %s %s was already applied for %s (%s), so the answer is the one "
                     "given then", body.method, body.plugin, body.path, body.origin,
                     body.request_id)

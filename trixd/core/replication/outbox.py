@@ -70,11 +70,9 @@ ANSWERED: str = "answered"
 # This process's other sender has the row, so it was neither offered nor refused.
 IN_FLIGHT: str = "in-flight"
 
-# The caller is waiting on this, so it is seconds rather than the sweep's thirty: the row
-# makes giving up free, and a dark peer must not hold a request thread. It is the inline
-# path's alone - the drain pays the sweep's, imported above rather than repeated, because
-# nobody is waiting on a sweep pass and a peer that is merely slow drained nothing at all
-# at three seconds.
+# The caller is waiting on this, so it is shorter than the sweep's: the row makes giving up
+# free, and a dark peer must not hold a request thread. The inline path's alone - the drain
+# pays the sweep's, imported rather than repeated, since a merely slow peer drains nothing.
 TIMEOUT: int = 3
 # After this many sweep passes a row still waiting is said loudly, once, and then every
 # this-many passes. It is NOT given up on: a peer away for an hour of patching would

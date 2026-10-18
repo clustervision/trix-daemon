@@ -1531,11 +1531,10 @@ def datetime_now():
 
 def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):
     """
-    Delivery is at-least-once: the sender gives the apply three seconds and offers the row
-    again every pass until it hears otherwise. The call was replayed rather than the answer,
-    so a peer slower than that had the write applied again at every pass - and the second
-    answer came back saying it changed nothing, which the sender cannot tell from the peer
-    declining to do the work.
+    A repeat of the same call is answered with the answer given the first time, not by
+    running the handler again. Delivery is at-least-once, so a peer slower than the sender's
+    wait - brief on a request thread, longer on a sweep pass - is offered the row at every
+    pass, and replaying the call rather than the answer lands one write repeatedly.
     """
     from trixd.common.constants import API_PREFIX
     from trixd.core.plugins.registry import current as registry
