@@ -1787,6 +1787,27 @@ def test_the_api_refuses_a_shape_the_render_cannot_use(rig, tmp_path, monkeypatc
         backend.set_exporter("node", {"labels": "rack=7"})
 
 
+def test_two_scope_changes_at_one_version_keep_both_exporters(rig, tmp_path, monkeypatch,
+                                                              interleave_once):
+    """
+    The exporter routes read in one session and wrote in another, so two operators changing
+    different exporters of one scope each kept their own and dropped the other's - each
+    answered 200 with the deviation it sent, only one of which was stored.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    fired = interleave_once(lambda: backend.set_applied("cluster",
+                                                        {"exporters": {"ipmi": False}}))
+
+    answer = backend.set_applied("cluster", {"exporters": {"node": True}})
+
+    assert fired, "the other change never ran, so nothing interleaved"
+    assert answer["exporters"].get("ipmi") is False, \
+        "the change that landed first was overwritten, and its caller was answered 200"
+    assert answer["exporters"].get("node") is True, \
+        "the change that won lost its own exporter"
+
+
 def test_a_path_word_cannot_be_taken_as_an_exporter_name(rig, tmp_path, monkeypatch):
     """
     PATCH /exporters/applied with the scope left off matches the one-segment route, so without

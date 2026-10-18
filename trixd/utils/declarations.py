@@ -31,13 +31,21 @@ __status__      = "Production"
 
 import socket
 
-from sqlalchemy import select
+from sqlalchemy import select, update
+from sqlalchemy.exc import IntegrityError
 
 from trixd.common import logging as trixlog
+from trixd.common.errors import ServiceUnavailable
 from trixd.db import engine as database
 from trixd.db import models
 
 LOGGER = trixlog.get("declarations")
+
+# How many times an amend reads the row again after losing the version it wrote against. A
+# round is only lost to a write that landed, so the bound is reached by a key being written
+# faster than it can be read, not by a race. Past it the caller is refused: answering 200
+# with a document that was never stored is the one outcome this must not produce.
+ROUNDS: int = 5
 
 
 def _origin() -> str:
@@ -136,13 +144,74 @@ def write(plugin: str, kind: str, name: str, body: dict) -> dict:
         handle.close()
 
 
+def amend(plugin: str, kind: str, name: str, changes: dict, defaults: dict) -> dict:
+    """
+    Put `changes` over the stored document and write the result, as one step.
+
+    Reading and writing in two sessions let a second caller land in between: both read one
+    version, both wrote the whole document, the later one won, and the earlier caller was
+    answered 200 with the value it sent rather than the value that was stored - after which
+    the truncated document replicates like any other, so the peer agrees with it and nothing
+    reports a conflict. The write is therefore conditional on the version that was read, and
+    a row that moved underneath is read again and the changes put over what is there now.
+    """
+    handle = database.session()
+    try:
+        for _ in range(ROUNDS):
+            # The round that lost has a transaction open on the snapshot it read, so without
+            # ending it here every later round reads the same stale row and none can settle.
+            handle.rollback()
+            row = handle.scalar(
+                select(models.Declaration).where(
+                    models.Declaration.plugin == plugin,
+                    models.Declaration.kind == kind,
+                    models.Declaration.name == name))
+            # A marked row is the record of a deletion, not a document; writing a key again
+            # revives it, as the marker has travelled by the time anyone writes here.
+            held = dict(row.body) if row is not None and not row.deleted else dict(defaults)
+            held.update(changes or {})
+            if row is None:
+                version = 1
+                try:
+                    handle.add(models.Declaration(plugin=plugin, kind=kind, name=name,
+                                                  body=held, origin=_origin()))
+                    handle.commit()
+                except IntegrityError:
+                    # Somebody inserted this key between the read and here. The unique
+                    # constraint is what makes that another round rather than a second row.
+                    continue
+            else:
+                version = (row.version or 0) + 1
+                settled = handle.execute(
+                    update(models.Declaration)
+                    .where(models.Declaration.id == row.id,
+                           models.Declaration.version == row.version)
+                    .values(body=held, deleted=False, version=version, origin=_origin()))
+                if settled.rowcount != 1:
+                    continue
+                handle.commit()
+            LOGGER.info("declaration %s/%s/%s written at version %s",
+                        plugin, kind, name or "-", version)
+            return held
+        handle.rollback()
+        LOGGER.error("declaration %s/%s/%s moved under every one of %s attempts to amend it, "
+                     "so nothing was stored", plugin, kind, name or "-", ROUNDS)
+        raise ServiceUnavailable(f"{plugin}/{kind}/{name or '-'} is being written faster than "
+                                 f"it can be amended; nothing was stored, so try again")
+    except Exception:
+        handle.rollback()
+        raise
+    finally:
+        handle.close()
+
+
 def merge(plugin: str, kind: str, name: str, body: dict, defaults: dict) -> dict:
     """
     Change only the keys that were sent, leaving the rest as they were.
     """
-    held = read(plugin, kind, name, dict(defaults))
-    held.update({key: value for key, value in (body or {}).items() if value is not None})
-    return write(plugin, kind, name, held)
+    return amend(plugin, kind, name,
+                 {key: value for key, value in (body or {}).items() if value is not None},
+                 defaults)
 
 
 def listing(plugin: str, kind: str = "") -> list:

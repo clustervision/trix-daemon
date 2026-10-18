@@ -760,9 +760,13 @@ class Backend:
                             "hosts": sorted(baseline.get(exporters.HOSTS) or {})},
                 "defined": definitions, "applied": scopes}
 
-    def _state(self, kind: str, name: str, body: dict) -> dict:
+    def _state(self, kind: str, name: str, changes: dict) -> dict:
         """
-        Write one exporter document and wake the render that reads it.
+        Change one exporter document and wake the render that reads it.
+
+        Only the keys sent are written, and `amend` is what makes the read and the write one
+        step: taken separately, two callers changing different exporters of one scope each
+        kept their own and dropped the other's.
 
         Removal is `forget`, which marks the row rather than deleting it: the peer re-adds a
         row that is missing here, so a real delete comes back within the sweep interval.
@@ -771,7 +775,7 @@ class Backend:
         # longer one is a caller's mistake and belongs in a refusal rather than a database error.
         if not name or len(name) > 255:
             raise BadRequest("a name is needed, of at most 255 characters")
-        stored = declarations.write(PLUGIN, kind, name, body or {})
+        stored = declarations.amend(PLUGIN, kind, name, changes or {}, {})
         # Qualified with the plugin, because a render's bare manifest input is compared that
         # way: a bare kind here wakes nothing, and the change then waits for a node to move.
         renders().notify(f"{PLUGIN}.{kind}")
@@ -790,12 +794,10 @@ class Backend:
         # refusal with a reason rather than a row that breaks service discovery later.
         if exporters.checked(exporter, sent, "the request", strict=True) is None:
             raise BadRequest("an exporter is a mapping of fields")
-        held = declarations.read(PLUGIN, exporters.DEFINITION, exporter, {})
         # Only what was actually sent: the binder fills every unset optional with None, and
         # writing those would blank the port this exporter is scraped on.
-        held.update(sent)
         return {"exporter": exporter,
-                "fields": self._state(exporters.DEFINITION, exporter, held)}
+                "fields": self._state(exporters.DEFINITION, exporter, sent)}
 
     def _forget(self, kind: str, name: str) -> bool:
         """
@@ -834,9 +836,7 @@ class Backend:
             if isinstance(deviation, dict) and exporters.checked(
                     name, deviation, "the request", strict=True) is None:
                 raise BadRequest(f"the deviation for {name} is not a mapping of fields")
-        held = declarations.read(PLUGIN, exporters.SCOPE, where, {})
-        held.update(sent)
-        return {"applied": where, "exporters": self._state(exporters.SCOPE, where, held)}
+        return {"applied": where, "exporters": self._state(exporters.SCOPE, where, sent)}
 
     def remove_applied(self, where: str) -> dict:
         """

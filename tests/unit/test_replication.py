@@ -956,6 +956,52 @@ def test_writing_a_forgotten_key_again_brings_it_back(rig):
                            in declarations.listing("prometheus", "exporter-scope")]
 
 
+def test_two_merges_at_one_version_keep_both_fields(rig, interleave_once):
+    """
+    A merge that reads in one session and writes in another is lost at the seam between them:
+    both callers read one version, both wrote the whole document, the later one won, and the
+    earlier caller was answered 200 with the value it sent rather than the value stored. The
+    truncated document then replicates like any other, so the peer agrees with it and no
+    sweep ever reports a conflict.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "config", "", {"rules_directory": "/etc/prometheus"})
+    fired = interleave_once(lambda: declarations.merge(
+        "prometheus", "config", "", {"reload_command": "systemctl reload prometheus"}, {}))
+
+    stored = declarations.merge("prometheus", "config", "", {"scrape_interval": "30s"}, {})
+
+    assert fired, "the other merge never ran, so nothing interleaved"
+    assert stored.get("reload_command") == "systemctl reload prometheus", \
+        "the merge that landed first was overwritten, and its caller was answered 200"
+    assert stored.get("scrape_interval") == "30s", "the merge that won lost its own field"
+    assert stored.get("rules_directory") == "/etc/prometheus", \
+        "a field neither caller sent was dropped"
+    assert declarations.read("prometheus", "config", "", {}) == stored, \
+        "the caller was answered a document that is not the one in the row"
+
+
+def test_two_merges_of_a_key_that_does_not_exist_yet_keep_both_fields(rig, interleave_once):
+    """
+    The same seam with no row to read yet, where both callers insert rather than update: the
+    unique constraint is what makes the loser read again instead of writing a second row.
+    """
+    from trixd.utils import declarations
+
+    fired = interleave_once(lambda: declarations.merge(
+        "slurm", "config", "", {"cluster_name": "trinity"}, {}))
+
+    stored = declarations.merge("slurm", "config", "", {"partition": "defq"}, {})
+
+    assert fired, "the other merge never ran, so nothing interleaved"
+    assert stored.get("cluster_name") == "trinity", \
+        "the insert that landed first was overwritten, and its caller was answered 200"
+    assert stored.get("partition") == "defq", "the merge that won lost its own field"
+    assert len(declarations.listing("slurm", "config")) == 1, \
+        "a second row was written for one key"
+
+
 def test_a_hard_delete_comes_back_from_the_peer(rig, tmp_path):
     """
     Why the marker exists, pinned so the reason cannot quietly stop being true.

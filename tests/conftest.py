@@ -46,6 +46,7 @@ from trixd.core.replication import applied, outbox
 from trixd.core.replication import sweep as replication_sweep
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
+from trixd.db import engine as database
 from trixd.plugins.luna import hashes
 from trixd.plugins.luna.config import LUNA_INI_ENV
 
@@ -170,6 +171,52 @@ def keypair_rig(tmp_path, monkeypatch):
     The same daemon with the optional keypair algorithm selected instead.
     """
     return build(tmp_path, algorithm="EdDSA", monkeypatch=monkeypatch)
+
+
+@pytest.fixture()
+def interleave_once(monkeypatch):
+    """
+    Run another caller's whole change inside the first read of the next database session.
+
+    A read, a change and a write across two sessions is lost at one seam, and a pair of
+    threads has to be lucky to meet there; injected, the losing order is the only order the
+    test can take. Returns the list the injection appends to, so a test can assert the other
+    caller actually ran rather than measuring an interleaving that never happened.
+    """
+    def install(other):
+        """
+        Arm it for the next session opened, and for the first read made on that session.
+        """
+        opened, fired = [], []
+        real = database.session
+
+        def session():
+            """
+            The next session, with its first read carrying the other caller behind it.
+            """
+            handle = real()
+            if opened:
+                return handle
+            opened.append(True)
+            scalar = handle.scalar
+
+            def read_then_interleave(*args, **kwargs):
+                """
+                Read, then let the other caller have the row, then answer with what we read.
+                """
+                row = scalar(*args, **kwargs)
+                if not fired:
+                    fired.append(True)
+                    other()
+                return row
+
+            handle.scalar = read_then_interleave
+            return handle
+
+        monkeypatch.setattr(database, "session", session)
+        return fired
+
+    return install
 
 
 @pytest.fixture()
