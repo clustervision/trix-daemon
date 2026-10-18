@@ -382,6 +382,10 @@ endpoints:
       Each node gets its own answer: `ok: false` with a `message` for a node Luna does not
       know, or whose file could not be written, without stopping the others. Prometheus is
       reloaded once for the lot, and not at all when nothing changed.
+
+      Where any entry was not applied, the answer also carries a top-level `skipped`
+      saying how many of them and why, which is what tells a replicating peer that part
+      of the call did not land rather than letting it record the lot as applied.
     request_example:
       nodes:
         - {node: node001, disabled: true}

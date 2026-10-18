@@ -65,8 +65,13 @@ def declined(result) -> str:
     decide whether to remember the answer at all. The two disagreeing is how a decline gets
     remembered as a success and then handed to every retry for an hour.
 
-    A non-empty string only. `skipped` is a reserved key in a replicated handler's answer,
-    and a count - three of ten items skipped - is not a handler declining to act.
+    A non-empty string only, and it says what the handler did not do: all of the call, or
+    the items of a batch it could not apply. Three of ten not landing is three nodes left
+    diverged, which is the sender's business and not a detail of the handler's answer.
+
+    `skipped` is a reserved key for that sentence. A count or a list of left-out items is
+    not it and is ignored here, so a handler reporting how many it left out needs its own
+    key - the type check is what keeps the two apart.
     """
     if isinstance(result, dict) and isinstance(result.get("skipped"), str):
         return result["skipped"][:200]

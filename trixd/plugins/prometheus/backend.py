@@ -394,6 +394,18 @@ class Backend:
                    or self._check_outstanding(item.get("hostname") or "")]
         if changed:
             self.reload_or_fail(f"rules written for {len(changed)} node(s)")
+        declined = [item for item in results if not item.get("ok")]
+        if declined:
+            # `skipped` is the reserved key a replicating sender reads to see what did not
+            # land. The per-node list is this endpoint's own shape and the sender does not
+            # read it, so nodes a peer could not write were recorded there as applied.
+            #
+            # The count says it was partial rather than total, and the reasons are
+            # deduplicated: the sender keeps 200 characters, which forty nodes failing for
+            # one reason would spend on forty copies of it.
+            said = sorted({str(item["message"]) for item in declined if item.get("message")})
+            return {"nodes": results,
+                    "skipped": f"{len(declined)} of {len(results)}: " + "; ".join(said)}
         return {"nodes": results}
 
     def list_hw_rules(self, request=None) -> dict:

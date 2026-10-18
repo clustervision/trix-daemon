@@ -648,6 +648,84 @@ def test_a_manager_sets_several_nodes_hardware_rules_in_one_call(rig, tmp_path, 
     assert rule["labels"]["disabled"] is True
 
 
+def test_a_batch_is_not_recorded_as_applied_for_what_it_did_not_apply(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    A replicating handler says what it did not do in the reserved `skipped` string, so the
+    sender holds the row rather than recording the lot as applied. Both hw-rules write
+    paths are asserted, and the two kinds of failure stay apart in what an operator reads.
+    """
+    from trixd.core.replication import applied, outbox
+    from trixd.plugins.prometheus import backend as prometheus
+
+    known = {"node001": {"hostname": "node001.cluster", "group": "compute"},
+             "node002": {"hostname": "node002.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+
+    def query(url, params=None, **_):
+        """
+        Prometheus, which has scraped node001 and has nothing for node002 yet.
+        """
+        host = params["query"].split('hostname="')[1].split('"')[0]
+        result = [] if host.startswith("node002") else [
+            {"metric": {"hostname": host, "luna_group": "compute", "class": "memory",
+                        "description": "DIMM", "product": "P", "vendor": "V",
+                        "serial": "S"}}]
+        return SimpleNamespace(status_code=200, json=lambda: {"data": {"result": result}})
+
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    asked = {"nodes": [{"node": "node001", "nhc": False},
+                       {"node": "node002", "force": True},
+                       {"node": "node999"}]}
+    answer = backend.set_hw_rules(asked)
+
+    by_node = {item["node"]: item for item in answer["nodes"]}
+    assert by_node["node001"]["ok"], answer
+    assert not by_node["node002"]["ok"] and not by_node["node999"]["ok"], answer
+    turned_down = applied.declined(answer)
+    assert turned_down != "", \
+        f"a batch that applied only part of itself reads as applied: {answer}"
+    assert turned_down.startswith("2 of 3"), \
+        f"the decline does not say how much of the batch did not land: {turned_down}"
+    # Both reasons reach whoever reads the refusal: a node this peer's Luna does not hold
+    # and a host it has not scraped want different attention.
+    assert "not a node Luna knows" in turned_down, turned_down
+    assert "has not been scraped yet" in turned_down, turned_down
+    assert applied.declined(backend.repair_hw_rules("node999")) != "", \
+        "the single-node path stopped saying it declined"
+
+    # A decline is deliberately not remembered, so the sweep's next offer runs the handler
+    # again: what did apply has to read as unchanged rather than being written a second time.
+    again = {item["node"]: item for item in backend.set_hw_rules(asked)["nodes"]}
+    assert again["node001"]["changed"] is False, \
+        f"the node that did apply was written again on the next offer: {again}"
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "trust", lambda: False)
+    monkeypatch.setattr(outbox, "peer_token", lambda *args, **kwargs: "token")
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "token")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: SimpleNamespace(
+        status_code=200, text="",
+        json=lambda: {"applied": "prometheus hw-rules", "origin": "tester",
+                      "result": answer}))
+
+    outbox.submit("ctrl2", "prometheus", "hw-rules", "PATCH", {}, asked, "req-batch",
+                  "tester")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    assert result["sent"] == 0, f"the partly applied batch was counted as sent: {result}"
+    still = outbox.owed()["actions"]
+    assert [one["path"] for one in still] == ["hw-rules"], \
+        f"nothing is owed, so the batch was recorded as applied: {still}"
+    assert "2 of 3" in still[0]["message"], still[0]["message"]
+
+
 def test_a_node_name_that_could_leave_the_rules_directory_is_refused(rig, tmp_path, monkeypatch):
     """
     The name ends up in a file name, so anything but a plain host name is a 400.
