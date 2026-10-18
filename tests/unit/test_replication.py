@@ -1265,7 +1265,7 @@ def test_one_row_the_peer_answers_badly_for_does_not_hold_the_others(rig, monkey
 def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, monkeypatch):
     """
     The other half of the same branch, and the half that costs real time: nothing came back,
-    so the rest of the queue is not offered. Each attempt is a three-second wait against a
+    so the rest of the queue is not offered. Each attempt is a whole timeout spent on a
     peer that is not there, so what this pins is the *number of attempts* - the counts come
     out the same whether the pass stopped or held every row, which is how the first version
     of this test passed while the branch it named could not be reached at all.
@@ -1934,9 +1934,10 @@ def test_two_controllers_agree_whatever_order_the_rows_went_in(rig, tmp_path):
 
 def test_a_row_refused_since_the_snapshot_is_not_sent_anyway(rig, monkeypatch):
     """
-    A drain takes a snapshot and then works through it, which is up to three seconds a row -
-    minutes with a queue of any size. A caller's own inline attempt can refuse a row inside
-    that window, so the state in the snapshot is stale by the time the row is reached.
+    A drain takes a snapshot and then works through it, which is up to one whole timeout a
+    row - minutes with a queue of any size. A caller's own inline attempt can refuse a row
+    inside that window, so the state in the snapshot is stale by the time the row is
+    reached.
 
     Re-read, rather than trusted. Taking the snapshot's word counts a refused row as sent,
     leaves its chain unheld, and offers the next action for that node over a prerequisite
@@ -2004,3 +2005,246 @@ def test_a_row_refused_since_the_snapshot_is_not_sent_anyway(rig, monkeypatch):
         f"the refusal was overwritten by the drain: {states}"
     assert states.get("req-repair") == outbox.QUEUED, \
         f"the action behind it did not stay queued: {states}"
+
+
+def test_a_status_code_the_peer_answers_with_is_not_asked_for_ever(rig, monkeypatch):
+    """
+    The same rule as a decline, for the other way the peer answers and does not do it. A
+    row still queued is cleared by nothing - the next action for a node clears only a
+    refusal, and the reap collects only a refusal - so a 5xx, a 401 or a 403 rode the sweep
+    for ever and held its node's later actions with it. Answering that way for long enough
+    makes it terminal, which is what gives it both exits.
+
+    Ordinary rather than exotic: a peer whose Prometheus has not scraped a node yet answers
+    502, so the row that marks the node's chain stuck is one a later scrape would take.
+
+    Both halves are asserted, because a 5xx is often a moment the next pass clears: a fresh
+    row answered 502 once stays queued, and one answered that way for longer than it is
+    asked for goes terminal and is then let go of with what it was holding. Driven through
+    the real send, so the status code is turned into an outcome by the code that will do it
+    in the field.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler could not reach what it needs."""
+        status_code = 502
+        text = "prometheus has not scraped node001 yet"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-502", "tester")
+    # Queued behind it for the same node, which is what the hold is for and what has to be
+    # let go of with it: a repair relabels a file the refused write never made.
+    behind = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                           {"node": "node001"}, None, "req-behind", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        first = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            young = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert young.state == outbox.QUEUED, \
+                f"one 502 on a fresh row made it {young.state}"
+            assert first["blocked"] == 1, f"node001's repair was not held: {first}"
+            # Both rows go back far enough that the refusal, when it is written down, is
+            # newer than what was already queued behind it. That is the field's order, and
+            # it is the order the reap looks for: it takes only what was waiting when the
+            # refusal happened, because anything newer would have cleared the refusal.
+            held = handle.scalar(select(models.Outbox).where(models.Outbox.id == behind))
+            young.created = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 7200)
+            held.created = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 7100)
+            handle.commit()
+        finally:
+            handle.close()
+
+        aged = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert row.state == outbox.FAILED, \
+                f"after {row.attempts} answers of 502 the row is still {row.state} and " \
+                f"the pass still holds node001 ({aged}), so nothing will ever clear it"
+            # The exit the terminal state is for: a day with nobody acting on the node.
+            row.finished = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+            handle.commit()
+        finally:
+            handle.close()
+
+        # The pass that lets go of it, and then the one that finds the node free: the reap
+        # runs at the end of a pass, so the pass that does it has already counted the hold.
+        outbox.drain("ctrl2")
+        free = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            left = {row.id for row in handle.scalars(select(models.Outbox)).all()}
+        finally:
+            handle.close()
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert row_id not in left, \
+        f"the row the peer answered 502 for is still there after being let go of: {left}"
+    assert behind not in left, \
+        f"node001's repair outlived the row it was held behind: {left}"
+    assert free["blocked"] == 0 and free["left"] == 0, \
+        f"node001 is still held after the reap: {free}"
+
+
+def test_an_inline_send_waits_for_what_is_already_owed_for_that_node(rig, monkeypatch):
+    """
+    The inline send holds a node's chain or it undoes the sweep's ordering. `drain` offers a
+    node's oldest owed action first because the later ones assume it landed; the inline path
+    offered whatever had just been written down, whatever else was owed for that node.
+
+    So a write the peer answered 502 for, followed by a delete for the same node delivered
+    at once, left the sweep to apply the write over the delete: the peer kept rule files for
+    a node that is gone, both rows read `done`, and health was green. What is asserted is
+    the order the peer saw, which is the only thing that cannot come out the same either
+    way.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    applied_at_peer = []
+    refused_once = []
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer whose Prometheus has not scraped node001 yet, once, and takes the rest.
+        """
+        if row.method == "PATCH" and not refused_once:
+            refused_once.append(row.path)
+            return outbox.QUEUED, "502: not scraped yet", outbox.ANSWERED
+        applied_at_peer.append(row.method)
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", send)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        wrote = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                 {"node": "node001"}, {"force": True}, {"changed": True},
+                                 "req-write", "tester")
+        # The precondition, not the outcome: the write really was offered inline and really
+        # was not taken. Without that the ordering this pins never arises.
+        assert refused_once, "the write was never offered inline, so nothing is owed"
+        assert wrote["peers"] == {"ctrl2": outbox.QUEUED}, wrote
+
+        deleted = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                   {"node": "node001"}, None, {"changed": True},
+                                   "req-delete", "tester")
+        # Whatever the sweep has not delivered yet, it delivers now.
+        outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    assert applied_at_peer == ["PATCH", "DELETE"], \
+        f"the peer saw {applied_at_peer}: the delete was delivered inline while the write " \
+        f"for the same node was still owed, so the sweep applied the write over it and " \
+        f"the peer keeps rule files for a node that is gone"
+    assert deleted["peers"] == {"ctrl2": "held-behind"}, \
+        f"the delete reported {deleted['peers']}, which does not say it was held"
+
+
+def test_a_first_action_for_a_node_is_sent_inline_rather_than_held(rig, monkeypatch):
+    """
+    The other half of the hold, and the half that would be silent: a guard that waits for a
+    row that is not there would take every inline send off the request path and leave every
+    call to the sweep, which is the latency the inline attempt exists to avoid.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (outbox.DONE, "",
+                                                             outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        said = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                {"node": "node001"}, {"force": True}, {"changed": True},
+                                "req-first", "tester")
+        # A second node, which the first says nothing about.
+        elsewhere = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                     {"node": "node002"}, None, {"changed": True},
+                                     "req-other", "tester")
+        # And the same node again, once what was owed for it has been taken.
+        again = outbox.replicate("prometheus", "hw-rules/<node>/actions/repair", "POST",
+                                 {"node": "node001"}, None, {"changed": True},
+                                 "req-again", "tester")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert said["peers"] == {"ctrl2": outbox.DONE}, said
+    assert elsewhere["peers"] == {"ctrl2": outbox.DONE}, \
+        f"node002 was held behind node001: {elsewhere}"
+    assert again["peers"] == {"ctrl2": outbox.DONE}, \
+        f"node001 was held behind a row that is already done: {again}"
+
+
+def test_the_drain_waits_as_long_as_the_sweep_rather_than_as_a_caller_would(rig,
+                                                                           monkeypatch):
+    """
+    Three seconds is the inline path's number, chosen because a caller's thread is held for
+    it. The drain inherited it, and a peer that is slow rather than dark then drained zero
+    rows per pass for ever: it did the work every pass, answered after the sender had gone,
+    and the silence opened its own breaker on a peer that was answering.
+
+    Nobody is waiting on a sweep pass, so it pays the sweep's own timeout. What keeps a pass
+    away from a peer that really is dark is the drain stopping at the first silence and the
+    breaker, not the clock on one offer - one wait per pass, not one per row.
+    """
+    from trixd.core.replication import outbox, sweep
+
+    class Answer:
+        """A peer that takes it."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001"}}
+
+    waited = []
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox.requests, "post",
+                        lambda *args, **kwargs: waited.append(kwargs["timeout"])
+                        or Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": "node001"}, {"force": True}, "req-slow", "tester")
+        outbox.drain("ctrl2")
+        assert waited == [sweep.TIMEOUT], \
+            f"the drain gave the peer {waited}s: a peer slower than that drains nothing, " \
+            f"pass after pass, and opens its own breaker on work it has done"
+
+        # The inline path keeps its own, because the caller is waiting on it.
+        outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                         {"node": "node002"}, None, {"changed": True}, "req-inline",
+                         "tester")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert waited[1:] == [outbox.TIMEOUT], \
+        f"a caller's thread was held for {waited[1:]}s, not the inline path's " \
+        f"{outbox.TIMEOUT}s"

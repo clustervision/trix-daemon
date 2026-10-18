@@ -48,6 +48,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.settings import current as settings
 from trixd.core.replication import applied
+from trixd.core.replication.sweep import TIMEOUT as SWEEP_TIMEOUT
 from trixd.core.replication.sweep import held_token, trust
 from trixd.core.replication.sweep import _token as peer_token
 from trixd.db import engine as database
@@ -70,7 +71,10 @@ ANSWERED: str = "answered"
 IN_FLIGHT: str = "in-flight"
 
 # The caller is waiting on this, so it is seconds rather than the sweep's thirty: the row
-# makes giving up free, and a dark peer must not hold a request thread.
+# makes giving up free, and a dark peer must not hold a request thread. It is the inline
+# path's alone - the drain pays the sweep's, imported above rather than repeated, because
+# nobody is waiting on a sweep pass and a peer that is merely slow drained nothing at all
+# at three seconds.
 TIMEOUT: int = 3
 # After this many sweep passes a row still waiting is said loudly, once, and then every
 # this-many passes. It is NOT given up on: a peer away for an hour of patching would
@@ -80,16 +84,21 @@ TIMEOUT: int = 3
 LOUD_AFTER: int = 12
 # How long a finished row is kept, so a caller that polls slowly still sees it.
 KEEP_SECONDS: int = 3600
-# What a message says when the peer answered and declined to do the work, and how long it
-# is offered again for. A decline can be a moment of Luna lag on the peer, which the next
-# pass clears; it can also be a node that peer will never know, and a row with no terminal
-# state is cleared by nothing and holds its node's later actions for ever.
+# What a message says when the peer answered and declined to do the work, and how long the
+# peer is allowed to keep answering without applying it. The answer can be a moment of Luna
+# lag on the peer, which the next pass clears; it can also be a node that peer will never
+# know, and a row with no terminal state is cleared by nothing and holds its node's later
+# actions for ever.
+#
+# It bounds every way the peer can answer and not do it - a decline in the body, a 5xx, a
+# 401 or a 403 - because each of those leaves the same row in the same place, and only
+# silence is a reason to keep asking indefinitely.
 #
 # How long rather than how many attempts. `attempts` counts every outcome - a dark peer, a
 # 5xx, a pass with no token held - so eleven passes of a peer being patched, which is under
 # an hour at the default interval, made the row terminal on its FIRST decline. `created` is
 # when this intent was written down and is reset by a newer one, so the span is the thing
-# meant all along: how long the peer has been declining what is owed.
+# meant all along: how long the peer has owed this without taking it.
 DECLINED: str = "the peer did not apply it"
 DECLINED_FOR_SECONDS: int = 3600
 # How long a refusal nothing has cleared is kept. It holds its node's later actions, and
@@ -130,8 +139,9 @@ def chain_of(target: str) -> str:
     """
     What two actions for one node share: the target without the body digest.
 
-    One definition, because `drain` holds a chain behind a refusal and `submit` clears one,
-    and the two disagreeing would leave rows nothing can clear.
+    One definition, because `drain` and the inline send hold a chain behind an action that
+    has not landed and `submit` clears one, and any two of them disagreeing would leave
+    rows nothing can clear, or send a node's actions out of order.
     """
     return target.split("|")[0]
 
@@ -258,6 +268,29 @@ def _clear_refused(handle, peer: str, plugin: str, chain: str) -> None:
         handle.delete(row)
 
 
+def _held_behind(peer: str, plugin: str, chain: str, row_id: int) -> bool:
+    """
+    Whether something owed for the same node has to go before this row.
+
+    The same question `drain` asks, asked the same way: the oldest owed row for a node goes
+    first, and what comes after it assumes it landed. Only the head of a chain may be sent,
+    so a first action for a node is never held, and a row is never held behind one that is
+    done - nothing waits for a row that will not be sent again.
+    """
+    handle = database.session()
+    try:
+        owing = handle.scalars(select(models.Outbox)
+                               .where(models.Outbox.peer == peer,
+                                      models.Outbox.plugin == plugin,
+                                      models.Outbox.state.in_((QUEUED, FAILED)))
+                               .order_by(models.Outbox.created,
+                                         models.Outbox.id)).all()
+        head = next((row.id for row in owing if chain_of(row.target) == chain), row_id)
+    finally:
+        handle.close()
+    return head != row_id
+
+
 def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body,
            request_id: str, origin: str) -> int:
     """
@@ -312,8 +345,15 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     thread for half a minute against a dark peer - the stall the breaker exists to stop,
     arriving through the back door. With nothing held, the row waits for the sweep, which
     can afford to sign in.
+
+    It decides the wait on the offer itself for the same reason: nobody is waiting on a
+    sweep pass, and a peer answering slower than the request path's few seconds drained
+    nothing at all, every pass, while doing the work each time and looking dark for it.
+    What keeps a pass away from a peer that really is dark is the drain stopping on the
+    first silence and the breaker, not the clock on one offer.
     """
     verify = trust()
+    patience = SWEEP_TIMEOUT if may_sign_in else TIMEOUT
     if not may_sign_in and not held_token(peer):
         return QUEUED, "no token held for the peer, so the sweep will sign in", NOT_ATTEMPTED
     held = json.loads(row.payload or "{}")
@@ -331,7 +371,7 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
                 return (QUEUED, "the held token expired, so the sweep will sign in",
                         NOT_ATTEMPTED)
         try:
-            answer = requests.post(url, json=envelope, timeout=TIMEOUT, verify=verify,
+            answer = requests.post(url, json=envelope, timeout=patience, verify=verify,
                                    headers={TOKEN_HEADER: token})
         except Exception as error:
             # Nothing came back, which is the one thing that is evidence about the peer.
@@ -395,9 +435,14 @@ def _release(row_id: int) -> None:
         _sending.discard(row_id)
 
 
-def _finish(row_id: int, state: str, message: str) -> None:
+def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> None:
     """
     Write down what happened to one row, counting the attempt.
+
+    `learned` is what the attempt learned about the peer, and it is what decides whether a
+    row still queued is allowed to stay queued for ever. The peer answering and not doing
+    the work is bounded; silence is not. It defaults to the peer having answered, which is
+    what a caller writing an outcome down by hand is saying happened.
     """
     handle = database.session()
     try:
@@ -408,14 +453,20 @@ def _finish(row_id: int, state: str, message: str) -> None:
         row.message = message[:2048]
         owed_for = (datetime.now(timezone.utc).replace(tzinfo=None)
                     - row.created).total_seconds()
-        if (state == QUEUED and message.startswith(DECLINED)
-                and owed_for >= DECLINED_FOR_SECONDS):
-            # Declined for long enough. Terminal is what gives it an exit: the next action
-            # for this node clears it, and a day later it is reaped - neither of which looks
-            # at a queued row, so a decline kept asking for ever and held the node with it.
+        if state == QUEUED and learned == ANSWERED and owed_for >= DECLINED_FOR_SECONDS:
+            # The peer has answered for long enough without doing it. Terminal is what gives
+            # it an exit: the next action for this node clears it, and a day later it is
+            # reaped - neither of which looks at a queued row, so such a row kept asking for
+            # ever and held the node with it.
+            #
+            # On what the attempt learned, not on the message: keyed on the decline's
+            # wording it bounded a decline and left a 5xx, a 401 and a 403 - the same row,
+            # in the same place, saying the same thing - with no exit at all. Any way the
+            # peer can answer and not do the work is this case, including a new one.
             state = FAILED
-            LOGGER.error("%s has been declining %s %s for %.0f minutes, so it is not asked "
-                         "again: %s", row.peer, row.method, row.path, owed_for / 60, message)
+            LOGGER.error("%s has answered for %s %s for %.0f minutes without applying "
+                         "it, so it is not asked again: %s", row.peer, row.method,
+                         row.path, owed_for / 60, message)
         if state == QUEUED and row.attempts and row.attempts % LOUD_AFTER == 0:
             # Said, not abandoned: it keeps riding the sweep until the peer takes it.
             LOGGER.error("%s has owed %s a %s %s for %d passes now: %s", row.origin,
@@ -475,8 +526,8 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
         if row.state != QUEUED:
             # Its own state, where this answered DONE for anything that was no longer
             # queued. A caller's inline attempt can refuse a row between the sweep taking
-            # its snapshot and reaching it - up to three seconds a row, so minutes with a
-            # queue of any size - and reading that back as done counted it as sent, left
+            # its snapshot and reaching it - one offer's wait a row, so minutes with a queue
+            # of any size - and reading that back as done counted it as sent, left
             # its chain unheld, and offered the next action for that node over a
             # prerequisite the peer had refused.
             return row.state, ANSWERED
@@ -492,7 +543,7 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
         return QUEUED, IN_FLIGHT
     try:
         state, message, learned = _send(peer, held, may_sign_in)
-        _finish(row_id, state, message)
+        _finish(row_id, state, message, learned)
     finally:
         # After the outcome is written, not before: released first, the row was unclaimed
         # and still queued for as long as the write took, which is the window the claim
@@ -514,6 +565,11 @@ def replicate(plugin: str, path: str, method: str, variables: dict, body,
 
     Never raises: the local work is done and answered, and a replication that cannot be
     attempted must not turn a successful call into a failed one.
+
+    It holds a node's chain exactly as the sweep's drain does. Sending inline without
+    asking delivered a row while an earlier one for the same node was still owed - a delete
+    going before the write it supersedes - and the next pass then applied the earlier one
+    over it, with both rows done and nothing anywhere saying the peer was wrong.
     """
     configured = peers()
     if not configured:
@@ -526,11 +582,17 @@ def replicate(plugin: str, path: str, method: str, variables: dict, body,
         return {"request_id": request_id, "peers": {}, "state": "skipped"}
 
     answered = {}
+    chain = chain_of(target_of(variables, body))
     for peer in configured:
         try:
             row_id = submit(peer, plugin, path, method, variables, body, request_id, origin)
             if breaker_open(peer):
                 answered[peer] = "peer-down"
+                continue
+            if _held_behind(peer, plugin, chain, row_id):
+                # Something earlier for this node has not landed, and this assumes it did.
+                # It is written down, so the sweep carries both in order.
+                answered[peer] = "held-behind"
                 continue
             # Not on a caller's thread: no sign-in, and a short timeout.
             answered[peer] = _attempt(peer, row_id, may_sign_in=False)[0]
@@ -604,9 +666,10 @@ def drain(peer: str) -> dict:
             in_flight += 1
         elif learned != ANSWERED:
             # Nothing came back. Everything from here, this row included, keeps its place
-            # for the next pass: offering the rest would be one three-second wait per row
+            # for the next pass: offering the rest would be one whole timeout per row
             # against a peer that is not there, which is the stall the breaker exists to
-            # prevent one layer down.
+            # prevent one layer down - and it is this stop, not a short clock on the offer,
+            # that keeps a dark peer from taking the pass.
             break
         else:
             # It answered, and answered badly for this row alone - a refusal, a 5xx, or a
