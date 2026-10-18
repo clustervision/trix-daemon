@@ -1562,12 +1562,12 @@ def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkey
     assert answer["skipped"] == ["node002", "node003"], answer
     assert answer["changed"] is True, "the node that does have a group was not configured"
 
-    # node_set is the genders plugin's too, and a node with no group is an ordinary line in
-    # a genders file - so the skipping belongs to this render and not to the shared reader.
+    # node_set is the genders plugin's too, and that render skips such a node for its own
+    # reason - so the skipping belongs to each render and not to the shared reader.
     assert slurm.node_set() == [{"name": "node001", "group": "compute"},
                                 {"name": "node002", "group": ""},
                                 {"name": "node003", "group": ""}], \
-        "the shared node list dropped a node, which takes it out of the genders file too"
+        "the shared node list filtered a node, which is each render's own decision"
 
 
 def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch, tmp_path):
@@ -1584,6 +1584,56 @@ def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch
     assert answer == {"nodes": 0, "files": [], "skipped": ["node001", "node002"]}, answer
     assert "nodes" not in seen, "the generator was called with nothing to write"
     assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
+
+
+def _genders(monkeypatch, nodes: dict) -> list:
+    """
+    Luna holding `nodes`, and a stand-in generator recording the set it was handed.
+    """
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
+                        lambda: SimpleNamespace(nodes=lambda: nodes))
+    handed: list = []
+    package = ModuleType("trinityx_config_genders")
+    package.Generate = lambda: SimpleNamespace(
+        Genders=lambda given: (handed.extend(given), True)[1])
+    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
+    return handed
+
+
+def test_a_node_with_no_group_is_left_out_of_the_genders_file(rig, monkeypatch):
+    """
+    A node Luna holds with no group renders as `<node> all,`, and libgenders refuses an empty
+    attribute for the whole file rather than for the line, so one such node makes the genders
+    file unloadable for every pdsh on the cluster. Left out and named, as slurm's render does.
+    """
+    from trixd.plugins.genders.backend import Backend
+
+    handed = _genders(monkeypatch, {"node001": {"group": "compute"},
+                                    "node002": {"group": None},
+                                    "node003": {"group": ""}})
+    answer = Backend().render_genders()
+
+    # True on either build, and first: no node reached the generator without a group, so no
+    # line it writes can carry the empty attribute libgenders refuses.
+    assert [one["name"] for one in handed] == ["node001"], handed
+    assert all(one["group"] for one in handed), handed
+    assert answer["nodes"] == 1, answer
+    assert answer.get("skipped") == ["node002", "node003"], answer
+
+
+def test_every_node_without_a_group_writes_no_genders_file_and_says_why(rig, monkeypatch):
+    """
+    Nothing to write, which is not the same as no nodes: the generator is not handed an empty
+    set, which would empty the managed block, and the names are in the answer.
+    """
+    from trixd.plugins.genders.backend import Backend
+
+    handed = _genders(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}})
+    answer = Backend().render_genders()
+
+    assert handed == [], "the generator was handed a set that would empty the genders file"
+    assert answer["nodes"] == 0, answer
+    assert answer.get("skipped") == ["node001", "node002"], answer
 
 
 def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
