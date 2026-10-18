@@ -2301,3 +2301,76 @@ def test_a_repair_relabels_the_live_file_when_an_older_one_sits_beside_it(rig, t
         f"the live file was never relabelled, so its alerts still match the old group: {expressions}"
     assert answer["rewritten"] == [os.path.basename(live)], \
         f"the relabel happened but was not reported: {answer}"
+
+
+def _hw_file_labelled(directory, host, group, parts=("memory",)):
+    """
+    A hardware rule file whose rules also carry the node labels, as Luna's own files do.
+    """
+    import yaml
+
+    path = _hw_file(directory, host, group, parts)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for rule in document["groups"][0]["rules"]:
+        rule["labels"].update({"hostname": host, "luna_group": group})
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return path
+
+
+def test_a_relabel_carries_every_node_label_and_not_just_the_hostname():
+    """
+    Enumerated from NODE_LABELS rather than listed one by one, because the relabel rewrites
+    exactly those matchers in the expression: a label it rewrites in the selector and not in
+    the labels block is one the file goes on naming wrongly, and it gets no second chance -
+    the next pass sees an expression that is already right and reports nothing to do.
+    """
+    from trixd.plugins.prometheus.backend import NODE_LABELS, _relabel_document
+
+    was = {"hostname": "node001.cluster", "luna_group": "compute"}
+    want = {"hostname": "web-07.cluster", "luna_group": "gpu"}
+    assert set(NODE_LABELS) == set(want), \
+        f"{sorted(set(NODE_LABELS) - set(want))} was added as a node label and needs a value " \
+        f"here before this test can say anything about it"
+    selector = ",".join(f'{key}="{was[key]}"' for key in NODE_LABELS)
+    document = {"groups": [{"name": "trinityx_hw", "rules": [
+        {"alert": "MissingHardwareComponent", "expr": f"absent(lshw_device{{{selector}}})",
+         "labels": dict(was)}]}]}
+
+    assert _relabel_document(document, want) is True, "the move was not seen at all"
+
+    labels = document["groups"][0]["rules"][0]["labels"]
+    stale = {key: labels[key] for key in NODE_LABELS if labels[key] != want[key]}
+    assert not stale, f"the selector was rewritten and these labels were left behind: {stale}"
+    assert _relabel_document(document, want) is False, \
+        "a second pass still finds work, so nothing about this file ever settles"
+
+
+def test_the_reconcile_leaves_no_rule_labelled_with_the_group_the_node_has_left(
+        rig, tmp_path, monkeypatch):
+    """
+    A group move reaches the labels block of every rule and not only its selector.
+
+    These labels are the compatibility surface: dashboards and alert rules group by them. The
+    pass that rewrites the selector is also the only one that will ever look - it stamps the
+    file as seen, and every pass after it finds an expression that is already right - so a
+    label left behind here is left behind for good.
+    """
+    import yaml
+
+    from trixd.plugins.prometheus.backend import NODE_LABELS
+
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    path = _hw_file_labelled(tmp_path, "node001.cluster", "compute")
+
+    first = backend.render_rule_files()
+
+    assert first["repaired"] == ["trix.hw.node001.cluster.rules"], \
+        f"the group move was not seen at all, so this says nothing about the labels: {first}"
+    labels = yaml.safe_load(path.read_text(encoding="utf-8"))["groups"][0]["rules"][0]["labels"]
+    assert labels.get("luna_group") == "gpu", \
+        f"the selector was rewritten and the label still names the group it has left: {labels}"
+    assert [key for key in NODE_LABELS if key not in labels] == [], \
+        f"a node label the file carried was dropped rather than corrected: {labels}"
+    assert backend.render_rule_files()["repaired"] == [], \
+        "the file never settles, so every reconcile pass rewrites and reloads it"

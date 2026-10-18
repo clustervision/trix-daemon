@@ -1173,11 +1173,14 @@ def _relabel_document(document: dict, values: dict) -> bool:
             if fixed != expr:
                 rule["expr"] = fixed
                 changed = True
+            # Every node label, not the hostname alone: the pass that fixes the expression
+            # is the only one that will look, so a label left behind is left for good.
             labels = rule.get("labels") or {}
-            host = values.get("hostname")
-            if labels.get("hostname") and host and labels["hostname"] != host:
-                labels["hostname"] = host
-                changed = True
+            for key in NODE_LABELS:
+                want = values.get(key)
+                if labels.get(key) and want and labels[key] != want:
+                    labels[key] = want
+                    changed = True
     return changed
 
 
