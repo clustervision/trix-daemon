@@ -541,6 +541,7 @@ class FakeRenders:
         Nothing woken yet.
         """
         self.woken = []
+        self.retries = 0
 
     def notify(self, item: str) -> list:
         """
@@ -551,8 +552,9 @@ class FakeRenders:
 
     def retry(self) -> list:
         """
-        Nothing has failed in this stub, so a pass puts nothing back.
+        Nothing has failed in this stub, so a pass puts nothing back; the ask is counted.
         """
+        self.retries += 1
         return []
 
 
@@ -650,6 +652,73 @@ def test_a_render_that_failed_is_produced_again_on_the_next_pass(rig, monkeypatc
         f"the failed render was never produced again: {len(attempts)} attempt(s)"
     assert item.document == {"nodes": ["node001"]}, \
         f"produced again, but it serves nothing: {item.last_error!r}"
+
+
+def test_a_render_that_failed_is_produced_again_where_luna_answers_no_hashes(rig,
+                                                                            monkeypatch):
+    """
+    Luna answers that route on the HA master only, so on the passive controller of a pair
+    every pass reads an empty dict: nothing is failing and nothing changed, and the fallback
+    reports itself inert. A render that failed there is owed exactly as much as on the
+    master, so the empty answer is the pass that has to put it back.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    attempts = []
+
+    def produce():
+        """
+        Luna away for the first attempt, answering afterwards.
+        """
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("luna is away")
+        return {"nodes": ["node001"]}
+
+    luna = FakeLuna({})
+    monkeypatch.setattr(hashes, "luna", lambda: luna)
+    poller = hashes.LunaHashes()
+
+    engine = renders()
+    # This render alone, so the reconcile below counts this producer and the retry is not
+    # also sweeping the shipped renders out to a Luna that no unit test has.
+    engine.forget_all()
+    engine.register("passive", "renders/thing",
+                    Render(inputs=["luna.node"], coalesce="0s"), produce)
+    assert engine.run_all() == 0, \
+        "the start-up reconcile was meant to fail, so nothing below is proven"
+    item = engine.renders["passive/renders/thing"]
+    assert item.document is None and item.last_error, \
+        "the render is not in the failed state this is about"
+
+    assert poller.once() == [], "an empty answer is never a change"
+    assert (poller.failing, poller.seen) == (False, {}), \
+        "Luna answering emptily is not what was driven, so the passive shape is unproven"
+    assert len(attempts) == 2, \
+        f"the failed render was never produced again: {len(attempts)} attempt(s)"
+    assert item.document == {"nodes": ["node001"]}, \
+        f"produced again, but it serves nothing: {item.last_error!r}"
+    assert not item.last_error, "a render that is serving still carries its failure"
+
+
+def test_a_failed_render_is_put_back_on_every_pass_that_reached_luna(rig, monkeypatch):
+    """
+    Recovery rests on the retry standing above every way a pass can end, so it is asserted
+    over all of them: no hashes at all, the baseline reading, no digest moved, a digest
+    moved. A pass that never reached Luna is the one pass that owes nothing.
+    """
+    poller, renders = _hashes(monkeypatch, {}, {"node": "1"}, {"node": "1"},
+                              {"node": "2"}, requests.ConnectionError("away"))
+    for reached in range(1, 5):
+        poller.once()
+        assert renders.retries == reached, \
+            f"pass {reached} reached Luna and put nothing back"
+    assert (poller.seen, renders.woken) == ({"node": "2"}, ["luna.node"]), \
+        "the four passes did not end the four ways this is asserted over"
+
+    poller.once()
+    assert renders.retries == 4, "a pass that never reached Luna has nothing to put back"
 
 
 def test_the_hash_baseline_and_poller_follow_the_interval(rig, monkeypatch):
