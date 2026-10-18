@@ -65,8 +65,14 @@ def register_placeholder(name: str, resolve, published: str) -> None:
 def substitute(text: str, request: Request = None) -> str:
     """
     Replace every registered placeholder, with the reader's own address when there is a
-    request and the static stand-in when there is not. An unregistered one is left as
-    written, so a disabled plugin shows its placeholder rather than a wrong address.
+    request and the static stand-in when there is not. A placeholder nothing registered is
+    left as written, as `{name}`.
+
+    Nothing takes a registration back, so an unplugged plugin's placeholder goes on being
+    resolved: there is no forget here and unload calls none. Written down rather than
+    fixed, because the one placeholder there is resolves to Luna's own address, where Luna
+    answers whether or not this daemon forwards to it, and the paragraph naming it is
+    stale once that route is gone however the placeholder reads.
     """
     for name, (resolve, published) in _placeholders.items():
         try:

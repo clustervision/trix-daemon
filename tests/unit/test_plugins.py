@@ -719,6 +719,56 @@ def test_a_manifest_that_could_not_work_is_refused_at_load(rig):
         manifests.duplicates(twice)
 
 
+def test_a_declaration_the_route_would_ignore_is_refused_beside_its_neighbours():
+    """
+    Two more shapes of the same kind as the refusals they sit next to.
+
+    A render that also declares a body schema, or a verb that is not a read: the reader
+    behind a render is handed neither. The body is built, documented and checked, and then
+    dropped on the way in; the write reaches that same reader, which answers what was last
+    rendered. That is the path variable and the query parameter again, which are refused
+    already. A public endpoint that also takes a node token: a public route is bound with
+    no guard in front of it, so the token is never asked for and never bound to the node
+    its path names - the route is open to anyone while the manifest says a node token, and
+    the document says public. It is a path carrying one of the node names that gets here;
+    one without is refused already, for the other half of the same reason.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend",
+            "schemas": {"change": {"name": {"type": "string"}}}}
+    for endpoints, because in (
+            ([{"path": "renders/thing", "methods": ["GET"], "minimum": "none",
+               "handler": "render_thing", "schema": "change",
+               "render": {"inputs": ["luna.node"], "serve": "json"}}],
+             "cannot also declare schema change"),
+            ([{"path": "renders/thing", "methods": ["GET", "POST"], "minimum": "none",
+               "handler": "render_thing",
+               "render": {"inputs": ["luna.node"], "serve": "json"}}],
+             "cannot also serve POST"),
+            ([{"path": "metrics/<node>", "methods": ["GET"], "handler": "read",
+               "public": True, "token": "node"}],
+             "is public and takes a node token")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse({**base, "endpoints": endpoints})
+        assert because in str(refusal.value), (because, str(refusal.value))
+
+    # And what these must not take with them, so neither can pass by refusing everything:
+    # a schema on the write that declares it, a render that only reads, a public read, and
+    # a node token behind the gate.
+    sound = manifests.parse({**base, "endpoints": [
+        {"path": "thing", "methods": ["PATCH"], "handler": "write", "schema": "change",
+         "minimum": "manager"},
+        {"path": "renders/thing", "methods": ["GET"], "minimum": "none",
+         "handler": "render_thing",
+         "render": {"inputs": ["luna.node"], "serve": "json"}},
+        {"path": "metrics", "methods": ["GET"], "handler": "read", "public": True},
+        {"path": "rules/<node>", "methods": ["PATCH"], "handler": "write",
+         "token": "node"}]})
+    assert len(sound.endpoints) == 4, "four shapes that have to go on loading"
+
+
 def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
     """
     Starlette matches the first of two routes with the same path and verb, so the second

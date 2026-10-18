@@ -289,19 +289,29 @@ def _hook_signature(event: str, handler: str, found) -> None:
             f"positionally; a hook is handed its payload as keyword arguments")
 
 
+def _hook_handler(manifest, backend, event: str, handler: str):
+    """
+    The backend method behind one declared change, refusing what the dispatcher could not
+    call.
+
+    The command-line check calls this too, so what it passes is what the load path accepts.
+    A refusal added here is reached from both; one added beside it, in either caller, is
+    reached from one.
+    """
+    found = getattr(backend, handler, None)
+    if found is None or not callable(found):
+        raise PluginRefused(
+            f"{event} names handler {handler}, which {manifest.backend} does not have")
+    _hook_signature(event, handler, found)
+    return found
+
+
 def _bind_hooks(manifest, backend) -> dict:
     """
     The backend method behind each change the manifest declares.
     """
-    hooks = {}
-    for event, handler in manifest.hooks.items():
-        found = getattr(backend, handler, None)
-        if found is None or not callable(found):
-            raise PluginRefused(
-                f"{event} names handler {handler}, which {manifest.backend} does not have")
-        _hook_signature(event, handler, found)
-        hooks[event] = found
-    return hooks
+    return {event: _hook_handler(manifest, backend, event, handler)
+            for event, handler in manifest.hooks.items()}
 
 
 def _daemon_paths(app: FastAPI, known) -> list:
@@ -333,6 +343,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     if not path:
         raise NotFound(f"no plugin named {name}")
 
+    # What answers for this plugin's queue before anything here touches it: its own handler
+    # from an earlier load, or the hook dispatcher where another plugin declares hooks on
+    # this source. Read before the purge, because the import below replaces it.
+    standing = tasks.handler(name)
     _purge(name)
     try:
         if os.path.isdir(path):
@@ -366,6 +380,15 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     except Exception as error:
         # Whatever is already serving keeps serving. The caller decides whether
         # that is fatal: at startup it is not, at the control endpoint it is.
+        # What answered for its queue is put back as it was found. The import above
+        # replaced that, so a refused plugin used to go on answering for its own subsystem
+        # and a notify naming it was dispatched into code that had just been refused -
+        # while dropping the registration instead would unplug the queue of a plugin whose
+        # routes are still serving, because three refusals come before that import.
+        if standing is None:
+            tasks.unregister(name)
+        else:
+            tasks.register(name, standing)
         reason = error.message if isinstance(error, PluginRefused) else str(error)
         LOGGER.error("plugin %s refused: %s", name, reason)
         _remember(known.refuse(name, reason, path))

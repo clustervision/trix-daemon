@@ -142,6 +142,25 @@ def test_the_document_names_luna_on_the_host_the_reader_used(client):
                                "url": "http://testserver/api/v1/docs/static/LICENSE.txt"}
 
 
+def test_a_placeholder_outlives_the_plugin_that_registered_it(rig):
+    """
+    Nothing takes a placeholder registration back, which is what substitute says: unplugging
+    the plugin that offered one leaves the document resolving it. Pinned because the sentence
+    there used to promise the opposite - a disabled plugin showing its placeholder - and
+    nothing anywhere delivered that, so the next reader believed the docstring.
+    """
+    from trixd.api.v1 import docs
+    from trixd.core.plugins import loader
+
+    assert "{luna}" not in docs.substitute(docs.DESCRIPTION), \
+        "the placeholder was never registered, so there is nothing here to outlive"
+    loader.unload(rig, "luna")
+    standing = docs.substitute(docs.DESCRIPTION)
+    assert "{luna}" not in standing, \
+        "the placeholder stopped resolving, so what substitute says about it is wrong again"
+    assert "https://<controller>:7050" in standing
+
+
 def test_the_published_document_names_no_controller():
     """
     docs/openapi.json is the same everywhere, so it shows where Luna is, not one machine.

@@ -91,6 +91,12 @@ def check(path: str) -> list:
             continue
         problems += [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
     for event, handler in manifest.hooks.items():
-        if not callable(getattr(backend, handler, None)):
-            problems.append(f"{event} names handler {handler}, which the backend does not have")
+        # The loader's own check rather than a second one beside it: this loop looked for
+        # the handler only, so a signature the load path refuses passed here. That is the
+        # render branch's defect again, and the way it comes back is a refusal added to the
+        # loader alone - so nothing here knows what a hook refusal is any more.
+        try:
+            loader._hook_handler(manifest, backend, event, handler)
+        except PluginRefused as error:
+            problems.append(error.message)
     return problems

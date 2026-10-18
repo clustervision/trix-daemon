@@ -256,6 +256,32 @@ def parse(document: dict) -> Manifest:
             unusable = "a path variable" if endpoint.variables else "a query parameter"
             raise PluginRefused(f"{endpoint.path or '/'} is a render, so it cannot take "
                                 f"{unusable}: the reader is given none")
+        if endpoint.render is not None:
+            # The same shape once more: the reader behind a render is handed neither a body
+            # nor a verb of its own. A declared schema is built, documented and dropped on
+            # the way in, and any verb but a read reaches that same reader, which answers
+            # what was last rendered. Both are accepted today and ignored in silence.
+            if endpoint.body_schema:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a render, so it cannot also declare schema "
+                    f"{endpoint.body_schema}: a body is documented and checked, and then "
+                    f"the reader is not handed it")
+            writes = [verb.upper() for verb in endpoint.methods
+                      if verb.upper() not in ("GET", "HEAD")]
+            if writes:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a render, so it cannot also serve "
+                    f"{', '.join(writes)}: the reader answers what was last rendered, so "
+                    f"the document would show a write that changes nothing")
+        if endpoint.public and endpoint.token == TOKEN_KIND_NODE:
+            # A public route is bound with no guard in front of it at all, so the node
+            # token is never asked for and never bound to the path's node: the route is
+            # open to anyone and the document says public, while the manifest says a node
+            # token. Refused rather than settled one way, because which of the two the
+            # author meant cannot be derived from the declaration.
+            raise PluginRefused(
+                f"{endpoint.path or '/'} is public and takes a node token: a public route "
+                f"is served with no guard, so no token is asked for or bound")
         if endpoint.token == TOKEN_KIND_NODE and not any(
                 key in endpoint.variables for key in NODE_PATH_PARAMS):
             # The gate binds a node token to the node its path names, and looks for it under

@@ -3239,6 +3239,228 @@ def test_the_check_refuses_everything_the_loader_refuses_about_a_render(rig, tmp
     assert check(str(path)) == [], "a render that loads has to pass the check"
 
 
+def test_every_loader_refusal_a_check_could_make_is_shared_with_it():
+    """
+    An empty list from the check is a promise that the plugin would load, and the promise
+    holds only while the loader's refusals run through functions the check calls too. A
+    refusal added beside one of them - in the loader's own loop rather than in the shared
+    validator that loop calls - is reached from the load path alone. That is how the render
+    branch's defect came back on the hook branch: the fix shared the render check, a
+    refusal landed in the loader afterwards, and the check knew nothing of it.
+
+    Derived rather than listed, because an example test has to be remembered and the whole
+    defect is that it was not: every function in the loader that raises PluginRefused is
+    either reachable from what the check calls, or named below as a refusal no check
+    without a daemon could make. A new refusal anywhere else fails here by construction.
+    """
+    import ast
+
+    from trixd.core.plugins import check as plugin_check
+
+    # The loader's own refusals, with why each is out of a check's reach. Nothing else may
+    # refuse without the check reaching it.
+    load_only = {
+        "load": "a reserved name, a manifest sitting under another name, a path already "
+                "served: the check makes its own of the first two, and the last needs a "
+                "route table",
+        "_install": "plugging in writes to the registries of a running daemon",
+        "_from_script": "a single-file plugin, which the check never sees: it wants a "
+                        "manifest.yaml",
+    }
+
+    def _tree(module):
+        """
+        One module's syntax tree, read from the file it was imported from.
+        """
+        with open(module.__file__, encoding="utf-8") as handle:
+            return ast.parse(handle.read())
+
+    functions = {node.name: node for node in _tree(loader).body
+                 if isinstance(node, ast.FunctionDef)}
+
+    def _refuses(node) -> bool:
+        """
+        Whether this function raises PluginRefused itself.
+        """
+        return any(isinstance(item, ast.Raise) and isinstance(item.exc, ast.Call)
+                   and getattr(item.exc.func, "id", "") == "PluginRefused"
+                   for item in ast.walk(node))
+
+    def _calls(node) -> set:
+        """
+        The loader's own functions this one calls by name.
+        """
+        return {item.func.id for item in ast.walk(node)
+                if isinstance(item, ast.Call) and isinstance(item.func, ast.Name)
+                and item.func.id in functions}
+
+    reached = {node.attr for node in ast.walk(_tree(plugin_check))
+               if isinstance(node, ast.Attribute) and isinstance(node.value, ast.Name)
+               and node.value.id == "loader" and node.attr in functions}
+    assert reached, "the check reaches into the loader by name, or this test checks nothing"
+    frontier = list(reached)
+    while frontier:
+        for found in _calls(functions[frontier.pop()]):
+            if found not in reached:
+                reached.add(found)
+                frontier.append(found)
+
+    refusing = {name for name, node in functions.items() if _refuses(node)}
+    assert refusing, "the loader refuses something, or this test checks nothing"
+    assert refusing - reached - set(load_only) == set(), (
+        f"the check cannot reach {', '.join(sorted(refusing - reached - set(load_only)))}, "
+        f"so it passes a plugin the loader refuses: call the same function from the check, "
+        f"or say here why a check without a daemon cannot make that refusal")
+    assert set(load_only) - refusing == set(), (
+        f"{', '.join(sorted(set(load_only) - refusing))} refuses nothing any more, so this "
+        f"list is stale and hides whatever takes its place")
+
+
+def test_the_check_refuses_a_hook_handler_the_dispatcher_could_not_call(rig, tmp_path):
+    """
+    A change is handed over as `handler(**payload)`, so a parameter that can only be filled
+    positionally never is: the loader refuses it, and the check looked for the handler only.
+    """
+    from trixd.core.plugins.check import check
+
+    path = tmp_path / "picky"
+    path.mkdir()
+    (path / "__init__.py").write_text("", encoding="utf-8")
+    (path / "backend.py").write_text(
+        'class Backend:\n    """A plugin whose hook could not be called."""\n\n'
+        '    def moved(self, name, /):\n        """Act."""\n        return "noted"\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n',
+        encoding="utf-8")
+    (path / "manifest.yaml").write_text(
+        "plugin: picky\nbackend: backend\nhooks:\n  luna.node.update: moved\nendpoints:\n"
+        "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
+        encoding="utf-8")
+
+    problems = check(str(path))
+    assert [problem for problem in problems if "positionally" in problem], \
+        f"the check passed a hook the loader refuses: {problems}"
+    with pytest.raises(PluginRefused, match="positionally"):
+        loader.load(rig, "picky", str(path))
+
+
+def _noisy_plugin(root) -> None:
+    """
+    A plugin that registers what runs its tasks as its module is imported, and is refused
+    after that import: its hook names a handler the backend does not have.
+    """
+    plugin = root / "plugins" / "noisy"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: noisy\nbackend: backend\nhooks:\n  luna.node.update: absent\nendpoints:\n"
+        "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        "from trixd.core import tasks\n\n\n"
+        'class Backend:\n    """A plugin with work of its own."""\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n\n\n'
+        'def run_task(task, param=""):\n    """Run one."""\n    return "noted"\n\n\n'
+        'tasks.register("noisy", run_task)\n', encoding="utf-8")
+
+
+def test_a_refused_load_takes_back_the_task_handler_its_import_registered(rig, tmp_path):
+    """
+    A plugin registers what runs its tasks as its module is imported, which happens before
+    almost every refusal: so a refused plugin went on answering for its own subsystem, and
+    a notify naming it was accepted and dispatched into code the loader had just refused.
+    """
+    import sys
+
+    from trixd.core import tasks
+
+    _noisy_plugin(tmp_path)
+    assert tasks.handler("noisy") is None, "nothing answers for noisy before the load"
+
+    with pytest.raises(PluginRefused, match="names handler absent"):
+        loader.load(rig, "noisy")
+
+    assert f"{loader.MODULE_PREFIX}noisy.backend" in sys.modules, \
+        "the backend was never imported, so nothing registered and this proves nothing"
+    assert tasks.handler("noisy") is None, \
+        "a refused plugin still answers for its own subsystem"
+
+
+def test_a_refusal_leaves_hook_dispatch_for_that_source_standing(rig, tmp_path):
+    """
+    What stood under the plugin's name may be the hook dispatcher rather than a plugin's
+    own handler, where another loaded plugin declares a hook on this source. Putting back
+    what was found covers that too: dropping the registration instead would stop every
+    plugin's hooks on these events, with nothing to say so.
+    """
+    from trixd.core import hooks, tasks
+
+    watchful = tmp_path / "plugins" / "watchful"
+    watchful.mkdir()
+    (watchful / "manifest.yaml").write_text(
+        "plugin: watchful\nbackend: backend\nhooks:\n  noisy.thing.update: moved\n"
+        "endpoints:\n  - path: seen\n    methods: [GET]\n    minimum: none\n"
+        "    handler: seen\n", encoding="utf-8")
+    (watchful / "backend.py").write_text(
+        'class Backend:\n    """A plugin that wants to hear about another one."""\n\n'
+        '    def moved(self, name=""):\n        """Act."""\n        return "noted"\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n',
+        encoding="utf-8")
+    loader.load(rig, "watchful")
+    assert tasks.handler("noisy") is hooks.run, \
+        "nothing dispatches noisy hooks, so there is nothing here to lose"
+
+    _noisy_plugin(tmp_path)
+    with pytest.raises(PluginRefused, match="names handler absent"):
+        loader.load(rig, "noisy")
+
+    assert tasks.handler("noisy") is hooks.run, \
+        "the refusal took hook dispatch for noisy events with it"
+
+
+def test_a_reload_refused_before_the_import_leaves_the_queue_it_found(rig, tmp_path):
+    """
+    Three refusals come before the backend is imported again - a manifest that cannot be
+    read, one that does not parse, a backend that does not import - so at that point the
+    handler registered under this plugin's name is still the working one from the load that
+    is serving. The routes keep serving on a refusal, and so does the queue behind them: a
+    task submitted for this plugin still runs, rather than answering that nothing is
+    registered for it.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED
+    from trixd.core import tasks
+    from trixd.core.plugins.registry import current as registry
+
+    plugin = tmp_path / "plugins" / "chatty"
+    plugin.mkdir()
+    sound = ("plugin: chatty\nbackend: backend\nendpoints:\n  - path: seen\n"
+             "    methods: [GET]\n    minimum: none\n    handler: seen\n")
+    (plugin / "manifest.yaml").write_text(sound, encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        "from trixd.core import tasks\n\n\n"
+        'class Backend:\n    """A plugin with a queue of its own."""\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n\n\n'
+        'def run_task(task, param=""):\n    """Run one."""\n'
+        '    return f"chatty ran {task}"\n\n\n'
+        'tasks.register("chatty", run_task)\n', encoding="utf-8")
+
+    loader.load(rig, "chatty")
+    standing = tasks.handler("chatty")
+    assert standing is not None, "the import registered nothing, so this proves nothing"
+    assert standing("rebuild") == "chatty ran rebuild", "it answered before the reload"
+
+    # Refused at the parse, which is before the backend is imported again.
+    (plugin / "manifest.yaml").write_text(sound.replace("[GET]", "[FROB]"), encoding="utf-8")
+    with pytest.raises(PluginRefused, match="unsupported verbs"):
+        loader.load(rig, "chatty")
+
+    entry = registry().get("chatty")
+    assert entry.state == PLUGIN_STATE_LOADED and entry.routes, \
+        "the old plugin stopped serving, so there is no queue here to keep"
+    assert tasks.handler("chatty") is standing, \
+        "the refused reload unplugged the queue of a plugin that is still serving"
+    assert tasks.handler("chatty")("rebuild") == "chatty ran rebuild", \
+        "the handler is registered but no longer runs the work"
+
+
 def test_a_render_has_to_declare_an_input_that_could_wake_it():
     """
     A render is produced once at start-up and then only when an input changes, so a render
