@@ -592,26 +592,39 @@ class Backend:
 
     def _hw_paths(self, node: str) -> list:
         """
-        The rule files that name this node, by full hostname or by short name.
+        The rule files that name this node: the names Luna holds for it, or failing Luna,
+        what the filenames say.
 
-        A file under the node's own name is unambiguous and is the whole answer: another
-        file sharing only its short name may belong to a different node, and must not be
-        read, rewritten or retired because somebody asked about this one.
+        A node is unique in Luna, so its name and its hostname address its files directly
+        and the domain does not matter. A filename cannot say that much: a node whose name
+        and hostname differ in their short form answers to neither by file, so its rules
+        were a 404 while they sat on disk, its retire found nothing and left a node that
+        was gone still alerting, and the import it asks for itself after boot regenerated,
+        backed up and reloaded on every boot.
 
-        With no such file - a node whose file is under the name it used to answer to, or
-        under its full hostname when the caller asked by the short one - there may be a
-        single candidate, and that is taken. Two is a refusal. Two nodes whose names differ
-        only past the first dot share a short name, and taking the first of them is how one
-        node's rules were served, rewritten and retired on another node's behalf: the
-        mistake the reconcile was taught not to make, left standing on every other route.
-
-        The refusal is loud and returns nothing, so a caller gets "no rules held for this
-        node" rather than another node's. Whoever reads the log can see which two files.
+        The search by filename is what is left when Luna cannot answer - a node that has
+        been deleted, which is exactly when the retire and the delete hook have to find its
+        files. There a short name may name two files, because two nodes whose hostnames
+        differ only past the first dot share one, and serving, rewriting or retiring either
+        of them on the other's behalf is the mistake the reconcile was taught not to make.
+        Two is refused loudly and answers nothing, so a caller gets "no rules held for this
+        node" rather than another node's, and whoever reads the log sees which two files.
         """
         directory = self._rules_dir()
-        own = os.path.join(directory, HW_RULES.format(host=node))
-        if os.path.isfile(own):
-            return [own]
+        try:
+            record = luna().node(node.split(".")[0])
+        except ServiceUnavailable as error:
+            # A retire and the delete hook have to find the files with Luna unreachable, and
+            # that is the same answer as for a node Luna no longer holds. Said, not swallowed.
+            LOGGER.warning("Luna could not say which files are %s's (%s), so they are taken "
+                           "from the file names instead", node, error.message)
+            record = None
+        if record is not None:
+            # The hostname first: that is the name a file is written under, and the node's
+            # own name is what a file written before a rename still carries.
+            names = dict.fromkeys([record.get("hostname") or node, node.split(".")[0]])
+            return [path for path in (os.path.join(directory, HW_RULES.format(host=name))
+                                      for name in names) if os.path.isfile(path)]
         pattern = os.path.join(directory, HW_RULES.format(host="*"))
         found = sorted(path for path in glob.glob(pattern)
                        if _names_node(_hw_host(path), node))

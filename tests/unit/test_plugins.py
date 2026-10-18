@@ -2303,18 +2303,104 @@ def test_a_repair_relabels_the_live_file_when_an_older_one_sits_beside_it(rig, t
         f"the relabel happened but was not reported: {answer}"
 
 
-def _hw_file_labelled(directory, host, group, parts=("memory",)):
+def _differing_name_backend(tmp_path, monkeypatch):
     """
-    A hardware rule file whose rules also carry the node labels, as Luna's own files do.
-    """
-    import yaml
+    A prometheus backend over tmp_path whose one node is keyed node001 in Luna and answers to
+    the hostname web-07.cluster, and a reload that is counted.
 
-    path = _hw_file(directory, host, group, parts)
-    document = yaml.safe_load(path.read_text(encoding="utf-8"))
-    for rule in document["groups"][0]["rules"]:
-        rule["labels"].update({"hostname": host, "luna_group": group})
-    path.write_text(yaml.safe_dump(document), encoding="utf-8")
-    return path
+    The two names do not even share a short form, which is the whole point: nothing about the
+    file this node's rules are written under can be read back out of the name it is asked by.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    nodes = {"node001": {"hostname": "web-07.cluster", "group": "compute"}}
+
+    class Luna:
+        """
+        That one node, and nothing under any other name.
+        """
+
+        def nodes(self):
+            """
+            Every node.
+            """
+            return nodes
+
+        def node(self, name):
+            """
+            One node, or None.
+            """
+            return nodes.get(name)
+
+    def query(url, params=None, **_):
+        """
+        One component, under the hostname.
+        """
+        result = [{"metric": {"hostname": "web-07.cluster", "luna_group": "compute",
+                              "class": "memory", "description": "DIMM", "product": "P",
+                              "vendor": "V", "serial": "S1"}}]
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": result}})
+
+    reloads = []
+
+    def reload(argv, **kwargs):
+        """
+        systemctl reload prometheus-server, counted.
+        """
+        reloads.append(argv)
+        return SimpleNamespace(ok=True, out="", err="")
+
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    monkeypatch.setattr(prometheus.shell, "run", reload)
+    monkeypatch.setattr(prometheus, "RELOADS", prometheus.SharedReload())
+    backend = prometheus.Backend()
+    backend.config(body={"rules_directory": str(tmp_path)})
+    return backend, reloads
+
+
+def _kept_copies(directory) -> int:
+    """
+    How many rule files sit under backup/, retired or copied aside before a write.
+    """
+    backup = directory / "backup"
+    return len(list(backup.iterdir())) if backup.is_dir() else 0
+
+
+def test_a_node_is_resolved_through_luna_and_not_by_what_its_file_is_called(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    A node keyed node001 in Luna and answering to web-07.cluster: its rule file is written
+    under the hostname, and no name it is asked by can be matched to that file.
+
+    A node is unique in Luna, so Luna can say which file is this node's and a filename cannot.
+    Read out of the filename, the file on disk is correct and invisible: the rules are a 404,
+    the retire reports nothing and leaves a node that is gone still alerting, and the import a
+    node asks for itself after boot regenerates, backs up and reloads Prometheus - on every
+    boot of every such node, for ever.
+    """
+    backend, reloads = _differing_name_backend(tmp_path, monkeypatch)
+
+    first = backend.import_hw_rules("node001", {})
+    written = tmp_path / "trix.hw.web-07.cluster.rules"
+    assert first["changed"] is True and written.is_file(), \
+        f"the first import did not write the file this test is about: {first}"
+
+    # The same node booting again, unchanged: no write, no backup, no reload.
+    reloaded, kept = len(reloads), _kept_copies(tmp_path)
+    again = backend.import_hw_rules("node001", {})
+    assert again["changed"] is False, \
+        f"the boot import cannot see the file it wrote, so it writes it again: {again}"
+    assert len(reloads) == reloaded, "Prometheus was reloaded for a node that had not changed"
+    assert _kept_copies(tmp_path) == kept, "a node that had not changed was backed up"
+
+    assert backend.get_hw_rules("node001").get("groups"), \
+        "rules that are on disk and correct are not served to a caller asking by the node"
+
+    retired = backend.remove_hw_rules("node001")
+    assert retired["retired"] == ["trix.hw.web-07.cluster.rules"], \
+        f"a node that is gone keeps its alerts loading: {retired}"
+    assert not written.exists(), "the file reported as retired is still in the glob"
 
 
 def test_a_relabel_carries_every_node_label_and_not_just_the_hostname():
@@ -2343,6 +2429,20 @@ def test_a_relabel_carries_every_node_label_and_not_just_the_hostname():
     assert not stale, f"the selector was rewritten and these labels were left behind: {stale}"
     assert _relabel_document(document, want) is False, \
         "a second pass still finds work, so nothing about this file ever settles"
+
+
+def _hw_file_labelled(directory, host, group, parts=("memory",)):
+    """
+    A hardware rule file whose rules also carry the node labels, as Luna's own files do.
+    """
+    import yaml
+
+    path = _hw_file(directory, host, group, parts)
+    document = yaml.safe_load(path.read_text(encoding="utf-8"))
+    for rule in document["groups"][0]["rules"]:
+        rule["labels"].update({"hostname": host, "luna_group": group})
+    path.write_text(yaml.safe_dump(document), encoding="utf-8")
+    return path
 
 
 def test_the_reconcile_leaves_no_rule_labelled_with_the_group_the_node_has_left(
@@ -2374,3 +2474,43 @@ def test_the_reconcile_leaves_no_rule_labelled_with_the_group_the_node_has_left(
         f"a node label the file carried was dropped rather than corrected: {labels}"
     assert backend.render_rule_files()["repaired"] == [], \
         "the file never settles, so every reconcile pass rewrites and reloads it"
+
+
+def test_a_luna_that_cannot_answer_does_not_stop_a_retire(rig, tmp_path, monkeypatch):
+    """
+    Retiring a node's files needs no Luna: the names on disk are enough, and the delete hook
+    runs exactly when Luna may no longer hold the node - or may not answer at all.
+
+    Resolving a node through Luna is what makes the other routes right, and it must not turn
+    a route that worked off the file names into a 503: a node deleted while Luna is down
+    would keep alerting with nothing left to notice. Luna is unreachable here, which the
+    client raises the same way as a refused token or a 5xx.
+    """
+    from trixd.common.errors import ServiceUnavailable
+    from trixd.plugins.prometheus import backend as prometheus
+
+    class Luna:
+        """
+        Luna, not answering.
+        """
+
+        def node(self, name):
+            """
+            What the client raises when it cannot be asked.
+            """
+            raise ServiceUnavailable("Luna is not answering")
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    monkeypatch.setattr(prometheus, "luna", lambda: Luna())
+    live = _hw_file(tmp_path, "node009.cluster", "compute")
+
+    try:
+        answer = backend.remove_hw_rules("node009")
+    except ServiceUnavailable as refusal:
+        raise AssertionError(
+            f"a Luna that cannot answer stopped a retire that needs none of it: "
+            f"{refusal.message}") from None
+
+    assert answer["retired"] == ["trix.hw.node009.cluster.rules"], \
+        f"the file was found by name and not retired: {answer}"
+    assert not live.exists(), "the file reported as retired is still in the glob"
