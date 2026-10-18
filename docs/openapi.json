@@ -608,6 +608,21 @@
       },
       "PrometheusConfig": {
         "properties": {
+          "exporters_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the exporter baseline is read from; this file is not replicated",
+            "examples": [
+              "/trinity/local/trixd/daemon/config/exporters.yaml"
+            ],
+            "title": "Exporters File"
+          },
           "prometheus_url": {
             "anyOf": [
               {
@@ -3146,13 +3161,14 @@
     },
     "/api/v1/prometheus/config": {
       "get": {
-        "description": "The three settings the prometheus plugin works with. `rules_directory` is where it\nwrites the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus\nwhich hardware each node reports, and `reload_command` is what it runs after writing a\nrule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the\nother and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The four settings the prometheus plugin works with. `exporters_file` is the baseline it\nreads the exporters from, `rules_directory` is where it writes the rule files Prometheus\nreads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and\n`reload_command` is what it runs after writing a rule file. When the scheme in\n`prometheus_url` is the wrong one, the plugin tries the other and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_config_get_api_v1_prometheus_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "example": {
+                  "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3205,7 +3221,7 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Send any of the three settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Send any of the four settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "prometheus_config_patch_api_v1_prometheus_config_patch",
         "requestBody": {
           "content": {
@@ -3229,6 +3245,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3236,7 +3253,7 @@
                 "schema": {}
               }
             },
-            "description": "All three settings as now held"
+            "description": "All four settings as now held"
           },
           "401": {
             "content": {

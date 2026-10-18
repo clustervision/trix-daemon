@@ -90,6 +90,11 @@ schemas:
       description: One entry per node, naming node and any of force, nhc and disabled
       example: [{node: node001, disabled: true}]
   config:
+    exporters_file:
+      type: string
+      optional: true
+      description: Where the exporter baseline is read from; this file is not replicated
+      example: /trinity/local/trixd/daemon/config/exporters.yaml
     rules_directory:
       type: string
       optional: true
@@ -113,14 +118,14 @@ endpoints:
     handler: config
     summary: Where the plugin writes rule files, reaches Prometheus, and what it reloads
     description: |
-      The three settings the prometheus plugin works with. `rules_directory` is where it
-      writes the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus
-      which hardware each node reports, and `reload_command` is what it runs after writing a
-      rule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the
-      other and remembers it.
+      The four settings the prometheus plugin works with. `exporters_file` is the baseline it
+      reads the exporters from, `rules_directory` is where it writes the rule files Prometheus
+      reads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and
+      `reload_command` is what it runs after writing a rule file. When the scheme in
+      `prometheus_url` is the wrong one, the plugin tries the other and remembers it.
     response:
       description: The settings as held
-      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: config
     methods: [PATCH]
@@ -130,12 +135,12 @@ endpoints:
     schema: config
     summary: Change where the plugin writes rule files, reaches Prometheus, or reloads
     description: |
-      Send any of the three settings; those left out keep their value. rootus only, because
+      Send any of the four settings; those left out keep their value. rootus only, because
       the daemon writes into `rules_directory` and runs `reload_command`, both as root.
     request_example: {prometheus_url: "https://localhost:9090"}
     response:
-      description: All three settings as now held
-      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      description: All four settings as now held
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: rules
     methods: [GET]

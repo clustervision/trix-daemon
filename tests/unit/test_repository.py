@@ -446,3 +446,78 @@ def _named_env_constant(node):
     if not any(name.endswith("_ENV") for name in names):
         return None
     return node.value.value if isinstance(node.value, ast.Constant) else None
+
+
+def test_every_setting_a_plugin_defaults_is_declared_by_the_schema_that_takes_it():
+    """
+    A key in a plugin's defaults that its manifest schema does not declare cannot be set
+    over the API at all: the request model the manifest builds ignores what it does not
+    declare, so the key never reaches the handler, the merge finds nothing to change, and
+    the call answers 200 with the old value still in it. Read from the plugin tree and from
+    each manifest's own schema, so the next setting added to a defaults dict is held to this
+    without anything here being told about it.
+    """
+    import ast
+    import yaml
+
+    checked, missing = [], []
+    for manifest in sorted(glob.glob(os.path.join(ROOT, "trixd", "plugins", "*",
+                                                  "manifest.yaml"))):
+        with open(manifest, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        schemas = document.get("schemas") or {}
+        backend = os.path.join(os.path.dirname(manifest),
+                               f"{document.get('backend', 'backend')}.py")
+        tree = ast.parse(_read(os.path.relpath(backend, ROOT)).decode("ascii"))
+        merged = _merged_defaults(tree)
+        for endpoint in document.get("endpoints") or []:
+            keys = merged.get(endpoint.get("handler"))
+            if not keys or not endpoint.get("schema"):
+                continue
+            where = f"{document['plugin']} {endpoint['schema']}"
+            checked.append(where)
+            missing += [f"{where} does not declare {key}, which {endpoint['handler']}() "
+                        f"merges as a default"
+                        for key in sorted(keys - set(schemas.get(endpoint["schema"]) or {}))]
+
+    assert checked, "no plugin was found to merge any defaults, so this proves nothing"
+    assert missing == [], ("a setting the code defaults is dropped before its handler sees "
+                           "it:\n" + "\n".join(missing))
+
+
+def _merged_defaults(tree) -> dict:
+    """
+    Per backend method, the keys of the defaults it merges a request body into: the last
+    argument of declarations.merge, where it names a dict the module holds or is one.
+    """
+    held = {}
+    for node in tree.body:
+        if not isinstance(node, (ast.Assign, ast.AnnAssign)):
+            continue
+        if not isinstance(node.value, ast.Dict):
+            continue
+        targets = [node.target] if isinstance(node, ast.AnnAssign) else node.targets
+        keys = {key.value for key in node.value.keys if isinstance(key, ast.Constant)}
+        for one in targets:
+            if isinstance(one, ast.Name):
+                held[one.id] = keys
+
+    found = {}
+    for owner in ast.walk(tree):
+        if not isinstance(owner, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for node in ast.walk(owner):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            reached = node.func.value
+            if node.func.attr != "merge" or not (isinstance(reached, ast.Name)
+                                                 and reached.id == "declarations"):
+                continue
+            defaults = node.args[4] if len(node.args) > 4 else next(
+                (word.value for word in node.keywords if word.arg == "defaults"), None)
+            if isinstance(defaults, ast.Name):
+                found.setdefault(owner.name, set()).update(held.get(defaults.id) or set())
+            elif isinstance(defaults, ast.Dict):
+                found.setdefault(owner.name, set()).update(
+                    key.value for key in defaults.keys if isinstance(key, ast.Constant))
+    return found
