@@ -425,6 +425,7 @@ class Backend:
         """
         paths = self._hw_paths(node)
         before = _read_yaml(paths[0]) if paths else None
+        stale = []
         if paths and not body.get("force"):
             # Copied rather than parsed a second time. Two independent documents are needed
             # - the one below is mutated in place and compared against `before` - but a
@@ -435,6 +436,10 @@ class Backend:
             host = self._host_of(node)
             path = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
             document = self._generate_hw_rules(host)
+            # Written under the name Luna resolves now, which is not the name the files it
+            # matched carry. Left where they are, Prometheus loads the whole glob and both
+            # fire - the one left behind still selecting the group the node has left.
+            stale = [found for found in paths if found != path]
 
         for group in document.get("groups", []):
             for rule in group.get("rules", []):
@@ -450,6 +455,10 @@ class Backend:
         if os.path.isfile(path):
             self._keep_copy(path)
         self._write_rules(path, document)
+        # After the write, never before it: a generate that raises must not leave the node
+        # with no rule file at all.
+        for found in stale:
+            self._retire(found)
         LOGGER.info("hardware rules written for %s at %s", node, path)
         return {"hostname": _hw_host(path), "rules": count, "changed": True}
 

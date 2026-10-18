@@ -1000,6 +1000,41 @@ def test_a_failed_reload_is_a_502_that_says_so(rig, tmp_path, monkeypatch):
         backend.set_hw_rules({"nodes": [{"node": "node001", "disabled": True}]})
 
 
+def test_a_regenerate_leaves_one_live_rule_file_and_not_two(rig, tmp_path, monkeypatch):
+    """
+    Force writes the name Luna resolves now, and the file it found stops being loaded.
+
+    Prometheus reads a glob, not a list of names, so a file left behind under the name a
+    node answered to before is still loaded: both fire, and the one left behind goes on
+    selecting the group the node has left. Retired rather than deleted, as every other
+    route here retires a file it takes out of service.
+    """
+    import glob
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    # What a node's file is called when it was written before the hostname Luna holds for
+    # it now, carrying a group it has since left.
+    was = str(_hw_file(tmp_path, "node001", "stale"))
+    assert backend._host_of("node001") == "node001.cluster", (
+        "Luna resolves node001 to the name the planted file already carries, so a "
+        "regenerate would write that same file and this would prove nothing")
+
+    answer = backend.import_hw_rules("node001", {"force": True})
+
+    assert answer["hostname"] == "node001.cluster"
+    live = sorted(os.path.basename(found) for found in
+                  glob.glob(os.path.join(str(tmp_path), "trix.hw.*.rules")))
+    assert live == ["trix.hw.node001.cluster.rules"], (
+        f"Prometheus loads this glob and it holds more than this node's one file: {live}")
+    selecting = [name for name in live if 'luna_group="stale"' in
+                 (tmp_path / name).read_text(encoding="utf-8")]
+    assert not selecting, (
+        f"a loaded rule file still selects the group the node has left: {selecting}")
+    assert not os.path.isfile(was), "the file it found is still in the glob Prometheus reads"
+    assert len(list((tmp_path / "backup").glob("trix.hw.node001.rules.*"))) == 1, (
+        "the file it found was lost rather than retired")
+
+
 def test_a_regenerate_writes_the_name_luna_resolves_even_when_the_rules_are_identical(
         rig, tmp_path, monkeypatch):
     """
