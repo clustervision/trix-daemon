@@ -849,6 +849,11 @@ class Backend:
         """
         What Prometheus will scrape there once everything has been resolved, so an operator can
         look before the render does it for real.
+
+        A name that is no scope at all answers exists: false and nothing scraped. Read as the
+        cluster, a misspelled scope answered for every node instead - byte for byte what the
+        cluster would have answered, including another operator's deviations, and previewing
+        as though the scope the caller named had been applied.
         """
         baseline, definitions, scopes = self._exporter_inputs()
         if where in (exporters.EVERY_CONTROLLER,) or where in (baseline.get(exporters.HOSTS) or {}):
@@ -861,8 +866,18 @@ class Backend:
         elif where.startswith("group:"):
             resolved = exporters.for_node("", where.split(":", 1)[1],
                                           baseline, definitions, scopes)
-        else:
+        elif where == exporters.CLUSTER:
             resolved = exporters.for_node("", "", baseline, definitions, scopes)
+        elif where in scopes:
+            # A controller whose hostname this controller's own exporters file does not name.
+            # That file is not replicated, so a row written for the peer can be held here
+            # while the file knows nothing of it; resolved as a node, it would answer from
+            # the wrong section of the baseline.
+            resolved = exporters.for_controller(where, baseline, definitions, scopes)
+        else:
+            # Said in the answer rather than as a 404: this route publishes none, and exists
+            # is how the hardware rules listing already says a name is not held.
+            return {"applied": where, "exists": False, "exporters": {}}
         return {"applied": where, "exporters": resolved}
 
     def _exporter_inputs(self, say: bool = False) -> tuple:

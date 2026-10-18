@@ -2843,6 +2843,41 @@ def test_only_the_last_copies_of_one_node_s_rules_are_kept(rig, tmp_path, monkey
         "pruning one node's copies discarded those of a node whose name it is a prefix of"
 
 
+def test_a_scope_that_is_no_scope_cannot_answer_as_the_cluster(rig, tmp_path, monkeypatch):
+    """
+    Every name that was not a controller, a node or a group resolved as the cluster, so a
+    misspelling answered for the whole cluster - another operator's deviations included - and
+    previewed as though the scope the caller named had been applied.
+
+    What makes a scope real is a lookup rather than its grammar: a controller's own scope is
+    an unprefixed hostname, and the file naming the controllers is not replicated, so a row
+    held here for the peer is the only thing that says that scope exists.
+    """
+    from trixd.utils import declarations
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    backend.config({"exporters_file": _factory_file(tmp_path, {
+        "nodes": {"node": {"port": 14200}},
+        "controllers": {"ha": {"port": 14205}},
+        "hosts": {}})})
+    declarations.write("prometheus", "exporter-scope", "cluster", {"node": {"port": 14999}})
+    declarations.write("prometheus", "exporter-scope", "ctrl2.cluster", {"ha": {"port": 14777}})
+
+    assert backend.show_applied("cluster") == {"applied": "cluster",
+                                               "exporters": {"node": {"port": 14999}}}, \
+        "the answer for a scope that does exist is not the one it was"
+
+    typo = backend.show_applied("clustre")
+
+    assert typo["exporters"] != backend.show_applied("cluster")["exporters"], \
+        f"a misspelled scope answers exactly as the cluster does: {typo}"
+    assert typo.get("exists") is False, \
+        f"nothing in the answer says the scope named is no scope at all: {typo}"
+    assert backend.show_applied("ctrl2.cluster")["exporters"] == {"ha": {"port": 14777}}, \
+        "a controller named by a row and not by this controller's own exporters file is " \
+        "resolved as a node"
+
+
 def test_a_batch_refused_part_way_through_writes_nothing(rig, tmp_path, monkeypatch):
     """
     The names are read before the first write. Validated inside the loop, a bad name at the
