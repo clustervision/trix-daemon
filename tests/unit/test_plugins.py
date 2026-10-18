@@ -726,9 +726,68 @@ def test_a_batch_is_not_recorded_as_applied_for_what_it_did_not_apply(rig, tmp_p
     assert "2 of 3" in still[0]["message"], still[0]["message"]
 
 
-def _a_sentence(node) -> bool:
+def test_a_decline_is_built_to_the_characters_the_sender_keeps(rig, tmp_path, monkeypatch):
     """
-    Whether one expression can only be a string.
+    A batch declining per node is bounded, and both causes still reach whoever reads it.
+
+    One of the two reasons names the node it is about, so a set of them deduplicates
+    nothing: a cluster that Prometheus has not scraped yet declines every node with its own
+    sentence. Built whole and cut by the sender, the characters go on node names and the
+    other cause - a node this controller's Luna has not got - never arrives, which is the
+    one that wants different attention.
+    """
+    from trixd.core.replication import applied
+    from trixd.plugins.prometheus import backend as prometheus
+
+    def query(url, params=None, **_):
+        """
+        Prometheus, which has scraped nothing.
+        """
+        return SimpleNamespace(status_code=200, json=lambda: {"data": {"result": []}})
+
+    known = {f"node{index:03d}": {"hostname": f"node{index:03d}.cluster", "group": "compute"}
+             for index in range(30)}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    answer = backend.set_hw_rules({
+        "nodes": [{"node": name, "force": True} for name in sorted(known)]
+                 + [{"node": f"gone{index:03d}"} for index in range(30)]})
+
+    # The precondition: sixty entries really declined, thirty for each cause, so the
+    # sentence below is built from both of them and from one reason per node.
+    reasons = [item.get("message") for item in answer["nodes"] if not item.get("ok")]
+    assert len(reasons) == 60, f"the batch did not decline what this is about: {reasons}"
+    assert len([one for one in reasons if "not a node Luna knows" in one]) == 30, reasons
+    assert len(set(reasons)) == 31, f"the reasons are not one per node plus one: {reasons}"
+
+    said = answer["skipped"]
+    assert said == applied.declined(answer), \
+        f"the sender cuts {len(said) - len(applied.declined(answer))} characters off a " \
+        f"sentence of {len(said)} built past what it keeps"
+    assert said.startswith("60 of 60"), f"the count no longer says how much: {said!r}"
+    assert "not a node Luna knows" in said, \
+        f"the cause shared by thirty nodes is crowded out by one sentence each: {said!r}"
+    assert "has not been scraped yet" in said, said
+
+
+def _sentence_makers(source: str) -> set:
+    """
+    The functions one module defines that say they answer a string.
+
+    A handler may build its sentence in a helper beside it, and the annotation is the only
+    statement in the tree of what comes back; one without an annotation is not read as a
+    sentence, so this gains nothing by being guessed at.
+    """
+    import ast
+
+    return {node.name for node in ast.walk(ast.parse(source))
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and isinstance(node.returns, ast.Name) and node.returns.id == "str"}
+
+
+def _a_sentence(node, makers=frozenset()) -> bool:
+    """
+    Whether one expression can only be a string, given the sentence makers beside it.
 
     Conservative on purpose: an expression this cannot see through counts as not a
     sentence, because what it guards is a decline the sender never reads.
@@ -742,13 +801,14 @@ def _a_sentence(node) -> bool:
     if isinstance(node, ast.BinOp) and isinstance(node.op, (ast.Add, ast.Mod)):
         # One string operand is enough: the other being a list is a TypeError at the
         # handler, not a decline that reads as applied at the sender.
-        return _a_sentence(node.left) or _a_sentence(node.right)
+        return _a_sentence(node.left, makers) or _a_sentence(node.right, makers)
     if isinstance(node, ast.IfExp):
-        return _a_sentence(node.body) and _a_sentence(node.orelse)
+        return _a_sentence(node.body, makers) and _a_sentence(node.orelse, makers)
     if isinstance(node, ast.Call):
         if isinstance(node.func, ast.Attribute) and node.func.attr in ("join", "format"):
             return True
-        return isinstance(node.func, ast.Name) and node.func.id == "str"
+        return isinstance(node.func, ast.Name) and (node.func.id == "str"
+                                                    or node.func.id in makers)
     return False
 
 
@@ -801,6 +861,15 @@ def test_a_sentence_is_told_from_a_list_before_the_tree_is_swept():
         assert len(answers) == 1, f"{text} was not read as one answer: {answers}"
         assert _a_sentence(answers[0][2]) is sentence, text
 
+    # And a helper beside the handler, read through what it says it answers and no further:
+    # a decline built in one is still a sentence, and one that says nothing is not.
+    for says, sentence in (("-> str", True), ("-> list", False), ("", False)):
+        module = (f"def why(left_out) {says}:\n    return str(left_out)\n\n"
+                  f"def handler(answer):\n    return {{'skipped': why(answer)}}\n")
+        answers = _skipped_answers(module)
+        assert len(answers) == 1, f"{says} was not read as one answer: {answers}"
+        assert _a_sentence(answers[0][2], _sentence_makers(module)) is sentence, says
+
 
 def test_no_replicating_handler_answers_skipped_as_anything_but_a_sentence():
     """
@@ -810,7 +879,8 @@ def test_no_replicating_handler_answers_skipped_as_anything_but_a_sentence():
     from the tree - which endpoints replicate from every shipped manifest, what their
     handlers answer from every module of those plugins - so the next endpoint to declare
     `replicate`, and the next handler to answer `skipped`, arrive here with nothing to
-    remember.
+    remember. A handler building its sentence in a helper is read through what that helper
+    says it answers, which is why a helper without an annotation reaches here as a refusal.
     """
     import ast
     import glob
@@ -841,11 +911,12 @@ def test_no_replicating_handler_answers_skipped_as_anything_but_a_sentence():
                                        recursive=True)):
             with open(module, encoding="utf-8") as handle:
                 source = handle.read()
+            makers = _sentence_makers(source)
             for function, line, value in _skipped_answers(source):
                 if function not in handlers:
                     continue
                 answers.append(f"{function} at {module}:{line}")
-                if not _a_sentence(value):
+                if not _a_sentence(value, makers):
                     offenders.append(f"{function} at {module}:{line} answers "
                                      f"skipped as {ast.unparse(value)}")
     assert answers, ("no replicating handler answers skipped at all, so this proves "
@@ -968,6 +1039,10 @@ def test_a_declaration_the_route_would_ignore_is_refused_beside_its_neighbours()
     its path names - the route is open to anyone while the manifest says a node token. It is
     a path carrying one of the node names that gets here; one without is refused already,
     for the other half of the same reason.
+
+    And a declared minimum on any of the three routes that cannot check one: the gate reads
+    it on a guarded user-token route and nowhere else, so the manifest and the document a
+    plugin author reads name a role that admits everyone.
     """
     from trixd.common.errors import PluginRefused
     from trixd.core.plugins import manifest as manifests
@@ -988,14 +1063,25 @@ def test_a_declaration_the_route_would_ignore_is_refused_beside_its_neighbours()
              "is public and takes a node token"),
             ([{"path": "metrics/<node>", "methods": ["GET"], "handler": "read",
                "forward": True, "token": "node"}],
-             "is forward and takes a node token")):
+             "is forward and takes a node token"),
+            ([{"path": "metrics", "methods": ["GET"], "handler": "read",
+               "public": True, "minimum": "manager"}],
+             "is public and declares minimum manager"),
+            ([{"path": "<path:rest>", "methods": ["GET"], "handler": "forward",
+               "forward": True, "minimum": "manager"}],
+             "is forward and declares minimum manager"),
+            ([{"path": "rules/<node>", "methods": ["PATCH"], "handler": "write",
+               "token": "node", "minimum": "manager"}],
+             "is on a node token and declares minimum manager")):
         with pytest.raises(PluginRefused) as refusal:
             manifests.parse({**base, "endpoints": endpoints})
         assert because in str(refusal.value), (because, str(refusal.value))
 
     # And what these must not take with them, so neither can pass by refusing everything:
     # a schema on the write that declares it, a render that only reads, a public read, a
-    # forwarded route on the token kind it does take, and a node token behind the gate.
+    # forwarded route on the token kind it does take, and a node token behind the gate -
+    # the last three being the shapes that carry no minimum, which is what they may not
+    # be refused for.
     sound = manifests.parse({**base, "endpoints": [
         {"path": "thing", "methods": ["PATCH"], "handler": "write", "schema": "change",
          "minimum": "manager"},

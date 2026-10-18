@@ -385,7 +385,9 @@ endpoints:
 
       Where any entry was not applied, the answer also carries a top-level `skipped`
       saying how many of them and why, which is what tells a replicating peer that part
-      of the call did not land rather than letting it record the lot as applied.
+      of the call did not land rather than letting it record the lot as applied. It is
+      built to the characters a peer records, so the reasons come counted and commonest
+      first, and any that did not fit are said as a number.
     request_example:
       nodes:
         - {node: node001, disabled: true}

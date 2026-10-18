@@ -91,7 +91,7 @@ Each endpoint:
 |---|---|---|
 | `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
 | `methods` | any of `GET`, `POST`, `PATCH`, `DELETE` | no, default `[GET]` |
-| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, unless `public`, `forward` or `token: node` |
+| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, and only, on a user-token route; `public`, `forward` and `token: node` check no role and are refused with one |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`; the body is validated against it before the handler runs | no; only POST and PATCH carry a body |
 | `token` | `user`, or `node` to accept only that node's own token | no |
@@ -165,6 +165,7 @@ the reload endpoint answers 409 with the reason.
 | a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
 | an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
+| an endpoint declares a `minimum` and is `public: true`, `forward: true` or `token: node` | refused; no role is checked on those, so the role would admit everyone |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |

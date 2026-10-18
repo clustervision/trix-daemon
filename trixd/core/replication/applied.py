@@ -51,6 +51,9 @@ LOGGER = trixlog.get("applied")
 KEEP: int = 3600
 # A ceiling so a storm cannot grow this without bound; the oldest go first.
 LIMIT: int = 4096
+# How much of a handler's sentence is kept. A handler building one has to build it to this,
+# rather than to whatever it happens to have and be cut here.
+KEPT: int = 200
 
 _answers: dict = {}
 _lock = threading.Lock()
@@ -74,7 +77,7 @@ def declined(result) -> str:
     key - the type check is what keeps the two apart.
     """
     if isinstance(result, dict) and isinstance(result.get("skipped"), str):
-        return result["skipped"][:200]
+        return result["skipped"][:KEPT]
     return ""
 
 

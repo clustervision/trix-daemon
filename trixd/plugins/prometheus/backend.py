@@ -36,6 +36,7 @@ import re
 import shutil
 import threading
 import time
+from collections import Counter
 
 import requests
 import urllib3
@@ -45,6 +46,7 @@ from trixd.common import logging as trixlog
 from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
                                  TrixdError)
 from trixd.core.render.engine import current as renders
+from trixd.core.replication.applied import KEPT
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.prometheus import exporters
 from trixd.utils import declarations, files
@@ -60,6 +62,9 @@ PLUGIN: str = "prometheus"
 # The literal words in this plugin's own route paths under /exporters, which an exporter may
 # therefore not be called: the one-segment route catches them when a scope is left off.
 RESERVED: tuple = ("applied",)
+
+# What closes a decline whose reasons did not all fit in the characters a sender keeps.
+MORE: str = " and {count} more"
 
 DEFAULT_CONFIG: dict = {
     "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
@@ -268,6 +273,26 @@ def quoted(value) -> str:
     return text.replace("\n", "\\n").replace("\r", "\\r").replace("\t", "\\t")
 
 
+def _not_applied(declined: list, total: int) -> str:
+    """
+    Why a batch did not fully apply, built to the characters a sender keeps of it.
+
+    Reasons are counted and the commonest goes first, because one of them names the node it
+    is about: a cause shared by a thousand nodes would otherwise be crowded out by a
+    thousand sentences that each name one. What does not fit is said as a number.
+    """
+    tally = Counter(str(item.get("message") or "declined") for item in declined)
+    said = f"{len(declined)} of {total}:"
+    for index, (reason, count) in enumerate(tally.most_common()):
+        piece = reason if count == 1 else f"{count}x {reason}"
+        piece = ("; " if index else " ") + piece
+        if index and len(said) + len(piece) > KEPT - len(MORE):
+            said += MORE.format(count=len(tally) - index)
+            break
+        said += piece
+    return said[:KEPT]
+
+
 class Backend:
     """
     One writer of the Prometheus configuration.
@@ -399,13 +424,8 @@ class Backend:
             # `skipped` is the reserved key a replicating sender reads to see what did not
             # land. The per-node list is this endpoint's own shape and the sender does not
             # read it, so nodes a peer could not write were recorded there as applied.
-            #
-            # The count says it was partial rather than total, and the reasons are
-            # deduplicated: the sender keeps 200 characters, which forty nodes failing for
-            # one reason would spend on forty copies of it.
-            said = sorted({str(item["message"]) for item in declined if item.get("message")})
             return {"nodes": results,
-                    "skipped": f"{len(declined)} of {len(results)}: " + "; ".join(said)}
+                    "skipped": _not_applied(declined, len(results))}
         return {"nodes": results}
 
     def list_hw_rules(self, request=None) -> dict:

@@ -280,6 +280,16 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(
                 f"{endpoint.path or '/'} is {unguarded} and takes a node token: such a "
                 f"route is served with no guard, so no token is asked for or bound")
+        ignores_role = unguarded or ("on a node token"
+                                     if endpoint.token == TOKEN_KIND_NODE else "")
+        if ignores_role and endpoint.minimum:
+            # The gate reads `minimum` on a guarded user-token route and nowhere else: a
+            # node token carries no principal, and an unguarded route is not asked. The
+            # manifest then reads as a restriction that is not applied anywhere.
+            raise PluginRefused(
+                f"{endpoint.path or '/'} is {ignores_role} and declares minimum "
+                f"{endpoint.minimum}: no role is checked on such a route, so the "
+                f"declaration admits everyone it reads as keeping out")
         if endpoint.token == TOKEN_KIND_NODE and not any(
                 key in endpoint.variables for key in NODE_PATH_PARAMS):
             # The gate binds a node token to the node its path names, and looks for it under
