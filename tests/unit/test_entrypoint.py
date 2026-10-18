@@ -30,10 +30,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import logging as logmodule
 import os
 import stat
-from contextlib import contextmanager
 
 import pytest
 
@@ -137,10 +135,13 @@ def test_a_bad_trixd_ini_is_reported_by_name_with_exit_code_2(tmp_path, capsys):
     assert server.main(["--config", str(tmp_path / "absent.ini")]) == 2
 
 
-def _ini_that_starts_up(tmp_path, extra: str = "") -> tuple:
+def _ini_that_starts_up(tmp_path, extra: str = "", insecure_bind: str = "127.0.0.1:0") -> tuple:
     """
     A configuration a real start-up can run against, logging to a file of its own, with
     extra appended for the reading of it to find fault with.
+
+    Emptying insecure_bind leaves nothing to serve, which is one of the refusals serve()
+    makes below the point where what reading the ini found is said.
     """
     from tests.conftest import SHARED_SECRET
 
@@ -150,7 +151,7 @@ def _ini_that_starts_up(tmp_path, extra: str = "") -> tuple:
     ini = tmp_path / "trixd.ini"
     ini.write_text(
         f"[LOGGER]\nLEVEL = warning\nLOGFILE = {logfile}\n"
-        "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
+        f"[API]\nBIND =\nINSECURE_BIND = {insecure_bind}\n"
         f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {SHARED_SECRET}\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         f'[PLUGINS]\nDIRECTORY = {tmp_path / "plugins"}\n'
@@ -194,31 +195,17 @@ def _started(ini: str, monkeypatch) -> None:
         trixlog.setup("info", "")
 
 
-@contextmanager
-def _counting(*names):
+def _lines_about(logfile, wording: str) -> list:
     """
-    Every record the named loggers emit, however the daemon logger is configured around
-    them.
+    The lines of [LOGGER] LOGFILE that carry one finding.
 
-    One name per place a start-up warning can come from. A handler on the daemon logger
-    itself would not do: trixlog.setup() clears that logger's handlers as the daemon
-    starts, and from then on nothing propagates past it either.
+    Read from the file rather than counted on a logger: the file is what a site reads, so
+    it is the only place that answers both whether a finding arrived and how often. It
+    also has no blind spot - a second emission from anywhere else lands here too, where a
+    handler on one named logger sees only what that logger said.
     """
-    records: list = []
-    attached: list = []
-    for name in names:
-        logger = logmodule.getLogger(name)
-        handler = logmodule.Handler()
-        handler.emit = records.append
-        attached.append((logger, handler, logger.level))
-        logger.addHandler(handler)
-        logger.setLevel(logmodule.DEBUG)
-    try:
-        yield records
-    finally:
-        for logger, handler, level in attached:
-            logger.removeHandler(handler)
-            logger.setLevel(level)
+    return [line for line in logfile.read_text(encoding="utf-8").splitlines()
+            if wording in line]
 
 
 def test_what_reading_the_ini_found_reaches_the_configured_logfile(tmp_path, monkeypatch):
@@ -226,14 +213,21 @@ def test_what_reading_the_ini_found_reaches_the_configured_logfile(tmp_path, mon
     settings.load() runs before trixlog.setup(), so a warning emitted while the ini is
     read reaches stderr through logging's last resort: unformatted in the journal on a
     unit, and absent from [LOGGER] LOGFILE, which is the file a site actually reads.
+
+    The name on the line is pinned with it: a site greps trixd.settings for what is wrong
+    with its ini, so moving these lines somewhere it reads must not rename them.
     """
     ini, logfile = _ini_that_starts_up(tmp_path, "[AUDIT]\nKEEPP = 10d\n")
     _started(ini, monkeypatch)
     # The precondition first: without this the rest measures a file nobody wrote to.
     assert logfile.is_file(), "the start-up logged nothing at all to [LOGGER] LOGFILE"
-    said = logfile.read_text(encoding="utf-8")
-    assert "KEEPP" in said, "a key trixd does not read never reached the logfile"
-    assert "nobody can hold rootus" in said, "an empty ini account never reached the logfile"
+    assert _lines_about(logfile, "KEEPP"), \
+        "a key trixd does not read never reached the logfile"
+    account = _lines_about(logfile, "nobody can hold rootus")
+    assert account, "an empty ini account never reached the logfile"
+    assert "trixd.settings" in account[0], \
+        f"the ini's own finding is attributed elsewhere, so a site's grep misses it: " \
+        f"{account[0]}"
 
 
 def test_one_problem_in_the_ini_is_reported_once_however_often_it_is_read(tmp_path,
@@ -243,11 +237,35 @@ def test_one_problem_in_the_ini_is_reported_once_however_often_it_is_read(tmp_pa
     serve() then reads it again. That is two reads of one file, and one empty account is
     one problem: a site reading its log must not be told about it twice.
     """
-    ini, _ = _ini_that_starts_up(tmp_path)
-    with _counting("trixd.settings", "trixd.server") as records:
-        _started(ini, monkeypatch)
-    times = sum("nobody can hold rootus" in record.getMessage() for record in records)
-    assert times == 1, f"one empty ini account was reported {times} times"
+    ini, logfile = _ini_that_starts_up(tmp_path)
+    _started(ini, monkeypatch)
+    # The precondition first: without this the rest counts lines nobody wrote.
+    assert logfile.is_file(), "the start-up logged nothing at all to [LOGGER] LOGFILE"
+    times = len(_lines_about(logfile, "nobody can hold rootus"))
+    assert times == 1, f"one empty ini account reached the logfile {times} times"
+
+
+def test_what_reading_the_ini_found_is_said_even_when_the_bind_refuses_the_start(tmp_path):
+    """
+    Below the point where this is said, serve() refuses for a second daemon, a certificate
+    it cannot read and a bind it cannot take - and a bad setting is the likeliest
+    explanation for all three, so it has to have been said before them.
+
+    Said in the lifespan instead it is lost on exactly those paths, because none of them
+    ever reaches a lifespan: hypercorn is never handed the application.
+    """
+    ini, logfile = _ini_that_starts_up(tmp_path, "[AUDIT]\nKEEPP = 10d\n", insecure_bind="")
+    try:
+        # The precondition: the start really was refused, and for the bind rather than
+        # anything earlier - otherwise this measures a daemon that simply came up.
+        with pytest.raises(SystemExit, match="neither BIND nor INSECURE_BIND"):
+            server.main(["--config", ini])
+        assert _lines_about(logfile, "KEEPP"), \
+            "the bind refused the start and took what reading the ini found with it"
+    finally:
+        # This start-up attached a handler on a file under tmp_path, which is about to
+        # go: leave the daemon logger as the rest of the suite expects to find it.
+        trixlog.setup("info", "")
 
 
 def test_what_was_found_is_still_said_when_a_later_setting_stops_the_command(tmp_path,

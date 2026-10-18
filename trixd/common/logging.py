@@ -78,10 +78,16 @@ def get(name: str = "") -> logging.Logger:
     return logging.getLogger(f"{LOGGER_NAME}.{name}" if name else LOGGER_NAME)
 
 
-def report(logger: logging.Logger, messages: list) -> None:
+def report(messages: list) -> None:
     """
-    Say what was found before this logger was configured, now that it is. Called once
-    per command, so one problem in the ini is reported once however often it was read.
+    Say what reading the ini found, now that there is somewhere to say it. Called once per
+    command, so one problem in the ini is reported once however often it was read.
+
+    Attributed to the settings module, which found them and is the name they already
+    carried: what had to change is where these lines land, not what a site greps to find
+    them. The logger is taken here rather than held in that module, which has none on
+    purpose - nothing it could log to exists while the ini is being read.
     """
+    logger = get("settings")
     for message in messages:
         logger.warning("%s", message)

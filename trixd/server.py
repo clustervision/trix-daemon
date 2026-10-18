@@ -99,12 +99,12 @@ def serve(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     logger = trixlog.setup(config.logger.level, config.logger.logfile)
-    # Here rather than in the lifespan: serve() refuses below for a second daemon, a
-    # certificate it cannot read and a bind it cannot take, and what reading the ini
-    # found has to be said on those paths too - they are where it most likely explains
-    # the refusal.
-    trixlog.report(LOGGER, config.warnings)
     logger.info("%s %s starting from %s", DAEMON_NAME, DAEMON_VERSION, config.config_file)
+    # Here rather than in the lifespan, which is too late twice over: the instance lock and
+    # build_config() refuse below this for a second daemon, a certificate that cannot be
+    # read and a bind that cannot be taken - the paths where a bad setting most likely
+    # explains the refusal - and keygen and plugin new never run a lifespan at all.
+    trixlog.report(config.warnings)
 
     # Before the application exists, never at the listeners: hypercorn runs start-up to
     # completion and only then creates a socket, so the port is far too late to decide this.
@@ -167,7 +167,7 @@ def keygen(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
-    trixlog.report(LOGGER, config.warnings)
+    trixlog.report(config.warnings)
     if config.tokens.shared:
         print(f"[TOKENS] ALGORITHM is {config.tokens.algorithm}, which signs with the "
               f"shared secret and needs no keypair")
@@ -190,7 +190,7 @@ def plugin_new(name: str, config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
-    trixlog.report(LOGGER, config.warnings)
+    trixlog.report(config.warnings)
     try:
         written = scaffold.new(name, config.plugins.site_directory, config.plugins.directory)
     except Exception as error:

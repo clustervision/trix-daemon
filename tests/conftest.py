@@ -182,17 +182,20 @@ def interleave_once(monkeypatch):
     threads has to be lucky to meet there; injected, the losing order is the only order the
     test can take. Returns the list the injection appends to, so a test can assert the other
     caller actually ran rather than measuring an interleaving that never happened.
+
+    Behind every one of the first `times` reads, so a test can take the seam once or lose
+    every round an amend is allowed.
     """
-    def install(other):
+    def install(other, times: int = 1):
         """
-        Arm it for the next session opened, and for the first read made on that session.
+        Arm it for the next session opened, and for its first `times` reads.
         """
         opened, fired = [], []
         real = database.session
 
         def session():
             """
-            The next session, with its first read carrying the other caller behind it.
+            The next session, with its early reads carrying the other caller behind them.
             """
             handle = real()
             if opened:
@@ -205,7 +208,7 @@ def interleave_once(monkeypatch):
                 Read, then let the other caller have the row, then answer with what we read.
                 """
                 row = scalar(*args, **kwargs)
-                if not fired:
+                if len(fired) < times:
                     fired.append(True)
                     other()
                 return row

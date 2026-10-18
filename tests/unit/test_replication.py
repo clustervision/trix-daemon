@@ -1139,6 +1139,47 @@ def test_two_merges_of_a_key_that_does_not_exist_yet_keep_both_fields(rig, inter
         "a second row was written for one key"
 
 
+def test_a_key_amended_past_the_bound_is_refused_retryably_rather_than_answered_200(
+        rig, interleave_once):
+    """
+    Past the bound nothing was stored, so the caller has to be refused - and refused in a
+    way that both reaches it and can be retried.
+
+    A refusal that is not a TrixdError never reaches the handler that turns one into a
+    response, so the caller is told nothing it can act on. A refusal below 500 is worse
+    than that: the outbox keeps a 5xx queued and makes any other 4xx terminal, so a
+    replicated write would be dropped on the peer for good over contention that clears.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "config", "", {"rules_directory": "/etc/prometheus"})
+    # A round is only lost to a write that landed, so one landing on every read is what
+    # takes the bound; anything less settles and never reaches the refusal.
+    fired = interleave_once(
+        lambda: declarations.write("prometheus", "config", "",
+                                   {"rules_directory": "/etc/prometheus"}),
+        times=declarations.ROUNDS)
+
+    with pytest.raises(Exception) as refusal:
+        declarations.merge("prometheus", "config", "", {"scrape_interval": "30s"}, {})
+
+    # The preconditions first: without these the refusal could be any other failure, and
+    # the assertions below would be measuring something that is not the exhaustion path.
+    assert len(fired) == declarations.ROUNDS, \
+        f"the other caller ran {len(fired)} times, so the bound is not what refused this"
+    assert declarations.read("prometheus", "config", "", {}).get("scrape_interval") is None, \
+        "the caller was refused for a change that was in fact stored"
+    assert isinstance(refusal.value, TrixdError), \
+        f"the exhaustion path raised {type(refusal.value).__name__}, which never reaches " \
+        f"the TrixdError handler, so the caller is told nothing it can act on"
+    assert refusal.value.status_code >= 500, \
+        f"nothing was stored and a retry is what settles it, but the caller was told " \
+        f"{refusal.value.status_code}, which the outbox treats as terminal"
+    assert "nothing was stored" in refusal.value.message, \
+        "the refusal does not say the write did not land"
+
+
 def test_a_hard_delete_comes_back_from_the_peer(rig, tmp_path):
     """
     Why the marker exists, pinned so the reason cannot quietly stop being true.

@@ -196,6 +196,10 @@ def amend(plugin: str, kind: str, name: str, changes: dict, defaults: dict) -> d
         handle.rollback()
         LOGGER.error("declaration %s/%s/%s moved under every one of %s attempts to amend it, "
                      "so nothing was stored", plugin, kind, name or "-", ROUNDS)
+        # Typed, and 5xx on purpose. A bare exception never reaches the TrixdError handler,
+        # so the caller would be told nothing at all; and the outbox keeps a 5xx queued
+        # while it makes any other 4xx terminal, so a conflict here would lose a replicated
+        # write on the peer for good over contention a retry settles.
         raise ServiceUnavailable(f"{plugin}/{kind}/{name or '-'} is being written faster than "
                                  f"it can be amended; nothing was stored, so try again")
     except Exception:
