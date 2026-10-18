@@ -120,8 +120,7 @@ class Backend:
         # run over it, so one node created before its group was assigned took the node and
         # partition configuration of every other node with it. Left out and named, rather
         # than refusing the lot: the nodes that do have a group are configurable without it.
-        # Only here. node_set is the genders plugin's too, and a node with no group is an
-        # ordinary line in a genders file.
+        # The genders render leaves the same node out, for its own reason.
         skipped = sorted(one["name"] for one in fullset if not one["group"])
         if skipped:
             LOGGER.error("no group in Luna, so left out of the slurm configuration: %s",

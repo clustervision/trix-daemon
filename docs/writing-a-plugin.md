@@ -164,7 +164,7 @@ the reload endpoint answers 409 with the reason.
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
 | a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
-| an endpoint is `public: true` and also `token: node` | refused; a public route has no guard to ask for the token |
+| an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
