@@ -31,7 +31,7 @@ __status__      = "Production"
 
 import inspect
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
@@ -41,8 +41,8 @@ from pydantic import BaseModel, Field, ValidationError
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   HOOK_EVENT_PARTS, PLUGIN_STATE_LOADED, ROLE_OPERATOR,
-                                   ROLE_READER, ROLE_ROOTUS, TOKEN_KIND_NODE)
+                                   HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
+                                   ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core import tasks
 from trixd.core.plugins import loader
@@ -202,9 +202,14 @@ def audit_trail(principal: str = Query("", description="Only this user's rows",
     The audit trail, filtered by who, outcome and an ISO 8601 start time.
     """
     try:
-        start = datetime.fromisoformat(since.replace("Z", "+00:00")).replace(tzinfo=None)             if since else None
+        start = datetime.fromisoformat(since.replace("Z", "+00:00")) if since else None
     except ValueError:
         raise BadRequest(f"{since} is not an ISO 8601 time") from None
+    # `Audit.at` is the naive UTC time the column stores, so an offset is converted rather
+    # than dropped: discarding it filters from the wall-clock reading and loses every row
+    # between the two, under a 200. Same idiom as core/replication/tables.py.
+    if start is not None and start.tzinfo is not None:
+        start = start.astimezone(timezone.utc).replace(tzinfo=None)
     return {"audit": audit.read(principal, outcome, start, limit)}
 
 
@@ -490,15 +495,18 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
             raise BadRequest(f"{body.plugin} {body.method} {body.path} does not accept the "
                              f"body {body.origin} sent: {error}") from error
 
-    if endpoint.token == TOKEN_KIND_NODE:
-        # No user token reaches a node endpoint, not even rootus; this route does, because
-        # applying for the node is the whole job. The peer and a person share the account,
-        # so the two cannot be told apart here - the trail is what is left.
-        audit.granted(caller.name, "replication.apply",
-                      str((body.variables or {}).get("node", body.path)),
-                      f"node endpoint reached through apply for {body.origin}")
+    # No user token reaches a node endpoint, not even rootus; this route does, because
+    # applying for the node is the whole job. The peer and a person share the account, so
+    # the two cannot be told apart here - the trail is what is left. A role-gated endpoint
+    # needs the row for the same reason: the gate's own row names this route, not the node.
+    variables = dict(body.variables or {})
+    audit.granted(caller.name, "replication.apply",
+                  next((str(variables[key]) for key in NODE_PATH_PARAMS if key in variables),
+                       body.path),
+                  f"{endpoint.token} endpoint {body.method} {body.path} reached through "
+                  f"apply for {body.origin}")
 
-    supplied = dict(body.variables or {})
+    supplied = dict(variables)
     if checked is not None:
         supplied["body"] = checked
     elif body.body is not None:

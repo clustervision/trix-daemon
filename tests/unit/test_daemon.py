@@ -1881,6 +1881,37 @@ def test_the_audit_trail_filters_by_who_outcome_and_time(rig, client, headers):
                       headers=headers).status_code == 422
 
 
+def test_the_audit_trail_converts_an_offset_in_since(rig, client, headers):
+    """
+    `Audit.at` is naive UTC, so an offset in `since` has to be converted and not discarded.
+    Discarding it filtered from the wall-clock reading instead of the instant, so every row
+    in between was silently absent from a 200. The filter test above passes Z, where the two
+    readings are the same and the loss cannot show.
+    """
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    handle = database.session()
+    try:
+        handle.add(models.Audit(at=now - timedelta(hours=1), principal="offset",
+                                action="GET", object="/thing", outcome="granted"))
+        handle.commit()
+    finally:
+        handle.close()
+
+    # Two hours before the row, written at +02:00. Thrown away, the same instant reads as
+    # the hour after the row rather than the hour before it.
+    since = (now - timedelta(hours=2)).replace(tzinfo=timezone.utc).astimezone(
+        timezone(timedelta(hours=2))).isoformat()
+    answer = client.get(f"{API_PREFIX}/system/audit",
+                        params={"since": since, "principal": "offset"}, headers=headers)
+    assert answer.status_code == 200, answer.text
+    assert [row["principal"] for row in answer.json()["audit"]] == ["offset"], \
+        (f"the row an hour after {since} is not in the answer, so the offset was dropped "
+         f"rather than converted: {answer.json()}")
+
+
 def test_audit_rows_are_written_in_batches_and_none_is_lost(rig):
     """
     A burst of rows lands in the table once the writer has flushed, every one of them.
@@ -2373,7 +2404,7 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     that one line the only thing in them that could reach the worker loop. The render
     engine's own note-keeping guards the same call for the same reason, so it is exercised
     here too - the docstring used to claim that and the test did not do it, and the engine's
-    was the one of the four that returned in silence.
+    was the one of the four then guarded that returned in silence.
     """
     import logging
 
@@ -2390,6 +2421,8 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
         A database that has gone away.
         """
         raise RuntimeError("the database is not there")
+
+    escaped = None
 
     class Said(logging.Handler):
         """
@@ -2428,15 +2461,26 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
                                   lambda: {"ok": 1})
         renders()._record(item)
         audit._write([audit._entry("someone", "GET", "/thing", "granted", "")])
+        # prune() runs on the writer's own loop with nothing around it, so its session
+        # belongs inside the try as the batch write's is. Kept rather than left to fail the
+        # run as an error, so the assertion below is what names it.
+        try:
+            audit.prune()
+        except Exception as error:
+            escaped = repr(error)
     finally:
         for module in (worker, rendering, audit):
             module.LOGGER.removeHandler(said)
         renders().forget("noted")
 
+    assert escaped is None, \
+        (f"audit.prune() let {escaped} out, and the one writer thread it runs on has "
+         f"nothing to catch it or restart it")
+
     # Named rather than counted: registering the render produces it, so the engine's guard
-    # fires more than once, and a count would say four was wrong without saying which.
+    # fires more than once, and a count would be wrong without saying which.
     for guard in ("to run task", "to prune finished tasks", "to requeue interrupted tasks",
-                  "to record render state", "audit row"):
+                  "to record render state", "audit row", "to prune the audit trail"):
         matched = [one for one in said.messages if guard in one]
         assert matched, f"the guard for {guard!r} said nothing: {said.messages}"
         assert len(set(matched)) == 1, \

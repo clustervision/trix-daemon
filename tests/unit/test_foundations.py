@@ -445,6 +445,43 @@ def test_a_secret_file_others_can_read_is_said_out_loud(tmp_path):
         f"a world-readable secret file was not mentioned: {loose}"
 
 
+def test_a_trusted_key_under_our_own_key_id_is_said_before_it_is_replaced(tmp_path):
+    """
+    The local public key is inserted after the trust directory is read, so a peer key of the
+    same name is replaced without a word. [TOKENS] KEY_ID defaults to one value on every
+    controller and the instruction for setting a pair up is to copy the peer key in under
+    the local id, so a default pair collides every time - and the peer's tokens are then
+    refused as simply invalid, which reads as a fault at the client. Latent while EdDSA is
+    not in use; said rather than restructured.
+    """
+    trust = tmp_path / "trust.d"
+    trust.mkdir()
+    # Group-writable under the harness umask, and a trust directory others may write to is
+    # refused whole - which would leave nothing for the collision below to happen in.
+    os.chmod(trust, 0o700)
+    private = tmp_path / "trixd.ed25519"
+    keys.generate(str(private))
+    # The peer's own key, filed under the key id both controllers hold by default.
+    keys.generate(str(tmp_path / "peer.ed25519"), str(trust / "trixd-1.pub"))
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[TOKENS]\nALGORITHM = EdDSA\nPRIVATE_KEY = {private}\n"
+                   f"KEY_ID = trixd-1\nTRUST = {trust}\n", encoding="utf-8")
+
+    records = Records()
+    keys.LOGGER.addHandler(records)
+    try:
+        ring = keys.KeyRing(configuration.load(str(ini)).tokens).load()
+    finally:
+        keys.LOGGER.removeHandler(records)
+
+    assert any("trixd-1.pub" in message and "KEY_ID" in message
+               for message in records.messages), \
+        (f"the peer key filed as trixd-1.pub was replaced by the local one with nothing "
+         f"said, so a refused peer token has no explanation: {records.messages}")
+    # Left as it was: the warning is the change, the trust loading is not.
+    assert ring.verifying_key("trixd-1") is not None
+
+
 def test_no_secret_anywhere_stops_the_start_naming_both_places(tmp_path):
     """
     Signing with nothing is the one thing that must not pass quietly.

@@ -156,7 +156,14 @@ def prune() -> int:
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
         seconds=settings().audit.keep)
-    handle = database.session()
+    try:
+        handle = database.session()
+    except Exception as error:
+        # Guarded for the same reason the batch write is: _loop calls this with nothing
+        # around it, and the one writer thread has nothing to restart it. Dying here would
+        # take the batching with it as well as the prune.
+        LOGGER.error("could not take a session to prune the audit trail: %s", error)
+        return 0
     try:
         removed = handle.execute(delete(models.Audit).where(models.Audit.at < cutoff)).rowcount
         handle.commit()

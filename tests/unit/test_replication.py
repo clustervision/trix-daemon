@@ -29,10 +29,11 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
-from trixd.common.constants import API_PREFIX
+from trixd.common.constants import API_PREFIX, NODE_PATH_PARAMS
 from trixd.core.replication import tables
 from trixd.db import engine as database
 from trixd.db import models
@@ -596,6 +597,87 @@ def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
     assert applied, "nothing in the trail says a node endpoint was reached through apply"
     assert applied[0]["object"] == "node001", applied[0]
     assert "ctrl1" in applied[0]["detail"], applied[0]
+
+
+def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "") -> None:
+    """
+    A site plugin with one replicating endpoint, taking its node under a chosen path
+    variable and gated either by a node token or by a role.
+    """
+    import os
+
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader
+
+    site = os.path.join(settings().plugins.site_directory, name)
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+        handle.write(
+            f"plugin: {name}\n"
+            "backend: backend\n"
+            "description: One replicating endpoint, for testing what apply records.\n"
+            "endpoints:\n"
+            f"  - path: thing/<{variable}>\n"
+            "    methods: [DELETE]\n"
+            f"    token: {token}\n"
+            + (f"    minimum: {minimum}\n" if minimum else "")
+            + "    handler: thing\n"
+            "    replicate: true\n"
+            "    summary: A replicating endpoint\n")
+    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+        handle.write("class Backend:\n"
+                     f"    def thing(self, {variable}: str) -> dict:\n"
+                     f'        return {{"retired": {variable}}}\n')
+    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+        handle.write("")
+    assert loader.load(rig, name).state == "loaded"
+
+
+def test_applying_a_role_gated_endpoint_leaves_a_trail_too(rig, client, headers):
+    """
+    The row was written only for a node endpoint, so a replicated call gated by a role left
+    the peer nothing but the gate's own row for the apply route under the account the pair
+    shares - the two controllers' trails then disagree about the same action, and the peer
+    cannot say who retired a node's rules. The reason the node case is recorded holds here
+    unchanged, so both are.
+    """
+    from trixd.core.security import audit
+
+    _applying_plugin(rig, "gated", "node", "user", minimum="manager")
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "gated", "path": "thing/<node>", "method": "DELETE",
+        "variables": {"node": "node002"}, "origin": "ctrl1", "request_id": "r-gated"})
+    assert answer.status_code == 200, answer.text
+
+    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert rows, "nothing in the trail says a role-gated endpoint was applied for the peer"
+    assert rows[0]["object"] == "node002", rows[0]
+    assert "ctrl1" in rows[0]["detail"], rows[0]
+
+
+@pytest.mark.parametrize("variable", NODE_PATH_PARAMS)
+def test_the_trail_names_the_node_under_any_name_the_gate_binds(rig, client, variable,
+                                                                headers):
+    """
+    Derived from the gate's own list rather than from a second copy of it: apply looked for
+    `node` alone, so the two had already diverged and an endpoint named after one of the
+    other two would have recorded the path in place of the node - leaving the trail unable
+    to say which node was acted on, with nothing to say so.
+    """
+    from trixd.core.security import audit
+
+    _applying_plugin(rig, f"named{variable}", variable, "node")
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": f"named{variable}", "path": f"thing/<{variable}>", "method": "DELETE",
+        "variables": {variable: "node003"}, "origin": "ctrl1",
+        "request_id": f"r-{variable}"})
+    assert answer.status_code == 200, answer.text
+
+    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert rows, f"nothing in the trail names an endpoint taking <{variable}>"
+    assert rows[0]["object"] == "node003", \
+        (f"the trail records {rows[0]['object']!r} rather than the node for an endpoint "
+         f"taking <{variable}>, which the gate binds as well as <node>")
 
 
 def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):

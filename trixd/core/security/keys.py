@@ -107,6 +107,15 @@ class KeyRing:
         """
         self.private = read_private(self.config.private_key)
         self.trusted = read_trust(self.config.trust)
+        if self.key_id in self.trusted:
+            # KEY_ID defaults to one value on every controller and a pair is set up by
+            # copying the peer key in under the local id, so on a default pair this is the
+            # peer key - and replacing it refuses its tokens as invalid, blaming the client.
+            LOGGER.error("%s in the trust directory %s carries this daemon's own [TOKENS] "
+                         "KEY_ID and is replaced by the local public key: tokens signed by "
+                         "whoever owns that key are refused as invalid. Give each "
+                         "controller its own KEY_ID and name the peer key after the peer.",
+                         self.key_id + PUBLIC_SUFFIX, self.config.trust)
         self.trusted[self.key_id] = self.private.public_key()
         LOGGER.info("signing as %s with %s key %s, trusting %s", self.issuer,
                     self.algorithm, self.key_id,
