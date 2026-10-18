@@ -461,7 +461,10 @@ class Backend:
                     labels["disabled"] = bool(body["disabled"])
 
         count = sum(len(group.get("rules", [])) for group in document.get("groups", []))
-        if before is not None and document == before and paths[0] == path:
+        # The clause above is true whenever the hostname file exists, which is also when a
+        # second file can be found beside it: unchanged is not the answer while one of them
+        # is a duplicate still in the glob Prometheus loads.
+        if before is not None and document == before and paths[0] == path and not stale:
             return {"hostname": _hw_host(path), "rules": count, "changed": False}
         if os.path.isfile(path):
             self._keep_copy(path)
@@ -1112,6 +1115,11 @@ class Backend:
         command = self._config().get("reload_command", DEFAULT_CONFIG["reload_command"])
         result = shell.run(command.split(), timeout=30)
         if not result.ok:
+            # Prometheus is on the configuration it had before these were written, so they
+            # are owed a reload exactly as a refusal is: drained here, the write that
+            # caused this is answered that its rules are in place on its next try.
+            with self.pending_lock:
+                self.pending_check.update(on_disk)
             LOGGER.error("reload failed: %s", result.err or result.out)
         return result.ok, result.err or result.out
 

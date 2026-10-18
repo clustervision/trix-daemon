@@ -1080,6 +1080,42 @@ def test_a_rule_file_promtool_refuses_stays_refused_until_it_is_taken(rig, tmp_p
     assert len(reloads) == 1, "a file promtool has taken is still being treated as pending"
 
 
+def test_a_reload_that_failed_is_still_owed_when_the_writer_asks_again(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    A write whose reload never landed is told so again, not that its rules are in place.
+
+    promtool refusing and the reload command failing leave Prometheus in the same state -
+    serving the configuration it held before the write - and what is owed a reload was put
+    back for the first and dropped for the second. So the node that wrote took its 502,
+    asked again, found its file unchanged and nothing outstanding, and was answered that
+    its rules were in place while Prometheus had never read them.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, reloads = _hw_backend(tmp_path, monkeypatch, reload_ok=False)
+    with pytest.raises(BackendFailure):
+        backend.import_hw_rules("node001", {})
+    path = tmp_path / "trix.hw.node001.cluster.rules"
+    assert path.is_file() and len(reloads) == 1, (
+        "nothing was written, or no reload was attempted over it, so there is no reload "
+        "outstanding for the retry below to be told about")
+    stamp = path.stat().st_mtime_ns
+
+    try:
+        again = backend.import_hw_rules("node001", {})
+    except BackendFailure as refusal:
+        again = refusal
+
+    assert isinstance(again, BackendFailure), (
+        f"asked again after a reload that failed, the node was answered {again} while "
+        "Prometheus is still on the configuration it held before the write")
+    assert path.stat().st_mtime_ns == stamp, (
+        "the retry rewrote the file, so this says nothing about the write that finds "
+        "nothing to do and is answered from the record alone")
+    assert len(reloads) == 2, "the reload Prometheus never took was not attempted again"
+
+
 def test_a_regenerate_leaves_one_live_rule_file_and_not_two(rig, tmp_path, monkeypatch):
     """
     Force writes the name Luna resolves now, and the file it found stops being loaded.
@@ -1142,6 +1178,44 @@ def test_a_regenerate_writes_the_name_luna_resolves_even_when_the_rules_are_iden
         "force compared the documents alone and left this node's rules under a name Luna "
         "no longer resolves, with nothing written and nothing moved")
     assert answer["changed"] is True and answer["hostname"] == "node001.cluster"
+
+
+def test_a_regenerate_whose_rules_are_identical_still_retires_the_duplicate(
+        rig, tmp_path, monkeypatch):
+    """
+    Identical content is not a reason to leave a second file of this node's loaded.
+
+    The unchanged answer is reached by the clause that says the hostname file exists, and a
+    second file is found only when that one exists too - so both hold at once. A force that
+    read back its own document returned saying the rules were in order, and the duplicate
+    it was meant to take out of the glob stayed in it, selecting the group the node has
+    left, for as long as nothing else rewrote the node.
+    """
+    import glob
+    import shutil
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.import_hw_rules("node001", {})
+    live = tmp_path / "trix.hw.node001.cluster.rules"
+    was = tmp_path / "trix.hw.node001.rules"
+    # Both names on disk with the same document: the one Luna resolves now, and the one the
+    # node answered to before a rename. A regenerate reads the same hardware and produces
+    # what is already in both of them, which is the ordinary case rather than a corner.
+    shutil.copy2(str(live), str(was))
+    assert was.read_text(encoding="utf-8") == live.read_text(encoding="utf-8"), (
+        "the two files are not on disk with the same content, so neither the unchanged "
+        "answer nor the retire that has to happen anyway is reached")
+
+    answer = backend.import_hw_rules("node001", {"force": True})
+
+    loaded = sorted(os.path.basename(found) for found in
+                    glob.glob(os.path.join(str(tmp_path), "trix.hw.*.rules")))
+    assert loaded == ["trix.hw.node001.cluster.rules"], (
+        f"Prometheus loads this glob and it still holds a duplicate of this node: {loaded}")
+    assert len(list((tmp_path / "backup").glob("trix.hw.node001.rules.*"))) == 1, (
+        "the duplicate was lost rather than retired")
+    assert answer["changed"] is True, (
+        "a file was taken out of the glob Prometheus loads, so something did change")
 
 
 def test_callers_waiting_together_share_a_reload_and_none_gets_an_earlier_one(rig):
