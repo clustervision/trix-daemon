@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import contextlib
 import inspect
+import logging as logmodule
 import os
 import re
 from datetime import datetime, timedelta, timezone
@@ -2638,6 +2639,33 @@ def test_a_render_wakes_only_on_the_inputs_it_declares(rig):
         "something declares a cluster input now, so the import decision needs revisiting"
 
 
+@contextlib.contextmanager
+def _listening(logger):
+    """
+    Every record one logger emits inside the block.
+
+    The daemon's loggers do not propagate, so pytest's own capture never sees them.
+    """
+    records = []
+    handler = logmodule.Handler()
+    handler.emit = records.append
+    previous = logger.level
+    logger.setLevel(logmodule.DEBUG)
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+
+
+def _said(records) -> str:
+    """
+    What a listened-to logger said, as one block of text.
+    """
+    return "\n".join(record.getMessage() for record in records)
+
+
 def test_a_refusal_leaves_a_loaded_plugin_serving():
     """
     A reload that refuses must not record the plugin as refused: its routes are still in
@@ -2724,3 +2752,159 @@ def test_a_manifest_cannot_bind_a_schema_it_never_declared():
     document["endpoints"][0]["schema"] = "setting"
     assert parse(document).endpoints[0].body_schema == "setting", \
         "the refusal is about the name, not about declaring a schema at all"
+
+
+def test_a_replicating_endpoint_cannot_also_read():
+    """
+    Replicate is applied per verb, so a read sharing the endpoint replicates too: every
+    GET writes an outbox row, asks the peer, and answers with a replicated block the
+    documented example of a read does not have.
+    """
+    document = {"plugin": "example", "endpoints": [
+        {"path": "rules", "methods": ["GET", "PATCH"], "handler": "rules",
+         "minimum": "manager", "replicate": True}]}
+    with pytest.raises(PluginRefused, match="cannot also serve GET"):
+        parse(document)
+
+    document["endpoints"][0]["methods"] = ["PATCH"]
+    assert parse(document).endpoints[0].replicate is True, \
+        "a write-only endpoint still replicates"
+
+
+def test_a_schema_on_a_verb_that_takes_no_body_is_refused():
+    """
+    The binder hands a body to POST, PATCH and PUT only, so a schema on a DELETE is taken
+    at parse and dropped at bind: the route and the published document agree with each
+    other and not with the manifest, and the signature check cannot see it because `body`
+    counts as a known argument whatever the verb.
+    """
+    document = {"plugin": "example", "schemas": {"rule": {"value": {"type": "string"}}},
+                "endpoints": [{"path": "rules/<node>", "methods": ["DELETE"],
+                               "handler": "drop", "minimum": "manager", "schema": "rule"}]}
+    with pytest.raises(PluginRefused, match="wants schema rule on DELETE, which takes no body"):
+        parse(document)
+
+    # GET keeps its schema: a GET and a write on one handler tell a read from a change by
+    # the body being None, which is how the scaffold's own example is written.
+    document["endpoints"][0]["methods"] = ["GET", "PATCH"]
+    assert parse(document).endpoints[0].body_schema == "rule", \
+        "a GET sharing a handler with a write lost its schema"
+
+
+def test_two_paths_differing_only_in_the_variable_name_are_one_route():
+    """
+    Starlette matches rules/{alpha} for a request to rules/{beta} as well, so the second
+    handler is dead - verbatim the harm the collector exists to name - while a key on the
+    written path calls them two different routes.
+    """
+    from trixd.core.plugins.manifest import duplicates
+
+    document = {"plugin": "example", "endpoints": [
+        {"path": "rules/<alpha>", "methods": ["GET"], "handler": "first", "minimum": "reader"},
+        {"path": "rules/<beta>", "methods": ["GET"], "handler": "second", "minimum": "reader"}]}
+    manifest = parse(document)
+    assert [endpoint.route_path for endpoint in manifest.endpoints] == [
+        "rules/{alpha}", "rules/{beta}"], "both of these are matched by the first route"
+
+    found = duplicates(manifest)
+    assert len(found) == 1, f"the dead second handler was not named: {found}"
+    assert "rules/<beta>" in found[0] and "rules/<alpha>" in found[0], found[0]
+
+    # A genuinely different path is still two routes, and an exact repeat keeps its wording.
+    document["endpoints"][1]["path"] = "ranges/<beta>"
+    assert duplicates(parse(document)) == []
+    document["endpoints"][1]["path"] = "rules/<alpha>"
+    assert duplicates(parse(document)) == ["GET rules/<alpha> is declared twice"]
+
+
+def test_plugin_state_that_cannot_be_read_says_so(monkeypatch):
+    """
+    Everything loads when the stored state cannot be read, which is right at a first start
+    and wrong every other time: a deliberately unplugged plugin comes back serving. The
+    swallow stays; being silent about it does not.
+    """
+    from trixd.db import engine as database
+
+    class _Handle:
+        """
+        A session whose first query fails, as it does before the table exists.
+        """
+
+        def scalars(self, *_args):
+            """
+            What SQLAlchemy raises against a database that has no plugin_state yet.
+            """
+            raise RuntimeError("no such table: plugin_state")
+
+        def close(self):
+            """
+            Closed either way.
+            """
+
+    monkeypatch.setattr(database, "session", _Handle)
+    with _listening(loader.LOGGER) as records:
+        assert loader._disabled_names() == set(), "the swallow has to stay"
+    assert "no such table: plugin_state" in _said(records), \
+        "a failed read of the stored state was silent"
+
+
+def test_a_plugin_in_the_enabled_list_but_not_on_disk_says_so(rig, monkeypatch):
+    """
+    load_all walks what is on disk, so a name only the ini asks for gets no entry, no
+    refusal and no line - unlike the two neighbouring cases, which are both logged.
+    """
+    import types
+
+    monkeypatch.setattr(loader, "discover", dict)
+    monkeypatch.setattr(loader, "_disabled_names", set)
+    monkeypatch.setattr(loader, "settings", lambda: types.SimpleNamespace(
+        plugins=types.SimpleNamespace(enabled=["nosuch"])))
+
+    with _listening(loader.LOGGER) as records:
+        assert loader.load_all(rig) == {}, "a missing plugin must not become an entry"
+    assert "nosuch" in _said(records), "a plugin asked for and absent was silent"
+
+
+def test_a_directory_with_no_manifest_is_not_silently_skipped(tmp_path):
+    """
+    A manifest that is missing or misnamed makes the directory invisible rather than
+    refused, which is the one failure an author gets no word about.
+    """
+    (tmp_path / "halfway").mkdir()
+    (tmp_path / "__pycache__").mkdir()
+
+    with _listening(loader.LOGGER) as records:
+        assert loader._scan(str(tmp_path)) == {}, "neither directory is a plugin"
+    said = _said(records)
+    assert "halfway" in said, "a directory with no manifest was skipped in silence"
+    assert "__pycache__" not in said, "the interpreter's own directory is not an author's typo"
+
+
+def test_the_check_refuses_everything_the_loader_refuses_about_a_render(rig, tmp_path):
+    """
+    An empty list from the check is a promise that the plugin would load. The render branch
+    looked for the producer only, so a coalesce the load path refuses passed the check and
+    failed on the controller - which is the one place the check exists to come before.
+    """
+    from trixd.core.plugins.check import check
+
+    path = tmp_path / "slowly"
+    path.mkdir()
+    (path / "__init__.py").write_text("", encoding="utf-8")
+    (path / "backend.py").write_text(
+        "class Backend:\n    def render_doc(self):\n        return {}\n", encoding="utf-8")
+    (path / "manifest.yaml").write_text(
+        "plugin: slowly\nbackend: backend\nendpoints:\n  - path: doc\n    methods: [GET]\n"
+        "    minimum: none\n    render:\n      inputs: [luna.node]\n      serve: json\n"
+        "      coalesce: soon\n", encoding="utf-8")
+
+    problems = check(str(path))
+    assert [problem for problem in problems if "coalesce" in problem], \
+        f"the check passed a manifest the loader refuses: {problems}"
+    with pytest.raises(PluginRefused, match="coalesce"):
+        loader.load(rig, "slowly", str(path))
+
+    (path / "manifest.yaml").write_text(
+        (path / "manifest.yaml").read_text(encoding="utf-8").replace("soon", "2s"),
+        encoding="utf-8")
+    assert check(str(path)) == [], "a render that loads has to pass the check"

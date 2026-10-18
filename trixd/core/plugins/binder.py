@@ -39,13 +39,12 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import PluginRefused
 from trixd.core import tasks
-from trixd.core.plugins.manifest import QUERY_TYPES, Endpoint, Manifest
+from trixd.core.plugins.manifest import BODY_VERBS, QUERY_TYPES, Endpoint, Manifest
 from trixd.core.replication import outbox
 from trixd.core.security.gate import Caller, guard, stamp
 
 LOGGER = trixlog.get("binder")
 
-BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
 # What the binder hands a handler besides the path variables.
 SUPPLIED: tuple = ("body", "caller", "request")
 

@@ -48,6 +48,9 @@ PATH_VARIABLE = re.compile(r"<(?:(path):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
 QUERY_TYPES: dict = {"string": str, "integer": int, "boolean": bool}
 # Names the binder hands a handler itself, so a query parameter cannot take them.
 RESERVED_ARGUMENTS: tuple = ("body", "caller", "request")
+# The verbs that carry a body. The binder reads this to decide what to ask FastAPI for,
+# and the parse refuses a schema on anything else, so the two cannot drift apart.
+BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
 
 TYPES: dict = {
     "string": str,
@@ -147,6 +150,14 @@ class Endpoint(BaseModel):
         return PATH_VARIABLE.sub(lambda found: "{" + found.group(2) + (
             ":path}" if found.group(1) else "}"), self.path).strip("/")
 
+    @property
+    def shape(self) -> str:
+        """
+        The path as Starlette matches it, which a variable's name is no part of.
+        """
+        return PATH_VARIABLE.sub(
+            lambda found: "{:path}" if found.group(1) else "{}", self.path).strip("/")
+
 
 class Manifest(BaseModel):
     """
@@ -202,7 +213,9 @@ def parse(document: dict) -> Manifest:
             # A read has nothing to carry; a render is already driven at both ends by the
             # same source; a forwarded call is replicated by the service behind it; and a
             # public one would let anyone make this controller call its peer.
-            if all(verb.upper() in ("GET", "HEAD") for verb in endpoint.methods):
+            reads = [verb.upper() for verb in endpoint.methods
+                     if verb.upper() in ("GET", "HEAD")]
+            if len(reads) == len(endpoint.methods):
                 raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
                                     f"to replicate")
             for why, blocked in (("a render", endpoint.render is not None),
@@ -211,6 +224,13 @@ def parse(document: dict) -> Manifest:
                 if blocked:
                     raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
                                         f"also replicate")
+            if reads:
+                # Replicate is applied per verb, so a read sharing the endpoint replicates
+                # as well: it writes an outbox row and asks the peer on every call, and
+                # answers with a block no read is documented to carry.
+                raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
+                                    f"serve {', '.join(reads)}: a read that replicated "
+                                    f"would write an outbox row for every call")
         if endpoint.render is not None and (endpoint.variables or endpoint.query):
             # A render is served by a reader that takes no arguments, so a variable or a
             # query parameter is accepted and then ignored: one document answers for every
@@ -227,9 +247,19 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(
                 f"{endpoint.path or '/'} takes a node token, so its path has to carry one "
                 f"of {', '.join(NODE_PATH_PARAMS)} for the gate to bind it to")
-        if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
-            raise PluginRefused(
-                f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+        if endpoint.body_schema:
+            if endpoint.body_schema not in manifest.schemas:
+                raise PluginRefused(
+                    f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+            # GET is deliberate: a GET and a write on one handler tell a read from a change
+            # by the body being None. Any other bodiless verb is accepted here and dropped
+            # at bind, so the document agrees with the route and not with the manifest.
+            bodiless = [verb.upper() for verb in endpoint.methods
+                        if verb.upper() not in BODY_VERBS and verb.upper() != "GET"]
+            if bodiless:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} wants schema {endpoint.body_schema} on "
+                    f"{', '.join(bodiless)}, which takes no body")
         _check_docs(endpoint)
     for event, handler in manifest.hooks.items():
         parts = str(event).split(".")
@@ -246,18 +276,24 @@ def duplicates(manifest: Manifest) -> list:
     Every path and verb this manifest declares more than once.
 
     Starlette matches the first of two routes with the same path and verb, so the second
-    handler is dead code its author believes is serving. Collected rather than raised: the
-    command-line check lists every problem it can find at once so an author fixes them in
-    one pass, and a refusal from the parse ends that collection at the first one. The load
-    path refuses on whatever comes back here.
+    handler is dead code its author believes is serving. A variable's name is no part of
+    that match, so rules/<alpha> and rules/<beta> are one route and not two. Collected
+    rather than raised: the command-line check lists every problem it can find at once so
+    an author fixes them in one pass, and a refusal from the parse ends that collection at
+    the first one. The load path refuses on whatever comes back here.
     """
-    seen, twice = set(), []
+    seen, twice = {}, []
     for endpoint in manifest.endpoints:
+        where = endpoint.path or "/"
         for verb in endpoint.methods:
-            key = (endpoint.route_path, verb.upper())
-            if key in seen:
-                twice.append(f"{verb.upper()} {endpoint.path or '/'} is declared twice")
-            seen.add(key)
+            key = (endpoint.shape, verb.upper())
+            first = seen.get(key)
+            if first == where:
+                twice.append(f"{verb.upper()} {where} is declared twice")
+            elif first is not None:
+                twice.append(f"{verb.upper()} {where} and {first} differ only in the name of "
+                             f"a path variable, so only {first} is ever matched")
+            seen.setdefault(key, where)
     return twice
 
 

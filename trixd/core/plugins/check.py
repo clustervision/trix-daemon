@@ -76,10 +76,13 @@ def check(path: str) -> list:
     for endpoint in manifest.endpoints:
         where = endpoint.path or "/"
         if endpoint.render is not None:
-            slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
-            method = endpoint.handler or f"render_{slug}"
-            if not callable(getattr(backend, method, None)):
-                problems.append(f"{where} declares a render with no producer named {method}")
+            # The loader's own check rather than a second one beside it: this branch looked
+            # for the producer only, so a coalesce the load path refuses passed here and
+            # the empty list promised above was wrong.
+            try:
+                loader._render_producer(endpoint, backend)
+            except PluginRefused as error:
+                problems.append(error.message)
             continue
         handler = getattr(backend, endpoint.handler, None)
         if not callable(handler):

@@ -108,6 +108,11 @@ def _scan(directory: str) -> dict:
         path = os.path.join(directory, name)
         if os.path.isdir(path) and os.path.isfile(os.path.join(path, "manifest.yaml")):
             found[name] = path
+        elif os.path.isdir(path) and not name.startswith("_"):
+            # Silence here reads as an empty directory: a plugin whose manifest is missing
+            # or misnamed is never discovered, so it is never refused either and the author
+            # is told nothing at all.
+            LOGGER.warning("%s has no manifest.yaml, so it is not a plugin", path)
         elif name.endswith(".py") and not name.startswith("_"):
             found[name[:-3]] = path
     return found
@@ -220,6 +225,26 @@ def _from_directory(name: str, path: str):
     return manifest, backend_class()
 
 
+def _render_producer(endpoint, backend):
+    """
+    The producer behind one declared render, refusing what the engine could not drive.
+
+    The command-line check calls this too, so what it passes is what the load path accepts.
+    """
+    slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
+    method = endpoint.handler or f"render_{slug}"
+    try:
+        seconds(endpoint.render.coalesce, 2)
+    except ValueError as error:
+        raise PluginRefused(f"{endpoint.path}: coalesce {error}") from None
+    producer = getattr(backend, method, None)
+    if producer is None or not callable(producer):
+        raise PluginRefused(
+            f"{endpoint.path} declares a render with no producer named {method} "
+            "on the backend")
+    return producer
+
+
 def _collect_renders(manifest, backend) -> list:
     """
     Every declared render with its producer, checked but not yet handed to the engine.
@@ -228,18 +253,8 @@ def _collect_renders(manifest, backend) -> list:
     for endpoint in manifest.endpoints:
         if endpoint.render is None:
             continue
-        slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
-        method = endpoint.handler or f"render_{slug}"
-        try:
-            seconds(endpoint.render.coalesce, 2)
-        except ValueError as error:
-            raise PluginRefused(f"{endpoint.path}: coalesce {error}") from None
-        producer = getattr(backend, method, None)
-        if producer is None or not callable(producer):
-            raise PluginRefused(
-                f"{endpoint.path} declares a render with no producer named {method} "
-                "on the backend")
-        found.append((endpoint.path, endpoint.render, producer))
+        found.append((endpoint.path, endpoint.render,
+                      _render_producer(endpoint, backend)))
     return found
 
 
@@ -387,8 +402,15 @@ def load_all(app: FastAPI) -> dict:
     """
     wanted = settings().plugins.enabled
     disabled = _disabled_names()
+    found = discover()
+    for name in wanted:
+        if name not in found:
+            # Nothing is recorded for a name with nothing behind it, so it is absent from
+            # the plugin list rather than refused in it: the only place it can be said is
+            # here.
+            LOGGER.warning("plugin %s is in the enabled list but not on disk", name)
     result = {}
-    for name, path in discover().items():
+    for name, path in found.items():
         if wanted and name not in wanted:
             LOGGER.info("plugin %s present but not in the enabled list", name)
             continue
@@ -413,7 +435,11 @@ def _disabled_names() -> set:
         return set(handle.scalars(
             select(models.PluginState.name)
             .where(models.PluginState.enabled.is_(False))).all())
-    except Exception:
+    except Exception as error:
+        # Kept deliberately: at a first start the table is not there yet, and refusing to
+        # load anything over that would be worse. Said out loud because the same empty
+        # answer also means a readable table whose rows were not read.
+        LOGGER.warning("could not read which plugins are unplugged, so none are: %s", error)
         return set()
     finally:
         handle.close()
