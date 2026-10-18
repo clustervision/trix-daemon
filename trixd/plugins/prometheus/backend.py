@@ -358,7 +358,7 @@ class Backend:
         written = self._write_hw_rules(node, body or {})
         # A node that rebooted unchanged costs no write and no reload: a boot storm of
         # thousands of nodes reloads Prometheus only for the ones that changed.
-        if written["changed"]:
+        if written["changed"] or self._check_outstanding(written["hostname"]):
             self.reload_or_fail(f"rules written for {node}")
         return written
 
@@ -380,7 +380,8 @@ class Backend:
             except TrixdError as error:
                 results.append({"node": node, "ok": False, "message": error.message})
         # One reload for the lot, not one per node, and none when nothing changed.
-        changed = [item["node"] for item in results if item.get("changed")]
+        changed = [item["node"] for item in results if item.get("changed")
+                   or self._check_outstanding(item.get("hostname") or "")]
         if changed:
             self.reload_or_fail(f"rules written for {len(changed)} node(s)")
         return {"nodes": results}
@@ -488,6 +489,18 @@ class Backend:
         with self.pending_lock:
             self.pending_check.add(path)
         return written
+
+    def _check_outstanding(self, host: str) -> bool:
+        """
+        Whether this host's rule file is still waiting for promtool to take it.
+
+        A file promtool refused is on disk and unchanged, so the writes that follow it find
+        nothing to do and ask for no reload: without this the node's own retry answers that
+        its rules are in place while Prometheus is refusing them.
+        """
+        path = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
+        with self.pending_lock:
+            return path in self.pending_check
 
     def repair_hw_rules(self, node: str, was: str = "") -> dict:
         """
@@ -1058,8 +1071,15 @@ class Backend:
         """
         with self.pending_lock:
             changed, self.pending_check = sorted(self.pending_check), set()
-        refused = _promtool_refuses([path for path in changed if os.path.isfile(path)])
+        on_disk = [path for path in changed if os.path.isfile(path)]
+        refused = _promtool_refuses(on_disk)
         if refused:
+            # Still on disk and still refused, so the record of them outlives the refusal.
+            # Drained here, the next reload for any other node checked only its own file and
+            # succeeded, Prometheus went on refusing the directory, and nothing named the bad
+            # file again - while the write that caused it reported success on its next try.
+            with self.pending_lock:
+                self.pending_check.update(on_disk)
             LOGGER.error("not reloading: promtool refuses what is on disk: %s", refused)
             return False, f"promtool refuses the rules on disk: {refused}"
         command = self._config().get("reload_command", DEFAULT_CONFIG["reload_command"])

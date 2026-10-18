@@ -1000,6 +1000,86 @@ def test_a_failed_reload_is_a_502_that_says_so(rig, tmp_path, monkeypatch):
         backend.set_hw_rules({"nodes": [{"node": "node001", "disabled": True}]})
 
 
+def _refusal_of(call) -> str:
+    """
+    What a call was refused with, or an empty string where it was not refused at all.
+    """
+    from trixd.common.errors import TrixdError
+
+    try:
+        call()
+    except TrixdError as refusal:
+        return refusal.message
+    return ""
+
+
+def test_a_rule_file_promtool_refuses_stays_refused_until_it_is_taken(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    A file Prometheus's own checker will not take goes on being refused until it is right.
+
+    promtool is asked once per reload, over the files written since the last one. Taken off
+    that list before it had answered, a refusal left nothing behind: the next reload for any
+    other node handed promtool only its own file and went ahead, Prometheus refused the
+    directory it reads and kept its previous configuration, and the node whose file was bad
+    was told its rules were in place every time it asked again.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch,
+                             nodes={"node002": {"hostname": "node002.cluster",
+                                                "group": "compute"}})
+    # promtool does not ship everywhere and is not installed here, so this path has never
+    # run: without the stub the check is skipped and every reload below is taken.
+    tool = tmp_path / "promtool"
+    tool.write_text("", encoding="utf-8")
+    monkeypatch.setattr(prometheus, "PROMTOOL", (str(tool),))
+    bad = str(tmp_path / "trix.hw.node001.cluster.rules")
+    refuses, checks, reloads = {bad}, [], []
+
+    def run(argv, **_):
+        """
+        promtool over the files it is handed, or the reload command.
+        """
+        if argv[0] == str(tool):
+            handed = list(argv[3:])
+            checks.append(handed)
+            named = sorted(set(handed) & refuses)
+            return SimpleNamespace(ok=not named, out="",
+                                   err=f"{named}: not a valid rule file" if named else "")
+        reloads.append(argv)
+        return SimpleNamespace(ok=True, out="", err="")
+
+    monkeypatch.setattr(prometheus.shell, "run", run)
+
+    told = _refusal_of(lambda: backend.import_hw_rules("node001", {}))
+    assert checks and bad in checks[0], "promtool was not asked about the file just written"
+    assert "promtool refuses" in told, "the refusal did not reach the node that caused it"
+    assert not reloads, "Prometheus was reloaded over a file promtool refuses"
+
+    # Any other node's write, which is what used to carry the refusal away with it.
+    told = _refusal_of(lambda: backend.import_hw_rules("node002", {}))
+    assert bad in checks[-1], (
+        "another node's reload was checked over its own file alone, so the refused one was "
+        "never named again while Prometheus went on refusing the directory it reads")
+    assert "promtool refuses" in told and not reloads
+
+    # The node's own retry. Nothing has changed on disk, so nothing is written - but the
+    # check it is waiting on has still never passed, and it has to be told so.
+    told = _refusal_of(lambda: backend.import_hw_rules("node001", {}))
+    assert "promtool refuses" in told, (
+        "asked again over a file promtool refuses, the node was answered that its rules "
+        "are in place, with no reload attempted and nothing left saying otherwise")
+    assert not reloads
+
+    # Put right: the reload is taken, and what it covered stops being owed one.
+    refuses.clear()
+    assert backend.import_hw_rules("node001", {})["changed"] is False
+    assert len(reloads) == 1, "the reload was never sent once promtool took the file"
+    backend.import_hw_rules("node002", {})
+    assert len(reloads) == 1, "a file promtool has taken is still being treated as pending"
+
+
 def test_a_regenerate_leaves_one_live_rule_file_and_not_two(rig, tmp_path, monkeypatch):
     """
     Force writes the name Luna resolves now, and the file it found stops being loaded.
