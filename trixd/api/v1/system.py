@@ -31,23 +31,23 @@ __status__      = "Production"
 
 import inspect
 import json
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path, Query, Request
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
-                                   HOOK_EVENT_PARTS, PLUGIN_STATE_LOADED, ROLE_OPERATOR,
-                                   ROLE_READER, ROLE_ROOTUS)
+                                   HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
+                                   ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused
 from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
-from trixd.core.replication import outbox, tables
+from trixd.core.replication import applied, outbox, tables
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.render.engine import current as renders
 from trixd.core.render import triggers
@@ -106,10 +106,14 @@ class Action(BaseModel):
                 "trixd or its plugin started, and whether that run worked. `triggers` carries one "
                 "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
                 "hashes, which it does on an HA master only, and `replication` when the last "
-                "sweep ran, 0 for never. `owed` counts the replicated calls still "
+                "sweep ran, 0 for never, with `not_converging` counting the peer and table "
+                "pairs that have still differed after several passes - which means neither "
+                "controller is taking the other's row. `owed` counts the replicated calls still "
                 "waiting for a peer, the ones given up on, the peers configured and the "
                 "peers not answering - counts only, and no peer is named, because this "
-                "route takes no token: `GET /system/replication/owed` says where. States "
+                "route takes no token: `GET /system/replication/owed` says where, and "
+                "`oldest_pending` says in seconds how long the oldest waiting call has "
+                "waited, which is what tells a busy queue from a stuck one. States "
                 "and times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
@@ -118,8 +122,9 @@ class Action(BaseModel):
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
-                             "replication": {"at": 1791545526.87}},
-                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0}},
+                             "replication": {"at": 1791545526.87, "not_converging": 0}},
+                "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0,
+                         "oldest_pending": 0}},
                 "How trixd is doing"))
 def health() -> dict:
     """
@@ -134,7 +139,8 @@ def health() -> dict:
             "triggers": {**{name: {"answering": state.get("answering", False),
                                    "last_pass": state.get("last_pass", 0)}
                             for name, state in triggers.states().items()},
-                         "replication": {"at": (sweep().last or {}).get("at", 0)}},
+                         "replication": {"at": (sweep().last or {}).get("at", 0),
+                                         "not_converging": sweep().stalled()}},
             "owed": outbox.states()}
 
 
@@ -167,9 +173,14 @@ def plugins(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
 
 @router.get("/audit", summary="Who did what here, newest first",
             description=(
-                "The audit trail: every decision the gate made and every change, with who, "
-                "the verb or action, the object, and the outcome. For a refusal, `detail` "
-                "says what the route needed and what the caller held. Rows are kept for "
+                "The audit trail: every decision the gate reached about a caller it could "
+                "identify, granted and refused alike, every change, and a sign-in whose "
+                "password was wrong - with who, the verb or action, the object, and the "
+                "outcome. For a refusal, `detail` says what the route needed and what the "
+                "caller held. A credential that did not verify at all is not here: a token "
+                "missing, malformed, expired, signed by an issuer this daemon does not "
+                "trust, or of the wrong kind is refused before the gate knows who is "
+                "asking, and leaves its trace in the log instead. Rows are kept for "
                 "`[AUDIT] KEEP`, 90 days by default."),
             responses=docs.answers({"audit": [{
                 "at": "2026-10-09T11:37:43.532228+00:00", "principal": "alice",
@@ -191,9 +202,14 @@ def audit_trail(principal: str = Query("", description="Only this user's rows",
     The audit trail, filtered by who, outcome and an ISO 8601 start time.
     """
     try:
-        start = datetime.fromisoformat(since.replace("Z", "+00:00")).replace(tzinfo=None)             if since else None
+        start = datetime.fromisoformat(since.replace("Z", "+00:00")) if since else None
     except ValueError:
         raise BadRequest(f"{since} is not an ISO 8601 time") from None
+    # `Audit.at` is the naive UTC time the column stores, so an offset is converted rather
+    # than dropped: discarding it filters from the wall-clock reading and loses every row
+    # between the two, under a 200. Same idiom as core/replication/tables.py.
+    if start is not None and start.tzinfo is not None:
+        start = start.astimezone(timezone.utc).replace(tzinfo=None)
     return {"audit": audit.read(principal, outcome, start, limit)}
 
 
@@ -412,7 +428,16 @@ def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
                  "The named handler is called directly rather than the route being "
                  "re-entered, so nothing is written down to send onwards: there is no loop "
                  "to prevent and no hop count to get wrong. rootus only, which is the "
-                 "account the pair already shares for replication."),
+                 "account the pair already shares for replication.\n\n"
+                 "Two conventions a replicating handler's answer carries. `skipped`, as a "
+                 "non-empty string, says what the handler did not do - a node that is not "
+                 "in this controller's Luna, or the entries of a batch it could not apply - "
+                 "and the sender then treats the call as not done and offers it again "
+                 "rather than recording it as applied; it is a reserved key, and a count or "
+                 "list of left-out items must not use it. Offering the "
+                 "same call again is answered with the answer given the first time, since "
+                 "delivery is at-least-once and the sender's wait is bounded: brief when "
+                 "a caller's own request offers the call, longer on a sweep pass."),
              responses=docs.answers({"applied": "prometheus hw-rules/<node>",
                                      "origin": "dev2-rocky9-controller1"},
                                     "What was applied",
@@ -427,6 +452,16 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     """
     Find the endpoint the peer names, check its manifest allows this, and call its handler.
     """
+    already = applied.recorded(body.origin, body.request_id)
+    if already is not None:
+        # Delivery is at-least-once: a sender whose wait ran out - brief on a caller's
+        # request thread, longer on a sweep pass - offers the row again at every pass.
+        # Answering as we answered then is what makes a slow apply harmless; running it
+        # again is how one write lands repeatedly.
+        LOGGER.info("%s %s %s was already applied for %s (%s), so the answer is the one "
+                    "given then", body.method, body.plugin, body.path, body.origin,
+                    body.request_id)
+        return already
     entry = registry().plugins.get(body.plugin)
     if entry is None or entry.state != PLUGIN_STATE_LOADED:
         raise NotFound(f"no plugin named {body.plugin} is loaded here")
@@ -443,15 +478,57 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
     if handler is None:
         raise NotFound(f"{body.plugin} has no handler {endpoint.handler}")
 
-    supplied = dict(body.variables or {})
-    if body.body is not None:
+    # The body the endpoint declares, checked against the model the binder bound rather than
+    # a second one written beside it. A peer a release ahead sends a field this build does
+    # not know, or omits one it now requires, and a refusal naming it beats the 500 a handler
+    # reaching for a missing key produces - which the sender can only read as "retry for ever".
+    model = (entry.models or {}).get(endpoint.body_schema) if endpoint.body_schema else None
+    checked = None
+    if model is not None:
+        try:
+            # Kept, not discarded. The ordinary route hands the handler what the model
+            # produced, so a declared integer arrives as an integer and an optional field
+            # the sender omitted arrives as None. Validating and then passing the raw body
+            # on left the handler a string where it expected a number, and a missing key
+            # where the route it was written against guarantees one - which is the 500 this
+            # check exists to stop.
+            checked = model(**(body.body or {})).model_dump()
+        except ValidationError as error:
+            raise BadRequest(f"{body.plugin} {body.method} {body.path} does not accept the "
+                             f"body {body.origin} sent: {error}") from error
+
+    # No user token reaches a node endpoint, not even rootus; this route does, because
+    # applying for the node is the whole job. The peer and a person share the account, so
+    # the two cannot be told apart here - the trail is what is left. A role-gated endpoint
+    # needs the row for the same reason: the gate's own row names this route, not the node.
+    variables = dict(body.variables or {})
+    audit.granted(caller.name, "replication.apply",
+                  next((str(variables[key]) for key in NODE_PATH_PARAMS if key in variables),
+                       body.path),
+                  f"{endpoint.token} endpoint {body.method} {body.path} reached through "
+                  f"apply for {body.origin}")
+
+    supplied = dict(variables)
+    if checked is not None:
+        supplied["body"] = checked
+    elif body.body is not None:
         supplied["body"] = body.body
     accepted = inspect.signature(handler).parameters
     answer = handler(**{key: value for key, value in supplied.items() if key in accepted})
     LOGGER.info("applied %s %s %s for %s (%s)", body.method, body.plugin, body.path,
                 body.origin, body.request_id)
-    return {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
-            "result": answer if isinstance(answer, (dict, list)) else str(answer)}
+    given = {"applied": f"{body.plugin} {body.path}", "origin": body.origin,
+             "result": answer if isinstance(answer, (dict, list)) else str(answer)}
+    turned_down = applied.declined(answer)
+    if turned_down:
+        # Not remembered. The sender is meant to offer this again - a decline here is often
+        # a moment of Luna lag - and answering every retry from the record would hold the
+        # decline for as long as the record lives.
+        LOGGER.warning("did not apply %s %s %s for %s: %s", body.method, body.plugin,
+                       body.path, body.origin, turned_down)
+    else:
+        applied.record(body.origin, body.request_id, given)
+    return given
 
 
 @router.post("/replication/sweep", summary="Reconcile with every peer now",

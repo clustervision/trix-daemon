@@ -71,7 +71,9 @@ def manifest_schema() -> dict:
             "methods": {"type": "array", "items": {"enum": list(HTTP_VERBS)},
                         "default": ["GET"]},
             "minimum": {"enum": list(MINIMUMS),
-                        "description": "the lowest role this endpoint admits"},
+                        "description": "the lowest role this endpoint admits; only on a "
+                                       "user-token route, as public, forward and node-token "
+                                       "routes check no role"},
             "handler": {"type": "string", "description": "the backend method"},
             "schema": {"type": "string", "description": "a name under schemas, for the body"},
             "token": {"enum": [TOKEN_KIND_USER, TOKEN_KIND_NODE], "default": TOKEN_KIND_USER},

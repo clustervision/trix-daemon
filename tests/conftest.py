@@ -37,8 +37,16 @@ from fastapi.testclient import TestClient
 
 from trixd.app import create_app
 from trixd.common import settings as configuration
+from trixd.core import tasks
 from trixd.core.lifespan import start
+from trixd.core.plugins.registry import current as registry
+from trixd.core.render import triggers
+from trixd.core.render.engine import current as renders
+from trixd.core.replication import applied, outbox
+from trixd.core.replication import sweep as replication_sweep
+from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
+from trixd.db import engine as database
 from trixd.plugins.luna import hashes
 from trixd.plugins.luna.config import LUNA_INI_ENV
 
@@ -50,9 +58,14 @@ PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__f
 SHARED_SECRET: str = "004f2af45d3a4e161a7dd2d17fdae47f"
 
 
-def build(tmp_path, algorithm: str = "HS256"):
+def build(tmp_path, algorithm: str = "HS256", monkeypatch=None):
     """
     Write a configuration and bring a daemon up against it.
+
+    `monkeypatch` is how the Luna ini reaches the environment. Assigning it directly left
+    the variable set for whatever ran next: the autouse fixture below clears it before each
+    test, so the leak stayed inside the run, but a test asking what happens with no Luna
+    configuration depended on nothing having built a rig first.
     """
     plugins = tmp_path / "plugins"
     if not plugins.exists():
@@ -64,7 +77,10 @@ def build(tmp_path, algorithm: str = "HS256"):
     luna_ini.write_text(f"[API]\nENDPOINT = luna.test:7050\nPROTOCOL = https\n"
                         f"VERIFY_CERTIFICATE = no\nSECRET_KEY = {SHARED_SECRET}\n",
                         encoding="utf-8")
-    os.environ[LUNA_INI_ENV] = str(luna_ini)
+    if monkeypatch is not None:
+        monkeypatch.setenv(LUNA_INI_ENV, str(luna_ini))
+    else:
+        os.environ[LUNA_INI_ENV] = str(luna_ini)
 
     ini = tmp_path / "trixd.ini"
     ini.write_text(
@@ -100,20 +116,110 @@ def _own_luna_ini(monkeypatch):
     yield
 
 
+@pytest.fixture(autouse=True)
+def _own_process_state():
+    """
+    The state that lives in the process rather than in a rig, put back afterwards.
+
+    These are module-level singletons, so one test's leavings are in the next test's way:
+    that is how a test passes alone and fails in a full run, and the other way round.
+    Building a rig does not clear any of them, because none belongs to a database or a
+    configuration file.
+
+    Two of these earn their keep and the rest are insurance. The plugin registry is the one
+    that actually bites: a test that loads a plugin of its own leaves it registered, so its
+    hooks go on being dispatched into the next test's run - which shows up as a hook
+    answering for a plugin that test never loaded. Taken out the way `unload` does, minus
+    the route table, which is a fresh app per test anyway.
+
+    The other is the outbox's in-flight set. A claim left behind makes the next test's
+    sender skip that row and report nothing owed, with no error anywhere - and row ids
+    restart at one in every fresh rig, so it is always row one that disappears. It cost the
+    reviewer who found it three probes that stopped reproducing their own defects.
+
+    The rest - the render engine, the applied record, the stall counts, the breaker, the
+    sweep's last pass and its peer tokens - are cleared because they are process state that
+    no rig owns, not because a test fails without them today.
+    """
+    standing = set(registry().plugins)
+    yield
+    for name in set(registry().plugins) - standing:
+        tasks.unregister(name)
+        triggers.forget(name)
+        registry().plugins.pop(name, None)
+    renders().forget_all()
+    applied.forget_all()
+    sweep().stubborn.clear()
+    sweep().last = {}
+    replication_sweep._tokens.clear()
+    outbox._failures.clear()
+    outbox._open.clear()
+    outbox._sending.clear()
+
+
 @pytest.fixture()
-def rig(tmp_path):
+def rig(tmp_path, monkeypatch):
     """
     A configured daemon: its own database, the shared secret, its own plugins.
     """
-    return build(tmp_path)
+    return build(tmp_path, monkeypatch=monkeypatch)
 
 
 @pytest.fixture()
-def keypair_rig(tmp_path):
+def keypair_rig(tmp_path, monkeypatch):
     """
     The same daemon with the optional keypair algorithm selected instead.
     """
-    return build(tmp_path, algorithm="EdDSA")
+    return build(tmp_path, algorithm="EdDSA", monkeypatch=monkeypatch)
+
+
+@pytest.fixture()
+def interleave_once(monkeypatch):
+    """
+    Run another caller's whole change inside the first read of the next database session.
+
+    A read, a change and a write across two sessions is lost at one seam, and a pair of
+    threads has to be lucky to meet there; injected, the losing order is the only order the
+    test can take. Returns the list the injection appends to, so a test can assert the other
+    caller actually ran rather than measuring an interleaving that never happened.
+
+    Behind every one of the first `times` reads, so a test can take the seam once or lose
+    every round an amend is allowed.
+    """
+    def install(other, times: int = 1):
+        """
+        Arm it for the next session opened, and for its first `times` reads.
+        """
+        opened, fired = [], []
+        real = database.session
+
+        def session():
+            """
+            The next session, with its early reads carrying the other caller behind them.
+            """
+            handle = real()
+            if opened:
+                return handle
+            opened.append(True)
+            scalar = handle.scalar
+
+            def read_then_interleave(*args, **kwargs):
+                """
+                Read, then let the other caller have the row, then answer with what we read.
+                """
+                row = scalar(*args, **kwargs)
+                if len(fired) < times:
+                    fired.append(True)
+                    other()
+                return row
+
+            handle.scalar = read_then_interleave
+            return handle
+
+        monkeypatch.setattr(database, "session", session)
+        return fired
+
+    return install
 
 
 @pytest.fixture()

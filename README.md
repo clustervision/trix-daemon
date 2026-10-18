@@ -51,7 +51,7 @@ sits on the boot path.
 | manifest | a plugin's declaration of its routes, their minimums, schemas and renders |
 | render | an output computed from inputs, such as the Prometheus target list or a slurm file, redone when an input changes |
 | declaration | a settings document a plugin stores, kept in the `declaration` table |
-| pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged |
+| pass-through | `/api/v1/luna/<path>`, which hands the request to Luna unchanged, up to `[API] MAX_BODY` |
 | Luna hook | what a plugin does after a node is renamed or deleted through the pass-through (`luna_hooks` in its manifest) |
 | node token | a token a booted node gets for itself, confined to that node (Luna's "provision" scope) |
 | service token | a short-lived token one controller's trixd gives the other's, for replication |
@@ -83,6 +83,10 @@ sits on the boot path.
    `/api/v1/luna/config/node/node001` to Luna as `/config/node/node001`, at the address
    Luna's own `luna.ini` names, with the method, query, headers and body as sent, less
    the connection headers, and returns Luna's answer unchanged. Luna decides who may.
+   The one limit is `[API] MAX_BODY`, which bounds every request this daemon reads and so
+   bounds Luna's whole API through here as well: a body past it is answered 413 and never
+   forwarded. It defaults to 8 MiB, which is well above anything the TrinityX tooling
+   sends; raise it if a site has a Luna call that legitimately exceeds it.
 2. After the answer has left, `trixd/plugins/luna/hooks.py` looks at what was asked. A
    successful rename, group move or delete is queued as a task (`trixd/core/tasks.py`).
 3. The task worker runs every plugin's `luna_hooks` handler for it; the prometheus
@@ -130,8 +134,9 @@ pip install -e .
 mkdir -p dev
 ```
 
-trixd reads Luna's address and the token secret from Luna's own `luna.ini`. On a
-workstation there is no Luna, so write a small one, `dev/luna.ini`, and point at it:
+The Luna plugin reads Luna's address, and the secret for the token it presents to Luna,
+from Luna's own `luna.ini`. On a workstation there is no Luna, so write a small one,
+`dev/luna.ini`, and point at it:
 
 ```ini
 [API]
@@ -164,10 +169,6 @@ LOGFILE =
 
 [AUTH]
 CHAIN = local
-
-[TRIGGERS]
-; No Luna here, so the hash comparison is off.
-LUNA_HASHES = 0s
 
 [PLUGINS]
 DIRECTORY = trixd/plugins
@@ -233,6 +234,22 @@ from there. A missing file, an unknown algorithm or an unreadable duration stops
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
 except `EXPIRY`, where it is hours as in `luna.ini`.
 
+Everything else a `trixd.ini` gets wrong is loud and not fatal: the daemon names it and
+comes up. A file that exists but cannot be read, a mode the daemon has no rights to
+among them, is named with the reason, and the daemon then starts on its built-in
+defaults rather than on what that file says. A section or a key trixd does not read, a
+misspelled `[DATABASE] URL` among them, is named one by one, because the alternative is
+a fresh default database and nothing said; the keys trixd reads are the ones it actually
+asks the file for, so a setting added to the code is covered without a second list to
+remember. `[API] MAX_BODY` takes `K`, `M` and `G` as powers of 1024, with or without a
+`B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
+`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Either one
+unreadable is named along with the value used instead: the default for `MAX_BODY`, and
+on for `ENABLED`, since reading it as off would quietly stop an HA pair reconciling. An
+empty `[API] USERNAME` or `PASSWORD` is named too, because that account is the one
+principal that holds `rootus`: without it the directory, slurm and replication routes
+answer 403 to every caller.
+
 **Nothing about Luna is in `trixd.ini`.** Where Luna answers, its protocol, whether
 its certificate is checked, and the token secret both daemons share are read from
 Luna's own `luna.ini` (`/trinity/local/luna/daemon/config/luna.ini`), and read again
@@ -243,9 +260,11 @@ warning that names them as ignored.
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
 package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
-what `ENABLED` lists, by default all six. slurm and genders write the same blocks
-luna2-daemon's node hook still writes, from the same generator and node list, so the two
-agree; once that hook stops, they are the only writers.
+what `ENABLED` lists, by default all six. An `ENABLED` that names nothing at all is the
+exception: it loads every plugin found rather than none, which is what an installed site
+already runs on, so the count it enabled is logged at startup. slurm and genders write
+the same blocks luna2-daemon's node hook still writes, from the same generator and node
+list, so the two agree; once that hook stops, they are the only writers.
 
 Clients get a `trixd.ini` of their own beside the `luna.ini` the installer writes for
 the alertx CLI, the On Demand apps and the node image. The Luna CLI and the luna2
@@ -272,7 +291,8 @@ trixd does it as the ini account.
 Every user route names its minimum, and the gate compares it with the caller's role
 before the handler runs. A refusal is a 403 that says both, as in
 `this needs manager; you hold operator`, and goes to the audit trail. The other
-controller's service token passes every check.
+controller is not an exception: it signs in with the account both controllers are
+configured with and is judged on that account, as any caller holding it would be.
 
 The whole decision is these lines. The position on the ladder is the rank:
 
@@ -285,9 +305,7 @@ MINIMUMS: tuple = ROLES + (ROLE_ROOTUS,)
 def rank(role: str) -> int:
     return MINIMUMS.index(role) if role in MINIMUMS else 0
 
-def permits(who, minimum: str, kind: str = "") -> tuple:
-    if kind == TOKEN_KIND_SERVICE:                # the other controller
-        return True, TOKEN_KIND_SERVICE
+def permits(who, minimum: str) -> tuple:
     held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):   # the trixd.ini account
         return True, held
@@ -315,9 +333,15 @@ read nothing until rootus gives them a role.
 ## Tokens, here and at Luna
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with
-`{"token": "..."}`, valid for `[API] EXPIRY`. Tokens are HS256 over the secret Luna
-signs with too, so either daemon verifies a token the other minted. trixd reads that
-secret from Luna's `luna.ini`, so there is one copy of it.
+`{"token": "..."}`, valid for `[API] EXPIRY`. trixd signs and verifies those with its
+own material, from `[TOKENS]`: a shared secret, `SECRET_KEY` or `SECRET_FILE`, or a
+keypair. The secret in Luna's `luna.ini` is a separate one, read by the Luna plugin for
+the token it presents to Luna, so there are two - and a token one daemon minted verifies
+at the other only where the installer has written the same value into both.
+
+The key ring is read once, when the daemon starts. Changing what trixd signs with
+therefore takes a restart; until then it goes on accepting tokens signed with the old
+material, whatever `luna.ini` now says.
 
 trixd's own calls to Luna, the ones its plugins make to read nodes and groups, carry a
 token trixd signs itself with that secret, as Luna's administrator, `id` 0. No Luna
@@ -350,9 +374,10 @@ prometheus plugin, for one, makes the node's hardware rule file carry the name a
 group Luna now holds, whether or not Luna's own hook moved it.
 
 A change made at Luna directly, not through this route, is picked up by comparing
-Luna's table hashes every `[TRIGGERS] LUNA_HASHES`. Luna answers that only on the
-HA master, so on a single controller such a change reaches the rule files when
-trixd next starts, or when the next node change passes through it.
+Luna's table hashes once an hour, which is the poller's own interval and not a
+setting. Luna answers that route only on the HA master, so on a single controller
+such a change reaches the rule files when trixd next starts, or when the next node
+change passes through it.
 
 ## Writing a plugin
 

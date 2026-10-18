@@ -35,9 +35,12 @@ endpoints:
     handler: list_services
     summary: Every service this daemon may control, and its state
     description: |
-      Each service in the catalogue with what systemd says about its unit now: `active` as
-      `systemctl is-active` answers it, `enabled` as `systemctl is-enabled` does. Only
-      catalogued services are listed; a manager keeps the catalogue.
+      Each service in the catalogue with what systemd says about its unit now: `active` is
+      the unit's `ActiveState` and `enabled` its `UnitFileState`, read for the whole
+      catalogue in one `systemctl show`. A unit systemd has no unit file for reads
+      `not-found` for both, which tells it apart from one that is merely stopped; a unit
+      systemd answered nothing at all for reads `unknown` for both. Only catalogued
+      services are listed; a manager keeps the catalogue.
     response:
       description: Each catalogued service and its state
       example: {services: {prometheus-server: {active: active, enabled: enabled}, slurmctld: {active: active, enabled: enabled}}}
@@ -78,7 +81,9 @@ endpoints:
     handler: status
     summary: Whether one service is running
     description: |
-      What systemd says about one catalogued service's unit right now.
+      What systemd says about one catalogued service's unit right now. `active` is the
+      unit's `ActiveState` and `enabled` its `UnitFileState`; a unit systemd has no unit
+      file for reads `not-found` for both.
     params:
       name: {description: "A service name from the catalogue", example: slurmctld}
     response:

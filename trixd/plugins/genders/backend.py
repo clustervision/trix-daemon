@@ -73,8 +73,24 @@ class Backend:
         if not fullset:
             LOGGER.info("no nodes yet, so nothing to write")
             return {"nodes": 0, "file": self.config()["genders_file"]}
+
+        # A node Luna holds with no group renders as `<node> all,`, and libgenders refuses an
+        # empty attribute for the whole file rather than for the line, so one such node takes
+        # pdsh out on every node. Left out and named, as the slurm render does for the same
+        # node: the nodes that do have a group stay addressable without it.
+        skipped = sorted(one["name"] for one in fullset if not one["group"])
+        if skipped:
+            LOGGER.error("no group in Luna, so left out of the genders file: %s",
+                         ", ".join(skipped))
+            fullset = [one for one in fullset if one["group"]]
+        if not fullset:
+            LOGGER.error("every node Luna holds is without a group, so there is nothing to "
+                         "write a genders file from")
+            return {"nodes": 0, "file": self.config()["genders_file"], "skipped": skipped}
+
         if not _generator().Genders(fullset):
             raise BackendFailure(f"{WRITES['genders_file']} has no {WRITES['managed_block']} "
                                  "managed block, so it was left alone")
         LOGGER.info("wrote the genders file for %d node(s)", len(fullset))
-        return {"nodes": len(fullset), "file": self.config()["genders_file"]}
+        return {"nodes": len(fullset), "file": self.config()["genders_file"],
+                **({"skipped": skipped} if skipped else {})}

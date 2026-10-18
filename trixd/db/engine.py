@@ -41,6 +41,24 @@ LOGGER = trixlog.get("db")
 
 BUSY_TIMEOUT_MS: int = 10000
 
+# How many callers can be inside a synchronous handler at once, which is the size of the
+# threadpool Starlette runs them in - forty - plus this daemon's own threads: the sweep, the
+# task worker and the triggers. The connection pool is sized to it.
+#
+# Left at the dialect default of five with ten of overflow, the sixteenth caller waited
+# pool_timeout seconds and was then refused outright, so a boot storm queued and then
+# failed. The timeout is shortened for the same reason: a caller that cannot have a
+# connection should be told, not held for half a minute.
+#
+# The two numbers are set in different places - Starlette's threadpool and this engine - so
+# a test reads both at run time and fails if the first outgrows the second. Checked there
+# rather than here: the limiter is only readable from inside the event loop, and reading it
+# would make anyio a dependency this daemon declares for a start-up warning, when the same
+# drift is caught before it ships.
+CALLERS: int = 40
+OWN_THREADS: int = 8
+POOL_TIMEOUT_SECONDS: int = 10
+
 _engine: Engine = None
 _factory: sessionmaker = None
 
@@ -96,7 +114,10 @@ def start(url: str) -> Engine:
     if path and os.path.dirname(path):
         os.makedirs(os.path.dirname(path), exist_ok=True)
     migrate(url)
-    _engine = create_engine(url, future=True, connect_args={"check_same_thread": False}
+    _engine = create_engine(url, future=True,
+                            pool_size=CALLERS + OWN_THREADS, max_overflow=0,
+                            pool_timeout=POOL_TIMEOUT_SECONDS,
+                            connect_args={"check_same_thread": False}
                             if url.startswith("sqlite") else {})
     _factory = sessionmaker(bind=_engine, expire_on_commit=False, future=True)
     LOGGER.info("database ready at %s", path or url)

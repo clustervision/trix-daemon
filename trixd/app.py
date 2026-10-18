@@ -31,6 +31,7 @@ __status__      = "Production"
 
 from fastapi import FastAPI
 
+from trixd.api import limits
 from trixd.api.v1 import auth, docs, identity, system
 from trixd.common import errors
 from trixd.common.constants import API_PREFIX, DAEMON_NAME, DAEMON_VERSION
@@ -54,6 +55,7 @@ def create_app(with_lifespan: bool = True) -> FastAPI:
         lifespan=lifespan if with_lifespan else None,
     )
     errors.register(app)
+    limits.register(app)
     for module in (auth, identity, system):
         stamp(module.router)
     app.include_router(auth.router)

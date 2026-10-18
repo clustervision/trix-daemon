@@ -74,6 +74,10 @@ class Declaration(Base, Replicated):
     kind: Mapped[str] = mapped_column(String(64), nullable=False)
     name: Mapped[str] = mapped_column(String(255), default="", nullable=False)
     body: Mapped[dict] = mapped_column(JSON, default=dict, nullable=False)
+    # A deleted declaration stays as a marker so the deletion reaches the peer; it counts as
+    # no row. Without it the sweep finds the row missing here, present there, and puts it back.
+    deleted: Mapped[bool] = mapped_column(Boolean, default=False, server_default=text("0"),
+                                          nullable=False)
 
 
 class Principal(Base, Replicated):
@@ -190,5 +194,12 @@ class PluginState(Base):
     reason: Mapped[str] = mapped_column(Text, default="", nullable=False)
 
 
-REPLICATED: tuple = ("declaration", "principal")
-LOCAL: tuple = ("audit", "render_state", "plugin_state", "task")
+# Which tables cross to the peer and which are this controller's own. Every mapped table
+# is in one of them: the outbox was in neither, which is what a parallel list does.
+#
+# The order is the one the sweep walks, and nothing depends on it: no render reads a
+# principal, and the two tables have no reference between them. It is written the way it
+# was before this list became the single source, so that deriving the order changed no
+# behaviour along with it - not because principals must go first.
+REPLICATED: tuple = ("principal", "declaration")
+LOCAL: tuple = ("audit", "render_state", "plugin_state", "task", "outbox")

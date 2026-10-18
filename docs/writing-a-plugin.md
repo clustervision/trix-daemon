@@ -91,7 +91,7 @@ Each endpoint:
 |---|---|---|
 | `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
 | `methods` | any of `GET`, `POST`, `PATCH`, `DELETE` | no, default `[GET]` |
-| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, unless `public`, `forward` or `token: node` |
+| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, and only, on a user-token route; `public`, `forward` and `token: node` check no role and are refused with one |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`; the body is validated against it before the handler runs | no; only POST and PATCH carry a body |
 | `token` | `user`, or `node` to accept only that node's own token | no |
@@ -135,7 +135,8 @@ class Backend:
 A handler is given only the arguments it declares:
 
 - a path variable, under its own name;
-- `body`, the validated request body as a dict;
+- `body`, the validated request body as a dict, and `None` on a verb that carries
+  none, which is how one handler serves both a read and a write;
 - `caller`, who is asking: a `trixd.core.security.gate.Caller`, with `.name`,
   `.role`, `.kind` (`user`, `node` or `service`) and `.rootus`.
 
@@ -162,7 +163,13 @@ the reload endpoint answers 409 with the reason.
 | an endpoint names a handler the backend does not have | refused |
 | a schema does not parse, or a verb is not one of the four | refused |
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
+| a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
+| a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
+| an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
+| an endpoint declares a `minimum` and is `public: true`, `forward: true` or `token: node` | refused; no role is checked on those, so the role would admit everyone |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
+| an endpoint handler takes a positional-only argument the route could not fill | refused; everything is handed over by keyword |
+| a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |
 
@@ -225,8 +232,8 @@ hooks may already have done part of the work.
 
 Only calls made through the pass-through are seen this way. A change made at Luna
 directly reaches a plugin through its renders, when Luna's table hashes show it:
-on an HA master within `[TRIGGERS] LUNA_HASHES`, and on a single controller only
-when trixd next starts.
+on an HA master within the hour the poller compares them on, and on a single
+controller only when trixd next starts.
 
 ## Shelling out
 
@@ -273,16 +280,24 @@ poll from what it last produced.
 
 | Field | Meaning |
 |---|---|
-| `inputs` | what wakes it: a Luna object (`luna.node`, `luna.group`, `luna.network`), or the name of one of this plugin's own declarations when a new one arrives from the other controller |
+| `inputs` | what wakes it: `luna.` and one of Luna's own table names (`luna.node`, `luna.group`, `luna.nodeinterface`, `luna.ipaddress`, `luna.network`, and any other table Luna hashes), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
 | `coalesce` | how long a burst of changes is gathered, default `2s` |
 | `serve` | `json` to answer GET with what was produced; without it the render produces files and serves nothing |
+
+Declare the table that *carries* what the producer reads, including a table it
+reaches only through a field Luna assembles for it, and declare the table rather
+than the field. A wake carries no data: the render is told only that something
+moved and its producer re-reads Luna for the truth, so a declaration keeps
+working when a table gains, loses or renames a column.
 
 The backend provides `render_<path with dashes and slashes as underscores>`, or
 whatever `handler` names, taking no arguments. Every render runs once at startup.
 A change wakes it at once, and changes landing within the next `coalesce` wake it
 once more when that window closes, so the last one is never lost. Renders run one
 at a time. A render that fails keeps its previous output and records the error,
-which `/api/v1/system/health` reports.
+which `/api/v1/system/health` reports, and is produced again on the next pass of
+the Luna hash fallback, so a producer that failed while its source was away does
+not stay failed.
 
 Writing files is the producer's own job. Write through `trixd.utils.files.write` or
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a

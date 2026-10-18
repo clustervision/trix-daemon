@@ -38,7 +38,7 @@ from trixd.api.v1 import docs
 from trixd.core.render import triggers
 from trixd.core.security import nodes
 from trixd.plugins.luna import config as luna_config
-from trixd.plugins.luna import hashes, hooks
+from trixd.plugins.luna import hashes
 from trixd.plugins.luna.client import current as client
 from trixd.plugins.luna.credentials import (get_credentials, get_token,
                                             get_token_for)
@@ -60,9 +60,25 @@ def _link(request) -> str:
     return f"{config.protocol}://{host}:{port}"
 
 
-triggers.register("luna_hashes", hashes.current())
-nodes.register(client())
-docs.register_placeholder("luna", _link, _PUBLISHED)
-hooks.install()
+def install() -> None:
+    """
+    Plug this plugin in. The loader calls it once the plugin has loaded.
 
-__all__ = ["client", "get_credentials", "get_token", "get_token_for"]
+    Here rather than at import, which is where it used to be. Another plugin reaching for
+    the Luna client - `from trixd.plugins.luna.client import current` in the Prometheus and
+    slurm backends - imports this package on the way, so importing it registered the node
+    source and started the Luna poller for a plugin that was never loaded and that nobody
+    had enabled: trixd went on polling Luna and issuing provision-scoped node tokens while
+    `/system/plugins` named neither, and nothing on the control surface could stop it.
+    Taking luna out of ENABLED, or out of the plugin directory altogether, did not help -
+    the import resolves against the Python package path, not the configured directory.
+
+    Owned, both of them, so unplugging this plugin takes the poller and the node source
+    with it.
+    """
+    triggers.register("luna_hashes", hashes.current(), owner="luna")
+    nodes.register(client(), owner="luna")
+    docs.register_placeholder("luna", _link, _PUBLISHED)
+
+
+__all__ = ["client", "get_credentials", "get_token", "get_token_for", "install"]

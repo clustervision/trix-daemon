@@ -31,7 +31,7 @@ __status__      = "Production"
 
 from trixd.common import logging as trixlog
 from trixd.common.settings import current as settings
-from trixd.common.constants import MINIMUMS, ROLE_NONE, TOKEN_KIND_SERVICE
+from trixd.common.constants import MINIMUMS, ROLE_NONE
 
 LOGGER = trixlog.get("access")
 
@@ -39,7 +39,12 @@ LOGGER = trixlog.get("access")
 def is_rootus(name: str) -> bool:
     """
     The account the ini names, checked against nothing. It is the break glass and
-    the system user, and every use of it is in the audit trail.
+    the system user.
+
+    Every use of it that goes through the gate is in the audit trail. The route to Luna is
+    not guarded, so it is the one place this account does the most - the caller's own
+    headers are forwarded and Luna honours the ini account as its administrator - and
+    leaves nothing here. Luna's own log is where that is answerable for.
     """
     return bool(name) and name == settings().api.username
 
@@ -47,18 +52,23 @@ def is_rootus(name: str) -> bool:
 def rank(role: str) -> int:
     """
     Where a role sits on the ladder; anything unknown sits at the bottom.
+
+    Safe for the role a caller holds, which is what the bottom is for, and not for the
+    minimum a route asks: a minimum nobody recognises would sit at the bottom too and
+    admit everyone. Nothing can reach that today - a manifest minimum is checked against
+    the ladder when the plugin loads, and the core's routes pass constants - so this is a
+    note about which direction holds, not a hole.
     """
     return MINIMUMS.index(role) if role in MINIMUMS else 0
 
 
-def permits(who, minimum: str, kind: str = "") -> tuple:
+def permits(who, minimum: str) -> tuple:
     """
-    Whether the caller reaches the minimum, and the role they hold. rootus always does,
-    and so does a peer daemon: a service token names a controller, never a person.
+    Whether the caller reaches the minimum, and the role they hold. rootus always does.
+
+    No token kind reaches a minimum on its own. The other controller is not an exception:
+    it signs in for a token of its own and is judged on the account it signed in with.
     """
-    if kind == TOKEN_KIND_SERVICE:
-        # Not a role on the ladder: it is what the audit trail shows a peer as holding.
-        return True, TOKEN_KIND_SERVICE
     held = getattr(who, "role", ROLE_NONE) or ROLE_NONE
     if who is not None and is_rootus(who.name):
         return True, held

@@ -153,8 +153,9 @@ def test_a_rename_over_http_refuses_both_ways_of_not_naming_the_old_name(stack):
     Who may call it is not asserted here: a derived test already holds every published
     route to the minimum it declares.
     """
-    node = stack.nodes[0] if stack.nodes else "node001"
-    path = f"/prometheus/hw-rules/{node}/actions/rename"
+    if not stack.nodes:
+        pytest.skip("Luna holds no node: a name it does not hold refuses for its own reason")
+    path = f"/prometheus/hw-rules/{stack.nodes[0]}/actions/rename"
 
     missing = stack.call("POST", path, stack.rootus(), json={})
     assert missing.status_code == 422, missing.text

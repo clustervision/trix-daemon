@@ -32,6 +32,7 @@ __status__      = "Production"
 import functools
 import importlib
 import importlib.util
+import inspect
 import os
 import sys
 import threading
@@ -47,7 +48,11 @@ from trixd.common.settings import current as settings, seconds
 from trixd.core.plugins import binder, manifest as manifests
 from trixd.core.plugins.registry import LoadedPlugin, current as registry
 from trixd.core.plugins.swap import exchange
+from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
+from trixd.core.security import nodes
+from trixd.core import hooks as dispatch
+from trixd.core import tasks
 from trixd.db import engine as database
 from trixd.db import models
 
@@ -104,9 +109,41 @@ def _scan(directory: str) -> dict:
         path = os.path.join(directory, name)
         if os.path.isdir(path) and os.path.isfile(os.path.join(path, "manifest.yaml")):
             found[name] = path
+        elif os.path.isdir(path) and not name.startswith("_"):
+            # Silence here reads as an empty directory: a plugin whose manifest is missing
+            # or misnamed is never discovered, so it is never refused either and the author
+            # is told nothing at all.
+            LOGGER.warning("%s has no manifest.yaml, so it is not a plugin", path)
         elif name.endswith(".py") and not name.startswith("_"):
             found[name[:-3]] = path
     return found
+
+
+def _install(name: str) -> None:
+    """
+    Let a plugin plug itself in, once it has loaded.
+
+    Anything a plugin offers the daemon - a node source, a trigger, a documentation link -
+    belongs here and not in its package's import. Another plugin reaching for this one's
+    client imports its package on the way, so an import that registers plugs in a plugin
+    nobody enabled: it polls, it answers, and the control surface neither shows it nor can
+    stop it. A plugin with nothing to offer needs no install.
+    """
+    # Looked up rather than passed down: the import just above put it here, under the same
+    # prefix for a package and for a single-file plugin, so the shape of what loaded does
+    # not have to travel through every return on the way.
+    package = sys.modules.get(f"{MODULE_PREFIX}{name}")
+    install = getattr(package, "install", None)
+    if install is None:
+        return
+    try:
+        install()
+    except Exception as error:
+        # A sequence of registrations, so one failing part way through leaves the ones
+        # before it: a trigger polling, or a node source answering, for a refused plugin.
+        triggers.forget(name)
+        nodes.forget(name)
+        raise PluginRefused(f"{name} could not plug itself in: {error}") from None
 
 
 def _purge(name: str) -> None:
@@ -189,6 +226,26 @@ def _from_directory(name: str, path: str):
     return manifest, backend_class()
 
 
+def _render_producer(endpoint, backend):
+    """
+    The producer behind one declared render, refusing what the engine could not drive.
+
+    The command-line check calls this too, so what it passes is what the load path accepts.
+    """
+    slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
+    method = endpoint.handler or f"render_{slug}"
+    try:
+        seconds(endpoint.render.coalesce, 2)
+    except ValueError as error:
+        raise PluginRefused(f"{endpoint.path}: coalesce {error}") from None
+    producer = getattr(backend, method, None)
+    if producer is None or not callable(producer):
+        raise PluginRefused(
+            f"{endpoint.path} declares a render with no producer named {method} "
+            "on the backend")
+    return producer
+
+
 def _collect_renders(manifest, backend) -> list:
     """
     Every declared render with its producer, checked but not yet handed to the engine.
@@ -197,18 +254,8 @@ def _collect_renders(manifest, backend) -> list:
     for endpoint in manifest.endpoints:
         if endpoint.render is None:
             continue
-        slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
-        method = endpoint.handler or f"render_{slug}"
-        try:
-            seconds(endpoint.render.coalesce, 2)
-        except ValueError as error:
-            raise PluginRefused(f"{endpoint.path}: coalesce {error}") from None
-        producer = getattr(backend, method, None)
-        if producer is None or not callable(producer):
-            raise PluginRefused(
-                f"{endpoint.path} declares a render with no producer named {method} "
-                "on the backend")
-        found.append((endpoint.path, endpoint.render, producer))
+        found.append((endpoint.path, endpoint.render,
+                      _render_producer(endpoint, backend)))
     return found
 
 
@@ -216,24 +263,55 @@ def _register_renders(plugin: str, found: list) -> None:
     """
     Replace a plugin's renders with the new ones, once the plugin is certain to load.
     """
-    engine = renders()
-    engine.forget(plugin)
-    for path, spec, producer in found:
-        engine.register(plugin, path, spec, producer)
+    renders().replace(plugin, found)
+
+
+def _hook_signature(event: str, handler: str, found) -> None:
+    """
+    Refuse a hook handler the dispatcher could not call, as the binder does for an endpoint.
+
+    A change is handed over as `handler(**payload)`, so every value arrives by keyword and
+    a parameter that can only be filled positionally never is. Nothing else about the shape
+    is checkable here: no plugin declares what an event's payload carries, so whether a
+    handler takes the fields it will be sent is settled by the derived test over the
+    publishers rather than guessed at from the event's name.
+    """
+    try:
+        accepted = inspect.signature(found).parameters
+    except (TypeError, ValueError):
+        return
+    unfillable = [name for name, item in accepted.items()
+                  if item.kind == inspect.Parameter.POSITIONAL_ONLY
+                  and item.default is inspect.Parameter.empty]
+    if unfillable:
+        raise PluginRefused(
+            f"{event} names handler {handler}, which needs {', '.join(unfillable)} "
+            f"positionally; a hook is handed its payload as keyword arguments")
+
+
+def _hook_handler(manifest, backend, event: str, handler: str):
+    """
+    The backend method behind one declared change, refusing what the dispatcher could not
+    call.
+
+    The command-line check calls this too, so what it passes is what the load path accepts.
+    A refusal added here is reached from both; one added beside it, in either caller, is
+    reached from one.
+    """
+    found = getattr(backend, handler, None)
+    if found is None or not callable(found):
+        raise PluginRefused(
+            f"{event} names handler {handler}, which {manifest.backend} does not have")
+    _hook_signature(event, handler, found)
+    return found
 
 
 def _bind_hooks(manifest, backend) -> dict:
     """
     The backend method behind each change the manifest declares.
     """
-    hooks = {}
-    for event, handler in manifest.hooks.items():
-        found = getattr(backend, handler, None)
-        if found is None or not callable(found):
-            raise PluginRefused(
-                f"{event} names handler {handler}, which {manifest.backend} does not have")
-        hooks[event] = found
-    return hooks
+    return {event: _hook_handler(manifest, backend, event, handler)
+            for event, handler in manifest.hooks.items()}
 
 
 def _daemon_paths(app: FastAPI, known) -> list:
@@ -265,6 +343,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     if not path:
         raise NotFound(f"no plugin named {name}")
 
+    # What answers for this plugin's queue before anything here touches it: its own handler
+    # from an earlier load, or the hook dispatcher where another plugin declares hooks on
+    # this source. Read before the purge, because the import below replaces it.
+    standing = tasks.handler(name)
     _purge(name)
     try:
         if os.path.isdir(path):
@@ -274,6 +356,10 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if manifest.plugin != name:
             raise PluginRefused(
                 f"manifest calls itself {manifest.plugin} but sits at {name}")
+        # Only the command-line check looked for these, and a reload does not run it.
+        twice = manifests.duplicates(manifest)
+        if twice:
+            raise PluginRefused(twice[0])
 
         models_for_plugin = manifests.build_models(manifest)
         found_renders = _collect_renders(manifest, backend)
@@ -287,9 +373,22 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if clash:
             raise PluginRefused(
                 f"{clash[0]} is already served by {taken[clash[0]]}")
+
+        # Inside the try, because it can fail: plugged in after the routes went live, a
+        # plugin that refused was already serving them and the reconcile never ran.
+        _install(name)
     except Exception as error:
         # Whatever is already serving keeps serving. The caller decides whether
         # that is fatal: at startup it is not, at the control endpoint it is.
+        # What answered for its queue is put back as it was found. The import above
+        # replaced that, so a refused plugin used to go on answering for its own subsystem
+        # and a notify naming it was dispatched into code that had just been refused -
+        # while dropping the registration instead would unplug the queue of a plugin whose
+        # routes are still serving, because three refusals come before that import.
+        if standing is None:
+            tasks.unregister(name)
+        else:
+            tasks.register(name, standing)
         reason = error.message if isinstance(error, PluginRefused) else str(error)
         LOGGER.error("plugin %s refused: %s", name, reason)
         _remember(known.refuse(name, reason, path))
@@ -306,6 +405,9 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.routes = exchange(app, name, router)
     known.put(entry)
     _remember(entry)
+    # The hooks it declared may name a source nothing answered for yet, and dispatch is the
+    # core's rather than the publisher's, so it is settled from the manifests after a load.
+    dispatch.reconcile()
     LOGGER.info("plugin %s loaded from %s with %d routes", name, path, len(entry.routes))
     return entry
 
@@ -320,9 +422,23 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
         raise NotFound(f"no plugin named {name}")
     exchange(app, name, None)
     renders().forget(name)
+    # Routes and renders were the only things let go of. Its task handler stayed, so the
+    # daemon still accepted notifications for it and dispatched them into unplugged code,
+    # and its triggers kept polling and kept waking renders - a disabled plugin that was
+    # still running.
+    tasks.unregister(name)
+    triggers.forget(name)
+    # The node source too, where this plugin offered it: a node sign-in asking an unplugged
+    # plugin's client whether Luna knows the node, and issuing a token on the answer, is
+    # worse than refusing because nothing can answer.
+    nodes.forget(name)
     entry = known.disable(name)
     _purge(name)
     _remember(entry)
+    # After the unregister above, which takes back the handler under this plugin's own name:
+    # where that name is also a source another loaded plugin declares a hook on, dispatch
+    # for it is put back. Unplugging the publisher used to stop every plugin's hooks.
+    dispatch.reconcile()
     LOGGER.info("plugin %s unplugged", name)
     return entry
 
@@ -334,8 +450,21 @@ def load_all(app: FastAPI) -> dict:
     """
     wanted = settings().plugins.enabled
     disabled = _disabled_names()
+    found = discover()
+    if not wanted:
+        # An empty list has always meant every plugin, which is not what "loads only
+        # what ENABLED lists" reads like; say the count rather than change it.
+        LOGGER.warning("[PLUGINS] ENABLED names nothing, which enables every plugin "
+                       "found: %d of them; list the plugins to load to narrow it",
+                       len(found))
+    for name in wanted:
+        if name not in found:
+            # Nothing is recorded for a name with nothing behind it, so it is absent from
+            # the plugin list rather than refused in it: the only place it can be said is
+            # here.
+            LOGGER.warning("plugin %s is in the enabled list but not on disk", name)
     result = {}
-    for name, path in discover().items():
+    for name, path in found.items():
         if wanted and name not in wanted:
             LOGGER.info("plugin %s present but not in the enabled list", name)
             continue
@@ -360,7 +489,11 @@ def _disabled_names() -> set:
         return set(handle.scalars(
             select(models.PluginState.name)
             .where(models.PluginState.enabled.is_(False))).all())
-    except Exception:
+    except Exception as error:
+        # Kept deliberately: at a first start the table is not there yet, and refusing to
+        # load anything over that would be worse. Said out loud because the same empty
+        # answer also means a readable table whose rows were not read.
+        LOGGER.warning("could not read which plugins are unplugged, so none are: %s", error)
         return set()
     finally:
         handle.close()

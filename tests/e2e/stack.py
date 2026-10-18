@@ -39,6 +39,7 @@ import tempfile
 import time
 from configparser import RawConfigParser
 from datetime import datetime, timedelta, timezone
+from urllib.parse import quote
 
 import jwt
 import requests
@@ -87,6 +88,10 @@ class Stack:
         self.session = requests.Session()
         self.tokens: dict = {}
         self.nodes: list = []
+        self.ready = False
+        # Every connection call() had to retry, so a test that sends hostile input can tell
+        # a request the daemon served from one it died on.
+        self.dropped: list = []
 
     # ------------------------------------------------------------------ start
 
@@ -104,6 +109,7 @@ class Stack:
             self._start_local()
         self._wait()
         self.nodes = self._luna_nodes()
+        self.ready = True
         return self
 
     def _secret_from_ini(self) -> str:
@@ -191,22 +197,55 @@ class Stack:
         The nodes Luna holds, through the pass-through, for routes that name a node.
         """
         answer = self.call("GET", "/luna/config/node", self.rootus())
-        if answer.status_code != 200:
-            return []
+        assert answer.status_code == 200, (
+            f"the suite cannot read Luna's nodes through /luna/config/node: "
+            f"{answer.status_code} {answer.text[:200]}. Luna down, a shared secret that "
+            f"differs between trixd and Luna, or an account Luna does not hold as its "
+            f"administrator all land here; everything that names a node depends on it, so "
+            f"it fails the run rather than turning into skips nobody reconciles")
         return sorted((answer.json().get("config") or {}).get("node") or {})
+
+    def _remove_created(self) -> list:
+        """
+        Every principal the suite named, removed; whatever would not go, named back.
+
+        The name goes into the path quoted, because a name is whatever the store hands
+        back and a DELETE built by interpolation removes a different principal: unquoted,
+        "e2e-x?y=1" sends ?y=1 as a query and takes "e2e-x" with it, answering 200. The
+        daemon's own name rule refuses such a name today, so this guards the path rather
+        than a name known to exist.
+        """
+        listed = self.call("GET", "/identity/users", self.rootus())
+        if listed.status_code != 200:
+            return [f"the identity store would not list: {listed.status_code}"]
+        left = []
+        for user in listed.json().get("users") or []:
+            name = user.get("name", "") if isinstance(user, dict) else str(user)
+            if not name.startswith(MARK) or name == self.user:
+                # In local mode the account the daemon runs as carries the mark too, and
+                # the daemon refuses to remove its own: that 400 is right, not a leftover.
+                continue
+            gone = self.call("DELETE", f"/identity/users/{quote(name, safe='')}", self.rootus())
+            if gone.status_code != 200:
+                left.append(f"{name}: {gone.status_code}")
+        return left
 
     def stop(self) -> None:
         """
-        Remove what the suite created, then stop what it started.
+        Remove what the suite created, then stop what it started, and say what would not go.
+
+        Both halves run whatever the other does: the process is stopped even when the
+        cleanup fails, and a principal left behind on a controller is said rather than
+        swallowed. Nothing is removed when start() never finished, so a setup failure is
+        reported as itself.
         """
-        try:
-            listed = self.call("GET", "/identity/users", self.rootus())
-            for user in (listed.json().get("users") or []) if listed.status_code == 200 else []:
-                name = user.get("name", "") if isinstance(user, dict) else str(user)
-                if name.startswith(MARK):
-                    self.call("DELETE", f"/identity/users/{name}", self.rootus())
-        except Exception:
-            pass
+        leftover: list = []
+        if self.ready:
+            try:
+                leftover = self._remove_created()
+            except Exception as error:
+                # Reported below, not swallowed: it must not stop the process teardown.
+                leftover = [f"the cleanup itself failed: {error}"]
         if self.process is not None:
             self.process.terminate()
             try:
@@ -216,6 +255,7 @@ class Stack:
             self.log.close()
         if self.luna is not None:
             self.luna.stop()
+        assert not leftover, (f"the suite left these principals at {self.base}: {leftover}")
 
     # ------------------------------------------------------------------ calls
 
@@ -230,10 +270,26 @@ class Stack:
         try:
             return self.session.request(method, f"{self.base}{path}", headers=sent,
                                         timeout=60, verify=False, **kwargs)
-        except requests.ConnectionError:
+        except requests.ConnectionError as dropped:
             # A reused connection the server had just closed; once more on a fresh one.
+            # A worker killed by the request raises the same thing and the retry answers
+            # from a healthy one, so the retry is recorded: see unbroken().
+            self.dropped.append(f"{method} {path}: {dropped}")
             return self.session.request(method, f"{self.base}{path}", headers=sent,
                                         timeout=60, verify=False, **kwargs)
+
+    def unbroken(self, mark: int) -> None:
+        """
+        That nothing since this mark was answered by the retry rather than by the request.
+
+        call() retries a dropped connection, and a worker dying on the input it was handed
+        is a dropped connection: the second attempt lands on a worker that is well, answers
+        a refusal, and the item passes. A test that sends hostile input looks at this before
+        it reads a status, because a worker that died is the outcome worse than the 500.
+        """
+        assert len(self.dropped) == mark, (
+            f"the daemon dropped the connection: {self.dropped[mark:]}. The answer came "
+            f"from call()'s retry, so what the status says is a healthy worker's reply")
 
     def sign_in(self, name: str, password: str) -> requests.Response:
         """

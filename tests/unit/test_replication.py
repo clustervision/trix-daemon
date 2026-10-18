@@ -29,10 +29,11 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
 
-from trixd.common.constants import API_PREFIX
+from trixd.common.constants import API_PREFIX, NODE_PATH_PARAMS
 from trixd.core.replication import tables
 from trixd.db import engine as database
 from trixd.db import models
@@ -205,6 +206,61 @@ def test_a_single_controller_runs_no_sweep(rig):
     assert sweep().start() is False
 
 
+def _sweep_said(peers: list, enabled: bool, monkeypatch) -> str:
+    """
+    What start() says about a replication section, and whether it started.
+
+    Through a handler on the sweep's own logger at its own level: the daemon's loggers
+    do not propagate once they are configured, so pytest's capture may never see them.
+    """
+    import logging as logmodule
+
+    from trixd.common import settings as configuration
+    from trixd.core.replication import sweep as replication
+
+    config = configuration.Settings()
+    config.replication = configuration.ReplicationSettings(peers=peers, enabled=enabled)
+    monkeypatch.setattr(replication, "settings", lambda: config)
+    records = []
+    handler = logmodule.Handler()
+    handler.emit = records.append
+    logger = replication.LOGGER
+    previous = logger.level
+    logger.setLevel(logmodule.DEBUG)
+    logger.addHandler(handler)
+    try:
+        assert replication.current().start() is False, "neither state may start a sweep"
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+    return "\n".join(record.getMessage() for record in records)
+
+
+def test_a_pair_with_the_switch_off_is_not_told_it_has_no_peers(monkeypatch):
+    """
+    A configured pair with ENABLED = no is the state someone greps this line for, and
+    being told the peers are not configured is the opposite of true: the peers are the
+    only reason the switch matters at all. Each state says which of the two it is.
+    """
+    said = _sweep_said(["peer.cluster:8050"], False, monkeypatch)
+    # The precondition: the line was said at all, so the rest is not measuring silence.
+    assert "no sweep is running" in said, "the sweep stopped without saying so"
+    assert "no replication peers configured" not in said, \
+        "a configured pair was told it has no peers, which is the opposite of true"
+    assert "ENABLED" in said, "the switch that actually stopped the sweep was not named"
+    assert "peer.cluster:8050" in said, "the peers left unreconciled were not named"
+
+
+def test_a_controller_with_no_peers_still_says_exactly_that(monkeypatch):
+    """
+    The other half of the split: with nothing configured the original wording stands,
+    because that is the state it describes and it is what a site greps for.
+    """
+    said = _sweep_said([], True, monkeypatch)
+    assert "no replication peers configured, so no sweep is running" in said
+    assert "ENABLED" not in said, "nothing is held up by the switch when there are no peers"
+
+
 def test_one_table_carries_the_whole_of_rbac(rig):
     """
     A user, a password, a role, as the whiteboard drew it: no groups, flags or modes. The
@@ -217,7 +273,7 @@ def test_one_table_carries_the_whole_of_rbac(rig):
                        "version", "origin", "updated_at"}, columns
     for gone in ("Usergroup", "Membership", "UsergroupMap", "Permission"):
         assert not hasattr(models, gone), gone
-    assert models.REPLICATED == ("declaration", "principal")
+    assert set(models.REPLICATED) == {"declaration", "principal"}
 
 
 def test_the_declaration_carries_no_permissions(rig):
@@ -415,10 +471,11 @@ def test_a_dark_peer_stops_being_attempted_after_three_failures(rig, monkeypatch
 
     def refuse(peer, row, may_sign_in=True):
         """
-        A peer that was reached and refused the connection.
+        A peer that is not there: the connection is refused, so nothing came back and the
+        socket is the only thing that has been learned about.
         """
         tried.append(peer)
-        return outbox.QUEUED, "connection refused", True
+        return outbox.QUEUED, "connection refused", outbox.NO_ANSWER
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     original, outbox._send = outbox._send, refuse
@@ -454,8 +511,8 @@ def test_a_call_that_changed_nothing_is_not_replicated(rig, monkeypatch):
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
     original = outbox._send
-    outbox._send = lambda peer, row, may_sign_in=True: (sent.append(peer),
-                                                        (outbox.DONE, "", True))[1]
+    outbox._send = lambda peer, row, may_sign_in=True: (
+        sent.append(peer), (outbox.DONE, "", outbox.ANSWERED))[1]
     try:
         for result, expected in (({"changed": False}, "skipped"),
                                  ({"changed": 0}, "skipped"),
@@ -499,6 +556,183 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
         "plugin": "directory", "path": "users/<name>", "method": "DELETE",
         "variables": {"name": "someone"}, "body": None, "origin": "ctrl1"})
     assert null_body.status_code != 422, null_body.text
+
+
+def _crossing_plugin(rig) -> None:
+    """
+    A site plugin whose one endpoint declares replicate, takes a node and requires a field.
+
+    Written here rather than borrowed from a shipped plugin: the only shipped one that
+    declares replicate is not in the test rig's ENABLED list, and a test of what apply
+    accepts should not depend on which plugin happens to carry the flag this release.
+    """
+    import os
+
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader
+
+    site = os.path.join(settings().plugins.site_directory, "crossing")
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+        handle.write(
+            "plugin: crossing\n"
+            "backend: backend\n"
+            "description: One endpoint that declares replicate, for testing apply.\n"
+            "schemas:\n"
+            "  shape:\n"
+            "    count:\n"
+            "      type: integer\n"
+            "      description: A number the handler is given\n"
+            "endpoints:\n"
+            "  - path: thing/<node>\n"
+            "    methods: [PATCH]\n"
+            "    token: node\n"
+            "    handler: thing\n"
+            "    schema: shape\n"
+            "    replicate: true\n"
+            "    summary: A replicating node endpoint\n")
+    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+        handle.write("class Backend:\n"
+                     "    def thing(self, node: str, body: dict = None) -> dict:\n"
+                     '        return {"node": node, "count": (body or {}).get("count")}\n')
+    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+        handle.write("")
+    assert loader.load(rig, "crossing").state == "loaded"
+
+
+def test_apply_refuses_a_body_the_endpoint_does_not_declare(rig, client, headers):
+    """
+    The route handed the handler whatever the peer sent, unchecked, so a body this build's
+    schema would refuse reached the handler and came back a 500 - which the outbox reads as
+    the peer having stopped answering, holding everything queued behind it. A refusal names
+    the field, and is terminal, so the sender stops instead.
+
+    Both directions of a version-skewed pair: a field of the wrong type, and a required one
+    the sender never knew about.
+    """
+    from trixd.common.constants import API_PREFIX
+
+    _crossing_plugin(rig)
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "origin": "ctrl1"}
+
+    wrong = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                        json={**envelope, "body": {"count": "lots"}, "request_id": "r-type"})
+    assert wrong.status_code == 400, wrong.text
+    assert "count" in wrong.text, wrong.text
+
+    absent = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                         json={**envelope, "body": None, "request_id": "r-absent"})
+    assert absent.status_code == 400, absent.text
+
+    good = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                       json={**envelope, "body": {"count": 3}, "request_id": "r-good"})
+    assert good.status_code == 200, good.text
+    assert good.json()["result"]["count"] == 3, good.text
+
+
+def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
+    """
+    No user token reaches a node endpoint, not even rootus, and this route does - which is
+    the whole job, since the peer applies on the node's behalf. The peer and a person share
+    the account the pair is configured with, so nothing here can tell them apart; what can
+    be done is to record that a node endpoint was reached this way, and that was not done.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.security import audit
+
+    _crossing_plugin(rig)
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+        "variables": {"node": "node001"}, "body": {"count": 1},
+        "origin": "ctrl1", "request_id": "r-trail"})
+    assert answer.status_code == 200, answer.text
+
+    applied = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert applied, "nothing in the trail says a node endpoint was reached through apply"
+    assert applied[0]["object"] == "node001", applied[0]
+    assert "ctrl1" in applied[0]["detail"], applied[0]
+
+
+def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "") -> None:
+    """
+    A site plugin with one replicating endpoint, taking its node under a chosen path
+    variable and gated either by a node token or by a role.
+    """
+    import os
+
+    from trixd.common.settings import current as settings
+    from trixd.core.plugins import loader
+
+    site = os.path.join(settings().plugins.site_directory, name)
+    os.makedirs(site, exist_ok=True)
+    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+        handle.write(
+            f"plugin: {name}\n"
+            "backend: backend\n"
+            "description: One replicating endpoint, for testing what apply records.\n"
+            "endpoints:\n"
+            f"  - path: thing/<{variable}>\n"
+            "    methods: [DELETE]\n"
+            f"    token: {token}\n"
+            + (f"    minimum: {minimum}\n" if minimum else "")
+            + "    handler: thing\n"
+            "    replicate: true\n"
+            "    summary: A replicating endpoint\n")
+    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+        handle.write("class Backend:\n"
+                     f"    def thing(self, {variable}: str) -> dict:\n"
+                     f'        return {{"retired": {variable}}}\n')
+    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+        handle.write("")
+    assert loader.load(rig, name).state == "loaded"
+
+
+def test_applying_a_role_gated_endpoint_leaves_a_trail_too(rig, client, headers):
+    """
+    The row was written only for a node endpoint, so a replicated call gated by a role left
+    the peer nothing but the gate's own row for the apply route under the account the pair
+    shares - the two controllers' trails then disagree about the same action, and the peer
+    cannot say who retired a node's rules. The reason the node case is recorded holds here
+    unchanged, so both are.
+    """
+    from trixd.core.security import audit
+
+    _applying_plugin(rig, "gated", "node", "user", minimum="manager")
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "gated", "path": "thing/<node>", "method": "DELETE",
+        "variables": {"node": "node002"}, "origin": "ctrl1", "request_id": "r-gated"})
+    assert answer.status_code == 200, answer.text
+
+    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert rows, "nothing in the trail says a role-gated endpoint was applied for the peer"
+    assert rows[0]["object"] == "node002", rows[0]
+    assert "ctrl1" in rows[0]["detail"], rows[0]
+
+
+@pytest.mark.parametrize("variable", NODE_PATH_PARAMS)
+def test_the_trail_names_the_node_under_any_name_the_gate_binds(rig, client, variable,
+                                                                headers):
+    """
+    Derived from the gate's own list rather than from a second copy of it: apply looked for
+    `node` alone, so the two had already diverged and an endpoint named after one of the
+    other two would have recorded the path in place of the node - leaving the trail unable
+    to say which node was acted on, with nothing to say so.
+    """
+    from trixd.core.security import audit
+
+    _applying_plugin(rig, f"named{variable}", variable, "node")
+    answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": f"named{variable}", "path": f"thing/<{variable}>", "method": "DELETE",
+        "variables": {variable: "node003"}, "origin": "ctrl1",
+        "request_id": f"r-{variable}"})
+    assert answer.status_code == 200, answer.text
+
+    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
+    assert rows, f"nothing in the trail names an endpoint taking <{variable}>"
+    assert rows[0]["object"] == "node003", \
+        (f"the trail records {rows[0]['object']!r} rather than the node for an endpoint "
+         f"taking <{variable}>, which the gate binds as well as <node>")
 
 
 def test_a_manifest_cannot_declare_replicate_on_a_call_that_must_not_cross(rig):
@@ -626,7 +860,8 @@ def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     monkeypatch.setattr(outbox, "_send",
-                        lambda peer, row, may_sign_in=True: (outbox.QUEUED, "away", True))
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
     outbox._failures.clear()
     outbox._open.clear()
     try:
@@ -661,9 +896,9 @@ def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
         A peer that refuses node001's delete outright and takes everything else.
         """
         if row.method == "DELETE" and "node001" in row.payload:
-            return outbox.FAILED, "400: malformed", True
+            return outbox.FAILED, "400: malformed", outbox.ANSWERED
         sent.append(row.payload)
-        return outbox.DONE, "", True
+        return outbox.DONE, "", outbox.ANSWERED
 
     monkeypatch.setattr(outbox, "_send", send)
     # All three are queued before the refusal happens, so node001's repair is one that
@@ -678,9 +913,10 @@ def test_a_refusal_holds_what_was_already_queued_behind_it(rig, monkeypatch):
     outbox._failures.clear()
     outbox._open.clear()
     try:
-        # The first pass meets the refusal at the head and stops there; the second one
-        # knows the row is refused and is the pass that holds the rest of the chain.
-        outbox.drain("ctrl2")
+        # One pass: the refusal at the head holds its own node's chain and the rest of what
+        # the peer owes still goes. It used to take two - the first pass stopped dead at the
+        # refusal and sent nothing, so node002 waited an interval for a refusal that was
+        # never anything to do with it.
         result = outbox.drain("ctrl2")
     finally:
         outbox._failures.clear()
@@ -711,8 +947,9 @@ def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatc
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     sent = []
     monkeypatch.setattr(outbox, "_send",
-                        lambda peer, row, may_sign_in=True: (sent.append(row.payload),
-                                                             (outbox.DONE, "", True))[1])
+                        lambda peer, row, may_sign_in=True: (
+                            sent.append(row.payload),
+                            (outbox.DONE, "", outbox.ANSWERED))[1])
     refused = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
                             {"node": "node001"}, {"was": "node000"}, "req", "tester")
     outbox._finish(refused, outbox.FAILED, "400: malformed")
@@ -741,3 +978,1368 @@ def test_the_next_action_for_a_node_clears_what_the_peer_refused(rig, monkeypatc
     assert result["blocked"] == 0, f"node001 is still held behind the refusal: {result}"
     assert len(sent) == 1 and "node001" in sent[0], \
         f"sent {sent}: node001's patch should have gone once the refusal was cleared"
+
+
+def test_a_forgotten_declaration_does_not_come_back_from_the_peer(rig, tmp_path):
+    """
+    The defect this closes is only visible across two controllers: deleting the row outright
+    leaves the peer holding it, and the next sweep puts it back - within thirty seconds, with
+    nothing said. A marked row carries the deletion instead, and counts as no row on both.
+    """
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node001", {"ipmi": False})
+    handle = database.session()
+    peer = _peer(tmp_path)
+    try:
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        assert peer.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node001")) is not None, "the peer never had it"
+
+        assert declarations.forget("prometheus", "exporter-scope", "node:node001") is True
+        handle.expire_all()
+        # A sweep in each direction, as the pair does every thirty seconds. The peer's own
+        # document goes first, while it still holds the live row: the other order overwrites
+        # the peer before the reverse sweep runs, and then nothing is being tested.
+        tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+
+        theirs = peer.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node001"))
+        assert theirs.deleted, "the deletion did not reach the peer"
+        assert declarations.read("prometheus", "exporter-scope", "node:node001") is None, \
+            "the row came back as a document here"
+        assert "node:node001" not in [row["name"] for row
+                                      in declarations.listing("prometheus", "exporter-scope")], \
+            "a forgotten declaration is still listed"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_a_peer_cannot_name_a_role_this_daemon_does_not_grant(rig):
+    """
+    The API refuses a role off the ladder, and the ladder leaves out rootus deliberately -
+    that is the ini account, not a role anyone is given. The merge took the peer's string as
+    it came, so a compromised or impersonated peer could write rootus into a principal row
+    and outrank manager on every route, in a value no API here would show as invalid.
+    """
+    handle = database.session()
+    try:
+        tables.merge_table(handle, "principal", [
+            {"key": ["climber"], "role": "rootus", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"},
+            {"key": ["gibberish"], "role": "king", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"},
+            {"key": ["ordinary"], "role": "manager", "password_digest": "", "enabled": True,
+             "version": 2, "origin": "peer", "updated_at": "2026-10-07 10:00:00"}])
+        held = {row.name: row.role for row in handle.scalars(
+            select(models.Principal).where(
+                models.Principal.name.in_(["climber", "gibberish", "ordinary"]))).all()}
+    finally:
+        handle.close()
+
+    assert held["climber"] == "none", "a peer wrote rootus into a principal row"
+    assert held["gibberish"] == "none", "a peer wrote a role off the ladder"
+    assert held["ordinary"] == "manager", "a role this daemon does grant was not kept"
+
+
+def test_forgetting_a_declaration_that_is_already_a_marker_still_moves_it_on(rig):
+    """
+    The marker can be newer here than at a peer that still holds the row live, and the pair
+    then sits at equal versions with different content, which no sweep breaks. Issuing the
+    delete again is the way out, so the second call bumps rather than answering nothing.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node003", {"ipmi": False})
+    assert declarations.forget("prometheus", "exporter-scope", "node:node003") is True
+    handle = database.session()
+    try:
+        marked = handle.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node003"))
+        first = marked.version
+
+        assert declarations.forget("prometheus", "exporter-scope", "node:node003") is False
+
+        handle.expire_all()
+        marked = handle.scalar(select(models.Declaration).where(
+            models.Declaration.name == "node:node003"))
+        assert marked.deleted, "the row stopped being a marker"
+        assert marked.version > first, \
+            "a delete issued again left the version where it was, so the tie cannot be broken"
+    finally:
+        handle.close()
+
+
+def test_writing_a_forgotten_key_again_brings_it_back(rig):
+    """
+    A marker must not be a tombstone nobody can get past: the same name written again is a
+    live document, or a scope could never be set twice.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "group:gpu", {"lshw": False})
+    declarations.forget("prometheus", "exporter-scope", "group:gpu")
+    assert declarations.read("prometheus", "exporter-scope", "group:gpu") is None
+
+    declarations.write("prometheus", "exporter-scope", "group:gpu", {"nvidia": True})
+
+    assert declarations.read("prometheus", "exporter-scope", "group:gpu") == {"nvidia": True}
+    assert "group:gpu" in [row["name"] for row
+                           in declarations.listing("prometheus", "exporter-scope")]
+
+
+def test_two_merges_at_one_version_keep_both_fields(rig, interleave_once):
+    """
+    A merge that reads in one session and writes in another is lost at the seam between them:
+    both callers read one version, both wrote the whole document, the later one won, and the
+    earlier caller was answered 200 with the value it sent rather than the value stored. The
+    truncated document then replicates like any other, so the peer agrees with it and no
+    sweep ever reports a conflict.
+    """
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "config", "", {"rules_directory": "/etc/prometheus"})
+    fired = interleave_once(lambda: declarations.merge(
+        "prometheus", "config", "", {"reload_command": "systemctl reload prometheus"}, {}))
+
+    stored = declarations.merge("prometheus", "config", "", {"scrape_interval": "30s"}, {})
+
+    assert fired, "the other merge never ran, so nothing interleaved"
+    assert stored.get("reload_command") == "systemctl reload prometheus", \
+        "the merge that landed first was overwritten, and its caller was answered 200"
+    assert stored.get("scrape_interval") == "30s", "the merge that won lost its own field"
+    assert stored.get("rules_directory") == "/etc/prometheus", \
+        "a field neither caller sent was dropped"
+    assert declarations.read("prometheus", "config", "", {}) == stored, \
+        "the caller was answered a document that is not the one in the row"
+
+
+def test_two_merges_of_a_key_that_does_not_exist_yet_keep_both_fields(rig, interleave_once):
+    """
+    The same seam with no row to read yet, where both callers insert rather than update: the
+    unique constraint is what makes the loser read again instead of writing a second row.
+    """
+    from trixd.utils import declarations
+
+    fired = interleave_once(lambda: declarations.merge(
+        "slurm", "config", "", {"cluster_name": "trinity"}, {}))
+
+    stored = declarations.merge("slurm", "config", "", {"partition": "defq"}, {})
+
+    assert fired, "the other merge never ran, so nothing interleaved"
+    assert stored.get("cluster_name") == "trinity", \
+        "the insert that landed first was overwritten, and its caller was answered 200"
+    assert stored.get("partition") == "defq", "the merge that won lost its own field"
+    assert len(declarations.listing("slurm", "config")) == 1, \
+        "a second row was written for one key"
+
+
+def test_a_key_amended_past_the_bound_is_refused_retryably_rather_than_answered_200(
+        rig, interleave_once):
+    """
+    Past the bound nothing was stored, so the caller has to be refused - and refused in a
+    way that both reaches it and can be retried.
+
+    A refusal that is not a TrixdError never reaches the handler that turns one into a
+    response, so the caller is told nothing it can act on. A refusal below 500 is worse
+    than that: the outbox keeps a 5xx queued and makes any other 4xx terminal, so a
+    replicated write would be dropped on the peer for good over contention that clears.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "config", "", {"rules_directory": "/etc/prometheus"})
+    # A round is only lost to a write that landed, so one landing on every read is what
+    # takes the bound; anything less settles and never reaches the refusal.
+    fired = interleave_once(
+        lambda: declarations.write("prometheus", "config", "",
+                                   {"rules_directory": "/etc/prometheus"}),
+        times=declarations.ROUNDS)
+
+    with pytest.raises(Exception) as refusal:
+        declarations.merge("prometheus", "config", "", {"scrape_interval": "30s"}, {})
+
+    # The preconditions first: without these the refusal could be any other failure, and
+    # the assertions below would be measuring something that is not the exhaustion path.
+    assert len(fired) == declarations.ROUNDS, \
+        f"the other caller ran {len(fired)} times, so the bound is not what refused this"
+    assert declarations.read("prometheus", "config", "", {}).get("scrape_interval") is None, \
+        "the caller was refused for a change that was in fact stored"
+    assert isinstance(refusal.value, TrixdError), \
+        f"the exhaustion path raised {type(refusal.value).__name__}, which never reaches " \
+        f"the TrixdError handler, so the caller is told nothing it can act on"
+    assert refusal.value.status_code >= 500, \
+        f"nothing was stored and a retry is what settles it, but the caller was told " \
+        f"{refusal.value.status_code}, which the outbox treats as terminal"
+    assert "nothing was stored" in refusal.value.message, \
+        "the refusal does not say the write did not land"
+
+
+def test_a_hard_delete_comes_back_from_the_peer(rig, tmp_path):
+    """
+    Why the marker exists, pinned so the reason cannot quietly stop being true.
+
+    If this ever fails, the sweep no longer re-adds a row that is missing here, and forgetting
+    could become an ordinary delete.
+    """
+    from trixd.core.replication import tables
+    from trixd.db import engine as database
+    from trixd.db import models
+    from trixd.utils import declarations
+
+    declarations.write("prometheus", "exporter-scope", "node:node009", {"ipmi": False})
+    handle = database.session()
+    peer = _peer(tmp_path)
+    try:
+        tables.merge_table(peer, "declaration", tables.export_table(handle, "declaration"))
+        handle.execute(models.Declaration.__table__.delete().where(
+            models.Declaration.name == "node:node009"))
+        handle.commit()
+        assert declarations.read("prometheus", "exporter-scope", "node:node009") is None
+
+        tables.merge_table(handle, "declaration", tables.export_table(peer, "declaration"))
+
+        assert declarations.read("prometheus", "exporter-scope",
+                                 "node:node009") == {"ipmi": False}, \
+            "a row deleted outright no longer returns, so the marker may not be needed"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_every_mapped_table_is_classified_as_replicated_or_local(rig):
+    """
+    A table in neither list does not replicate, and nothing says so: the sweep iterates
+    the list, so the pass reports clean while the table never crosses. The outbox was
+    such a table, and this is the list that learns about the next one for free.
+    """
+    from trixd.db import models
+
+    mapped = {mapper.class_.__tablename__ for mapper in models.Base.registry.mappers}
+    classified = set(models.REPLICATED) | set(models.LOCAL)
+    assert mapped == classified, sorted(mapped ^ classified)
+
+
+def test_an_exact_tie_resolves_the_same_way_on_both_controllers(rig, tmp_path):
+    """
+    Same version and same timestamp with different content: neither row is newer, so each
+    controller kept its own and the two copies then stayed different for ever, with a
+    warning on both sides and no pass able to resolve it. The origin decides instead,
+    which both sides read the same way.
+    """
+    from datetime import datetime
+
+    peer = _peer(tmp_path)
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="tied", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        peer.add(models.Principal(name="tied", role="manager", origin="ctrl2",
+                                  version=4, updated_at=stamped))
+        handle.commit()
+        peer.commit()
+
+        ours = tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+
+        assert ours["conflicts"] == 1, ours
+        assert (tables.table_hash(handle, "principal")
+                == tables.table_hash(peer, "principal")), "the tie left the pair diverged"
+        held = handle.scalar(select(models.Principal).where(models.Principal.name == "tied"))
+        assert held.role == "manager" and held.origin == "ctrl2"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_exactly_one_side_wins_a_tie(rig):
+    """
+    The property that makes it converge: run over the same pair from either controller,
+    the answer names the same document. Keeping the local row satisfies neither side.
+    """
+    from trixd.core.replication.tables import _wins_tie
+
+    one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
+    two = {"key": ["tied"], "origin": "ctrl2", "role": "manager"}
+    assert _wins_tie("principal", two, one) != _wins_tie("principal", one, two)
+
+    # Same origin as well: a digest still separates them, so there is always an answer.
+    same_one = {"key": ["tied"], "origin": "ctrl1", "role": "operator"}
+    same_two = {"key": ["tied"], "origin": "ctrl1", "role": "manager"}
+    assert (_wins_tie("principal", same_two, same_one)
+            != _wins_tie("principal", same_one, same_two))
+
+
+def test_a_pass_that_cannot_converge_is_said_and_counted(rig):
+    """
+    Taking everything the peer had that was newer is not the same as agreeing with it.
+    A pass that still differed afterwards reported success and said nothing, so the only
+    sign was the whole table being fetched again every interval, for ever.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    both = ["principal", "declaration"]
+    theirs = {"principal": "aaa", "declaration": "same"}
+    ours = {"principal": "bbb", "declaration": "same"}
+
+    for _ in range(STUBBORN - 1):
+        walking._converged("peer1", both, ["principal"], theirs, ours)
+        assert walking.stalled() == 0, "one differing pass is ordinary and stays quiet"
+    walking._converged("peer1", both, ["principal"], theirs, ours)
+    assert walking.stalled() == 1, "a table differing pass after pass was never reported"
+
+    # And it stops being said once the pair agrees, without a restart.
+    walking._converged("peer1", both, [], theirs, theirs)
+    assert walking.stalled() == 0
+
+
+def test_health_says_how_many_tables_are_not_converging(client):
+    """
+    The counts are what a monitor reads; a pair that cannot converge was in none of them.
+    """
+    answer = client.get(f"{API_PREFIX}/system/health")
+    assert answer.status_code == 200
+    reported = answer.json()["triggers"]["replication"]
+    assert "not_converging" in reported, reported
+    assert reported["not_converging"] == 0
+
+
+def test_one_row_the_peer_answers_badly_for_does_not_hold_the_others(rig, monkeypatch):
+    """
+    A 5xx is the peer answering, so it says nothing about the next node - and stopping the
+    pass there held everything else owed to that peer, pass after pass, with nothing able
+    to clear it. It holds its own node's chain and no more.
+    """
+    import json as jsonlib
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    for node in ("node001", "node002", "node003"):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": node}, {"force": True}, f"req-{node}", "tester")
+
+    def answer(peer, row, may_sign_in=True):
+        """The peer is up, and one node's row goes wrong on it."""
+        if jsonlib.loads(row.payload)["variables"]["node"] == "node001":
+            return outbox.QUEUED, "500: it went wrong here", outbox.ANSWERED
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", answer)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    # The states, not the counts: drain orders by creation and the counts come out the same
+    # whichever row went wrong, so a pass that stopped dead at a late row would have read
+    # identically. What the states cannot be mistaken about is which rows the peer took.
+    handle = database.session()
+    try:
+        rows = {jsonlib.loads(row.payload)["variables"]["node"]: row
+                for row in handle.scalars(select(models.Outbox)).all()}
+        assert rows["node001"].state == outbox.QUEUED, rows["node001"].state
+        assert "500" in rows["node001"].message, rows["node001"].message
+        assert rows["node002"].state == outbox.DONE, rows["node002"].state
+        assert rows["node003"].state == outbox.DONE, rows["node003"].state
+    finally:
+        handle.close()
+    assert result["sent"] == 2, result
+
+
+def test_a_peer_that_has_stopped_answering_stops_the_pass_at_one_attempt(rig, monkeypatch):
+    """
+    The other half of the same branch, and the half that costs real time: nothing came back,
+    so the rest of the queue is not offered. Each attempt is a whole timeout spent on a
+    peer that is not there, so what this pins is the *number of attempts* - the counts come
+    out the same whether the pass stopped or held every row, which is how the first version
+    of this test passed while the branch it named could not be reached at all.
+    """
+    from trixd.core.replication import outbox
+
+    for node in ("node001", "node002", "node003"):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": node}, {"force": True}, f"dark-{node}", "tester")
+
+    tried = []
+
+    def silence(peer, row, may_sign_in=True):
+        """A peer that is not there: the socket says nothing back."""
+        tried.append(row.path)
+        return outbox.QUEUED, "connection refused", outbox.NO_ANSWER
+
+    monkeypatch.setattr(outbox, "_send", silence)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert len(tried) == 1, f"a dark peer was offered {len(tried)} rows, not one"
+    assert result["sent"] == 0, result
+    assert result["left"] == 3, result
+
+
+def test_a_peer_saying_it_skipped_is_not_recorded_as_done(rig, monkeypatch):
+    """
+    The peer answers 200 and its body says it did not do the work - the node is not in its
+    own Luna. That was read as done and pruned an hour later, so the only account of the
+    peer being behind for that node was gone.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node001"}, {"force": True}, "req-skip", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    result = outbox.drain("ctrl2")
+    assert result["sent"] == 0, result
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox))
+        assert row is not None, "the row was pruned, so nothing says the peer is behind"
+        assert row.state == outbox.QUEUED, row.state
+        assert "not in Luna" in row.message, row.message
+    finally:
+        handle.close()
+
+
+def test_a_refusal_nothing_clears_is_let_go_of_with_what_it_held(rig, monkeypatch):
+    """
+    A refused row holds its node's later actions until somebody acts on that node again.
+    Where nobody does, that hold was permanent and lived in a row nothing reaped. What was
+    held goes with it rather than being sent: those actions assume it landed.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-stuck", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/rename", "POST",
+                  {"node": "node001"}, {"was": "node000"}, "req-behind", "tester")
+    # Another node's row, which the refusal was never anything to do with.
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req-other", "tester")
+
+    handle = database.session()
+    try:
+        now = datetime.now(timezone.utc).replace(tzinfo=None)
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.message = "400: this build serves no such endpoint"
+        # Refused a day ago, and what it holds was queued before that - which is the only
+        # way a row can be behind it: submitting one afterwards clears the refusal.
+        row.finished = now - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        for other in handle.scalars(select(models.Outbox)).all():
+            other.created = now - timedelta(seconds=outbox.KEEP_REFUSED + 120)
+        handle.commit()
+    finally:
+        handle.close()
+
+    # Through drain, not by calling the reap: with the call removed from drain the whole
+    # suite stayed green, so the reap would never have run on a controller.
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.DONE, "", outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    handle = database.session()
+    try:
+        left = handle.scalars(select(models.Outbox)).all()
+        assert [row.target.split("=")[1].split("|")[0] for row in left] == ["node002"], \
+            [(row.state, row.target) for row in left]
+        assert left[0].state == outbox.DONE, left[0].state
+    finally:
+        handle.close()
+
+
+def test_a_fresh_refusal_is_kept_as_evidence(rig):
+    """
+    The reap is for a refusal nothing has cleared in a day, not for one somebody may still
+    be reading in health or in owed.
+    """
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-new", "tester")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.finished = datetime_now()
+        handle.commit()
+    finally:
+        handle.close()
+
+    assert outbox._reap("ctrl2") == 0
+    handle = database.session()
+    try:
+        assert handle.scalar(select(models.Outbox)) is not None
+    finally:
+        handle.close()
+
+
+def datetime_now():
+    """
+    Now, as the outbox stores it: naive UTC.
+    """
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).replace(tzinfo=None)
+
+
+def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):
+    """
+    A repeat of the same call is answered with the answer given the first time, not by
+    running the handler again. Delivery is at-least-once, so a peer slower than the sender's
+    wait - brief on a request thread, longer on a sweep pass - is offered the row at every
+    pass, and replaying the call rather than the answer lands one write repeatedly.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.plugins.registry import current as registry
+    from trixd.core.replication import applied
+
+    applied.forget_all()
+    _crossing_plugin(rig)
+    entry = registry().plugins["crossing"]
+    ran = []
+    standing = entry.backend.thing
+
+    def counting(node: str, body: dict = None) -> dict:
+        """The same handler, counting how many times the peer's call reached it."""
+        ran.append(node)
+        return standing(node, body)
+
+    entry.backend.thing = counting
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 3},
+                "origin": "ctrl1", "request_id": "r-repeat"}
+    try:
+        first = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+        again = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+    finally:
+        entry.backend.thing = standing
+        applied.forget_all()
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 200, again.text
+    assert ran == ["node001"], f"the call ran {len(ran)} times"
+    assert again.json() == first.json(), "the repeat answered something else"
+
+
+def test_a_difference_that_is_moving_is_not_called_unconverged(rig):
+    """
+    A table differing at the end of a pass is ordinary: our row may simply be the newer one,
+    and the peer takes it on its own next pass. Counting passes alone therefore called a
+    healthy pair with a trickle of local writes unconverged after three of them, and said so
+    as an error. The count only grows while neither side has moved.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    for step in range(STUBBORN + 2):
+        # A local write every pass, so our hash is never the one it was.
+        walking._converged("peer1", ["principal"], ["principal"],
+                           {"principal": "theirs"}, {"principal": f"ours-{step}"})
+    assert walking.stalled() == 0, "a pair that is still moving was called unconverged"
+
+
+def test_a_peer_that_answers_no_hashes_does_not_clear_the_count(rig):
+    """
+    Both attempts refused leaves no hashes to compare, which is not the same as nothing
+    differing - and it cleared the count for exactly the table nobody could look at, so
+    health read zero while the divergence stood.
+    """
+    from trixd.core.replication.sweep import STUBBORN, Sweep
+
+    walking = Sweep()
+    theirs, ours = {"principal": "aaa"}, {"principal": "bbb"}
+    for _ in range(STUBBORN):
+        walking._converged("peer1", ["principal"], ["principal"], theirs, ours)
+    assert walking.stalled() == 1
+
+    # A pass that could compare nothing: no table is comparable, so none is judged.
+    walking._converged("peer1", [], [], {}, ours)
+    assert walking.stalled() == 1, "the count went when the hashes could not be compared"
+
+
+def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
+    """
+    The merge writes columns, not the document: a role this daemon would not grant is
+    written as none, so the row would still differ from the document at the same version
+    and time - a tie remade on every pass, with the same write and the same claim each time.
+    """
+    from datetime import datetime
+
+    peer = _peer(tmp_path)
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="odd", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        # rootus is the ini account, not a role on the ladder; the API refuses it, and the
+        # merge writes it as none - so taking this document cannot settle the tie.
+        peer.add(models.Principal(name="odd", role="rootus", origin="ctrl2",
+                                  version=4, updated_at=stamped))
+        handle.commit()
+        peer.commit()
+
+        # Both ways, as a pass on each controller does: a veto that only looked at the
+        # incoming document left the side holding the unsound row keeping it, so the tie
+        # resolved differently on the two and the pair stayed apart - and this test asserted
+        # only that the local row survived, which was true on one of them.
+        tables.merge_table(handle, "principal", tables.export_table(peer, "principal"))
+        tables.merge_table(peer, "principal", tables.export_table(handle, "principal"))
+
+        held = handle.scalar(select(models.Principal).where(models.Principal.name == "odd"))
+        theirs = peer.scalar(select(models.Principal).where(models.Principal.name == "odd"))
+        assert held.role == "operator", "a role off the ladder arrived through the tie"
+        assert theirs.role == "operator", \
+            f"the peer kept {theirs.role!r}: the unsound row has to lose on both sides"
+        assert (tables.table_hash(handle, "principal")
+                == tables.table_hash(peer, "principal")), "the pair stayed apart"
+    finally:
+        handle.close()
+        peer.close()
+
+
+def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
+    """
+    A queued row is cleared by nothing: the next action for a node clears only a refusal,
+    and the reap collects only a refusal. So a decline rode the sweep for ever and held its
+    node's later actions with it - and the new action that was meant to clear it was held
+    too. Declining for long enough makes it terminal, which is what gives it both exits.
+
+    A span, not a count of attempts: `attempts` counts every outcome, so eleven passes
+    against a peer being patched plus one decline used to be enough, and a decline is often
+    a moment of Luna lag that the next pass clears. So both halves are asserted here - a
+    fresh row that is declined once stays queued, and one declining for longer than it is
+    asked for goes terminal.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-decline", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    # Driven through the real send, so the message the decline is recognised by is the one
+    # the send produces: the two are a pair, and a test that built the message itself would
+    # pass while a reworded one broke the escalation.
+    outbox.drain("ctrl2")
+    handle = database.session()
+    try:
+        young = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert young.state == outbox.QUEUED, \
+            f"one decline on a fresh row made it {young.state}"
+        young.created = (datetime_now()
+                         - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60))
+        handle.commit()
+    finally:
+        handle.close()
+    outbox.drain("ctrl2")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert row.state == outbox.FAILED, \
+            f"after {row.attempts} declines the row is still {row.state}, so nothing " \
+            f"will ever clear it"
+    finally:
+        handle.close()
+
+
+def test_a_declined_apply_is_not_remembered(rig, client, headers):
+    """
+    A decline is offered again, and the row carries the same request id every pass - so
+    remembering the answer would hand every retry the decline for as long as the record
+    lives, and the peer would stay behind for that node.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.plugins.registry import current as registry
+    from trixd.core.replication import applied
+
+    applied.forget_all()
+    _crossing_plugin(rig)
+    entry = registry().plugins["crossing"]
+    ran = []
+
+    def declining(node: str, body: dict = None) -> dict:
+        """A handler that cannot act: the node is not in this controller's Luna."""
+        ran.append(node)
+        return {"node": node, "skipped": "not in Luna"}
+
+    standing = entry.backend.thing
+    entry.backend.thing = declining
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 1},
+                "origin": "ctrl1", "request_id": "r-declined"}
+    try:
+        first = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+        again = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                            json=envelope)
+    finally:
+        entry.backend.thing = standing
+        applied.forget_all()
+
+    assert first.status_code == 200, first.text
+    assert again.status_code == 200, again.text
+    assert ran == ["node001", "node001"], \
+        f"the handler ran {len(ran)} times: a decline must be offered again, not answered " \
+        f"from the record"
+
+
+def test_two_senders_do_not_deliver_one_row_twice(rig, monkeypatch):
+    """
+    Both senders live in this process - the sweep's drain and a caller's inline attempt -
+    and both read the row as queued before either marks it, so the same call went to the
+    peer twice and only the peer's own record stood between that and the write happening
+    twice.
+    """
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-race", "tester")
+    tried = []
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (tried.append(row.path),
+                                                             (outbox.DONE, "",
+                                                              outbox.ANSWERED))[1])
+
+    assert outbox._claim(row_id), "nothing held the row yet"
+    try:
+        # The other sender, arriving while the first is still in flight.
+        outbox._attempt("ctrl2", row_id)
+    finally:
+        outbox._release(row_id)
+    assert tried == [], "the row was offered while the other sender had it in flight"
+
+    # Once it is given back, the row is sent as usual.
+    outbox._attempt("ctrl2", row_id)
+    assert len(tried) == 1, tried
+
+
+def test_a_pair_that_cannot_converge_reaches_health(rig, client, monkeypatch):
+    """
+    The count has to be reached through a pass, not by calling the counter: with both of
+    `pass_over`'s calls to it stubbed out the whole suite stayed green, which would have
+    left `not_converging` at zero on a controller for ever with nothing to say so.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication.sweep import STUBBORN
+    from trixd.core.replication.sweep import current as sweep
+
+    walking = sweep()
+    walking.stubborn.clear()
+
+    def answers(peer, path):
+        """A peer holding other tables that never takes ours, and offering no documents."""
+        if path == "hashes":
+            return {"hashes": {table: f"theirs-{table}" for table in tables.ORDER}}
+        return {"documents": []}
+
+    monkeypatch.setattr(walking, "_get", answers)
+    try:
+        for _ in range(STUBBORN):
+            last = walking.pass_over("ctrl2")
+        # The passes really did end differing - without this the health value below would
+        # be zero for the ordinary reason rather than the one under test.
+        assert last["unconverged"] == list(tables.ORDER), last
+
+        reported = client.get(f"{API_PREFIX}/system/health").json()["triggers"]["replication"]
+        assert reported["not_converging"] == len(tables.ORDER), reported
+    finally:
+        walking.stubborn.clear()
+
+
+def test_health_says_how_long_the_oldest_owed_call_has_waited(rig):
+    """
+    The counts cannot tell a queue that is busy from one that is stuck; how long the oldest
+    has waited can, and a monitor reads it.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    assert outbox.states()["oldest_pending"] == 0, "nothing is owed yet"
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-age", "tester")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = datetime_now() - timedelta(seconds=600)
+        handle.commit()
+    finally:
+        handle.close()
+
+    waited = outbox.states()["oldest_pending"]
+    assert 580 <= waited <= 660, waited
+
+
+def test_the_reap_leaves_an_intent_newer_than_the_refusal_it_lets_go_of(rig):
+    """
+    The reap drops what a refusal was holding, because those actions assume it landed. A row
+    submitted *after* the refusal was written down is not one of them - submitting it cleared
+    the refusal, so it is the newer statement of what the node should be - and deleting it
+    would be the reap throwing away an intent nobody has sent yet.
+
+    The other reap test ages every row behind the refusal, so this case never arises there.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-stuck", "tester")
+    later = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                          {"node": "node001"}, None, "req-later", "tester")
+
+    handle = database.session()
+    try:
+        now = datetime_now()
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.message = "400: this build serves no such endpoint"
+        row.finished = now - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        # Written down after the refusal was, which is the whole point.
+        after = handle.scalar(select(models.Outbox).where(models.Outbox.id == later))
+        after.created = now
+        handle.commit()
+    finally:
+        handle.close()
+
+    assert outbox._reap("ctrl2") == 1, "the newer intent was let go of with the refusal"
+
+    handle = database.session()
+    try:
+        left = handle.scalars(select(models.Outbox)).all()
+        assert [row.id for row in left] == [later], [(r.id, r.state) for r in left]
+    finally:
+        handle.close()
+
+
+def test_a_pass_reports_what_is_still_owed_after_it(rig, monkeypatch):
+    """
+    `left` is what the peer still owes once the pass is over, so it is counted after the
+    reap rather than before: counted before, it included the rows the same pass had just
+    let go of, and a caller reading POST /system/replication/sweep was told the peer owed
+    actions that no longer existed.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    stuck = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                          {"node": "node001"}, {"force": True}, "req-old", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req-other", "tester")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == stuck))
+        row.state = outbox.FAILED
+        row.finished = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+        handle.commit()
+    finally:
+        handle.close()
+
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.DONE, "", outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    handle = database.session()
+    try:
+        owed = handle.scalars(select(models.Outbox).where(
+            models.Outbox.state.in_((outbox.QUEUED, outbox.FAILED)))).all()
+    finally:
+        handle.close()
+    assert result["left"] == len(owed), \
+        f"the pass says {result['left']} still owed and the table holds {len(owed)}"
+
+
+def test_a_tie_between_documents_of_different_shape_keeps_the_local_row(rig, tmp_path):
+    """
+    Part way through an upgrade one build's document carries a field the other's does not.
+    At an exact tie nothing can settle that: taking the shorter document writes the field it
+    lacks back to its default, and the build without the field cannot write it at all, so no
+    choice converges. The local row stands and the pair is left visibly apart - which the
+    sweep counts and health reports as not_converging.
+
+    Pinned because it is the one branch of the tie a shipped build cannot reach, so nothing
+    else here would notice it going.
+    """
+    from datetime import datetime
+
+    stamped = datetime(2026, 10, 17, 12, 0, 0)
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="shaped", role="operator", origin="ctrl1",
+                                    version=4, updated_at=stamped))
+        handle.commit()
+
+        mine = tables.export_table(handle, "principal")[0]
+        # What the other build sends: the same row, and a field this one has never seen.
+        incoming = {**mine, "role": "manager", "origin": "ctrl2", "nickname": "extra"}
+        outcome = tables.merge_table(handle, "principal", [incoming])
+
+        held = handle.scalar(select(models.Principal).where(
+            models.Principal.name == "shaped"))
+        assert outcome["conflicts"] == 1, outcome
+        assert outcome["updated"] == 0, outcome
+        assert held.role == "operator", \
+            f"took a document of a different shape: role is now {held.role!r}"
+        assert held.origin == "ctrl1", held.origin
+    finally:
+        handle.close()
+
+
+def test_two_controllers_agree_whatever_order_the_rows_went_in(rig, tmp_path):
+    """
+    The export is sorted, and that sort is what makes a table hash mean the same thing on
+    both controllers. Autoincrement is local - the file says so: "the peer inserts its own
+    row and gets its own number" - so the same rows genuinely do sit in different physical
+    order on the two sides.
+
+    Without the sort, two controllers holding identical content hash differently, every
+    sweep fetches the whole table, the comparison never agrees, and no number of rounds
+    resolves it: the rows are already the same, so there is nothing for a merge to change.
+    Permanent divergence, and the most expensive outcome this package has.
+
+    Every two-controller test here seeds one side and derives the other by merging, so both
+    end up in the same physical order and the sort is never load-bearing in them. This one
+    inserts the same rows in different orders on purpose, which is the only way to see it.
+    """
+    from datetime import datetime
+
+    # One moment for every row, on both sides. Without this the documents differ by their
+    # timestamps and the hashes disagree for a reason that has nothing to do with order,
+    # which would make this pass against a broken sort.
+    when = datetime(2026, 10, 17, 12, 0, 0)
+    rows = ("alice", "bob", "carol")
+
+    def seed(handle, order):
+        """
+        The same three principals, inserted in the order given.
+        """
+        for name in order:
+            handle.add(models.Principal(name=name, role="reader", password_digest="",
+                                        enabled=True, version=1, origin="here",
+                                        updated_at=when))
+        handle.commit()
+
+    here = _peer(tmp_path, "one.db")
+    there = _peer(tmp_path, "two.db")
+    try:
+        seed(here, rows)
+        seed(there, tuple(reversed(rows)))
+
+        # The premise: the two really are in different physical order. Read back without an
+        # order_by, so this is what the database holds rather than what we asked for.
+        order_here = [row.name for row in here.scalars(select(models.Principal)).all()]
+        order_there = [row.name for row in there.scalars(select(models.Principal)).all()]
+        assert order_here != order_there, \
+            f"both sides came out in the same order, so this proves nothing: {order_here}"
+        assert sorted(order_here) == sorted(order_there) == sorted(rows), \
+            "the two sides do not hold the same rows"
+
+        assert tables.table_hash(here, "principal") == tables.table_hash(there, "principal"), \
+            ("two controllers holding identical rows disagree on the table hash, so they "
+             "will re-fetch the whole table every sweep and never converge")
+    finally:
+        here.close()
+        there.close()
+
+
+def test_a_row_refused_since_the_snapshot_is_not_sent_anyway(rig, monkeypatch):
+    """
+    A drain takes a snapshot and then works through it, which is up to one whole timeout a
+    row - minutes with a queue of any size. A caller's own inline attempt can refuse a row
+    inside that window, so the state in the snapshot is stale by the time the row is
+    reached.
+
+    Re-read, rather than trusted. Taking the snapshot's word counts a refused row as sent,
+    leaves its chain unheld, and offers the next action for that node over a prerequisite
+    the peer rejected - and the pass reports a clean `sent` with no refusals, so nothing
+    says it happened.
+
+    The refusal has to arrive from a second actor, which is what makes this different from
+    the pass next door: a refusal that happens inside _send leaves the row queued in the
+    snapshot and queued when it is read back, so it never exercises the re-read.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    offered = []
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer that takes everything. While it handles node002, somebody else refuses
+        node001's delete - a caller's inline attempt, landing inside the drain's window.
+        """
+        offered.append((row.method, row.path, row.payload))
+        if "node002" in row.payload:
+            handle = database.session()
+            try:
+                stale = handle.scalar(select(models.Outbox).where(
+                    models.Outbox.request_id == "req-delete"))
+                stale.state = outbox.FAILED
+                stale.message = "400: the peer refused it"
+                handle.commit()
+            finally:
+                handle.close()
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", send)
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node002"}, None, "req-other", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                  {"node": "node001"}, None, "req-delete", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                  {"node": "node001"}, None, "req-repair", "tester")
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        result = outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    assert any("node002" in one[2] for one in offered), \
+        "node002 never went, so the second actor never ran and this proves nothing"
+    assert not any(one[0] == "DELETE" and "node001" in one[2] for one in offered), \
+        f"a row refused since the snapshot was offered to the peer anyway: {offered}"
+    assert not any("repair" in one[1] for one in offered), \
+        f"the next action for that node went over a refused prerequisite: {offered}"
+    assert result["blocked"] == 1, f"node001's chain was not held: {result}"
+
+    handle = database.session()
+    try:
+        states = {row.request_id: row.state for row in handle.scalars(
+            select(models.Outbox).where(models.Outbox.peer == "ctrl2")).all()}
+    finally:
+        handle.close()
+    assert states.get("req-delete") == outbox.FAILED, \
+        f"the refusal was overwritten by the drain: {states}"
+    assert states.get("req-repair") == outbox.QUEUED, \
+        f"the action behind it did not stay queued: {states}"
+
+
+def test_a_status_code_the_peer_answers_with_is_not_asked_for_ever(rig, monkeypatch):
+    """
+    The same rule as a decline, for the other way the peer answers and does not do it. A
+    row still queued is cleared by nothing - the next action for a node clears only a
+    refusal, and the reap collects only a refusal - so a 5xx, a 401 or a 403 rode the sweep
+    for ever and held its node's later actions with it. Answering that way for long enough
+    makes it terminal, which is what gives it both exits.
+
+    Ordinary rather than exotic: a peer whose Prometheus has not scraped a node yet answers
+    502, so the row that marks the node's chain stuck is one a later scrape would take.
+
+    Both halves are asserted, because a 5xx is often a moment the next pass clears: a fresh
+    row answered 502 once stays queued, and one answered that way for longer than it is
+    asked for goes terminal and is then let go of with what it was holding. Driven through
+    the real send, so the status code is turned into an outcome by the code that will do it
+    in the field.
+    """
+    from datetime import timedelta
+
+    from sqlalchemy import select
+
+    from trixd.core.replication import outbox
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    class Answer:
+        """What the apply route answers when its handler could not reach what it needs."""
+        status_code = 502
+        text = "prometheus has not scraped node001 yet"
+
+        def json(self):
+            return {}
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-502", "tester")
+    # Queued behind it for the same node, which is what the hold is for and what has to be
+    # let go of with it: a repair relabels a file the refused write never made.
+    behind = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>/actions/repair", "POST",
+                           {"node": "node001"}, None, "req-behind", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        first = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            young = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert young.state == outbox.QUEUED, \
+                f"one 502 on a fresh row made it {young.state}"
+            assert first["blocked"] == 1, f"node001's repair was not held: {first}"
+            # Both rows go back far enough that the refusal, when it is written down, is
+            # newer than what was already queued behind it. That is the field's order, and
+            # it is the order the reap looks for: it takes only what was waiting when the
+            # refusal happened, because anything newer would have cleared the refusal.
+            held = handle.scalar(select(models.Outbox).where(models.Outbox.id == behind))
+            young.created = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 7200)
+            held.created = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 7100)
+            handle.commit()
+        finally:
+            handle.close()
+
+        aged = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert row.state == outbox.FAILED, \
+                f"after {row.attempts} answers of 502 the row is still {row.state} and " \
+                f"the pass still holds node001 ({aged}), so nothing will ever clear it"
+            # The exit the terminal state is for: a day with nobody acting on the node.
+            row.finished = datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 60)
+            handle.commit()
+        finally:
+            handle.close()
+
+        # The pass that lets go of it, and then the one that finds the node free: the reap
+        # runs at the end of a pass, so the pass that does it has already counted the hold.
+        outbox.drain("ctrl2")
+        free = outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            left = {row.id for row in handle.scalars(select(models.Outbox)).all()}
+        finally:
+            handle.close()
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert row_id not in left, \
+        f"the row the peer answered 502 for is still there after being let go of: {left}"
+    assert behind not in left, \
+        f"node001's repair outlived the row it was held behind: {left}"
+    assert free["blocked"] == 0 and free["left"] == 0, \
+        f"node001 is still held after the reap: {free}"
+
+
+def test_an_inline_send_waits_for_what_is_already_owed_for_that_node(rig, monkeypatch):
+    """
+    The inline send holds a node's chain or it undoes the sweep's ordering. `drain` offers a
+    node's oldest owed action first because the later ones assume it landed; the inline path
+    offered whatever had just been written down, whatever else was owed for that node.
+
+    So a write the peer answered 502 for, followed by a delete for the same node delivered
+    at once, left the sweep to apply the write over the delete: the peer kept rule files for
+    a node that is gone, both rows read `done`, and health was green. What is asserted is
+    the order the peer saw, which is the only thing that cannot come out the same either
+    way.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    applied_at_peer = []
+    refused_once = []
+
+    def send(peer, row, may_sign_in=True):
+        """
+        A peer whose Prometheus has not scraped node001 yet, once, and takes the rest.
+        """
+        if row.method == "PATCH" and not refused_once:
+            refused_once.append(row.path)
+            return outbox.QUEUED, "502: not scraped yet", outbox.ANSWERED
+        applied_at_peer.append(row.method)
+        return outbox.DONE, "", outbox.ANSWERED
+
+    monkeypatch.setattr(outbox, "_send", send)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        wrote = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                 {"node": "node001"}, {"force": True}, {"changed": True},
+                                 "req-write", "tester")
+        # The precondition, not the outcome: the write really was offered inline and really
+        # was not taken. Without that the ordering this pins never arises.
+        assert refused_once, "the write was never offered inline, so nothing is owed"
+        assert wrote["peers"] == {"ctrl2": outbox.QUEUED}, wrote
+
+        deleted = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                   {"node": "node001"}, None, {"changed": True},
+                                   "req-delete", "tester")
+        # Whatever the sweep has not delivered yet, it delivers now.
+        outbox.drain("ctrl2")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    assert applied_at_peer == ["PATCH", "DELETE"], \
+        f"the peer saw {applied_at_peer}: the delete was delivered inline while the write " \
+        f"for the same node was still owed, so the sweep applied the write over it and " \
+        f"the peer keeps rule files for a node that is gone"
+    assert deleted["peers"] == {"ctrl2": "held-behind"}, \
+        f"the delete reported {deleted['peers']}, which does not say it was held"
+
+
+def test_a_first_action_for_a_node_is_sent_inline_rather_than_held(rig, monkeypatch):
+    """
+    The other half of the hold, and the half that would be silent: a guard that waits for a
+    row that is not there would take every inline send off the request path and leave every
+    call to the sweep, which is the latency the inline attempt exists to avoid.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True: (outbox.DONE, "",
+                                                             outbox.ANSWERED))
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        said = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH",
+                                {"node": "node001"}, {"force": True}, {"changed": True},
+                                "req-first", "tester")
+        # A second node, which the first says nothing about.
+        elsewhere = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                                     {"node": "node002"}, None, {"changed": True},
+                                     "req-other", "tester")
+        # And the same node again, once what was owed for it has been taken.
+        again = outbox.replicate("prometheus", "hw-rules/<node>/actions/repair", "POST",
+                                 {"node": "node001"}, None, {"changed": True},
+                                 "req-again", "tester")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert said["peers"] == {"ctrl2": outbox.DONE}, said
+    assert elsewhere["peers"] == {"ctrl2": outbox.DONE}, \
+        f"node002 was held behind node001: {elsewhere}"
+    assert again["peers"] == {"ctrl2": outbox.DONE}, \
+        f"node001 was held behind a row that is already done: {again}"
+
+
+def test_the_drain_waits_as_long_as_the_sweep_rather_than_as_a_caller_would(rig,
+                                                                           monkeypatch):
+    """
+    Three seconds is the inline path's number, chosen because a caller's thread is held for
+    it. The drain inherited it, and a peer that is slow rather than dark then drained zero
+    rows per pass for ever: it did the work every pass, answered after the sender had gone,
+    and the silence opened its own breaker on a peer that was answering.
+
+    Nobody is waiting on a sweep pass, so it pays the sweep's own timeout. What keeps a pass
+    away from a peer that really is dark is the drain stopping at the first silence and the
+    breaker, not the clock on one offer - one wait per pass, not one per row.
+    """
+    from trixd.core.replication import outbox, sweep
+
+    class Answer:
+        """A peer that takes it."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001"}}
+
+    waited = []
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox.requests, "post",
+                        lambda *args, **kwargs: waited.append(kwargs["timeout"])
+                        or Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": "node001"}, {"force": True}, "req-slow", "tester")
+        outbox.drain("ctrl2")
+        assert waited == [sweep.TIMEOUT], \
+            f"the drain gave the peer {waited}s: a peer slower than that drains nothing, " \
+            f"pass after pass, and opens its own breaker on work it has done"
+
+        # The inline path keeps its own, because the caller is waiting on it.
+        outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
+                         {"node": "node002"}, None, {"changed": True}, "req-inline",
+                         "tester")
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+    assert waited[1:] == [outbox.TIMEOUT], \
+        f"a caller's thread was held for {waited[1:]}s, not the inline path's " \
+        f"{outbox.TIMEOUT}s"

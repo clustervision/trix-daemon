@@ -68,7 +68,14 @@ def stack():
     """
     if not WANTED:
         pytest.skip("set TRIXD_E2E=local or TRIXD_E2E_URL")
-    running = Stack().start()
+    running = Stack()
+    try:
+        running.start()
+    except BaseException:
+        # Popen has already run by the time most of start() can fail, so without this the
+        # daemon, its port and its log handle outlive the run that failed to set them up.
+        running.stop()
+        raise
     yield running
     running.stop()
 
@@ -79,6 +86,22 @@ def document(stack):
     The live OpenAPI document, read once.
     """
     return stack.document()
+
+
+@pytest.fixture(scope="session")
+def published(document):
+    """
+    What the daemon answering now serves: (verb, path) to the statuses it declares.
+
+    The matrix is parametrised from the committed document, so a route the live daemon does
+    not serve - a plugin left disabled, a controller on another build - answers 404, and an
+    assertion that only rules out 401, 403 and 500 reads that as access granted. This is
+    also what separates a 404 for the object a path names from a 404 for a route that is
+    not there: the operations that can fail to find an object declare 404 and the rest
+    do not.
+    """
+    return {(verb, path): set(operation.get("responses") or {})
+            for verb, path, operation in operations(document)}
 
 
 def pytest_generate_tests(metafunc) -> None:

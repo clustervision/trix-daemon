@@ -37,8 +37,8 @@ from typing import Any, Optional
 
 from pydantic import BaseModel, ConfigDict, Field, create_model
 
-from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE,
-                                   TOKEN_KIND_USER)
+from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS,
+                                   NODE_PATH_PARAMS, TOKEN_KIND_NODE, TOKEN_KIND_USER)
 from trixd.common.errors import PluginRefused
 
 # <name> is one path segment; <path:name> is the rest of the path, slashes and all.
@@ -48,6 +48,9 @@ PATH_VARIABLE = re.compile(r"<(?:(path):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
 QUERY_TYPES: dict = {"string": str, "integer": int, "boolean": bool}
 # Names the binder hands a handler itself, so a query parameter cannot take them.
 RESERVED_ARGUMENTS: tuple = ("body", "caller", "request")
+# The verbs that carry a body. The binder reads this to decide what to ask FastAPI for,
+# and the parse refuses a schema on anything else, so the two cannot drift apart.
+BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
 
 TYPES: dict = {
     "string": str,
@@ -147,6 +150,14 @@ class Endpoint(BaseModel):
         return PATH_VARIABLE.sub(lambda found: "{" + found.group(2) + (
             ":path}" if found.group(1) else "}"), self.path).strip("/")
 
+    @property
+    def shape(self) -> str:
+        """
+        The path as Starlette matches it, which a variable's name is no part of.
+        """
+        return PATH_VARIABLE.sub(
+            lambda found: "{:path}" if found.group(1) else "{}", self.path).strip("/")
+
 
 class Manifest(BaseModel):
     """
@@ -202,7 +213,9 @@ def parse(document: dict) -> Manifest:
             # A read has nothing to carry; a render is already driven at both ends by the
             # same source; a forwarded call is replicated by the service behind it; and a
             # public one would let anyone make this controller call its peer.
-            if all(verb.upper() in ("GET", "HEAD") for verb in endpoint.methods):
+            reads = [verb.upper() for verb in endpoint.methods
+                     if verb.upper() in ("GET", "HEAD")]
+            if len(reads) == len(endpoint.methods):
                 raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
                                     f"to replicate")
             for why, blocked in (("a render", endpoint.render is not None),
@@ -211,9 +224,93 @@ def parse(document: dict) -> Manifest:
                 if blocked:
                     raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
                                         f"also replicate")
-        if endpoint.body_schema and endpoint.body_schema not in manifest.schemas:
+            if reads:
+                # Replicate is applied per verb, so a read sharing the endpoint replicates
+                # as well: it writes an outbox row and asks the peer on every call, and
+                # answers with a block no read is documented to carry.
+                raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
+                                    f"serve {', '.join(reads)}: a read that replicated "
+                                    f"would write an outbox row for every call")
+        if endpoint.render is not None:
+            # Nothing wakes a render with no inputs, and nothing wakes one whose input has
+            # an empty segment: the engine matches an input against <source>.<object>, so
+            # `luna.` and `` match no change there is. Either way it produces once at
+            # start-up, serves that for ever and reports a healthy render while the files
+            # it writes drift from Luna. Refused rather than logged, because an author's
+            # only other signal is stale data at a customer.
+            if not endpoint.render.inputs:
+                raise PluginRefused(f"{endpoint.path or '/'} is a render and declares no "
+                                    f"inputs, so nothing would ever wake it")
+            unusable = [str(item) for item in endpoint.render.inputs
+                        if not all(part.strip() for part in str(item).split("."))]
+            if unusable:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} declares input {', '.join(unusable)}, which "
+                    f"names no change: an input is <source>.<object>, such as luna.node, "
+                    f"or one of this plugin's own declarations")
+        if endpoint.render is not None and (endpoint.variables or endpoint.query):
+            # A render is served by a reader that takes no arguments, so a variable or a
+            # query parameter is accepted and then ignored: one document answers for every
+            # value of it, the producer is never told which was asked for, and the author's
+            # only signal is wrong data at a customer.
+            unusable = "a path variable" if endpoint.variables else "a query parameter"
+            raise PluginRefused(f"{endpoint.path or '/'} is a render, so it cannot take "
+                                f"{unusable}: the reader is given none")
+        if endpoint.render is not None:
+            # The same shape once more: the reader behind a render is handed neither a body
+            # nor a verb of its own. A declared schema is built, documented and dropped on
+            # the way in, and any verb but a read reaches that same reader, which answers
+            # what was last rendered. Both are accepted today and ignored in silence.
+            if endpoint.body_schema:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a render, so it cannot also declare schema "
+                    f"{endpoint.body_schema}: a body is documented and checked, and then "
+                    f"the reader is not handed it")
+            writes = [verb.upper() for verb in endpoint.methods
+                      if verb.upper() not in ("GET", "HEAD")]
+            if writes:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a render, so it cannot also serve "
+                    f"{', '.join(writes)}: the reader answers what was last rendered, so "
+                    f"the document would show a write that changes nothing")
+        unguarded = "public" if endpoint.public else "forward" if endpoint.forward else ""
+        if unguarded and endpoint.token == TOKEN_KIND_NODE:
+            # Which half the author meant - the unguarded route or the node binding -
+            # cannot be derived from the declaration, so neither is assumed.
             raise PluginRefused(
-                f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+                f"{endpoint.path or '/'} is {unguarded} and takes a node token: such a "
+                f"route is served with no guard, so no token is asked for or bound")
+        ignores_role = unguarded or ("on a node token"
+                                     if endpoint.token == TOKEN_KIND_NODE else "")
+        if ignores_role and endpoint.minimum:
+            # The gate reads `minimum` on a guarded user-token route and nowhere else: a
+            # node token carries no principal, and an unguarded route is not asked. The
+            # manifest then reads as a restriction that is not applied anywhere.
+            raise PluginRefused(
+                f"{endpoint.path or '/'} is {ignores_role} and declares minimum "
+                f"{endpoint.minimum}: no role is checked on such a route, so the "
+                f"declaration admits everyone it reads as keeping out")
+        if endpoint.token == TOKEN_KIND_NODE and not any(
+                key in endpoint.variables for key in NODE_PATH_PARAMS):
+            # The gate binds a node token to the node its path names, and looks for it under
+            # one of these names only. With none of them there the binding is skipped in
+            # silence and one node's token is accepted for another node's data.
+            raise PluginRefused(
+                f"{endpoint.path or '/'} takes a node token, so its path has to carry one "
+                f"of {', '.join(NODE_PATH_PARAMS)} for the gate to bind it to")
+        if endpoint.body_schema:
+            if endpoint.body_schema not in manifest.schemas:
+                raise PluginRefused(
+                    f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+            # GET is deliberate: a GET and a write on one handler tell a read from a change
+            # by the body being None. Any other bodiless verb is accepted here and dropped
+            # at bind, so the document agrees with the route and not with the manifest.
+            bodiless = [verb.upper() for verb in endpoint.methods
+                        if verb.upper() not in BODY_VERBS and verb.upper() != "GET"]
+            if bodiless:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} wants schema {endpoint.body_schema} on "
+                    f"{', '.join(bodiless)}, which takes no body")
         _check_docs(endpoint)
     for event, handler in manifest.hooks.items():
         parts = str(event).split(".")
@@ -225,6 +322,32 @@ def parse(document: dict) -> Manifest:
     return manifest
 
 
+def duplicates(manifest: Manifest) -> list:
+    """
+    Every path and verb this manifest declares more than once.
+
+    Starlette matches the first of two routes with the same path and verb, so the second
+    handler is dead code its author believes is serving. A variable's name is no part of
+    that match, so rules/<alpha> and rules/<beta> are one route and not two. Collected
+    rather than raised: the command-line check lists every problem it can find at once so
+    an author fixes them in one pass, and a refusal from the parse ends that collection at
+    the first one. The load path refuses on whatever comes back here.
+    """
+    seen, twice = {}, []
+    for endpoint in manifest.endpoints:
+        where = endpoint.path or "/"
+        for verb in endpoint.methods:
+            key = (endpoint.shape, verb.upper())
+            first = seen.get(key)
+            if first == where:
+                twice.append(f"{verb.upper()} {where} is declared twice")
+            elif first is not None:
+                twice.append(f"{verb.upper()} {where} and {first} differ only in the name of "
+                             f"a path variable, so only {first} is ever matched")
+            seen.setdefault(key, where)
+    return twice
+
+
 def _check_docs(endpoint: Endpoint) -> None:
     """
     Refuse documentation that the document could not show truthfully.
@@ -233,6 +356,13 @@ def _check_docs(endpoint: Endpoint) -> None:
     unknown = [name for name in endpoint.params if name not in endpoint.variables]
     if unknown:
         raise PluginRefused(f"{where} documents {', '.join(unknown)}, which its path does not have")
+    # A query parameter by one of these names is already refused below. A path variable by
+    # one of them was not, and for a public endpoint nothing else catches it: the handler is
+    # handed the path's value where it expects the caller, and answers 500 on its first call.
+    taken = [name for name in endpoint.variables if name in RESERVED_ARGUMENTS]
+    if taken:
+        raise PluginRefused(f"{where} names path variable {', '.join(taken)}, which is how a "
+                            f"handler is given its body, its caller or the request")
     for name, item in endpoint.query.items():
         if (not re.fullmatch(r"[a-zA-Z_][a-zA-Z0-9_]*", name) or name in RESERVED_ARGUMENTS
                 or name in endpoint.variables):

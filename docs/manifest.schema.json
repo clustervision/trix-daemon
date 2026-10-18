@@ -53,7 +53,7 @@
             "type": "array"
           },
           "minimum": {
-            "description": "the lowest role this endpoint admits",
+            "description": "the lowest role this endpoint admits; only on a user-token route, as public, forward and node-token routes check no role",
             "enum": [
               "none",
               "reader",

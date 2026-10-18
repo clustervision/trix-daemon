@@ -31,9 +31,20 @@ KEYFILE =
 EXPIRY = 1h
 USERNAME = trixd
 PASSWORD = trixd
+MAX_BODY = 8M
 ; PROTOCOL is the scheme trixd serves and a peer is reached on, https or http. A site
 ; serving plain HTTP sets it to http here; it was followed from luna.ini before.
 ; BIND carries TLS on CERTFILE and KEYFILE: the cluster pair Luna also serves.
+; MAX_BODY is the largest request body trixd will read, with K, M and G as powers of 1024
+; and a bare number meaning bytes; 8M, 8MB and 8MiB are the same ceiling. The body is read
+; before any token is checked, so this is what an unauthenticated caller can cost; 0 lifts
+; the ceiling. Raise it if a bulk set or a rule document is refused, which answers 413 and
+; says the limit. It bounds the pass-through to Luna as well, so it bounds every Luna call
+; made through this daemon. A value trixd cannot read is named in the log and the 8M
+; default is used, so the ceiling is never quietly wider than this file says.
+; USERNAME and PASSWORD are the ini account, the one principal that holds rootus. Leaving
+; either empty leaves nobody able to call the directory, slurm or replication routes, and
+; is said at startup.
 ; INSECURE_BIND is plain HTTP on every address, for nodes; it is clear text on the network.
 ; 127.0.0.1:8051 keeps it on the controller alone.
 
@@ -85,7 +96,9 @@ ENABLED = yes
 CA_FILE = /trinity/local/etc/ssl/cluster-ca.crt
 ; Each peer is host:port of the other controller's TLS listener, named as its certificate
 ; names it. Empty on a single controller, which has nothing to reconcile with. CA_FILE is
-; what a peer's certificate is checked against before the service token is sent.
+; what a peer's certificate is checked against before the service token is sent. ENABLED
+; takes yes or no, on or off, true or false, 1 or 0; a value trixd cannot read is named in
+; the log and replication stays on, because reading it as off is the dangerous guess.
 
 [AUDIT]
 ; How long a row of the audit trail is kept. Rows are written in batches.
@@ -102,5 +115,10 @@ SITE_DIRECTORY = /trinity/local/trixd/plugins
 ENABLED = luna, directory, prometheus, services, slurm, genders
 ; DIRECTORY holds the shipped plugins and is replaced on upgrade; a site's own go in
 ; SITE_DIRECTORY, which is not, and cannot take a shipped plugin's name. A restart loads
-; only what ENABLED lists. slurm and genders write the same blocks luna2-daemon's node
-; hook still writes, from the same node list.
+; only what ENABLED lists, unless ENABLED names nothing at all, which loads every plugin
+; found rather than none; the count is logged at startup. slurm and genders write the same
+; blocks luna2-daemon's node hook still writes, from the same node list.
+
+; Every section and key trixd reads is above. One it does not read - a misspelling, or a
+; section meant for something else - is named at startup and otherwise ignored, so the
+; default is what the daemon runs on.

@@ -56,6 +56,12 @@ TOKEN_ALGORITHM_SHARED: str = "HS256"
 TOKEN_ALGORITHM_KEYPAIR: str = "EdDSA"
 TOKEN_ALGORITHMS: tuple = (TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHM_KEYPAIR)
 DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
+# The largest request body this daemon will read. The body is read before any token is
+# checked - that is the framework's order, not a choice here - so without a ceiling an
+# unauthenticated caller decides how much memory one request costs. Generous against the
+# largest body the API itself asks for (a rule document, or one bulk set per node) and
+# small against what a caller can otherwise send.
+DEFAULT_MAX_BODY: int = 8 * 1024 * 1024
 MINIMUM_SECRET_LENGTH: int = 32
 
 # Luna reads back id, scope and node; id 0 is the administrator its ini names.
@@ -73,6 +79,9 @@ TOKEN_KIND_SERVICE: str = "service"
 # Where the ini account is known from: trixd.ini itself, never a source or a row.
 SOURCE_INI: str = "ini"
 TOKEN_KINDS: tuple = (TOKEN_KIND_USER, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE)
+# The path variables the gate will bind a node token to. A node endpoint whose path
+# carries none of them is refused at load, so this is read in two places and lives here.
+NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 
 # The ladder, lowest first. A principal with no role holds a token and nothing more.
 ROLE_NONE: str = "none"

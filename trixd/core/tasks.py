@@ -71,6 +71,17 @@ def register(subsystem: str, handler) -> None:
     _handlers[subsystem] = handler
 
 
+def unregister(subsystem: str) -> bool:
+    """
+    Take back what runs a task of this kind, for when its plugin is unplugged.
+
+    Without this a disabled plugin still answered for its subsystem: a notify naming one
+    of its events was accepted instead of refused, and dispatched into code that had been
+    unplugged, taking the render lock on the way.
+    """
+    return _handlers.pop(subsystem, None) is not None
+
+
 def handler(subsystem: str):
     """
     What runs a task of this kind, or None when nothing registered for it. A caller
@@ -119,7 +130,14 @@ def _run_one(identifier: str) -> None:
     """
     Mark it running, do it, write down what happened either way.
     """
-    handle = database.session()
+    try:
+        handle = database.session()
+    except Exception as error:
+        # Outside the try that was meant to hold it, this was the one line in here that
+        # could reach the worker loop, which had nothing to catch it. The engine's own
+        # note-keeping guards the same call for the same reason.
+        LOGGER.error("could not take a session to run task %s: %s", identifier, error)
+        return
     try:
         row = handle.scalar(select(models.Task)
                             .where(models.Task.request_id == identifier))
@@ -156,11 +174,19 @@ def _loop() -> None:
     """
     while True:
         identifier = _work.get()
-        if identifier is None:
-            return
-        _run_one(identifier)
-        _prune()
-        _work.task_done()
+        try:
+            _run_one(identifier)
+            _prune()
+        except Exception as error:
+            # This thread is the only worker and nothing starts a second one, so anything
+            # reaching here used to end every queued action for the life of the daemon:
+            # submit went on answering `queued`, nothing ran it, and the only trace was
+            # the interpreter's own excepthook rather than a line from this daemon.
+            LOGGER.error("the task worker could not finish %s: %s", identifier, error)
+        finally:
+            # Whether it worked or not: a get that never answers leaves anything waiting on
+            # the queue waiting for good.
+            _work.task_done()
 
 
 def _prune() -> None:
@@ -168,7 +194,11 @@ def _prune() -> None:
     Forget finished tasks older than KEEP_SECONDS, so the table stays the size of a day.
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=KEEP_SECONDS)
-    handle = database.session()
+    try:
+        handle = database.session()
+    except Exception as error:
+        LOGGER.error("could not take a session to prune finished tasks: %s", error)
+        return
     try:
         handle.execute(delete(models.Task).where(models.Task.state.in_((DONE, FAILED)),
                                                   models.Task.finished < cutoff))
@@ -198,7 +228,11 @@ def _requeue() -> None:
     """
     A row left queued or running is work this daemon accepted and did not finish.
     """
-    handle = database.session()
+    try:
+        handle = database.session()
+    except Exception as error:
+        LOGGER.error("could not take a session to requeue interrupted tasks: %s", error)
+        return
     try:
         rows = handle.scalars(select(models.Task).where(
             models.Task.state.in_((QUEUED, RUNNING)))).all()

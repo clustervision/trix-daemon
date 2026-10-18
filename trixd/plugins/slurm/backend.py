@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import hashlib
+
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
 from trixd.plugins.luna.client import current as luna
@@ -55,9 +57,29 @@ def _generator():
     try:
         from trinityx_config_slurm import Generate
     except ImportError as error:
+        # Both ways out are named, because the installer enables this plugin on every
+        # cluster while the generator it needs is installed only where slurm is the
+        # workload manager. On such a cluster the right answer is not to install anything.
         raise BackendFailure(
-            f"trinityx_config_slurm is not installed on this controller: {error}") from None
+            f"trinityx_config_slurm is not installed on this controller, so the slurm "
+            f"blocks cannot be written ({error}). Install it where slurm is the workload "
+            f"manager, or take slurm out of [PLUGINS] ENABLED where it is not") from None
     return Generate()
+
+
+def _digests(paths) -> dict:
+    """
+    What each managed file hashes to now. A file that is not there yet hashes to nothing,
+    so its first write counts as a change.
+    """
+    found = {}
+    for path in paths:
+        try:
+            with open(path, "rb") as handle:
+                found[path] = hashlib.sha256(handle.read()).hexdigest()
+        except OSError:
+            found[path] = ""
+    return found
 
 
 def node_set() -> list:
@@ -93,19 +115,47 @@ class Backend:
             LOGGER.info("no nodes yet, so nothing to write")
             return {"nodes": 0, "files": []}
 
+        # A node Luna holds with no group renders as `NodeSet= Nodes=<node>` and
+        # `PartitionName= Nodes=`, which slurm will not load - and scontrol reconfigure is
+        # run over it, so one node created before its group was assigned took the node and
+        # partition configuration of every other node with it. Left out and named, rather
+        # than refusing the lot: the nodes that do have a group are configurable without it.
+        # The genders render leaves the same node out, for its own reason.
+        skipped = sorted(one["name"] for one in fullset if not one["group"])
+        if skipped:
+            LOGGER.error("no group in Luna, so left out of the slurm configuration: %s",
+                         ", ".join(skipped))
+            fullset = [one for one in fullset if one["group"]]
+        if not fullset:
+            LOGGER.error("every node Luna holds is without a group, so there is nothing to "
+                         "configure slurm with")
+            return {"nodes": 0, "files": [], "skipped": skipped}
+
         files = {
             "nodes": settings["nodes_file"],
             "partitions": settings["partitions_file"],
             "gres": settings["gres_file"],
         }
+        before = _digests(files.values())
         written = _generator().all_configs(nodes=fullset, configs=files,
                                            manager=settings["manager"])
         if not written:
             raise BackendFailure("the slurm generator reported a failure")
 
+        # Only for a real change, as the Prometheus plugin already does for its reload. This
+        # ran on every pass: at start-up, where it is the one thing slow enough to put the
+        # whole start over the lifespan timeout, and again on every node event, so a boot
+        # storm reconfigured slurm once per node for files that had not moved.
+        if _digests(files.values()) == before:
+            LOGGER.info("the slurm blocks are unchanged for %d node(s), so slurm is not "
+                        "reconfigured", len(fullset))
+            return {"nodes": len(fullset), "files": sorted(files.values()),
+                    "reconfigured": False, "changed": False,
+                    **({"skipped": skipped} if skipped else {})}
         result = shell.run(settings["reconfigure"].split(), timeout=60)
         if not result.ok:
             LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
         LOGGER.info("wrote the slurm blocks for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "files": sorted(files.values()),
-                "reconfigured": result.ok}
+                "reconfigured": result.ok, "changed": True,
+                **({"skipped": skipped} if skipped else {})}

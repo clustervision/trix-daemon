@@ -47,6 +47,22 @@ GRANTED: str = "granted"
 REFUSED: str = "refused"
 
 DETAIL_LIMIT: int = 1024
+# How wide each text column actually is, read from the model rather than repeated here. A
+# value wider than its column is not a caller's mistake to pass on: on an engine that
+# enforces the width the insert raises, and because rows are written in batches of up to
+# LIMIT, one oversized row takes every unrelated row in that batch with it. `principal` and
+# `object` come from the request, so an unauthenticated caller decides their length.
+_WIDTHS: dict = {name: column.type.length
+                 for name, column in models.Audit.__table__.columns.items()
+                 if getattr(column.type, "length", None)}
+
+
+def _fits(field: str, value: str) -> str:
+    """
+    The value, cut to the width of the column it goes in.
+    """
+    limit = _WIDTHS.get(field)
+    return value if limit is None or len(value) <= limit else value[:limit]
 # One commit per batch rather than per request: the cost a busy daemon would otherwise pay.
 BATCH_ROWS: int = 500
 BATCH_WAIT: float = 0.5
@@ -70,8 +86,10 @@ def _entry(principal: str, action: str, object_name: str, outcome: str, detail: 
     What a row holds, captured when it happened.
     """
     return {"at": datetime.now(timezone.utc).replace(tzinfo=None),
-            "principal": principal or "anonymous", "action": action,
-            "object": object_name or "", "outcome": outcome,
+            "principal": _fits("principal", principal or "anonymous"),
+            "action": _fits("action", action),
+            "object": _fits("object", object_name or ""),
+            "outcome": _fits("outcome", outcome),
             "detail": (detail or "")[:DETAIL_LIMIT]}
 
 
@@ -79,7 +97,17 @@ def _write(entries: list) -> None:
     """
     Commit a batch in one session; a failure is logged, never raised into a request.
     """
-    own = database.session()
+    try:
+        own = database.session()
+    except Exception as error:
+        # Outside the try that was meant to hold it, this one line could reach the writer
+        # loop, which has nothing to catch it - one thread, nothing restarts it. The trail
+        # survives, because record() falls back to a synchronous write when the writer is
+        # gone, but the batch in hand is lost and every row after it pays its own commit on
+        # a request thread, which batching exists to avoid.
+        LOGGER.error("could not take a session to record %d audit row(s): %s",
+                     len(entries), error)
+        return
     try:
         own.add_all([_row(entry) for entry in entries])
         own.commit()
@@ -128,7 +156,14 @@ def prune() -> int:
     """
     cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(
         seconds=settings().audit.keep)
-    handle = database.session()
+    try:
+        handle = database.session()
+    except Exception as error:
+        # Guarded for the same reason the batch write is: _loop calls this with nothing
+        # around it, and the one writer thread has nothing to restart it. Dying here would
+        # take the batching with it as well as the prune.
+        LOGGER.error("could not take a session to prune the audit trail: %s", error)
+        return 0
     try:
         removed = handle.execute(delete(models.Audit).where(models.Audit.at < cutoff)).rowcount
         handle.commit()

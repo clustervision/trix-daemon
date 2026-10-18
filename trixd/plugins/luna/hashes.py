@@ -59,6 +59,7 @@ class LunaHashes:
         self.seen: dict = {}
         self.last_pass: float = 0.0
         self.quiet: bool = False
+        self.failing: bool = False
 
     def once(self) -> list:
         """
@@ -68,8 +69,23 @@ class LunaHashes:
         try:
             current = luna().table_hashes()
         except Exception as error:
+            # Remembered, not only logged. The pass surviving a failure is deliberate and
+            # stays; what was wrong is that nothing said it had failed, so a Luna that
+            # errored on every pass published the same answering state as one that was
+            # being read successfully - and that state is the unauthenticated health
+            # route, which is the signal a monitor acts on.
+            self.failing = True
             LOGGER.warning("could not read Luna table hashes: %s", error)
             return []
+        self.failing = False
+
+        # Luna has just answered, so this is where a render it was away for is put back. A
+        # failure is its own record of what is owed, and the producer reads what Luna holds
+        # now - so a digest change that was spent on a render that failed comes back with it,
+        # and the start-up reconcile that failed against an absent Luna stops being final.
+        again = renders().retry()
+        if again:
+            LOGGER.info("produced again after an earlier failure: %s", ", ".join(again))
 
         if not current:
             # Luna answers this only on the HA master, so empty is normal here and
@@ -119,6 +135,12 @@ class LunaHashes:
         if INTERVAL <= 0:
             LOGGER.info("the Luna hash fallback is switched off")
             return False
+        if self.thread is not None and self.thread.is_alive():
+            # Already polling. Said here as well as refused by the registry, because two
+            # threads on one `seen` lose a change rather than merely duplicating work:
+            # whichever assigns last decides what the other compared against.
+            LOGGER.info("the Luna hash fallback is already running")
+            return False
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="trixd-hashes", daemon=True)
         self.thread.start()
@@ -138,7 +160,7 @@ class LunaHashes:
         return {"interval": INTERVAL,
                 "last_pass": self.last_pass,
                 "tables_seen": len(self.seen),
-                "answering": not self.quiet and bool(self.seen)}
+                "answering": not self.quiet and not self.failing and bool(self.seen)}
 
 
 _hashes: LunaHashes = LunaHashes()

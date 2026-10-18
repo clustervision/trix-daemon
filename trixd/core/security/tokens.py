@@ -37,7 +37,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import (LUNA_CLAIM_ID, LUNA_CLAIM_NODE, LUNA_CLAIM_SCOPE,
                                     LUNA_NO_USER_ID, LUNA_SCOPE_PROVISION,
                                     LUNA_SUPERUSER_ID, TOKEN_KIND_NODE,
-                                    TOKEN_KIND_USER, TOKEN_KINDS)
+                                    TOKEN_KIND_SERVICE, TOKEN_KIND_USER, TOKEN_KINDS)
 from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.core.security import keys
@@ -140,7 +140,11 @@ def verify(token: str) -> Claims:
         raise Unauthenticated("token was signed by an issuer this daemon does not trust")
 
     try:
-        payload = jwt.decode(token, verifying, algorithms=[ring.algorithm])
+        # An expiry is required, not merely honoured when present: PyJWT checks exp only if
+        # the token carries one, so a token minted without it would never expire. The sweep
+        # already demands one of a token it holds; this is the same demand on arrival.
+        payload = jwt.decode(token, verifying, algorithms=[ring.algorithm],
+                             options={"require": ["exp"]})
     except jwt.ExpiredSignatureError:
         raise Unauthenticated("token has expired") from None
     except jwt.PyJWTError:
@@ -149,4 +153,13 @@ def verify(token: str) -> Claims:
     claims = Claims(payload)
     if claims.kind not in TOKEN_KINDS:
         raise Unauthenticated("token carries an unknown kind")
+    if claims.kind == TOKEN_KIND_SERVICE:
+        # Minted here for Luna, never for this daemon: no endpoint can declare one, and
+        # nothing outside sends one. Removing its role bypass was not enough, because the
+        # subject it names is this daemon's own ini account - so it passed as rootus by the
+        # ordinary route instead, and whatever read that header on its way to Luna still
+        # held everything. Refused where tokens arrive, which is the only place that covers
+        # every endpoint at once.
+        LOGGER.warning("a service token was presented to this daemon by %s", claims.subject)
+        raise Unauthenticated("a service token is not accepted here")
     return claims

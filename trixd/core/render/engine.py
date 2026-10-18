@@ -91,6 +91,9 @@ class Engine:
         self.lock = threading.RLock()
         self.pending: dict = {}
         self.trailing: dict = {}
+        # Whether the first pass over every render has happened. Before it, start-up will
+        # produce them; after it, a render registered by a reload has to produce its own.
+        self.reconciled: bool = False
 
     def forget(self, plugin: str) -> None:
         """
@@ -103,15 +106,73 @@ class Engine:
                 if timer is not None:
                     timer.cancel()
 
+    def forget_all(self) -> None:
+        """
+        Drop every render and cancel every timer, for a process that is starting over.
+        """
+        with self.lock:
+            for timer in self.trailing.values():
+                timer.cancel()
+            self.renders.clear()
+            self.pending.clear()
+            self.trailing.clear()
+            self.reconciled = False
+
+    def _declare(self, plugin: str, path: str, spec, producer) -> Render:
+        """
+        Put one render in the table. The caller holds the lock and decides what produces it.
+        """
+        item = Render(plugin, path, spec, producer)
+        self.renders[item.key] = item
+        LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
+        return item
+
     def register(self, plugin: str, path: str, spec, producer) -> Render:
         """
         Take a render and the backend method that produces it.
         """
         with self.lock:
-            item = Render(plugin, path, spec, producer)
-            self.renders[item.key] = item
-            LOGGER.debug("render %s declared, inputs %s", item.key, spec.inputs)
-            return item
+            item = self._declare(plugin, path, spec, producer)
+        # A reload builds new render objects holding no document, and nothing runs them
+        # until one of their inputs changes - which for a plugin whose inputs are quiet
+        # could be a long time. Outside the lock: run takes it itself.
+        if self.reconciled:
+            self.run(item)
+        return item
+
+    def replace(self, plugin: str, found: list) -> list:
+        """
+        Swap everything one plugin declares for a new set, with nothing unanswerable in
+        between.
+
+        The new renders produce before they are swapped in, so the ones they replace are
+        still the ones being read while that happens. Forgetting first leaves a poll with
+        no render to read; declaring first leaves it one that has produced nothing.
+
+        A new producer that fails inherits the document its predecessor was serving, so a
+        reload while Luna is away does not empty what was answering. The next change tries
+        again, against the new code.
+        """
+        items = [Render(plugin, path, spec, producer) for path, spec, producer in found]
+        with self.lock:
+            standing = {key: item for key, item in self.renders.items()
+                        if key.startswith(f"{plugin}/")}
+        # Outside the lock: producing can call Luna, and run takes the lock itself.
+        if self.reconciled:
+            for item in items:
+                if self.run(item):
+                    continue
+                was = standing.get(item.key)
+                if was is not None and was.document is not None:
+                    item.document = was.document
+                    item.rendered_at = was.rendered_at
+                    LOGGER.warning("render %s could not be produced on reload, so it keeps "
+                                   "what was being served", item.key)
+        with self.lock:
+            self.forget(plugin)
+            for item in items:
+                self.renders[item.key] = item
+        return items
 
     def reader(self, plugin: str, path: str):
         """
@@ -125,8 +186,10 @@ class Engine:
             item = self.renders.get(f"{plugin}/{path}")
             if item is None:
                 raise NotFound(f"no render named {plugin}/{path}")
-            if item.document is None:
-                self.run(item)
+            # Deliberately not produced here. A render reads from Luna behind a lock every
+            # render shares, and these endpoints need no token, so a poll arriving while
+            # Luna is away would hold that lock for the whole connect timeout - and the
+            # polls stack. Start-up and a change produce renders; a reader only serves.
             if item.document is None:
                 raise NotFound(f"{plugin}/{path} has not rendered yet: {item.last_error}")
             return item.document
@@ -161,25 +224,71 @@ class Engine:
         for item in list(self.renders.values()):
             if self.run(item):
                 done += 1
+        self.reconciled = True
         return done
+
+    def retry(self) -> list:
+        """
+        Produce again whatever failed the last time it ran.
+
+        What is owed is recorded by the failure itself, so there is nothing kept here and
+        nothing to expire: a producer that failed leaves the error standing, and the next
+        pass produces it again against whatever its source holds then - which is also the
+        change that was lost when it failed. Before the reconcile there is nothing to put
+        back, because start-up has yet to produce anything.
+        """
+        if not self.reconciled:
+            return []
+        recovered = []
+        for key in list(self.renders):
+            with self.lock:
+                # Looked up again under the lock, as notify and the trailing timer are: a
+                # reload landing inside this pass replaces the render sampled above, and
+                # producing from that one writes over what its replacement already wrote.
+                item = self.renders.get(key)
+                if item is None or not item.last_error:
+                    continue
+                if self.run(item):
+                    recovered.append(key)
+        return recovered
 
     def notify(self, changed: str = "") -> list:
         """
         A change landed. Render what declared it as an input, now or when its window closes.
         """
         woken = []
-        now = time.monotonic()
         for item in list(self.renders.values()):
             if not item.wants(changed):
                 continue
-            last = self.pending.get(item.key, 0.0)
-            if now - last < item.coalesce:
-                # Inside the window: once more when it closes, so a burst's last change is drawn.
-                self._trail(item.key, item.coalesce - (now - last))
-                continue
-            self.pending[item.key] = now
-            woken.append(item.key)
-            self.run(item)
+            with self.lock:
+                # The window is read under the lock and from the clock as it is once the lock
+                # is held. The lock is what makes renders run one at a time, so a wake that
+                # arrives during one waits here, and a window read before that wait is
+                # measured from before the render it waited for - which costs a burst a full
+                # re-render per wake whenever a producer is slower than its own window.
+                now = time.monotonic()
+                last = self.pending.get(item.key, 0.0)
+                if now - last < item.coalesce:
+                    # Inside the window: once more when it closes, so a burst's last change
+                    # is drawn.
+                    self._trail(item.key, item.coalesce - (now - last))
+                    continue
+                # Looked up again under the lock, as the trailing timer does for the same
+                # reason: a reload can have replaced this render since the sweep above took
+                # its reference, and producing from the one being held then writes output
+                # from code that has been unplugged - after its replacement has written, so
+                # what is left on disk is the old render's.
+                current = self.renders.get(item.key)
+                if current is None:
+                    continue
+                produced = self.run(current)
+                # From the end of the render rather than its start, so the window a burst
+                # coalesces into begins where the work finished.
+                self.pending[item.key] = time.monotonic()
+            if produced:
+                # Only what rendered. This is what /system/notify answers as `rendered` and
+                # what the hash poller reports as woken, and a failed render is neither.
+                woken.append(item.key)
         return woken
 
     def _trail(self, key: str, delay: float) -> None:
@@ -203,8 +312,10 @@ class Engine:
             item = self.renders.get(key)
             if item is None:
                 return
+            self.run(item)
+            # From the end, as in notify: a wake landing while this runs belongs to the next
+            # window rather than to the one that has already closed.
             self.pending[key] = time.monotonic()
-        self.run(item)
 
     def listing(self) -> list:
         """
@@ -222,7 +333,12 @@ class Engine:
         """
         try:
             handle = database.session()
-        except Exception:
+        except Exception as error:
+            # Said, as the three task functions that guard this same call all say it. This
+            # was the one of the four that returned in silence, so a note nobody could write
+            # looked exactly like a render nobody had run.
+            LOGGER.warning("could not take a session to record render state for %s: %s",
+                           item.key, error)
             return
         try:
             row = handle.scalar(select(models.RenderState)

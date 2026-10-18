@@ -608,6 +608,21 @@
       },
       "PrometheusConfig": {
         "properties": {
+          "exporters_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the exporter baseline is read from; this file is not replicated",
+            "examples": [
+              "/trinity/local/trixd/daemon/config/exporters.yaml"
+            ],
+            "title": "Exporters File"
+          },
           "prometheus_url": {
             "anyOf": [
               {
@@ -655,6 +670,96 @@
           }
         },
         "title": "PrometheusConfig",
+        "type": "object"
+      },
+      "PrometheusExporter": {
+        "properties": {
+          "interval": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How often to scrape it, as a duration such as 30s or 5m",
+            "examples": [
+              "5m"
+            ],
+            "title": "Interval"
+          },
+          "labels": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Labels added to every target of this exporter",
+            "title": "Labels"
+          },
+          "port": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The port the exporter answers on, where it differs from the baseline",
+            "examples": [
+              14200
+            ],
+            "title": "Port"
+          },
+          "timeout": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long one scrape of it may take, as a duration such as 10s",
+            "examples": [
+              "10s"
+            ],
+            "title": "Timeout"
+          }
+        },
+        "title": "PrometheusExporter",
+        "type": "object"
+      },
+      "PrometheusExporter_Applied": {
+        "properties": {
+          "exporters": {
+            "additionalProperties": true,
+            "description": "Exporter name to false to switch it off here, true to take the baseline, or the fields to change. A name the baseline does not have is defined by saying it here.\n",
+            "examples": [
+              {
+                "lshw": false,
+                "node": {
+                  "interval": "15s"
+                },
+                "storcli": {
+                  "port": 14211
+                }
+              }
+            ],
+            "title": "Exporters",
+            "type": "object"
+          }
+        },
+        "required": [
+          "exporters"
+        ],
+        "title": "PrometheusExporter_Applied",
         "type": "object"
       },
       "PrometheusHw_Rename": {
@@ -1002,7 +1107,7 @@
     }
   },
   "info": {
-    "description": "**trixd** is the TrinityX daemon for everything that is not a physical node: the cluster's users and groups, the Prometheus monitoring configuration, starting and stopping services, and the slurm and genders files computed from Luna's node list. Every route below says what it does, what to send, what comes back, and who may call it.\n\n**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: nodes, groups, images, networks and boot. It answers at https://<controller>:7050, and [https://<controller>:7050/version](https://<controller>:7050/version) says which version it runs. A request to `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides who may.\n\n### Signing in\n1. `POST /api/v1/auth/token` with `{\"username\": \"...\", \"password\": \"...\"}` answers `201` and `{\"token\": \"...\"}`, valid for an hour unless `trixd.ini` says otherwise.\n2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as `Authorization: Bearer <token>`.\n3. On this page: **Authorize**, paste the token into either field, and every **Try it out** sends it.\n\n### Who may call what\nA user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a lowest role, shown as **Access** under its description. **rootus**, the account `trixd.ini` names, is the administrator and passes every check. `none` may only ask who it is, with `GET /api/v1/auth/whoami`.\n\n### Ports\n**8050** speaks the protocol `trixd.ini` names, https or http. **8051** is plain HTTP on every address, for nodes; a password or token sent there crosses the network in clear text.\n\n### Errors\nA refusal or a failure answers its status and `{\"message\": \"...\"}` saying why: 400 a request that cannot be acted on, 401 no token or a bad one, 403 a role below the route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd failed, 503 not available on this controller.\n",
+    "description": "**trixd** is the TrinityX daemon for everything that is not a physical node: the cluster's users and groups, the Prometheus monitoring configuration, starting and stopping services, and the slurm and genders files computed from Luna's node list. Every route below says what it does, what to send, what comes back, and who may call it.\n\n**Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: nodes, groups, images, networks and boot. It answers at https://<controller>:7050, and [https://<controller>:7050/version](https://<controller>:7050/version) says which version it runs. A request to `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides who may.\n\n### Signing in\n1. `POST /api/v1/auth/token` with `{\"username\": \"...\", \"password\": \"...\"}` answers `201` and `{\"token\": \"...\"}`, valid for an hour unless `trixd.ini` says otherwise.\n2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as `Authorization: Bearer <token>`.\n3. On this page: **Authorize**, paste the token into either field, and every **Try it out** sends it.\n\n### Who may call what\nA user holds one role: `none` < `reader` < `operator` < `manager`. Each route admits a lowest role, shown as **Access** under its description. **rootus**, the account `trixd.ini` names, is the administrator and passes every check. `none` may only ask who it is, with `GET /api/v1/auth/whoami`.\n\n### Ports\n**8050** speaks the protocol `trixd.ini` names, https or http. **8051** is plain HTTP on every address, for nodes; a password or token sent there crosses the network in clear text.\n\n### Errors\nA refusal or a failure answers its status and `{\"message\": \"...\"}` saying why: 400 a request that cannot be acted on, 401 no token or a bad one, 403 a role below the route's minimum, 404 no such object, 409 a conflict, 413 a body larger than `[API] MAX_BODY`, 422 a body that does not match its schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd failed, 503 not available on this controller.\n",
     "license": {
       "name": "GPL-3.0-or-later",
       "url": "/api/v1/docs/static/LICENSE.txt"
@@ -1014,7 +1119,7 @@
   "paths": {
     "/api/v1/auth/node/{node}": {
       "post": {
-        "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise a username and password. Never on the node name alone.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
+        "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise the daemon's own account, or one holding a role that may act for a node. Never on the node name alone, and never on being merely a known user: this token is the node's identity, and Luna honours it as such.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
         "operationId": "issue_node_api_v1_auth_node__node__post",
         "parameters": [
           {
@@ -3056,13 +3161,14 @@
     },
     "/api/v1/prometheus/config": {
       "get": {
-        "description": "The three settings the prometheus plugin works with. `rules_directory` is where it\nwrites the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus\nwhich hardware each node reports, and `reload_command` is what it runs after writing a\nrule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the\nother and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The four settings the prometheus plugin works with. `exporters_file` is the baseline it\nreads the exporters from, `rules_directory` is where it writes the rule files Prometheus\nreads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and\n`reload_command` is what it runs after writing a rule file. When the scheme in\n`prometheus_url` is the wrong one, the plugin tries the other and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_config_get_api_v1_prometheus_config_get",
         "responses": {
           "200": {
             "content": {
               "application/json": {
                 "example": {
+                  "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3115,7 +3221,7 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Send any of the three settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Send any of the four settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "prometheus_config_patch_api_v1_prometheus_config_patch",
         "requestBody": {
           "content": {
@@ -3139,6 +3245,7 @@
             "content": {
               "application/json": {
                 "example": {
+                  "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3146,7 +3253,7 @@
                 "schema": {}
               }
             },
-            "description": "All three settings as now held"
+            "description": "All four settings as now held"
           },
           "401": {
             "content": {
@@ -3199,6 +3306,573 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/prometheus/exporters": {
+      "get": {
+        "description": "The baseline the installer rendered, what this site has defined on top of it, and every\nscope that deviates. The baseline is a file and is NOT replicated, so its digest is\nreported here: one call on each controller, and two different digests mean the pair\ndisagrees about what it is scraping while the database looks converged.\n\n`read` says whether that file is the baseline in use. False means it is absent,\nunreadable or names no nodes section, and the exporters built into the daemon are being\nserved instead - which two digests alone would not tell you.\n\n`ignored` is what the last read of that file threw away: a label Prometheus will not\naccept, a port that is not a number, a duration that is not one. The file is forgiving,\nbecause one bad label must not cost a cluster its targets - this is where it says what\nit forgave, rather than only a log line that has since rotated.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_list_exporters_get_api_v1_prometheus_exporters_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": {
+                    "group:gpu": {
+                      "lshw": false
+                    }
+                  },
+                  "defined": {},
+                  "factory": {
+                    "controllers": {
+                      "ha": {
+                        "port": 14205
+                      }
+                    },
+                    "digest": "9f2c1d0ab3e45678",
+                    "hosts": [
+                      "controller1.cluster"
+                    ],
+                    "ignored": [],
+                    "nodes": {
+                      "node": {
+                        "port": 14200
+                      }
+                    },
+                    "path": "/trinity/local/trixd/daemon/config/exporters.yaml",
+                    "read": true,
+                    "reason": ""
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The baseline, the definitions and the deviations"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Every exporter this cluster scrapes, and where each one applies",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/prometheus/exporters/applied/{where}": {
+      "delete": {
+        "description": "Drop every deviation held for one scope\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_applied_delete_api_v1_prometheus_exporters_applied__where__delete",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {},
+                  "forgotten": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The scope, with nothing held for it"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Drop every deviation held for one scope",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
+      "get": {
+        "description": "Resolves the baseline, this site's definitions and every scope that applies, so an\noperator can look before the render does it for real. Takes `cluster`, `controllers`,\n`group:<name>`, `node:<name>`, or a controller's own hostname.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_show_applied_get_api_v1_prometheus_exporters_applied__where__get",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {
+                    "node": {
+                      "port": 14200
+                    }
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "Exporter name to the fields it is scraped with there"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What will be scraped somewhere, once everything is resolved",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "A scope is `cluster`, a Luna group, one node, every controller, or one controller by its\nown hostname. A controller is named by its real hostname and never by \"this one\": the\ntable replicates, so a row meaning \"me\" would be written by both controllers under one\nkey and each would overwrite the other.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_set_applied_patch_api_v1_prometheus_exporters_applied__where__patch",
+        "parameters": [
+          {
+            "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+            "examples": {
+              "example": {
+                "value": "group:gpu"
+              }
+            },
+            "in": "path",
+            "name": "where",
+            "required": true,
+            "schema": {
+              "description": "cluster, controllers, group:<name>, node:<name> or a controller hostname",
+              "title": "Where",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "exporters": {
+                      "lshw": false,
+                      "node": {
+                        "interval": "15s"
+                      }
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusExporter_Applied"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "applied": "group:gpu",
+                  "exporters": {
+                    "lshw": false
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "What this scope now holds"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Apply an exporter somewhere, override its fields, or switch it off",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/exporters/{exporter}": {
+      "delete": {
+        "description": "Leaves the baseline to speak for it again. The row is marked rather than deleted, because\na row missing here is re-added from the peer at the next pass; marked, it counts as no\nrow on both controllers.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_remove_exporter_delete_api_v1_prometheus_exporters__exporter__delete",
+        "parameters": [
+          {
+            "description": "The exporter's name",
+            "examples": {
+              "example": {
+                "value": "lshw"
+              }
+            },
+            "in": "path",
+            "name": "exporter",
+            "required": true,
+            "schema": {
+              "description": "The exporter's name",
+              "title": "Exporter",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "exporter": "lshw",
+                  "fields": {},
+                  "forgotten": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The exporter, with nothing held against it"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Forget what this site said about an exporter",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      },
+      "patch": {
+        "description": "Changes an exporter everywhere it applies, which is how a site that runs one on another\nport says so once rather than per group. An exporter the baseline has never heard of is\ndefined by this call.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_set_exporter_patch_api_v1_prometheus_exporters__exporter__patch",
+        "parameters": [
+          {
+            "description": "The exporter's name",
+            "examples": {
+              "example": {
+                "value": "lshw"
+              }
+            },
+            "in": "path",
+            "name": "exporter",
+            "required": true,
+            "schema": {
+              "description": "The exporter's name",
+              "title": "Exporter",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "port": 24208
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusExporter"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "exporter": "lshw",
+                  "fields": {
+                    "port": 24208
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The exporter as it now stands"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Define an exporter, or change one the baseline already has",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/prometheus/hw-rules": {
@@ -3328,7 +4002,7 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Several nodes in one call, as alertx's save-nodes sends it. Each entry names a `node`\nand any of `force`, `nhc` and `disabled`, which mean what they mean for one node in\n`PATCH /api/v1/prometheus/hw-rules/{node}`.\n\nEach node gets its own answer: `ok: false` with a `message` for a node Luna does not\nknow, or whose file could not be written, without stopping the others. Prometheus is\nreloaded once for the lot, and not at all when nothing changed.\n\n**Access:** manager or above: manager and rootus",
+        "description": "Several nodes in one call, as alertx's save-nodes sends it. Each entry names a `node`\nand any of `force`, `nhc` and `disabled`, which mean what they mean for one node in\n`PATCH /api/v1/prometheus/hw-rules/{node}`.\n\nEach node gets its own answer: `ok: false` with a `message` for a node Luna does not\nknow, or whose file could not be written, without stopping the others. Prometheus is\nreloaded once for the lot, and not at all when nothing changed.\n\nWhere any entry was not applied, the answer also carries a top-level `skipped`\nsaying how many of them and why, which is what tells a replicating peer that part\nof the call did not land rather than letting it record the lot as applied. It is\nbuilt to the characters a peer records, so the reasons come counted and commonest\nfirst, and any that did not fit are said as a number.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "prometheus_set_hw_rules_patch_api_v1_prometheus_hw_rules_patch",
         "requestBody": {
           "content": {
@@ -3987,7 +4661,7 @@
     },
     "/api/v1/prometheus/renders/targets": {
       "get": {
-        "description": "The document Prometheus' `http_sd` polls: one entry per node and exporter, with the\naddress Prometheus scrapes and the labels it attaches. It is answered from the last\nrender, which runs when a node or network changes through the luna plugin, on a\nnotify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,\nbecause service discovery presents no token.\n\nThe exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,\n`slurm_job` 14207 and `lshw` 14208.\n\n**Access:** public, no token",
+        "description": "The document Prometheus' `http_sd` polls: one entry per node and exporter, with the\naddress Prometheus scrapes and the labels it attaches. It is answered from the last\nrender, which runs when a node, group, interface or network changes through the luna\nplugin, on a notify, or when Luna's table hashes change, so a poll costs no call to\nLuna. Public, because service discovery presents no token.\n\nThe exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,\n`slurm_job` 14207 and `lshw` 14208.\n\n**Access:** public, no token",
         "operationId": "prometheus_render_targets_get_api_v1_prometheus_renders_targets_get",
         "responses": {
           "200": {
@@ -4403,7 +5077,7 @@
     },
     "/api/v1/services": {
       "get": {
-        "description": "Each service in the catalogue with what systemd says about its unit now: `active` as\n`systemctl is-active` answers it, `enabled` as `systemctl is-enabled` does. Only\ncatalogued services are listed; a manager keeps the catalogue.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Each service in the catalogue with what systemd says about its unit now: `active` is\nthe unit's `ActiveState` and `enabled` its `UnitFileState`, read for the whole\ncatalogue in one `systemctl show`. A unit systemd has no unit file for reads\n`not-found` for both, which tells it apart from one that is merely stopped; a unit\nsystemd answered nothing at all for reads `unknown` for both. Only catalogued\nservices are listed; a manager keeps the catalogue.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_list_services_get_api_v1_services_get",
         "responses": {
           "200": {
@@ -4740,7 +5414,7 @@
     },
     "/api/v1/services/{name}": {
       "get": {
-        "description": "What systemd says about one catalogued service's unit right now.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "What systemd says about one catalogued service's unit right now. `active` is the\nunit's `ActiveState` and `enabled` its `UnitFileState`; a unit systemd has no unit\nfile for reads `not-found` for both.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "services_status_get_api_v1_services__name__get",
         "parameters": [
           {
@@ -5193,7 +5867,7 @@
     },
     "/api/v1/system/audit": {
       "get": {
-        "description": "The audit trail: every decision the gate made and every change, with who, the verb or action, the object, and the outcome. For a refusal, `detail` says what the route needed and what the caller held. Rows are kept for `[AUDIT] KEEP`, 90 days by default.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The audit trail: every decision the gate reached about a caller it could identify, granted and refused alike, every change, and a sign-in whose password was wrong - with who, the verb or action, the object, and the outcome. For a refusal, `detail` says what the route needed and what the caller held. A credential that did not verify at all is not here: a token missing, malformed, expired, signed by an issuer this daemon does not trust, or of the wrong kind is refused before the gate knows who is asking, and leaves its trace in the log instead. Rows are kept for `[AUDIT] KEEP`, 90 days by default.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "audit_trail_api_v1_system_audit_get",
         "parameters": [
           {
@@ -5475,7 +6149,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never, with `not_converging` counting the peer and table pairs that have still differed after several passes - which means neither controller is taking the other's row. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where, and `oldest_pending` says in seconds how long the oldest waiting call has waited, which is what tells a busy queue from a stuck one. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -5486,6 +6160,7 @@
                   "owed": {
                     "failed": 0,
                     "not_answering": 0,
+                    "oldest_pending": 0,
                     "peers": 1,
                     "pending": 0
                   },
@@ -5509,7 +6184,8 @@
                       "last_pass": 1791545823.43
                     },
                     "replication": {
-                      "at": 1791545526.87
+                      "at": 1791545526.87,
+                      "not_converging": 0
                     }
                   }
                 },
@@ -5926,7 +6602,7 @@
     },
     "/api/v1/system/replication/apply": {
       "post": {
-        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\nTwo conventions a replicating handler's answer carries. `skipped`, as a non-empty string, says what the handler did not do - a node that is not in this controller's Luna, or the entries of a batch it could not apply - and the sender then treats the call as not done and offers it again rather than recording it as applied; it is a reserved key, and a count or list of left-out items must not use it. Offering the same call again is answered with the answer given the first time, since delivery is at-least-once and the sender's wait is bounded: brief when a caller's own request offers the call, longer on a sweep pass.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_apply_api_v1_system_replication_apply_post",
         "requestBody": {
           "content": {

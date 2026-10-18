@@ -38,6 +38,7 @@ import sys
 from trixd.common import logging as trixlog
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_NAME, DAEMON_VERSION
+from trixd.core import instance
 
 LOGGER = trixlog.get("server")
 
@@ -77,6 +78,13 @@ def build_config(config):
     served.workers = 1
     served.accesslog = "-"
     served.errorlog = "-"
+    # Chosen rather than inherited. Start-up runs the migrations, loads every plugin, takes
+    # each trigger's baseline and produces every render inside the lifespan, and some of
+    # that reaches Luna - which has a timeout of its own. The default is 60s, and exceeding
+    # it kills the process, which systemd restarts five seconds later, which starts again
+    # and exceeds it again: a loop that never trips the start limiter because each attempt
+    # is far longer than the interval it is measured over.
+    served.startup_timeout = 300
     served.graceful_timeout = 10
     # Hypercorn closes an idle connection after 5s, racing a client about to reuse it.
     served.keep_alive_timeout = 75
@@ -92,10 +100,27 @@ def serve(config_file: str = "") -> int:
     config = configuration.set_current(configuration.load(config_file))
     logger = trixlog.setup(config.logger.level, config.logger.logfile)
     logger.info("%s %s starting from %s", DAEMON_NAME, DAEMON_VERSION, config.config_file)
+    # Here rather than in the lifespan, which is too late twice over: the instance lock and
+    # build_config() refuse below this for a second daemon, a certificate that cannot be
+    # read and a bind that cannot be taken - the paths where a bad setting most likely
+    # explains the refusal - and keygen and plugin new never run a lifespan at all.
+    trixlog.report(config.warnings)
+
+    # Before the application exists, never at the listeners: hypercorn runs start-up to
+    # completion and only then creates a socket, so the port is far too late to decide this.
+    held = instance.SingleInstance(config)
+    if not held.take():
+        running = held.holder()
+        named = f" as pid {running}" if running else ""
+        raise SystemExit(f"{DAEMON_NAME} is already running on this controller{named}; "
+                         f"the lock is {held.path}")
 
     from trixd.app import create_app
     application = create_app()
-    asyncio.run(_run(hypercorn_serve, application, build_config(config)))
+    try:
+        asyncio.run(_run(hypercorn_serve, application, build_config(config)))
+    finally:
+        held.release()
     return 0
 
 
@@ -142,6 +167,7 @@ def keygen(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
+    trixlog.report(config.warnings)
     if config.tokens.shared:
         print(f"[TOKENS] ALGORITHM is {config.tokens.algorithm}, which signs with the "
               f"shared secret and needs no keypair")
@@ -164,6 +190,7 @@ def plugin_new(name: str, config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
+    trixlog.report(config.warnings)
     try:
         written = scaffold.new(name, config.plugins.site_directory, config.plugins.directory)
     except Exception as error:
@@ -208,10 +235,17 @@ def main(argv: list = None) -> int:
     if args.command == "plugin" and args.subcommand == "check" and os.path.isdir(args.name):
         # A directory needs no trixd.ini: an author or a pipeline checks before installing.
         return plugin_check(args.name)
+    # Silent: the command that runs next loads the ini again and says what was found
+    # once, with logging configured. Nothing runs after this, so here it would be twice.
+    found: list = []
     try:
-        configuration.load(args.config)
+        configuration.load(args.config, found)
     except ValueError as error:
         # A wrong setting stops the daemon here, named, rather than as a traceback later.
+        # Nothing downstream will run to say what was found before it, and there is no
+        # logfile to say it to, so this is the one path that reports it itself.
+        for message in found:
+            print(f"{DAEMON_NAME}: {message}", file=sys.stderr)
         print(f"{DAEMON_NAME}: {error}", file=sys.stderr)
         return 2
 

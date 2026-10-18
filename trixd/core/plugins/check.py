@@ -34,8 +34,7 @@ import os
 
 from trixd.common.constants import RESERVED_PLUGINS
 from trixd.common.errors import PluginRefused
-from trixd.core.plugins import manifest as manifests
-from trixd.core.plugins.binder import signature_problems
+from trixd.core.plugins import binder, manifest as manifests
 
 
 def check(path: str) -> list:
@@ -70,27 +69,29 @@ def check(path: str) -> list:
     except Exception as error:
         return problems + [f"the backend does not import: {error}"]
 
-    seen = set()
+    # Through the shared collector, which the load path refuses on. Collected here rather
+    # than raised, so one run still names every problem it can find.
+    problems += manifests.duplicates(manifest)
     for endpoint in manifest.endpoints:
-        where = endpoint.path or "/"
-        for verb in endpoint.methods:
-            key = (endpoint.route_path, verb.upper())
-            if key in seen:
-                problems.append(f"{verb.upper()} {where} is declared twice")
-            seen.add(key)
         if endpoint.render is not None:
-            slug = endpoint.path.strip("/").replace("/", "_").replace("-", "_")
-            method = endpoint.handler or f"render_{slug}"
-            if not callable(getattr(backend, method, None)):
-                problems.append(f"{where} declares a render with no producer named {method}")
+            # The loader's own check rather than a second one beside it: this branch looked
+            # for the producer only, so a coalesce the load path refuses passed here and
+            # the empty list promised above was wrong.
+            try:
+                loader._render_producer(endpoint, backend)
+            except PluginRefused as error:
+                problems.append(error.message)
             continue
-        handler = getattr(backend, endpoint.handler, None)
-        if not callable(handler):
-            problems.append(f"{where} names handler {endpoint.handler}, which the backend "
-                            "does not have")
-            continue
-        problems += [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
+        # The binder's own check rather than a second one beside it: this was a second
+        # copy of its two refusals, and the wording had already drifted apart from it.
+        problems += binder.endpoint_problems(manifest, backend, endpoint)
     for event, handler in manifest.hooks.items():
-        if not callable(getattr(backend, handler, None)):
-            problems.append(f"{event} names handler {handler}, which the backend does not have")
+        # The loader's own check rather than a second one beside it: this loop looked for
+        # the handler only, so a signature the load path refuses passed here. That is the
+        # render branch's defect again, and the way it comes back is a refusal added to the
+        # loader alone - so nothing here knows what a hook refusal is any more.
+        try:
+            loader._hook_handler(manifest, backend, event, handler)
+        except PluginRefused as error:
+            problems.append(error.message)
     return problems

@@ -34,7 +34,7 @@ from fastapi.routing import APIRoute
 from fastapi.security import APIKeyHeader, HTTPAuthorizationCredentials, HTTPBearer
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import (ROLE_NONE, TOKEN_KIND_NODE, TOKEN_KIND_SERVICE,
+from trixd.common.constants import (NODE_PATH_PARAMS, ROLE_NONE, TOKEN_KIND_NODE,
                                    TOKEN_KIND_USER)
 from trixd.common.errors import Forbidden, Unauthenticated
 from trixd.core.security import access, audit, principals, tokens
@@ -42,7 +42,6 @@ from trixd.db import engine
 
 LOGGER = trixlog.get("gate")
 
-NODE_PATH_PARAMS: tuple = ("node", "name", "hostname")
 # The two headers a token may come in, declared as schemes so the document offers one
 # Authorize for both. Neither refuses on its own: the gate decides.
 TOKEN_HEADER = APIKeyHeader(
@@ -117,6 +116,11 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
                 audit.refused(claims.subject, request.method, target,
                               f"node token for {claims.node}")
                 raise Forbidden("token is not valid for this node")
+            # A refusal above is recorded and a grant was not, so the trail showed only the
+            # node calls that failed. These writes matter: a node's own token sets its
+            # hardware rules, and the trail is where that is answerable for.
+            audit.granted(claims.subject, request.method, target or _target(request),
+                          "on a node token")
             return Caller(claims, None, ROLE_NONE)
 
         if claims.kind == TOKEN_KIND_NODE:
@@ -127,14 +131,14 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
         handle = engine.session()
         try:
             who = principals.resolve(handle, claims.subject)
-            if who is None and claims.kind != TOKEN_KIND_SERVICE:
+            if who is None:
                 audit.refused(claims.subject, request.method, _target(request),
                               "the subject cannot be resolved here")
                 raise Unauthenticated(f"{claims.subject} cannot be resolved here")
         finally:
             handle.close()
 
-        allowed, held = access.permits(who, minimum, claims.kind)
+        allowed, held = access.permits(who, minimum)
         if not allowed:
             audit.refused(claims.subject, request.method, _target(request),
                           f"needs {minimum}, holds {held}")

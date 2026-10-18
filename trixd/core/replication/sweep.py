@@ -48,6 +48,10 @@ LOGGER = trixlog.get("sweep")
 TIMEOUT: int = 30
 # A token is replaced this long before it expires, so one never dies mid-pass.
 RENEW_MARGIN: int = 60
+# How many passes a table may still differ after being merged before it is said loudly.
+# One is ordinary: our row was the newer one, and the peer takes it on its own next pass.
+# Several in a row is not, and means neither side will take the other's.
+STUBBORN: int = 3
 
 # What each peer issued us, by peer. A peer signs us in and decides what its token may
 # do, which is why nothing here mints one: the two controllers of a pair are configured
@@ -137,6 +141,8 @@ class Sweep:
         self.stop = threading.Event()
         self.thread = None
         self.last: dict = {}
+        # Consecutive passes one table has still differed from one peer after merging.
+        self.stubborn: dict = {}
 
     def _get(self, peer: str, path: str):
         """
@@ -152,15 +158,61 @@ class Sweep:
                 # The token the peer gave us is no longer good to it: ask for another.
                 continue
             if answer.status_code >= 400:
+                # A refusal that survives the renewal included, which is why there is no
+                # path out of here that answers nothing: it raises, and the caller is left
+                # before it can read that as the peer being up.
                 raise RuntimeError(f"{peer} answered {answer.status_code}")
             return answer.json()
-        return None
 
     def _trust(self):
         """
         The cluster CA to check a peer against; the sweep's own name for it.
         """
         return trust()
+
+    def _converged(self, peer: str, comparable: list, still: list,
+                   theirs: dict, ours: dict) -> None:
+        """
+        Keep count of a difference that is standing still, and say so once it has stood
+        long enough. A pass that cannot converge said nothing and reported success, so the
+        only sign was the full table being fetched every interval for ever.
+
+        Two things this is careful about. Only tables that could actually be compared are
+        touched: a peer that refuses both attempts answers no hashes at all, and treating
+        that as "nothing differs" cleared the count for exactly the table nobody could
+        look at. And the count only grows while *neither* side has moved - a table differing
+        at the end of a pass is ordinary, because our row may simply be the newer one and
+        the peer takes it on its own next pass, so counting passes alone called a healthy
+        pair with a trickle of writes unconverged after three of them.
+        """
+        for table in comparable:
+            key = f"{peer}/{table}"
+            if table not in still:
+                self.stubborn.pop(key, None)
+                continue
+            seen = (theirs.get(table), ours.get(table))
+            count, before = self.stubborn.get(key, (0, None))
+            count = count + 1 if before == seen else 1
+            self.stubborn[key] = (count, seen)
+            if count >= STUBBORN:
+                LOGGER.error("%s has differed from %s for %d passes with neither side "
+                             "moving: neither controller is taking the other's row, so "
+                             "this will not resolve on its own", table, peer, count)
+
+    def forget(self, peers: list) -> None:
+        """
+        Drop what is counted against a peer that is no longer configured, which nothing
+        else clears: only a pass over that same peer does, and there are no more of those.
+        """
+        for key in [key for key in self.stubborn if key.split("/")[0] not in peers]:
+            self.stubborn.pop(key, None)
+
+    def stalled(self) -> int:
+        """
+        How many peer and table pairs have not converged for long enough to be said. For
+        health, which carries counts only.
+        """
+        return len([1 for count, _ in self.stubborn.values() if count >= STUBBORN])
 
     def pass_over(self, peer: str) -> dict:
         """
@@ -172,30 +224,40 @@ class Sweep:
 
         handle = database.session()
         try:
-            answered = self._get(peer, "hashes")
-            theirs = (answered or {}).get("hashes") or {}
             # It answered, so it is up: that closes its breaker whether or not anything was
             # owed to it. Waiting for a replicated row to drain would leave health
             # reporting a healthy peer as not answering until one happened along.
             #
-            # None means it did not answer: _get gives that back when both attempts were
-            # refused, and a refusal surviving a renewal is the one failure that should
-            # keep the breaker shut, not open it. Reading None as success made a credential
-            # mismatch oscillate - closed by every pass, reopened by the next three calls.
-            if answered is not None:
-                outbox.record_success(peer)
+            # Reaching this line is the whole of the test. A refusal that survives the
+            # renewal raises out of _get, so a credential mismatch never gets here - which
+            # it must not, or the breaker is closed by every pass and reopened by the next
+            # three calls.
+            theirs = (self._get(peer, "hashes") or {}).get("hashes") or {}
+            outbox.record_success(peer)
             ours = tables.hashes(handle)
-            differing = [table for table in tables.ORDER
-                         if theirs.get(table) and theirs[table] != ours.get(table)]
+            comparable = [table for table in tables.ORDER if theirs.get(table)]
+            absent = [table for table in tables.ORDER if table not in comparable]
+            if absent:
+                LOGGER.warning("%s sent no hash for %s, so %s not compared this pass",
+                               peer, ", ".join(absent),
+                               "they were" if len(absent) > 1 else "it was")
+            differing = [table for table in comparable if theirs[table] != ours.get(table)]
             if not differing:
-                return {"peer": peer, "tables": [], "changes": {}}
+                self._converged(peer, comparable, [], theirs, ours)
+                return {"peer": peer, "tables": [], "changes": {}, "unconverged": []}
 
             changes = {}
             for table in differing:
                 documents = (self._get(peer, f"table/{table}") or {}).get("documents") or []
                 changes[table] = tables.merge_table(handle, table, documents)
+            # Compared again against what the peer answered, rather than assumed: taking
+            # everything of theirs that was newer is not the same as agreeing with them.
+            after = tables.hashes(handle)
+            still = [table for table in differing if theirs[table] != after.get(table)]
+            self._converged(peer, comparable, still, theirs, after)
             LOGGER.info("reconciled %s with %s: %s", ", ".join(differing), peer, changes)
-            return {"peer": peer, "tables": differing, "changes": changes}
+            return {"peer": peer, "tables": differing, "changes": changes,
+                    "unconverged": still}
         finally:
             handle.close()
 
@@ -208,7 +270,13 @@ class Sweep:
         from trixd.core.replication import outbox
 
         results = []
-        for peer in settings().replication.peers:
+        # The outbox's list, which is empty when replication is switched off: reading the
+        # peers straight out of the settings meant `ENABLED = no` stopped the timer and left
+        # health saying peers: 0, while POST /system/replication/sweep still reconciled and
+        # still drained the outbox across.
+        configured = outbox.peers()
+        self.forget(configured)
+        for peer in configured:
             try:
                 owed = outbox.drain(peer)
                 result = self.pass_over(peer)
@@ -233,8 +301,14 @@ class Sweep:
         Only when peers are configured: one controller has nothing to reconcile.
         """
         config = settings().replication
-        if not config.enabled or not config.peers:
+        # Two different states, and reporting the switch as an empty peer list is the
+        # opposite of true on a pair: peers first, so the switch names what it holds up.
+        if not config.peers:
             LOGGER.info("no replication peers configured, so no sweep is running")
+            return False
+        if not config.enabled:
+            LOGGER.info("[REPLICATION] ENABLED is no, so no sweep is running: %s is "
+                        "configured and is not reconciled", ", ".join(config.peers))
             return False
         if self._trust() is True:
             LOGGER.warning("CA_FILE %s is missing: peers are checked against the system store, "

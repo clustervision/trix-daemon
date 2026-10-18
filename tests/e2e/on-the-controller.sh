@@ -66,7 +66,10 @@ NODES=$(curl -sk $PLAIN/api/v1/luna/config/node -H "$H" | jq_ "len(d['config']['
 [ "${NODES:-0}" -gt 0 ] && say PASS "the pass-through returned $NODES nodes" || say FAIL "no nodes through the pass-through"
 
 echo "=== 4. the layout, as Luna's: only the daemon link ==="
-check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd | grep -vxE 'daemon|plugins' | wc -l)" 0
+# Without this, a missing directory is an ls on stderr and an empty count, so the check
+# below reads "nothing beside daemon" off an installation that is not there at all.
+check "the install directory is there" "$([ -d /trinity/local/trixd ] && echo yes || echo no)" yes
+check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd 2>/dev/null | grep -vxE 'daemon|plugins' | wc -l)" 0
 check "daemon links into the shared python" "$(readlink /trinity/local/trixd/daemon | grep -c '^/trinity/local/python/')" 1
 
 echo "=== 4b. plugins ==="
@@ -162,10 +165,17 @@ check "health reports the renders"     "$(echo "$HEALTH" | jq_ "len(d['renders']
 check "health reports the triggers"    "$(echo "$HEALTH" | jq_ "'luna_hashes' in d['triggers']")" True
 
 echo "=== 13. tidy up ==="
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2eop -H "$H"
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2enone -H "$H"
-curl -sk -o /dev/null -X DELETE $PLAIN/api/v1/identity/users/e2ereader -H "$H"
-say PASS "removed the test principals"
+# This is a destructive step on a live controller and e2eop was promoted to manager above,
+# so each removal is read back: a refused DELETE used to print PASS and leave it standing.
+for NAME in e2eop e2enone e2ereader; do
+  check "removed $NAME"                "$(code -X DELETE $PLAIN/api/v1/identity/users/$NAME -H "$H")" 200
+  check "$NAME cannot sign in again"   "$(code -X POST $PLAIN/api/v1/auth/token -H "$J" -d "$(body "$NAME" pw)")" 401
+done
+# Named rather than matched on a prefix: a controller whose own ini account begins with the
+# same letters is not one of these, and is not removable anyway.
+LEFT=$(curl -sk $PLAIN/api/v1/identity/users -H "$H" |
+       jq_ "sum(1 for u in d['users'] if u['name'] in ('e2eop', 'e2enone', 'e2ereader'))")
+check "no principal this script made is left" "${LEFT:-unknown}" 0
 
 echo
 echo "failures: $FAIL"

@@ -25,6 +25,33 @@ hooks:
   luna.node.update: node_updated
   luna.node.delete: node_deleted
 schemas:
+  exporter:
+    port:
+      type: integer
+      optional: true
+      description: The port the exporter answers on, where it differs from the baseline
+      example: 14200
+    interval:
+      type: string
+      optional: true
+      description: How often to scrape it, as a duration such as 30s or 5m
+      example: 5m
+    timeout:
+      type: string
+      optional: true
+      description: How long one scrape of it may take, as a duration such as 10s
+      example: 10s
+    labels:
+      type: object
+      optional: true
+      description: Labels added to every target of this exporter
+  exporter_applied:
+    exporters:
+      type: object
+      description: >
+        Exporter name to false to switch it off here, true to take the baseline, or the fields
+        to change. A name the baseline does not have is defined by saying it here.
+      example: {lshw: false, node: {interval: 15s}, storcli: {port: 14211}}
   hw_rename:
     was:
       type: string
@@ -63,6 +90,11 @@ schemas:
       description: One entry per node, naming node and any of force, nhc and disabled
       example: [{node: node001, disabled: true}]
   config:
+    exporters_file:
+      type: string
+      optional: true
+      description: Where the exporter baseline is read from; this file is not replicated
+      example: /trinity/local/trixd/daemon/config/exporters.yaml
     rules_directory:
       type: string
       optional: true
@@ -86,14 +118,14 @@ endpoints:
     handler: config
     summary: Where the plugin writes rule files, reaches Prometheus, and what it reloads
     description: |
-      The three settings the prometheus plugin works with. `rules_directory` is where it
-      writes the rule files Prometheus reads, `prometheus_url` is where it asks Prometheus
-      which hardware each node reports, and `reload_command` is what it runs after writing a
-      rule file. When the scheme in `prometheus_url` is the wrong one, the plugin tries the
-      other and remembers it.
+      The four settings the prometheus plugin works with. `exporters_file` is the baseline it
+      reads the exporters from, `rules_directory` is where it writes the rule files Prometheus
+      reads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and
+      `reload_command` is what it runs after writing a rule file. When the scheme in
+      `prometheus_url` is the wrong one, the plugin tries the other and remembers it.
     response:
       description: The settings as held
-      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: config
     methods: [PATCH]
@@ -103,12 +135,12 @@ endpoints:
     schema: config
     summary: Change where the plugin writes rule files, reaches Prometheus, or reloads
     description: |
-      Send any of the three settings; those left out keep their value. rootus only, because
+      Send any of the four settings; those left out keep their value. rootus only, because
       the daemon writes into `rules_directory` and runs `reload_command`, both as root.
     request_example: {prometheus_url: "https://localhost:9090"}
     response:
-      description: All three settings as now held
-      example: {rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      description: All four settings as now held
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
 
   - path: rules
     methods: [GET]
@@ -350,6 +382,12 @@ endpoints:
       Each node gets its own answer: `ok: false` with a `message` for a node Luna does not
       know, or whose file could not be written, without stopping the others. Prometheus is
       reloaded once for the lot, and not at all when nothing changed.
+
+      Where any entry was not applied, the answer also carries a top-level `skipped`
+      saying how many of them and why, which is what tells a replicating peer that part
+      of the call did not land rather than letting it record the lot as applied. It is
+      built to the characters a peer records, so the reasons come counted and commonest
+      first, and any that did not fit are said as a number.
     request_example:
       nodes:
         - {node: node001, disabled: true}
@@ -369,16 +407,20 @@ endpoints:
     public: true
     handler: render_targets
     render:
-      inputs: [luna.node, luna.network]
+      # Luna's own table names, one per table this document is built out of: the scraped
+      # address is `ipaddress`, the interface carrying it `nodeinterface`, the domain in
+      # every hostname `network`, and the `luna_group` label `group`.
+      inputs: [luna.node, luna.group, luna.nodeinterface, luna.ipaddress, luna.network,
+               exporter, exporter-scope]
       serve: json
       coalesce: 2s
     summary: Service discovery targets, served from the render
     description: |
       The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
       address Prometheus scrapes and the labels it attaches. It is answered from the last
-      render, which runs when a node or network changes through the luna plugin, on a
-      notify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,
-      because service discovery presents no token.
+      render, which runs when a node, group, interface or network changes through the luna
+      plugin, on a notify, or when Luna's table hashes change, so a poll costs no call to
+      Luna. Public, because service discovery presents no token.
 
       The exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,
       `slurm_job` 14207 and `lshw` 14208.
@@ -395,6 +437,112 @@ endpoints:
     minimum: reader
     handler: render_rule_files
     render:
-      inputs: [settings, rules, luna.node]
+      # Every hardware file is named by its node's hostname and labelled with its group,
+      # and Luna assembles that hostname out of the node, the interface it provisions over,
+      # that interface's address and its network. Each of those decides what to relabel.
+      inputs: [settings, rules, luna.node, luna.group, luna.nodeinterface, luna.ipaddress,
+               luna.network]
     # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk
+
+  - path: exporters
+    methods: [GET]
+    minimum: reader
+    handler: list_exporters
+    summary: Every exporter this cluster scrapes, and where each one applies
+    description: |
+      The baseline the installer rendered, what this site has defined on top of it, and every
+      scope that deviates. The baseline is a file and is NOT replicated, so its digest is
+      reported here: one call on each controller, and two different digests mean the pair
+      disagrees about what it is scraping while the database looks converged.
+
+      `read` says whether that file is the baseline in use. False means it is absent,
+      unreadable or names no nodes section, and the exporters built into the daemon are being
+      served instead - which two digests alone would not tell you.
+
+      `ignored` is what the last read of that file threw away: a label Prometheus will not
+      accept, a port that is not a number, a duration that is not one. The file is forgiving,
+      because one bad label must not cost a cluster its targets - this is where it says what
+      it forgave, rather than only a log line that has since rotated.
+    response:
+      description: The baseline, the definitions and the deviations
+      example:
+        factory: {path: /trinity/local/trixd/daemon/config/exporters.yaml, digest: 9f2c1d0ab3e45678, read: true, reason: '', ignored: [], nodes: {node: {port: 14200}}, controllers: {ha: {port: 14205}}, hosts: [controller1.cluster]}
+        defined: {}
+        applied: {group:gpu: {lshw: false}}
+
+  - path: exporters/<exporter>
+    methods: [PATCH]
+    minimum: manager
+    handler: set_exporter
+    schema: exporter
+    summary: Define an exporter, or change one the baseline already has
+    description: |
+      Changes an exporter everywhere it applies, which is how a site that runs one on another
+      port says so once rather than per group. An exporter the baseline has never heard of is
+      defined by this call.
+    params:
+      exporter: {description: "The exporter's name", example: lshw}
+    request_example: {port: 24208}
+    response:
+      description: The exporter as it now stands
+      example: {exporter: lshw, fields: {port: 24208}}
+
+  - path: exporters/<exporter>
+    methods: [DELETE]
+    minimum: manager
+    handler: remove_exporter
+    summary: Forget what this site said about an exporter
+    description: |
+      Leaves the baseline to speak for it again. The row is marked rather than deleted, because
+      a row missing here is re-added from the peer at the next pass; marked, it counts as no
+      row on both controllers.
+    params:
+      exporter: {description: "The exporter's name", example: lshw}
+    response:
+      description: The exporter, with nothing held against it
+      example: {exporter: lshw, forgotten: true, fields: {}}
+
+  - path: exporters/applied/<where>
+    methods: [GET]
+    minimum: reader
+    handler: show_applied
+    summary: What will be scraped somewhere, once everything is resolved
+    description: |
+      Resolves the baseline, this site's definitions and every scope that applies, so an
+      operator can look before the render does it for real. Takes `cluster`, `controllers`,
+      `group:<name>`, `node:<name>`, or a controller's own hostname.
+    params:
+      where: {description: "cluster, controllers, group:<name>, node:<name> or a controller hostname", example: "group:gpu"}
+    response:
+      description: Exporter name to the fields it is scraped with there
+      example: {applied: "group:gpu", exporters: {node: {port: 14200}}}
+
+  - path: exporters/applied/<where>
+    methods: [PATCH]
+    minimum: manager
+    handler: set_applied
+    schema: exporter_applied
+    summary: Apply an exporter somewhere, override its fields, or switch it off
+    description: |
+      A scope is `cluster`, a Luna group, one node, every controller, or one controller by its
+      own hostname. A controller is named by its real hostname and never by "this one": the
+      table replicates, so a row meaning "me" would be written by both controllers under one
+      key and each would overwrite the other.
+    params:
+      where: {description: "cluster, controllers, group:<name>, node:<name> or a controller hostname", example: "group:gpu"}
+    request_example: {exporters: {lshw: false, node: {interval: 15s}}}
+    response:
+      description: What this scope now holds
+      example: {applied: "group:gpu", exporters: {lshw: false}}
+
+  - path: exporters/applied/<where>
+    methods: [DELETE]
+    minimum: manager
+    handler: remove_applied
+    summary: Drop every deviation held for one scope
+    params:
+      where: {description: "cluster, controllers, group:<name>, node:<name> or a controller hostname", example: "group:gpu"}
+    response:
+      description: The scope, with nothing held for it
+      example: {applied: "group:gpu", forgotten: true, exporters: {}}

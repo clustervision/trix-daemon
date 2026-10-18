@@ -39,16 +39,73 @@ LOGGER = trixlog.get("triggers")
 # the plugin's business and never the daemon's. Its state() carries at least
 # answering and last_pass, which are what /system/health publishes for it.
 _triggers: dict = {}
+# Which plugin registered each trigger, so unplugging that plugin can stop it.
+_owners: dict = {}
+# Whether the triggers have been started. One registered after that has to start itself:
+# start_all runs once, at start-up, so a reload's trigger would never have been started.
+_running: bool = False
 
 
-def register(name: str, trigger) -> None:
+def _stop(name: str, trigger) -> None:
+    """
+    Ask one trigger to stop, and say so rather than raise when it will not.
+    """
+    if trigger is None:
+        return
+    try:
+        trigger.shutdown()
+    except Exception as error:
+        LOGGER.error("trigger %s could not be stopped: %s", name, error)
+
+
+def _start(name: str, trigger) -> None:
+    """
+    Start one trigger, and say so rather than raise when it will not.
+    """
+    try:
+        trigger.start()
+    except Exception as error:
+        LOGGER.error("trigger %s could not start: %s", name, error)
+
+
+def register(name: str, trigger, owner: str = "") -> None:
     """
     Offer a background trigger under a name, which is the key it reports health by.
-    Registering the same name twice replaces it, so a re-plug does not stack pollers.
+
+    Registering the same name twice replaces it and stops the one replaced, which it did
+    not before: the old poller kept running with nothing referencing it, so nothing could
+    stop it, and its baseline was the one still driving the renders while health reported
+    the replacement that had never started.
     """
-    if name in _triggers and _triggers[name] is not trigger:
+    held = _triggers.get(name)
+    if held is trigger:
+        # The same object offering itself again, which is what reloading a plugin whose
+        # trigger is a module-level singleton does: the module holding it is not one the
+        # reload purges, so the object outlives the reload and is already running. Starting
+        # it again would leave a second thread on the same state, and each reload another.
+        _owners[name] = owner
+        return
+    if held is not None:
         LOGGER.info("trigger %s replaced", name)
+        _stop(name, held)
     _triggers[name] = trigger
+    _owners[name] = owner
+    if _running:
+        _start(name, trigger)
+
+
+def forget(owner: str) -> list:
+    """
+    Stop and drop every trigger one plugin registered, for when it is unplugged.
+    """
+    dropped = []
+    for name in [key for key, who in _owners.items() if who and who == owner]:
+        _stop(name, _triggers.pop(name, None))
+        _owners.pop(name, None)
+        dropped.append(name)
+    if dropped:
+        LOGGER.info("triggers stopped with %s: %s", owner, ", ".join(dropped))
+    return dropped
 
 
 def baseline_all() -> None:
@@ -56,7 +113,7 @@ def baseline_all() -> None:
     Take every trigger's baseline before the reconcile, so a change landing after it
     is seen as a change rather than absorbed into the first reading.
     """
-    for name, trigger in _triggers.items():
+    for name, trigger in list(_triggers.items()):
         try:
             trigger.baseline()
         except Exception as error:
@@ -67,22 +124,20 @@ def start_all() -> None:
     """
     Start every trigger. One that refuses to start says so and the others still run.
     """
-    for name, trigger in _triggers.items():
-        try:
-            trigger.start()
-        except Exception as error:
-            LOGGER.error("trigger %s could not start: %s", name, error)
+    global _running
+    _running = True
+    for name, trigger in list(_triggers.items()):
+        _start(name, trigger)
 
 
 def shutdown_all() -> None:
     """
     Ask every trigger to stop; each ends at its next wake-up.
     """
-    for name, trigger in _triggers.items():
-        try:
-            trigger.shutdown()
-        except Exception as error:
-            LOGGER.error("trigger %s could not be stopped: %s", name, error)
+    global _running
+    _running = False
+    for name, trigger in list(_triggers.items()):
+        _stop(name, trigger)
 
 
 def states() -> dict:
@@ -90,7 +145,9 @@ def states() -> dict:
     What each trigger is doing, for the health endpoint.
     """
     found = {}
-    for name, trigger in _triggers.items():
+    # A copy: health is served from a request thread while an unload pops entries from the
+    # loader's, and iterating the dict itself raises when its size changes.
+    for name, trigger in list(_triggers.items()):
         try:
             found[name] = trigger.state()
         except Exception as error:

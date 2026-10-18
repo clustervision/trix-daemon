@@ -65,8 +65,14 @@ def register_placeholder(name: str, resolve, published: str) -> None:
 def substitute(text: str, request: Request = None) -> str:
     """
     Replace every registered placeholder, with the reader's own address when there is a
-    request and the static stand-in when there is not. An unregistered one is left as
-    written, so a disabled plugin shows its placeholder rather than a wrong address.
+    request and the static stand-in when there is not. A placeholder nothing registered is
+    left as written, as `{name}`.
+
+    Nothing takes a registration back, so an unplugged plugin's placeholder goes on being
+    resolved: there is no forget here and unload calls none. Written down rather than
+    fixed, because the one placeholder there is resolves to Luna's own address, where Luna
+    answers whether or not this daemon forwards to it, and the paragraph naming it is
+    stale once that route is gone however the placeholder reads.
     """
     for name, (resolve, published) in _placeholders.items():
         try:
@@ -111,9 +117,9 @@ clear text.
 ### Errors
 A refusal or a failure answers its status and `{"message": "..."}` saying why: 400 a \
 request that cannot be acted on, 401 no token or a bad one, 403 a role below the \
-route's minimum, 404 no such object, 409 a conflict, 422 a body that does not match its \
-schema (FastAPI's `detail` list instead of `message`), 502 the service behind trixd \
-failed, 503 not available on this controller.
+route's minimum, 404 no such object, 409 a conflict, 413 a body larger than `[API] \
+MAX_BODY`, 422 a body that does not match its schema (FastAPI's `detail` list instead of \
+`message`), 502 the service behind trixd failed, 503 not available on this controller.
 """
 
 ACCESS: dict = {

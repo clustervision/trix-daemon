@@ -46,6 +46,26 @@ LUNA_INI_ENV: str = "TRIXD_LUNA_INI"
 TIMEOUT: int = 20
 PROTOCOLS: tuple = ("https", "http")
 
+# The personal file last said to be in use, so it is said once and not on every check.
+_said_personal: str = ""
+
+
+def _say_personal(path: str) -> None:
+    """
+    Say, once for each path, that a personal file is being followed.
+
+    Which file this is decides which cluster the daemon reads. A command-line login as root
+    leaves one behind, and the daemon then takes that cluster's nodes and renders this
+    controller's genders and slurm files from them. It is said once rather than on every
+    check, because the path is re-read whenever the file's timestamp moves.
+    """
+    global _said_personal
+    if _said_personal == path:
+        return
+    _said_personal = path
+    LOGGER.warning("following %s rather than %s: a personal login file is deciding which "
+                   "cluster this daemon reads", path, DEFAULT_LUNA_INI)
+
 
 def chosen_path() -> str:
     """
@@ -57,7 +77,10 @@ def chosen_path() -> str:
     if named:
         return named
     personal = os.path.expanduser(USER_LUNA_INI)
-    return personal if os.path.isfile(personal) else DEFAULT_LUNA_INI
+    if os.path.isfile(personal):
+        _say_personal(personal)
+        return personal
+    return DEFAULT_LUNA_INI
 
 
 def _bool(value: str) -> bool:

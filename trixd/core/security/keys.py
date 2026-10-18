@@ -30,6 +30,7 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import os
+import stat
 
 from cryptography.hazmat.primitives import serialization
 from cryptography.hazmat.primitives.asymmetric import ed25519
@@ -84,8 +85,18 @@ class KeyRing:
                 f"{self.algorithm} signs with a shared secret and none was found: set "
                 f"[TOKENS] SECRET_KEY in trixd.ini, or put it in {self.config.secret_file}")
         if len(self.secret) < MINIMUM_SECRET_LENGTH:
-            LOGGER.warning("the shared secret is %d characters long; the installer "
-                           "writes %d", len(self.secret), MINIMUM_SECRET_LENGTH)
+            LOGGER.error("the shared secret is %d characters long where the installer writes "
+                         "%d: it signs every token this daemon issues, rootus ones included",
+                         len(self.secret), MINIMUM_SECRET_LENGTH)
+        # Said rather than refused, so a controller already running on a loose file keeps
+        # serving. Checked whenever the file is there: the settings hold the resolved secret
+        # and not where it came from, and a file holding one is worth a line either way.
+        if self.config.secret_file and os.path.isfile(self.config.secret_file):
+            loose = _unsafe_to_read(self.config.secret_file)
+            if loose:
+                LOGGER.error("%s %s: it holds the secret every token here is signed with, "
+                             "and on a default install the one Luna holds too",
+                             self.config.secret_file, loose)
         LOGGER.info("signing as %s with %s and the secret shared with Luna",
                     self.issuer, self.algorithm)
         return self
@@ -96,6 +107,15 @@ class KeyRing:
         """
         self.private = read_private(self.config.private_key)
         self.trusted = read_trust(self.config.trust)
+        if self.key_id in self.trusted:
+            # KEY_ID defaults to one value on every controller and a pair is set up by
+            # copying the peer key in under the local id, so on a default pair this is the
+            # peer key - and replacing it refuses its tokens as invalid, blaming the client.
+            LOGGER.error("%s in the trust directory %s carries this daemon's own [TOKENS] "
+                         "KEY_ID and is replaced by the local public key: tokens signed by "
+                         "whoever owns that key are refused as invalid. Give each "
+                         "controller its own KEY_ID and name the peer key after the peer.",
+                         self.key_id + PUBLIC_SUFFIX, self.config.trust)
         self.trusted[self.key_id] = self.private.public_key()
         LOGGER.info("signing as %s with %s key %s, trusting %s", self.issuer,
                     self.algorithm, self.key_id,
@@ -156,6 +176,38 @@ def read_private(path: str):
     return key
 
 
+def _unsafe_to_read(path: str) -> str:
+    """
+    Why a secret file is readable by more than its owner, or an empty string when it is not.
+    """
+    try:
+        mode = stat.S_IMODE(os.stat(path).st_mode)
+    except OSError as error:
+        return f"could not be checked: {error}"
+    if mode & (stat.S_IRGRP | stat.S_IROTH | stat.S_IWGRP | stat.S_IWOTH):
+        return f"is mode {mode:04o}, readable beyond its owner"
+    return ""
+
+
+def _unsafe(path: str) -> str:
+    """
+    Why a path holding trust cannot be believed, or an empty string when it can.
+
+    A key in here decides which issuers this daemon accepts, so whoever can write one in
+    decides that. Ownership and mode are the whole protection and neither was looked at,
+    while the private key beside it is created 0600 and has a test pinning the mode.
+    """
+    try:
+        info = os.stat(path)
+    except OSError as error:
+        return str(error)
+    if info.st_uid not in (0, os.geteuid()):
+        return f"owned by uid {info.st_uid}"
+    if info.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+        return f"writable beyond its owner, mode {stat.S_IMODE(info.st_mode):04o}"
+    return ""
+
+
 def read_trust(directory: str) -> dict:
     """
     Every <key-id>.pub in the trust directory, indexed by key identifier.
@@ -164,10 +216,21 @@ def read_trust(directory: str) -> dict:
     if not os.path.isdir(directory):
         LOGGER.warning("no trust directory at %s: only our own tokens will verify", directory)
         return trusted
+    # The whole directory, before any key in it: if others may write here they choose what
+    # this daemon trusts, and which file they chose is not the interesting part.
+    unsafe = _unsafe(directory)
+    if unsafe:
+        LOGGER.error("refusing the trust directory %s: %s; only our own tokens will verify",
+                     directory, unsafe)
+        return trusted
     for name in sorted(os.listdir(directory)):
         if not name.endswith(PUBLIC_SUFFIX):
             continue
         path = os.path.join(directory, name)
+        unsafe = _unsafe(path)
+        if unsafe:
+            LOGGER.error("ignoring %s: %s", path, unsafe)
+            continue
         try:
             with open(path, "rb") as handle:
                 key = serialization.load_pem_public_key(handle.read())

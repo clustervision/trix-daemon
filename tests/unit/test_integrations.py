@@ -315,6 +315,31 @@ def test_with_no_secret_trixd_signs_in_and_keeps_what_it_got(rig, tmp_path, monk
         assert stat.S_IMODE(os.stat(os.path.dirname(path)).st_mode) == 0o700
 
 
+def test_the_token_cache_tightens_a_directory_that_was_already_there(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    The test above lets trixd create the directory, and says so - that was the only case the
+    0700 promise held for. makedirs applies its mode when it creates and not otherwise, and
+    the Luna command line creates this directory first on most boxes, so in practice the
+    0600 file sat in whatever permissions were already there.
+    """
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(tmp_path, username="luna", password="p"))
+    loose = tmp_path / "loose"
+    loose.mkdir()
+    os.chmod(loose, 0o777)
+    path = str(loose / "token")
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, path)
+    issued = _signed("l" * 32)
+    monkeypatch.setattr(credentials.requests, "post",
+                        lambda url, **kwargs: Answer(201, body={"token": issued}))
+
+    assert credentials.get_token() == issued
+    if os.name == "posix":
+        assert stat.S_IMODE(os.stat(loose).st_mode) == 0o700, \
+            "a directory that already existed was left as it was found"
+        assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
+
+
 def test_luna_away_with_nothing_held_is_unavailable_not_a_wrong_token(rig, tmp_path, monkeypatch):
     """
     A render answers 503 and records the failure; it never renders from a token it
@@ -434,6 +459,27 @@ def test_lunas_envelopes_are_unwrapped(rig):
     assert client.nodes() == {}
 
 
+def test_an_unreadable_cluster_answer_means_security_is_enforced(rig):
+    """
+    The flag decides whether a node has to present a measurement, so an answer that cannot
+    be read must not read as "off". A 404, an empty body and a row whose shape has moved all
+    arrive as an empty row; before this they turned attestation off cluster-wide and said
+    nothing, while a transport failure - the louder case - already raised instead.
+    """
+    client, _ = _luna(
+        Answer(body={"config": {"cluster": {"security": False}}}),
+        Answer(body={"config": {"cluster": {"security": True}}}),
+        Answer(404),
+        Answer(body={}),
+        Answer(body={"config": {"cluster": {"name": "trinity"}}}))
+
+    assert client.enforcing_security() is False, "Luna said off and meant it"
+    assert client.enforcing_security() is True, "Luna said on"
+    assert client.enforcing_security() is True, "a 404 read as not enforcing"
+    assert client.enforcing_security() is True, "an empty body read as not enforcing"
+    assert client.enforcing_security() is True, "a row with no flag read as not enforcing"
+
+
 def test_trixd_follows_luna_ini_when_it_changes(rig, tmp_path, monkeypatch):
     """
     A protocol, address or secret changed in luna.ini is what trixd uses next; an empty
@@ -495,6 +541,7 @@ class FakeRenders:
         Nothing woken yet.
         """
         self.woken = []
+        self.retries = 0
 
     def notify(self, item: str) -> list:
         """
@@ -502,6 +549,13 @@ class FakeRenders:
         """
         self.woken.append(item)
         return [f"render-for-{item}"]
+
+    def retry(self) -> list:
+        """
+        Nothing has failed in this stub, so a pass puts nothing back; the ask is counted.
+        """
+        self.retries += 1
+        return []
 
 
 def _hashes(monkeypatch, *answers) -> tuple:
@@ -548,6 +602,189 @@ def test_luna_failing_a_hash_pass_is_not_fatal(rig, monkeypatch):
     assert poller.once() == []
     assert poller.once() == []
     assert poller.seen == {"node": "1"}
+
+
+def test_a_render_that_failed_is_produced_again_on_the_next_pass(rig, monkeypatch):
+    """
+    Nothing drove a failed render again, and what that costs is the whole defect: a Luna
+    away during the start-up reconcile fails every render of it, so `renders/targets` 404s
+    on every http_sd poll - new nodes never scraped, deleted ones scraped for ever, and no
+    targets at all after Prometheus restarts. It did not heal: the change that would have
+    woken them is spent either way, because the poller takes its first good reading as a
+    baseline and a failing pass that spotted a moved digest overwrites `seen` regardless.
+
+    Asserted with no change notified at all. A pass that woke the render on a moved digest
+    would be proving the ordinary path instead of the retry.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    attempts = []
+
+    def produce():
+        """
+        Luna away for the first attempt, answering afterwards.
+        """
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("luna is away")
+        return {"nodes": ["node001"]}
+
+    luna = FakeLuna({"node": "1"}, {"node": "1"})
+    monkeypatch.setattr(hashes, "luna", lambda: luna)
+    poller = hashes.LunaHashes()
+
+    engine = renders()
+    # This render alone, so the reconcile below counts this producer and the retry is not
+    # also sweeping the shipped renders out to a Luna that no unit test has.
+    engine.forget_all()
+    engine.register("retried", "renders/thing",
+                    Render(inputs=["luna.node"], coalesce="0s"), produce)
+    assert engine.run_all() == 0, \
+        "the start-up reconcile was meant to fail, so nothing below is proven"
+    item = engine.renders["retried/renders/thing"]
+    assert item.document is None and item.last_error, \
+        "the render is not in the failed state this is about"
+
+    assert poller.once() == [], "the first reading is a baseline and wakes nothing"
+    assert poller.once() == [], "no digest moved, so no change may be notified"
+    assert len(attempts) == 2, \
+        f"the failed render was never produced again: {len(attempts)} attempt(s)"
+    assert item.document == {"nodes": ["node001"]}, \
+        f"produced again, but it serves nothing: {item.last_error!r}"
+
+
+def test_a_render_that_failed_is_produced_again_where_luna_answers_no_hashes(rig,
+                                                                            monkeypatch):
+    """
+    Luna answers that route on the HA master only, so on the passive controller of a pair
+    every pass reads an empty dict: nothing is failing and nothing changed, and the fallback
+    reports itself inert. A render that failed there is owed exactly as much as on the
+    master, so the empty answer is the pass that has to put it back.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    attempts = []
+
+    def produce():
+        """
+        Luna away for the first attempt, answering afterwards.
+        """
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("luna is away")
+        return {"nodes": ["node001"]}
+
+    luna = FakeLuna({})
+    monkeypatch.setattr(hashes, "luna", lambda: luna)
+    poller = hashes.LunaHashes()
+
+    engine = renders()
+    # This render alone, so the reconcile below counts this producer and the retry is not
+    # also sweeping the shipped renders out to a Luna that no unit test has.
+    engine.forget_all()
+    engine.register("passive", "renders/thing",
+                    Render(inputs=["luna.node"], coalesce="0s"), produce)
+    assert engine.run_all() == 0, \
+        "the start-up reconcile was meant to fail, so nothing below is proven"
+    item = engine.renders["passive/renders/thing"]
+    assert item.document is None and item.last_error, \
+        "the render is not in the failed state this is about"
+
+    assert poller.once() == [], "an empty answer is never a change"
+    assert (poller.failing, poller.seen) == (False, {}), \
+        "Luna answering emptily is not what was driven, so the passive shape is unproven"
+    assert len(attempts) == 2, \
+        f"the failed render was never produced again: {len(attempts)} attempt(s)"
+    assert item.document == {"nodes": ["node001"]}, \
+        f"produced again, but it serves nothing: {item.last_error!r}"
+    assert not item.last_error, "a render that is serving still carries its failure"
+
+
+def test_a_retry_produces_what_the_engine_holds_and_not_what_it_sampled(rig):
+    """
+    The retry sweeps the renders it read before the first producer ran, and a reload
+    landing inside that sweep replaces them. Producing from the sampled object then runs
+    code that has been unplugged, after its replacement has already written, so what is
+    left on disk is the old render's - which is the reason notify and the trailing timer
+    look their render up again under the lock, stated in a comment beside each.
+
+    A retry pass is where this is reachable for long enough to matter: it is one producer
+    after another against a Luna that may be slow, and the reload is an ordinary enable,
+    disable or reload of a plugin.
+
+    The preconditions are asserted too, because the negative half is satisfied by a retry
+    that produced nothing at all.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    spec = Render(inputs=["luna.node"], coalesce="0s")
+    ran, swapped, reconciling = [], [], [1]
+
+    def new_second():
+        """
+        The second render as the reload leaves it, still unable to produce.
+        """
+        ran.append("new")
+        raise RuntimeError("luna is away")
+
+    def old_second():
+        """
+        The second render as it was before the reload. Nothing may call this again.
+        """
+        ran.append("old")
+        raise RuntimeError("luna is away")
+
+    def first():
+        """
+        The first render of the pass: away for the reconcile, and on the retry it succeeds
+        and takes the reload with it.
+        """
+        ran.append("first")
+        if reconciling:
+            reconciling.clear()
+            raise RuntimeError("luna is away")
+        if not swapped:
+            swapped.append(1)
+            engine.replace("reloaded", [("renders/second", spec, new_second)])
+        return {"nodes": []}
+
+    engine = renders()
+    engine.forget_all()
+    engine.register("reloaded", "renders/first", spec, first)
+    engine.register("reloaded", "renders/second", spec, old_second)
+    assert engine.run_all() == 0, \
+        "both renders were meant to fail, so there is nothing for a retry to put back"
+    ran.clear()
+
+    engine.retry()
+    assert ran[:1] == ["first"], \
+        f"the pass never reached the producer that reloads, so nothing is proven: {ran}"
+    assert swapped and engine.renders["reloaded/renders/second"].producer is new_second, \
+        "the reload did not take, so the sampled render is still the one held"
+    assert "old" not in ran, \
+        f"the retry produced from a render the reload had replaced: {ran}"
+
+
+def test_a_failed_render_is_put_back_on_every_pass_that_reached_luna(rig, monkeypatch):
+    """
+    Recovery rests on the retry standing above every way a pass can end, so it is asserted
+    over all of them: no hashes at all, the baseline reading, no digest moved, a digest
+    moved. A pass that never reached Luna is the one pass that owes nothing.
+    """
+    poller, renders = _hashes(monkeypatch, {}, {"node": "1"}, {"node": "1"},
+                              {"node": "2"}, requests.ConnectionError("away"))
+    for reached in range(1, 5):
+        poller.once()
+        assert renders.retries == reached, \
+            f"pass {reached} reached Luna and put nothing back"
+    assert (poller.seen, renders.woken) == ({"node": "2"}, ["luna.node"]), \
+        "the four passes did not end the four ways this is asserted over"
+
+    poller.once()
+    assert renders.retries == 4, "a pass that never reached Luna has nothing to put back"
 
 
 def test_the_hash_baseline_and_poller_follow_the_interval(rig, monkeypatch):
@@ -864,6 +1101,47 @@ def test_a_new_user_reaches_obol_as_flags(rig, monkeypatch):
     assert added == ["obol", "user", "add", "dave", "--uid", "1600", "--groups", "hpc,gpu"]
 
 
+def test_a_password_does_not_reach_obol_as_an_argument(rig, monkeypatch):
+    """
+    An argument sits in /proc for the life of the call, readable by any local user - and a
+    controller has interactive logins, with /trinity/home exported. obol will take a prompt
+    instead, so the value goes down a pipe and never into the process table.
+
+    The masking table beside the runner is the evidence this value was always known to be
+    secret: it covered the log and left the argument list alone.
+    """
+    from trixd.plugins.directory import backend as directory
+    from trixd.plugins.directory.backend import Backend
+
+    seen = []
+    existing = set()
+
+    def run(argv, *args, **kwargs):
+        """
+        Record the call with whatever was handed to standard input, and behave as obol
+        does either side of the add: show fails until the user is there.
+        """
+        seen.append((list(argv), kwargs.get("secret_input")))
+        verb = argv[2] if argv[1] != "-J" else argv[3]
+        name = argv[3] if argv[1] != "-J" else argv[4]
+        if verb == "show" and name not in existing:
+            return Ran("", 1, "not found")
+        if verb == "add":
+            existing.add(name)
+        return Ran("{}")
+
+    monkeypatch.setattr(directory.shell, "run", run)
+    monkeypatch.setattr(directory.shell, "run_json", lambda argv, *a, **k: {"uid": argv[-1]})
+    Backend().create_user({"username": "dave", "password": "a long passphrase", "uid": 1600})
+
+    added_argv, secret = [entry for entry in seen if "add" in entry[0]][0]
+    assert "a long passphrase" not in added_argv, "the password went into the argument list"
+    assert "--password" not in added_argv, "obol was still told to take it as an argument"
+    assert "--prompt-password" in added_argv, "obol was not asked to prompt for it"
+    assert secret == "a long passphrase\n", "the password was not handed over on stdin"
+    assert "--uid" in added_argv and "1600" in added_argv, "the other fields stopped arriving"
+
+
 def test_the_directory_refuses_what_obol_would_get_wrong(rig, monkeypatch):
     """
     No name, a name taken, an empty change and a missing record are all refused first.
@@ -911,13 +1189,25 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
     ]
 
 
-def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) -> dict:
+def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,
+           content: str = "one") -> dict:
     """
     The slurm plugin on a stand-in generator package, Luna and scontrol.
+
+    The stand-in writes the files it is handed, as the real generator does. It did not, and
+    that mattered once the reconfigure became conditional on their content: a generator that
+    writes nothing leaves them unchanged for ever, so a test built on it would have pinned
+    the opposite of what happens in production.
     """
     from trixd.plugins.slurm import backend as slurm
+    from trixd.utils import declarations
 
     seen = {}
+    declarations.write("slurm", "config", "", {
+        **slurm.DEFAULT_CONFIG,
+        "nodes_file": str(tmp_path / "slurm-nodes.conf"),
+        "partitions_file": str(tmp_path / "slurm-partitions.conf"),
+        "gres_file": str(tmp_path / "slurm-gres.conf")})
 
     class Generate:
         """
@@ -926,9 +1216,13 @@ def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) 
 
         def all_configs(self, nodes, configs, manager):
             """
-            Remember the call and report success or failure.
+            Remember the call, write what it was asked to, and report success or failure.
             """
             seen.update(nodes=nodes, configs=configs, manager=manager)
+            if wrote:
+                for path in configs.values():
+                    with open(path, "w", encoding="utf-8") as handle:
+                        handle.write(content)
             return wrote
 
     package = ModuleType("trinityx_config_slurm")
@@ -940,36 +1234,73 @@ def _slurm(monkeypatch, nodes: dict, wrote: bool = True, reconfigured: int = 0) 
     return seen
 
 
-def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch):
+def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch, tmp_path):
     """
     Sorted node and group pairs, the three files, then scontrol reconfigure.
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": None}})
+    seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": "compute"}},
+                  tmp_path)
     answer = Backend().render_config()
-    assert seen["nodes"] == [{"name": "node001", "group": ""}, {"name": "node002", "group": "gpu"}]
+    assert seen["nodes"] == [{"name": "node001", "group": "compute"},
+                             {"name": "node002", "group": "gpu"}]
     assert set(seen["configs"]) == {"nodes", "partitions", "gres"}
     assert seen["manager"] == "TrinityX"
     assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
     assert answer["nodes"] == 2 and answer["reconfigured"] is True
 
 
-def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch):
+def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatch,
+                                                                 tmp_path):
+    """
+    scontrol reconfigure ran on every pass. At start-up that is the one thing slow enough
+    to put the whole start over the lifespan timeout, and on a boot storm it ran once per
+    node event for files that had not moved. The Prometheus plugin already reloads only for
+    a change; this is the same rule for the one call that restarts something.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    nodes = {"node001": {"group": "a"}}
+    seen = _slurm(monkeypatch, nodes, tmp_path)
+
+    first = Backend().render_config()
+    assert first["reconfigured"] is True, "the first pass wrote the files and must reconfigure"
+    assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
+
+    # The same nodes again, so the generator writes the same bytes. The behaviour is
+    # asserted before the reported value, and through get(): a build without the fix has
+    # no such key, and reaching for it would error in place of asserting, which reads as
+    # proof and is not.
+    seen.pop("ran")
+    again = Backend().render_config()
+    assert "ran" not in seen, "slurm was reconfigured for files that had not changed"
+    assert again.get("reconfigured") is False, again
+    assert again.get("changed") is False, again
+
+    # And a real change still reconfigures, so this is not simply switched off.
+    _slurm(monkeypatch, nodes, tmp_path, content="two")
+    moved = Backend().render_config()
+    assert moved.get("reconfigured") is True, moved
+    assert moved.get("changed") is True, moved
+
+
+def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch,
+                                                                     tmp_path):
     """
     No nodes is not an error; a failing generator is; a failing reconfigure is reported.
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {})
+    seen = _slurm(monkeypatch, {}, tmp_path)
     assert Backend().render_config() == {"nodes": 0, "files": []}
     assert "nodes" not in seen, "the generator ran with no nodes"
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, wrote=False)
+    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, wrote=False)
     with pytest.raises(BackendFailure, match="generator reported a failure"):
         Backend().render_config()
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, reconfigured=1)
+    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, reconfigured=1)
     assert Backend().render_config()["reconfigured"] is False
 
 
@@ -980,7 +1311,10 @@ def test_slurm_without_its_generator_says_so(rig, monkeypatch):
     from trixd.plugins.slurm import backend as slurm
 
     monkeypatch.setitem(sys.modules, "trinityx_config_slurm", None)
-    monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: {"n": {}}))
+    # With a group: a node without one is left out before the generator is reached, as an
+    # empty Luna already was, and this test is about the package rather than the group.
+    monkeypatch.setattr(slurm, "luna",
+                        lambda: SimpleNamespace(nodes=lambda: {"n": {"group": "a"}}))
     with pytest.raises(BackendFailure, match="not installed on this controller"):
         slurm.Backend().render_config()
 
@@ -1060,34 +1394,94 @@ def test_the_gate_reads_either_header_and_refuses_no_token(rig, token):
     assert client.get("/look", headers={"x-access-tokens": "not.a.token"}).status_code == 401
 
 
-def test_a_subject_nobody_knows_is_refused_and_the_peer_is_not(rig):
+def test_a_node_call_the_gate_allows_is_in_the_trail(rig):
     """
-    A signed token for a name no source resolves is 401; the peer's service token,
-    which names no user, passes a manager route.
+    A node token refused on another node's route was recorded; one that was allowed was not,
+    so the trail held only the node calls that failed. A node's own token writes that node's
+    hardware rules, which includes switching its alerting off, and that has to be answerable
+    for - "the gate refused nobody" and "nothing happened" looked identical.
+    """
+    from trixd.core.security import audit, tokens
+
+    client = _gated()
+    own = {"x-access-tokens": tokens.mint("node001", kind="node", node="node001")}
+    assert client.patch("/hw-rules/node001", headers=own).status_code == 200
+    assert client.patch("/hw-rules/node002", headers=own).status_code == 403
+
+    rows = [row for row in audit.read(limit=50) if row["object"].startswith("node00")]
+    granted = [row for row in rows if row["outcome"] == "granted"]
+    refused = [row for row in rows if row["outcome"] == "refused"]
+    assert granted, "an allowed node call left nothing in the trail"
+    assert granted[0]["object"] == "node001", granted[0]
+    assert granted[0]["principal"] == "node001", granted[0]
+    assert refused, "the refusal stopped being recorded"
+
+
+def test_a_subject_nobody_knows_is_refused_whatever_kind_the_token_claims(rig):
+    """
+    A signed token for a name no source resolves is 401, and claiming to be a service
+    does not change that. It used to: naming no user passed every check, including a
+    manager route, so anything that read one of those headers was an administrator here.
     """
     from trixd.core.security import tokens
 
     client = _gated()
     ghost = {"x-access-tokens": tokens.mint("ghost-of-nobody")}
     assert client.get("/look", headers=ghost).status_code == 401
-    peer = {"x-access-tokens": tokens.mint("trixd", kind="service")}
-    answer = client.patch("/change", headers=peer)
-    assert answer.status_code == 200, answer.text
+    service = {"x-access-tokens": tokens.mint("ghost-of-nobody", kind="service")}
+    assert client.get("/look", headers=service).status_code == 401
+    answer = client.patch("/change", headers=service)
+    assert answer.status_code == 401, answer.text
+
+
+def test_a_service_token_naming_the_ini_account_is_refused(rig):
+    """
+    The one that matters, and the one the first attempt missed.
+
+    This daemon mints a service token for Luna and signs it with the secret both hold, and
+    the subject it names is DAEMON_NAME - which is exactly what the installer writes as this
+    daemon's own ini account. So removing the kind's role bypass changed nothing on a real
+    install: the token passed as rootus by the ordinary route instead, and whatever read
+    that header on its way to Luna still held everything, the replication export and every
+    principal's password digest with it.
+
+    The subject is taken from the settings rather than written here, because the whole
+    defect was that the two happen to be the same name.
+    """
+    from trixd.common.settings import current as settings
+    from trixd.core.security import tokens
+
+    client = _gated()
+    account = settings().api.username
+    assert account, "the rig has no ini account, so this test proves nothing"
+    theirs = {"x-access-tokens": tokens.mint(account, kind="service")}
+
+    assert client.get("/look", headers=theirs).status_code == 401, \
+        "a service token naming the ini account was accepted"
+    answer = client.patch("/change", headers=theirs)
+    assert answer.status_code == 401, \
+        f"a service token naming the ini account reached a manager route: {answer.text}"
+
+    # The same account as an ordinary user token still works, so this refuses the kind and
+    # not the account.
+    mine = {"x-access-tokens": tokens.mint(account)}
+    assert client.patch("/change", headers=mine).status_code == 200
 
 
 def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     """
-    is-active and is-enabled for each catalogued unit, and unknown when they are silent.
+    A unit's ActiveState and UnitFileState, and unknown for one systemd answered nothing for.
     """
     from trixd.plugins.services import backend as services
 
     def systemctl(argv, **kwargs):
         """
-        dirsrv@local is running and enabled; anything else says nothing.
+        dirsrv@local is running and enabled; systemd answers for nothing else.
         """
-        if argv[-1] == "dirsrv@local":
-            return Ran("active" if argv[1] == "is-active" else "enabled")
-        return Ran("", 3)
+        if "dirsrv@local" not in argv:
+            return Ran("", 3)
+        return Ran("Id=dirsrv@local.service\nNames=dirsrv@local.service\n"
+                   "LoadState=loaded\nActiveState=active\nUnitFileState=enabled")
 
     monkeypatch.setattr(services.shell, "run", systemctl)
     listed = services.Backend().list_services()["services"]
@@ -1096,6 +1490,82 @@ def test_a_services_state_is_what_systemd_says(rig, monkeypatch):
     assert services.Backend().act("dirsrv", "STATUS")["unit"] == "dirsrv@local"
     with pytest.raises(NotFound):
         services.Backend().status("sshd")
+
+
+def test_a_listing_asks_systemd_once_and_maps_each_record_by_name(rig, monkeypatch):
+    """
+    One `systemctl show` for the whole catalogue rather than is-active and is-enabled per
+    unit: 200 services were 400 subprocesses, each with its own minute of timeout, taken one
+    after another on the thread holding the request.
+
+    Mapped by the name in the record and never by position, which is why `show` is the right
+    command: `systemctl is-enabled` over three units whose middle one is unknown prints one
+    state line for the whole call, so a positional read hands one service another's state
+    and nothing says it happened. The records here come back in a different order from the
+    one they were asked in, so a positional read cannot pass.
+
+    Counted rather than timed, so it says the same thing on a loaded box.
+    """
+    from trixd.plugins.services import backend as services
+
+    # What systemd answers for three units whose middle one it has no unit file for. Every
+    # unit's state differs, so a mapping that slipped cannot come out right by accident.
+    shown = ("Id=gamma.service\nNames=gamma.service\nLoadState=loaded\n"
+             "ActiveState=failed\nUnitFileState=disabled\n"
+             "\n"
+             "Id=alpha.service\nNames=alpha.service\nLoadState=loaded\n"
+             "ActiveState=active\nUnitFileState=enabled\n"
+             "\n"
+             "Id=beta.service\nNames=beta.service\nLoadState=not-found\n"
+             "ActiveState=inactive\nUnitFileState=")
+    ran = []
+
+    def systemctl(argv, **kwargs):
+        """
+        Record the call and answer as one show over the whole list does.
+        """
+        ran.append(argv)
+        return Ran(shown)
+
+    monkeypatch.setattr(services.shell, "run", systemctl)
+    monkeypatch.setattr(services.Backend, "_units",
+                        lambda self: {"a": "alpha", "b": "beta", "c": "gamma"})
+
+    listed = services.Backend().list_services()["services"]
+
+    assert len(ran) == 1, f"{len(ran)} subprocesses to list 3 services: {ran}"
+    assert listed["a"] == {"active": "active", "enabled": "enabled"}, listed
+    assert listed["c"] == {"active": "failed", "enabled": "disabled"}, listed
+    # A unit systemd has no unit file for is not a unit that is stopped, and the pair of
+    # commands this replaces could not tell them apart: both read inactive and unknown.
+    assert listed["b"] == {"active": "not-found", "enabled": "not-found"}, listed
+    assert ran[0][1] == "show", ran[0]
+    assert ran[0][-3:] == ["alpha", "beta", "gamma"], ran[0]
+
+
+def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
+    """
+    `act` checks both before it queues, but the worker is reachable without going through
+    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
+    catalogue can be rewritten between an action being queued and the worker reaching it.
+    So the checks are in the worker, beside the command they are protecting.
+    """
+    from trixd.plugins.services import backend as services
+
+    ran = []
+    monkeypatch.setattr(services.shell, "run",
+                        lambda argv, **kwargs: ran.append(argv) or Ran("", 0))
+
+    with pytest.raises(NotFound):
+        services.run_task("restart", "sshd")
+    assert ran == [], f"a unit outside the catalogue reached the command: {ran}"
+
+    with pytest.raises(BadRequest):
+        services.run_task("mask", "slurmctld")
+    assert ran == [], f"an action outside the list reached the command: {ran}"
+
+    assert services.run_task("restart", "slurmctld") == "restart slurmctld accepted"
+    assert ran == [["/usr/bin/systemctl", "restart", "slurmctld"]], ran
 
 
 def test_a_queued_service_action_runs_the_configured_command(rig, monkeypatch):
@@ -1135,3 +1605,236 @@ def test_genders_says_why_it_wrote_nothing(rig, monkeypatch):
     monkeypatch.setitem(sys.modules, "trinityx_config_genders", None)
     with pytest.raises(BackendFailure, match="not installed on this controller"):
         genders.Backend().render_genders()
+
+
+def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkeypatch, tmp_path):
+    """
+    A node Luna holds with no group renders as `NodeSet= Nodes=<node>` and `PartitionName=
+    Nodes=`, which slurm will not load - and scontrol reconfigure is run over it, so one
+    node created before its group was assigned took the node and partition configuration of
+    every other node with it. A node without a group is ordinary, so this is left out and
+    named rather than refusing the write for the nodes that do have one.
+    """
+    from trixd.plugins.slurm import backend as slurm
+    from trixd.plugins.slurm.backend import Backend
+
+    seen = _slurm(monkeypatch, {"node001": {"group": "compute"},
+                                "node002": {"group": None},
+                                "node003": {"group": ""}}, tmp_path)
+    answer = Backend().render_config()
+
+    assert seen["nodes"] == [{"name": "node001", "group": "compute"}], seen["nodes"]
+    assert answer["nodes"] == 1, answer
+    assert answer["skipped"] == ["node002", "node003"], answer
+    assert answer["changed"] is True, "the node that does have a group was not configured"
+
+    # node_set is the genders plugin's too, and that render skips such a node for its own
+    # reason - so the skipping belongs to each render and not to the shared reader.
+    assert slurm.node_set() == [{"name": "node001", "group": "compute"},
+                                {"name": "node002", "group": ""},
+                                {"name": "node003", "group": ""}], \
+        "the shared node list filtered a node, which is each render's own decision"
+
+
+def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch, tmp_path):
+    """
+    Nothing to configure slurm with, which is not the same as no nodes: the generator is not
+    called at all rather than handed an empty set, and the names are in the answer.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    seen = _slurm(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}},
+                  tmp_path)
+    answer = Backend().render_config()
+
+    assert answer == {"nodes": 0, "files": [], "skipped": ["node001", "node002"]}, answer
+    assert "nodes" not in seen, "the generator was called with nothing to write"
+    assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
+
+
+def _genders(monkeypatch, nodes: dict) -> list:
+    """
+    Luna holding `nodes`, and a stand-in generator recording the set it was handed.
+    """
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
+                        lambda: SimpleNamespace(nodes=lambda: nodes))
+    handed: list = []
+    package = ModuleType("trinityx_config_genders")
+    package.Generate = lambda: SimpleNamespace(
+        Genders=lambda given: (handed.extend(given), True)[1])
+    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
+    return handed
+
+
+def test_a_node_with_no_group_is_left_out_of_the_genders_file(rig, monkeypatch):
+    """
+    A node Luna holds with no group renders as `<node> all,`, and libgenders refuses an empty
+    attribute for the whole file rather than for the line, so one such node makes the genders
+    file unloadable for every pdsh on the cluster. Left out and named, as slurm's render does.
+    """
+    from trixd.plugins.genders.backend import Backend
+
+    handed = _genders(monkeypatch, {"node001": {"group": "compute"},
+                                    "node002": {"group": None},
+                                    "node003": {"group": ""}})
+    answer = Backend().render_genders()
+
+    # True on either build, and first: no node reached the generator without a group, so no
+    # line it writes can carry the empty attribute libgenders refuses.
+    assert [one["name"] for one in handed] == ["node001"], handed
+    assert all(one["group"] for one in handed), handed
+    assert answer["nodes"] == 1, answer
+    assert answer.get("skipped") == ["node002", "node003"], answer
+
+
+def test_every_node_without_a_group_writes_no_genders_file_and_says_why(rig, monkeypatch):
+    """
+    Nothing to write, which is not the same as no nodes: the generator is not handed an empty
+    set, which would empty the managed block, and the names are in the answer.
+    """
+    from trixd.plugins.genders.backend import Backend
+
+    handed = _genders(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}})
+    answer = Backend().render_genders()
+
+    assert handed == [], "the generator was handed a set that would empty the genders file"
+    assert answer["nodes"] == 0, answer
+    assert answer.get("skipped") == ["node001", "node002"], answer
+
+
+def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
+    """
+    The catalogue was read once for the ordering and again for every service in it, and each
+    read is its own database session and query - so a listing cost one query per service for
+    an answer that cannot change during the call. One read, whatever the catalogue holds.
+
+    Counted rather than timed, so it says the same thing on a loaded box.
+    """
+    from trixd.plugins.services import backend as services
+
+    reads = []
+
+    def counted(self) -> dict:
+        """
+        The catalogue, remembering that it was asked for.
+        """
+        reads.append(1)
+        return {f"svc{n}": f"svc{n}.service" for n in range(12)}
+
+    monkeypatch.setattr(services.Backend, "_units", counted)
+    monkeypatch.setattr(services.shell, "run",
+                        lambda argv, **kwargs: Ran("active", 0, ""))
+
+    answer = services.Backend().list_services()
+
+    assert len(answer["services"]) == 12, answer
+    assert len(reads) == 1, f"the catalogue was read {len(reads)} times for 12 services"
+
+
+def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, monkeypatch):
+    """
+    The poller surviving a failed pass is deliberate and stays. What was wrong is that
+    nothing said the pass had failed: `answering` stayed true and `last_pass` went on
+    advancing, so a Luna erroring on every pass published the same state as one being read
+    successfully - on the unauthenticated health route, which is what a monitor acts on.
+
+    Note the direction. A passive controller, where an empty answer is normal and harmless,
+    correctly reports false. It was the broken case that read as healthy.
+    """
+    poller, _ = _hashes(monkeypatch, {"node": "1"}, requests.ConnectionError("away"),
+                        {"node": "1"})
+
+    assert poller.once() == [], "the first reading is a baseline"
+    assert poller.state()["answering"] is True, \
+        "a good pass does not report answering, so this proves nothing"
+
+    assert poller.once() == [], "a failed pass is skipped, not fatal"
+    assert poller.state()["answering"] is False, \
+        "every pass is failing and it still reports itself answering"
+    assert poller.seen == {"node": "1"}, "a failed pass threw away the baseline"
+
+    assert poller.once() == [], "the poller did not carry on after the failure"
+    assert poller.state()["answering"] is True, "it never recovers once a pass has failed"
+
+
+def test_a_luna_node_answer_this_build_cannot_read_is_not_an_empty_cluster(rig):
+    """
+    Luna answers config/node 404 when it holds no nodes, so nothing to read is genuinely an
+    empty cluster and stays one. An answer that is there in a shape this build does not read
+    is a different thing: read as "no nodes" it emptied the genders file and the slurm blocks
+    for every node at once, while the render recorded a healthy pass and reported nodes: 0.
+    """
+    empty = (Answer(404), Answer(body={"config": {"node": {}}}))
+    unreadable = {
+        "a renamed envelope": Answer(body={"config": {"nodes": {"node001": {}}}}),
+        "a list where the map was": Answer(body={"config": {"node": ["node001"]}}),
+        "another object's envelope": Answer(body={"monitor": {"status": {}}}),
+        "a body that is not JSON": Answer(text="service unavailable"),
+    }
+
+    client, _ = _luna(*empty)
+    assert client.nodes() == {}, "a cluster with no nodes has to keep reading as empty"
+    assert client.nodes() == {}, "an envelope holding no node is still an empty cluster"
+
+    for why, answer in unreadable.items():
+        client, _ = _luna(answer)
+        with pytest.raises(ServiceUnavailable, match="cannot read"):
+            client.nodes()
+        assert client.session.calls, f"{why} was never asked for"
+
+
+def test_the_renders_keep_their_files_when_lunas_node_answer_cannot_be_read(rig, monkeypatch,
+                                                                           tmp_path):
+    """
+    The two renders built from the shared node list treat an unreadable answer as the
+    Prometheus render already does - they fail, so the engine keeps the previous result and
+    what is on disk - while a genuinely empty cluster still writes nothing and answers
+    nodes: 0 exactly as it did.
+    """
+    from trixd.plugins.genders import backend as genders
+    from trixd.plugins.slurm import backend as slurm
+
+    wrote = []
+    package = ModuleType("trinityx_config_genders")
+    package.Generate = lambda: SimpleNamespace(
+        Genders=lambda nodes: wrote.append(nodes) or True)
+    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
+    seen = _slurm(monkeypatch, {}, tmp_path)
+
+    def answering(answer):
+        """
+        Both plugins reading a real client whose session answers this, twice.
+        """
+        client, _ = _luna(answer, answer)
+        monkeypatch.setattr(slurm, "luna", lambda: client)
+
+    # Luna's own answer for a cluster holding no node, which is a 404.
+    answering(Answer(404))
+    assert slurm.Backend().render_config() == {"nodes": 0, "files": []}
+    assert genders.Backend().render_genders() == {"nodes": 0, "file": "/etc/genders"}
+    assert "nodes" not in seen, "the slurm generator ran for a cluster with no nodes"
+    assert wrote == [], "the genders generator ran for a cluster with no nodes"
+
+    # The same two renders over an answer whose shape has moved.
+    answering(Answer(body={"config": {"nodes": {"node001": {"group": "a"}}}}))
+    with pytest.raises(ServiceUnavailable, match="cannot read"):
+        slurm.Backend().render_config()
+    with pytest.raises(ServiceUnavailable, match="cannot read"):
+        genders.Backend().render_genders()
+    assert "nodes" not in seen, "the slurm generator was handed an answer nothing could read"
+    assert wrote == [], "the genders file was rewritten from an answer nothing could read"
+
+
+def test_a_node_name_is_encoded_into_lunas_path(rig):
+    """
+    The node sign-in route takes the name from an unauthenticated caller and this is where it
+    reaches Luna. requests leaves ?, # and / in a path alone, and Starlette has already
+    turned %2f back into / by the time the route matched, so the name is quoted here.
+    """
+    wanted = {"node001": "node001", "a/b": "a%2Fb", "x?secret=1": "x%3Fsecret%3D1",
+              "y#frag": "y%23frag", "z%2fw": "z%252fw"}
+    client, session = _luna(*[Answer(body={"config": {"node": {}}})] * len(wanted))
+
+    for name, quoted in wanted.items():
+        client.node(name)
+        assert session.calls[-1][1] == f"https://luna.test:7050/config/node/{quoted}", name
