@@ -397,17 +397,16 @@ class Backend:
         held = {_hw_host(path): path for path in sorted(glob.glob(pattern))}
         answer = []
         for host in (asked or sorted(held)):
-            # The same rule as _hw_paths, which this does not go through: an exact name is
-            # the answer, and where there is none, one candidate may be taken and two are a
-            # refusal. Taking the first of two listed one node's rules under another's name.
+            # A file under the name asked for is the whole answer. Where there is none, the
+            # node is resolved as every other route resolves it - by the names Luna holds
+            # for it - so a node whose name and hostname differ in their short form is no
+            # longer listed as holding nothing while its rules sit on disk and the route
+            # for one node serves them. Only a name asked for and not on disk costs that
+            # lookup: the estate pass reads the file names and asks Luna nothing.
             path = held.get(host)
             if path is None:
-                shared = [held[name] for name in held if _names_node(name, host)]
-                if len(shared) > 1:
-                    LOGGER.error("%s could be any of %s, which share its short name, so "
-                                 "none of them is listed for it", host,
-                                 [os.path.basename(one) for one in shared])
-                path = shared[0] if len(shared) == 1 else ""
+                found = self._hw_paths(host)
+                path = found[0] if found else ""
             if not path:
                 answer.append({"node": host, "exists": False})
                 continue

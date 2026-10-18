@@ -844,25 +844,32 @@ def prometheus_module():
     return prometheus
 
 
-def _hw_backend(tmp_path, monkeypatch, reload_ok=True):
+def _hw_backend(tmp_path, monkeypatch, reload_ok=True, nodes=None):
     """
     A prometheus backend over tmp_path with one node, Prometheus answering one DIMM, and a
     reload that is counted.
+
+    Luna holds node001, and whatever `nodes` adds, and answers None for every other name,
+    as the real client does. A stub that hands a record back for any name asked resolves a
+    node Luna has never held to node001's hostname, so a route that asks Luna reads as
+    holding that node's rules and the test passes on a record Luna would not have given.
     """
     from types import SimpleNamespace
 
     from trixd.plugins.prometheus import backend as prometheus
 
+    held = {"node001": {"hostname": "node001.cluster", "group": "compute"}, **(nodes or {})}
+
     class Luna:
         """
-        One node.
+        The nodes Luna holds.
         """
 
         def node(self, name):
             """
-            Its record.
+            Its record, or None for a name Luna does not hold.
             """
-            return {"hostname": "node001.cluster", "group": "compute"}
+            return held.get(name)
 
     def query(url, params=None, **_):
         """
@@ -2034,13 +2041,16 @@ def _rule_file_digests(backend):
     return found
 
 
-def _hw_rules_entry_points():
+def _hw_rules_entry_points(method: str = ""):
     """
     Every caller-facing way into the hardware rule files, derived from the manifest.
 
     Returned as {handler: how_to_call}. Derived rather than listed so an endpoint or hook
     added to the manifest arrives here without a file to remember to edit - the test below
     fails naming it until it is either asserted or excluded on purpose.
+
+    With a method, only the endpoints that take it, which leaves the hooks out: the readers
+    are the endpoints answering GET.
     """
     import os
 
@@ -2052,8 +2062,10 @@ def _hw_rules_entry_points():
         open(os.path.join(os.path.dirname(prometheus.__file__), "manifest.yaml"),
              encoding="utf-8"))
     handlers = {entry["handler"] for entry in manifest["endpoints"]
-                if str(entry.get("path", "")).startswith("hw-rules")}
-    handlers |= set((manifest.get("hooks") or {}).values())
+                if str(entry.get("path", "")).startswith("hw-rules")
+                and (not method or method in (entry.get("methods") or []))}
+    if not method:
+        handlers |= set((manifest.get("hooks") or {}).values())
     return handlers
 
 
@@ -2178,6 +2190,72 @@ def test_listing_the_hardware_rules_answers_for_the_whole_estate_by_default(
     assert [entry["node"] for entry in answer] == held, "not every node held was answered for"
     assert all(entry["exists"] and "document" in entry and entry["document"] for entry in answer), (
         "the default answer no longer carries each node's rule file")
+
+
+def _get_says_held(backend, node: str) -> bool:
+    """
+    Whether the route for one node serves a rule file for it.
+    """
+    from trixd.common.errors import NotFound
+
+    try:
+        return bool(backend.get_hw_rules(node))
+    except NotFound:
+        return False
+
+
+def _list_says_held(backend, node: str) -> bool:
+    """
+    Whether the listing says this node's rules are held.
+    """
+    from types import SimpleNamespace
+
+    answer = backend.list_hw_rules(SimpleNamespace(query_params={"nodes": node}))["nodes"]
+    return bool(answer[0]["exists"])
+
+
+# How each reader is asked whether one node's rules are held, keyed by its handler so the
+# manifest decides which readers the test below covers.
+HELD_BY_READER = {"get_hw_rules": _get_says_held, "list_hw_rules": _list_says_held}
+
+
+def test_every_reader_agrees_whether_a_node_holds_hardware_rules(rig, tmp_path, monkeypatch):
+    """
+    One node, one question, one answer, whichever reader is asked it.
+
+    A node's rule files are the ones Luna names for it, and a node whose name and hostname
+    differ in their short form answers to neither by file name alone. A reader resolving by
+    file name says nothing is held for it while the file sits on disk and the other reader
+    serves that same file - which reaches a caller as a node that both has and has not got
+    rules, and sends a manager regenerating what is already there. Enumerated from the
+    manifest rather than named, so a reader added to it arrives here and has to answer.
+    """
+    readers = _hw_rules_entry_points(method="GET")
+    assert readers <= set(HELD_BY_READER), (
+        f"the manifest declares {sorted(readers - set(HELD_BY_READER))} as a way to read "
+        f"the hardware rules, and this test does not ask it whether a node's rules are "
+        f"held: add it to HELD_BY_READER")
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch, nodes={
+        "node042": {"hostname": "sled07.cluster", "group": "compute"}})
+    backend.import_hw_rules("node042", {})
+    held_file = prometheus_module().HW_RULES.format(host="sled07.cluster")
+    assert os.path.isfile(os.path.join(backend._rules_dir(), held_file)), (
+        "nothing was written under the hostname, so there is no resolution to disagree on")
+    assert "node042" not in held_file, (
+        "the file name carries the node's own name, so a reader resolving by file name "
+        "finds it as well and this would pass either way")
+
+    answers = {name: ask(backend, "node042") for name, ask in sorted(HELD_BY_READER.items())}
+
+    assert set(answers.values()) == {True}, (
+        f"node042's rule file is on disk as {held_file}, and the readers do not agree that "
+        f"it is held: {answers}")
+
+    # A name Luna does not hold, that no file carries either: not held, on every reader.
+    unheld = {name: ask(backend, "node999") for name, ask in sorted(HELD_BY_READER.items())}
+    assert set(unheld.values()) == {False}, (
+        f"Luna holds no node999 and no file names one, and the readers answer: {unheld}")
 
 
 def _plugin_whose_install_fails(tmp_path, name: str, before: str = "") -> None:
