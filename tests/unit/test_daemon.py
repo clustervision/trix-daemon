@@ -955,6 +955,30 @@ def test_a_role_outside_the_ladder_is_refused(rig, client, headers):
     assert "king" in answer.text
 
 
+def test_a_name_outside_the_shape_is_refused_by_every_route_that_writes_one(
+        rig, client, headers):
+    """
+    A login name is written to a table that replicates and is addressed on the peer by that
+    name, so a route that writes one admits only the shape the chain's sources issue.
+    Enumerated from the router, so a route added later has to say which it is.
+    """
+    from urllib.parse import quote
+
+    from trixd.api.v1 import identity
+
+    writes = sorted({(verb, route.path) for route in identity.router.routes
+                     for verb in getattr(route, "methods", ())
+                     if "{name}" in route.path
+                     and verb in ("POST", "PUT", "PATCH", "DELETE")})
+    assert writes, "no identity route writes a user named in its path"
+    for verb, path in writes:
+        for name in ("a b", 'a"b', "a:b", "x" * 256):
+            asked = path.replace("{name}", quote(name, safe=""))
+            answer = client.request(verb, asked, json={"role": "reader"}, headers=headers)
+            assert answer.status_code == 400, (verb, name, answer.status_code, answer.text)
+            assert "is not a login name" in answer.text, (verb, name, answer.text)
+
+
 def test_whoami_reports_the_role(rig, client, headers):
     """
     A role is what a person can be told; a bit list is not.

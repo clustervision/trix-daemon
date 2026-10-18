@@ -107,6 +107,20 @@ def test_no_listener_at_all_stops_the_start():
         server.build_config(_settings(protocol="http"))
 
 
+def test_start_up_is_given_longer_than_hypercorn_allows_by_itself():
+    """
+    Start-up runs the migrations, loads every plugin and produces every render before a
+    socket exists, and hypercorn's own default kills the process part way - which systemd
+    restarts into the same wait. How much longer is a judgement; inheriting is the defect.
+    """
+    from hypercorn.config import Config
+
+    shipped = configuration.ApiSettings()
+    served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
+                                           protocol="http"))
+    assert served.startup_timeout > Config().startup_timeout
+
+
 def test_replication_follows_the_protocol_too(monkeypatch):
     """
     The peer serves what this controller serves, so the sweep asks it the same way.
