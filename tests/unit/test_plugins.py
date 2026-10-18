@@ -2841,3 +2841,52 @@ def test_only_the_last_copies_of_one_node_s_rules_are_kept(rig, tmp_path, monkey
     assert held[-1] not in planted, f"the copy this write took is not among those kept: {held}"
     assert copies("node10.cluster") == planted[:3], \
         "pruning one node's copies discarded those of a node whose name it is a prefix of"
+
+
+def test_a_batch_refused_part_way_through_writes_nothing(rig, tmp_path, monkeypatch):
+    """
+    The names are read before the first write. Validated inside the loop, a bad name at the
+    end of a batch left the entries ahead of it written and the reload after it unrun: rule
+    files on disk that Prometheus has never been told about, under an answer saying the batch
+    was refused.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    known = {f"node00{number}": {"hostname": f"node00{number}.cluster", "group": "compute"}
+             for number in range(1, 6)}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+    reloads = []
+    monkeypatch.setattr(prometheus.shell, "run",
+                        lambda *a, **k: reloads.append(a) or SimpleNamespace(ok=True, out="",
+                                                                            err=""))
+    monkeypatch.setattr(prometheus, "RELOADS", prometheus.SharedReload())
+
+    def query(url, params=None, **_):
+        """
+        Prometheus, answering one part for whichever host is asked about.
+        """
+        host = params["query"].split('hostname="')[1].split('"')[0]
+        result = [{"metric": {"hostname": host, "luna_group": "compute", "class": "memory",
+                              "description": "DIMM", "product": "P", "vendor": "V",
+                              "serial": "S"}}]
+        return SimpleNamespace(status_code=200, json=lambda: {"data": {"result": result}})
+
+    monkeypatch.setattr(prometheus.requests, "get", query)
+    taken = [{"node": name, "force": True} for name in sorted(known)]
+
+    with pytest.raises(BadRequest):
+        backend.set_hw_rules({"nodes": taken + [{"node": "../../etc/passwd"}]})
+
+    written = sorted(path.name for path in tmp_path.glob("trix.hw.*.rules"))
+    assert written == [], f"a refused batch wrote these rule files: {written}"
+    assert reloads == [], f"a refused batch reloaded Prometheus {len(reloads)} time(s)"
+
+    # The gate the reload sits behind still holds for a batch that is taken: one reload for
+    # the lot, and every file on disk.
+    answer = backend.set_hw_rules({"nodes": taken})
+
+    assert [item["ok"] for item in answer["nodes"]] == [True] * len(known), \
+        f"a batch of names that are all good was not taken: {answer}"
+    assert len(list(tmp_path.glob("trix.hw.*.rules"))) == len(known), \
+        "a batch that was taken did not write a rule file for every node"
+    assert len(reloads) == 1, f"one batch that changed every node, {len(reloads)} reloads"

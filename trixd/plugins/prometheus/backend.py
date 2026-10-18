@@ -371,11 +371,17 @@ class Backend:
         Several nodes at once, as alertx's save-nodes asks: regenerate (force), or set
         whether a node's alerts count for health (nhc) and fire at all (disabled).
         """
-        results = []
-        for entry in (body or {}).get("nodes") or []:
-            node = str((entry or {}).get("node") or "")
+        entries = [(entry or {}, str((entry or {}).get("node") or ""))
+                   for entry in (body or {}).get("nodes") or []]
+        # Every name is read before the first write. Refused from inside the loop below, the
+        # entries ahead of the bad one are already written and the reload at the end never
+        # runs: files Prometheus has not been told about, under an answer saying the batch
+        # was refused.
+        for _, node in entries:
             if not NODE_NAME.match(node):
                 raise BadRequest(f"{node or 'an entry'} does not name a node")
+        results = []
+        for entry, node in entries:
             if luna().node(node.split(".")[0]) is None:
                 results.append({"node": node, "ok": False, "message": "not a node Luna knows"})
                 continue
