@@ -38,6 +38,7 @@ import pytest
 from trixd import server
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_VERSION
+from trixd.core import instance
 
 
 def _settings(**api) -> configuration.Settings:
@@ -179,3 +180,144 @@ def test_the_plugin_command_wants_new_and_a_name(rig, capsys):
     assert server.main(["--config", config, "plugin", "old", "x"]) == 1
     assert "usage: trixd plugin new <name>" in capsys.readouterr().out
     assert server.main(["--config", config, "plugin", "new", "luna"]) == 1, "reserved name"
+
+
+def _serving_ini(tmp_path) -> str:
+    """
+    A configuration a real start-up can run against: its own database, no plugins.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    for name in ("plugins", "site-plugins"):
+        (tmp_path / name).mkdir()
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(
+        "[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
+        "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
+        f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {SHARED_SECRET}\n"
+        f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
+        f'[PLUGINS]\nDIRECTORY = {tmp_path / "plugins"}\n'
+        f'SITE_DIRECTORY = {tmp_path / "site-plugins"}\nENABLED =\n',
+        encoding="utf-8")
+    return str(ini)
+
+
+def test_a_second_daemon_is_refused_before_it_touches_anything(tmp_path, monkeypatch):
+    """
+    Hypercorn runs the lifespan to completion before it creates a socket, so the port a
+    second daemon cannot have stops it only once it has migrated the database, taken over
+    the tasks the first one is running and rewritten every render. Nothing may run.
+    """
+    import fcntl
+
+    from trixd.core import lifespan, tasks
+    from trixd.core.render.engine import Engine
+
+    ini = _serving_ini(tmp_path)
+    reached = []
+
+    def _requeued() -> None:
+        """
+        Stand where the rows the first daemon is running are taken from it.
+        """
+        reached.append("_requeue")
+
+    def _ran_all(self) -> int:
+        """
+        Stand where every render file is written again from this process.
+        """
+        reached.append("run_all")
+        return 0
+
+    # A second daemon is a fresh interpreter, so its worker has never been started and
+    # start() does not return early.
+    monkeypatch.setattr(tasks, "_worker", None)
+    monkeypatch.setattr(tasks, "_requeue", _requeued)
+    monkeypatch.setattr(Engine, "run_all", _ran_all)
+
+    async def _as_hypercorn_does(hypercorn_serve, application, hypercorn_config) -> None:
+        """
+        The whole startup, which is all that happens before the first socket.
+        """
+        lifespan.start(application)
+
+    monkeypatch.setattr(server, "_run", _as_hypercorn_does)
+
+    # The first daemon, holding what it holds for the life of its process.
+    first = os.open(f"{ini}.lock", os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(first, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    refused = ""
+    try:
+        server.serve(ini)
+    except SystemExit as stopped:
+        refused = str(stopped)
+    finally:
+        os.close(first)
+    assert reached == [], f"a second daemon reached {reached} with the lock already held"
+    assert "already running" in refused and f"{ini}.lock" in refused
+
+
+def test_the_lock_dies_with_the_daemon_that_held_it(tmp_path):
+    """
+    An advisory lock on a descriptor is the kernel's to drop, so a daemon killed outright
+    leaves nothing behind and the process started in its place is never refused.
+    """
+    import subprocess
+    import sys
+
+    config = configuration.Settings(config_file=str(tmp_path / "trixd.ini"))
+    path = instance.lock_path(config)
+    first = subprocess.Popen(
+        [sys.executable, "-c",
+         "import fcntl, os, sys, time\n"
+         f"handle = os.open({path!r}, os.O_RDWR | os.O_CREAT, 0o644)\n"
+         "fcntl.flock(handle, fcntl.LOCK_EX)\n"
+         "sys.stdout.write('held\\n')\n"
+         "sys.stdout.flush()\n"
+         "time.sleep(60)\n"],
+        stdout=subprocess.PIPE, text=True)
+    try:
+        assert first.stdout.readline().strip() == "held", "the first daemon never took it"
+        assert instance.SingleInstance(config).take() is False
+    finally:
+        first.kill()
+        first.wait(timeout=10)
+    replacement = instance.SingleInstance(config)
+    assert replacement.take() is True, "a daemon killed outright left its lock behind"
+    replacement.release()
+
+
+def test_the_terminal_subcommands_run_beside_a_serving_daemon(tmp_path, capsys):
+    """
+    A person asks the installed command line what it would do while the daemon serves.
+    The lock belongs to serving, so neither keygen nor plugin check waits for it.
+    """
+    import fcntl
+
+    private = tmp_path / "keys" / "trixd.ed25519"
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(f"[LOGGER]\nLOGFILE =\n[TOKENS]\nALGORITHM = EdDSA\n"
+                   f"PRIVATE_KEY = {private}\nKEY_ID = trixd-1\n", encoding="utf-8")
+    config = configuration.Settings(config_file=str(ini))
+    held = os.open(instance.lock_path(config), os.O_RDWR | os.O_CREAT, 0o644)
+    fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    try:
+        assert server.main(["--config", str(ini), "keygen"]) == 0
+        assert server.main(["--config", str(ini), "plugin", "check", str(tmp_path)]) == 1
+    finally:
+        os.close(held)
+    assert f"wrote {private}" in capsys.readouterr().out
+
+
+def test_the_lock_is_beside_the_ini_and_never_on_storage_a_pair_shares(tmp_path):
+    """
+    One lock per configuration file, named as the daemon was told to read it: each
+    controller of a pair keeps its own even where that ini points at shared storage.
+    """
+    real = tmp_path / "shared" / "trixd.ini"
+    real.parent.mkdir()
+    real.write_text("[API]\n", encoding="utf-8")
+    link = tmp_path / "local" / "trixd.ini"
+    link.parent.mkdir()
+    os.symlink(real, link)
+    assert instance.lock_path(configuration.Settings(config_file=str(link))) == f"{link}.lock"

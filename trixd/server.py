@@ -38,6 +38,7 @@ import sys
 from trixd.common import logging as trixlog
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_NAME, DAEMON_VERSION
+from trixd.core import instance
 
 LOGGER = trixlog.get("server")
 
@@ -100,9 +101,21 @@ def serve(config_file: str = "") -> int:
     logger = trixlog.setup(config.logger.level, config.logger.logfile)
     logger.info("%s %s starting from %s", DAEMON_NAME, DAEMON_VERSION, config.config_file)
 
+    # Before the application exists, never at the listeners: hypercorn runs start-up to
+    # completion and only then creates a socket, so the port is far too late to decide this.
+    held = instance.SingleInstance(config)
+    if not held.take():
+        running = held.holder()
+        named = f" as pid {running}" if running else ""
+        raise SystemExit(f"{DAEMON_NAME} is already running on this controller{named}; "
+                         f"the lock is {held.path}")
+
     from trixd.app import create_app
     application = create_app()
-    asyncio.run(_run(hypercorn_serve, application, build_config(config)))
+    try:
+        asyncio.run(_run(hypercorn_serve, application, build_config(config)))
+    finally:
+        held.release()
     return 0
 
 
