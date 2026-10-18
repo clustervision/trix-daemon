@@ -32,6 +32,7 @@ __status__      = "Production"
 
 import ast
 import glob
+import json
 import os
 import re
 import subprocess
@@ -166,13 +167,121 @@ def _shape(document: dict) -> dict:
     return shape
 
 
+# FastAPI's own models, named here because what is in them is FastAPI's wording and
+# FastAPI's fields rather than anything written down in this repository.
+LIBRARY_SCHEMAS = ("HTTPValidationError", "ValidationError")
+
+
+def _examples(holder: dict) -> list:
+    """
+    The example values declared on a media type, a parameter or a field, as sorted JSON
+    text. The library carries them three ways - one bare example, a list of them, or a
+    dict keyed by a name it invents - so the wrapper is taken off and the values, which
+    are the manifest's, are what gets compared.
+    """
+    declared = []
+    if "example" in holder:
+        declared.append(holder["example"])
+    examples = holder.get("examples")
+    if isinstance(examples, dict):
+        declared += [item.get("value") if isinstance(item, dict) else item
+                     for item in examples.values()]
+    elif isinstance(examples, list):
+        declared += examples
+    return sorted(json.dumps(item, sort_keys=True) for item in declared)
+
+
+def _content(holder: dict) -> dict:
+    """
+    What a body or an answer carries: each media type, the model it names, and the
+    examples declared for it. The model is named rather than read into - the name is a
+    class in trixd/, while the schema under it is the library's rendering of that class.
+    """
+    carried = {}
+    for media, body in holder.get("content", {}).items():
+        named = body.get("schema", {}).get("$ref", "")
+        carried[media] = {"model": named.rsplit("/", 1)[-1], "examples": _examples(body)}
+    return carried
+
+
+def _library_answer(answer: dict) -> bool:
+    """
+    Whether an answer is one FastAPI added rather than one a manifest declared. It adds
+    its own validation answer, in its own words, to every route that takes an argument.
+    A manifest may declare a 422 of its own and one does; that one names our own Error
+    model, so what this skips is the library's answer and not the code's.
+    """
+    models = {body.get("schema", {}).get("$ref", "").rsplit("/", 1)[-1]
+              for body in answer.get("content", {}).values()}
+    return bool(models) and models <= set(LIBRARY_SCHEMAS)
+
+
+def _promises(document: dict) -> dict:
+    """
+    Everything the document promises a reader that is authored in this repository, and
+    nothing the library decides how to render.
+
+    Ours, so compared: every description and example, down to the field; the field names
+    and which of them are required; the constraints a manifest declares; the response
+    codes and their wording; the model each body and answer names; the tags, the security
+    schemes and the info block. Every one of those is written in a plugin manifest, a
+    route declaration or a model in trixd/, so a difference between the committed
+    document and a fresh one is a real divergence - the published document promising a
+    reader something the code no longer does.
+
+    The library's, so left out: the spec version, the generated operationId, a field's
+    auto-titled title, a declared default, and the JSON Schema a type turns into (anyOf
+    against null, additionalProperties, items, format). requirements.txt pins fastapi
+    exactly but takes pydantic as a floor, so the installed pydantic really does differ
+    between machines and really does re-render those - comparing them would fail in CI
+    with nothing here changed, which is what _shape was right to leave out. The gap it
+    left is that it dropped the authored content along with the rendering.
+
+    So do not widen this to the whole document. Add to it only what is written down in
+    this repository, and leave to _shape's reasoning anything the library formats.
+    """
+    components = document.get("components", {})
+    promises = {"info": document["info"],
+                "securitySchemes": components.get("securitySchemes", {})}
+    for name, schema in components.get("schemas", {}).items():
+        if name in LIBRARY_SCHEMAS:
+            continue
+        promises[f"schema {name}"] = {
+            "description": schema.get("description", ""),
+            "required": sorted(schema.get("required", [])),
+            "fields": {field: {"description": rule.get("description", ""),
+                               "pattern": rule.get("pattern", ""),
+                               "examples": _examples(rule)}
+                       for field, rule in schema.get("properties", {}).items()},
+        }
+    for path, operations in document["paths"].items():
+        for verb, operation in operations.items():
+            body = operation.get("requestBody") or {}
+            promises[f"{verb.upper()} {path}"] = {
+                "tags": sorted(operation.get("tags", [])),
+                "security": sorted(scheme for item in operation.get("security", [])
+                                   for scheme in item),
+                "parameters": {item["name"]: {"in": item.get("in", ""),
+                                              "required": item.get("required", False),
+                                              "description": item.get("description", ""),
+                                              "examples": _examples(item)}
+                               for item in operation.get("parameters", [])},
+                "body": {"required": body.get("required", False),
+                         "content": _content(body)} if body else {},
+                "answers": {code: {"description": answer.get("description", ""),
+                                   "content": _content(answer)}
+                            for code, answer in operation.get("responses", {}).items()
+                            if not _library_answer(answer)},
+            }
+    return promises
+
+
 def test_the_published_schemas_match_the_code(tmp_path):
     """
-    docs/openapi.json and docs/manifest.schema.json are what the code builds. When this
-    fails, run python tools/build_schemas.py and commit what it writes.
+    docs/openapi.json and docs/manifest.schema.json are what the code builds: the routes
+    they publish, and the text and examples they promise a reader. When this fails, run
+    python tools/build_schemas.py and commit what it writes.
     """
-    import json
-
     # Built against an environment with the daemon's own variables taken out. The build is
     # a subprocess, so it inherits whatever an earlier test left behind - and the Luna ini
     # one is set directly rather than through monkeypatch, so it outlives the test that set
@@ -191,6 +300,13 @@ def test_the_published_schemas_match_the_code(tmp_path):
             fresh = json.load(handle)
         if name == "openapi.json":
             assert _shape(committed) == _shape(fresh), "run python tools/build_schemas.py"
+            held, builds = _promises(committed), _promises(fresh)
+            assert sorted(held) == sorted(builds), "run python tools/build_schemas.py"
+            apart = {key: {"docs/openapi.json": held[key], "the code": builds[key]}
+                     for key in sorted(held) if held[key] != builds[key]}
+            assert not apart, (f"docs/openapi.json promises what the code no longer "
+                               f"builds, at {sorted(apart)}: {apart}; "
+                               f"run python tools/build_schemas.py")
         else:
             assert committed == fresh, "run python tools/build_schemas.py"
 
