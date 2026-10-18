@@ -273,15 +273,13 @@ def parse(document: dict) -> Manifest:
                     f"{endpoint.path or '/'} is a render, so it cannot also serve "
                     f"{', '.join(writes)}: the reader answers what was last rendered, so "
                     f"the document would show a write that changes nothing")
-        if endpoint.public and endpoint.token == TOKEN_KIND_NODE:
-            # A public route is bound with no guard in front of it at all, so the node
-            # token is never asked for and never bound to the path's node: the route is
-            # open to anyone and the document says public, while the manifest says a node
-            # token. Refused rather than settled one way, because which of the two the
-            # author meant cannot be derived from the declaration.
+        unguarded = "public" if endpoint.public else "forward" if endpoint.forward else ""
+        if unguarded and endpoint.token == TOKEN_KIND_NODE:
+            # Which half the author meant - the unguarded route or the node binding -
+            # cannot be derived from the declaration, so neither is assumed.
             raise PluginRefused(
-                f"{endpoint.path or '/'} is public and takes a node token: a public route "
-                f"is served with no guard, so no token is asked for or bound")
+                f"{endpoint.path or '/'} is {unguarded} and takes a node token: such a "
+                f"route is served with no guard, so no token is asked for or bound")
         if endpoint.token == TOKEN_KIND_NODE and not any(
                 key in endpoint.variables for key in NODE_PATH_PARAMS):
             # The gate binds a node token to the node its path names, and looks for it under
