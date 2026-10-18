@@ -53,7 +53,15 @@ UNIT_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9@._:-]*$")
 def run_task(action: str, unit: str) -> str:
     """
     What the worker runs for a queued service action.
+
+    Checked here and not in `act` alone because the worker is reachable without it:
+    `POST /system/notify` dispatches on an event's first segment, which is this plugin's
+    own name, and a catalogue can be rewritten between an action being queued and run.
     """
+    if action not in ACTIONS:
+        raise BadRequest(f'{action} is not one of {", ".join(ACTIONS)}')
+    if unit not in Backend()._units().values():
+        raise NotFound(f"{unit} is not a unit this daemon controls")
     result = shell.run([_command(), action, unit], timeout=TIMEOUT)
     if not result.ok:
         raise BackendFailure(result.err or result.out or f"{action} {unit} failed")

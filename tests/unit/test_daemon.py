@@ -2047,6 +2047,37 @@ def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client,
     assert shapeless.status_code == 400, "two parts is not an event"
 
 
+def test_the_doorbell_cannot_reach_the_services_worker(rig, client, headers, monkeypatch):
+    """
+    The services plugin registers its worker for queued actions under the bare name
+    `services`, so an event beginning `services.` dispatches straight into it - past the
+    action list and the catalogue that `act` applies - and it runs the service command as
+    root on the request thread, relaying what the child said.
+
+    What has kept that harmless is the event grammar, which forces two dots into the verb
+    so no real action matches: luck, not a check. Nothing reaches the command.
+    """
+    from trixd.utils import shell
+
+    ran = []
+
+    def fake_run(argv, **kwargs):
+        """
+        Record the argv instead of running anything.
+        """
+        ran.append(argv)
+        return type("R", (), {"ok": True, "out": "", "err": "", "code": 0})()
+
+    monkeypatch.setattr(shell, "run", fake_run)
+
+    answer = client.post(f"{API_PREFIX}/system/notify", headers=headers,
+                         json={"event": "services.unit.restart",
+                               "payload": {"name": "slurmctld"}})
+
+    assert ran == [], f"a notify reached the service command: {ran}"
+    assert answer.status_code == 400, answer.text
+
+
 def test_the_doorbell_is_not_the_administrator_alone(client, headers):
     """
     A graphical interface or another tool rings this, not only the daemon's own account.

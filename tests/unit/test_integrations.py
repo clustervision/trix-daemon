@@ -1437,3 +1437,28 @@ def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, m
 
     assert poller.once() == [], "the poller did not carry on after the failure"
     assert poller.state()["answering"] is True, "it never recovers once a pass has failed"
+
+
+def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
+    """
+    `act` checks both before it queues, but the worker is reachable without going through
+    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
+    catalogue can be rewritten between an action being queued and the worker reaching it.
+    So the checks are in the worker, beside the command they are protecting.
+    """
+    from trixd.plugins.services import backend as services
+
+    ran = []
+    monkeypatch.setattr(services.shell, "run",
+                        lambda argv, **kwargs: ran.append(argv) or Ran("", 0))
+
+    with pytest.raises(NotFound):
+        services.run_task("restart", "sshd")
+    assert ran == [], f"a unit outside the catalogue reached the command: {ran}"
+
+    with pytest.raises(BadRequest):
+        services.run_task("mask", "slurmctld")
+    assert ran == [], f"an action outside the list reached the command: {ran}"
+
+    assert services.run_task("restart", "slurmctld") == "restart slurmctld accepted"
+    assert ran == [["/usr/bin/systemctl", "restart", "slurmctld"]], ran
