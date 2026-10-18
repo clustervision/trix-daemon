@@ -284,7 +284,9 @@ whatever `handler` names, taking no arguments. Every render runs once at startup
 A change wakes it at once, and changes landing within the next `coalesce` wake it
 once more when that window closes, so the last one is never lost. Renders run one
 at a time. A render that fails keeps its previous output and records the error,
-which `/api/v1/system/health` reports.
+which `/api/v1/system/health` reports, and is produced again on the next pass of
+the Luna hash fallback, so a producer that failed while its source was away does
+not stay failed.
 
 Writing files is the producer's own job. Write through `trixd.utils.files.write` or
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a

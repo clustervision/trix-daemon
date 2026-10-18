@@ -1605,6 +1605,114 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
     assert seen == [1, 2], seen
 
 
+def test_a_burst_during_a_slow_render_coalesces_into_one_more_pass(rig):
+    """
+    Two passes for a burst whatever the producer costs, which is what the plugin guide
+    promises and what keeps a bulk move over a thousand nodes from costing a render of the
+    whole node table per change.
+
+    The window was measured from the render's start while the lock was held across the
+    producer, so a producer slower than its own window put every later wake outside it: each
+    blocked on the lock, stamped the window with the timestamp it had taken before blocking,
+    and then re-rendered in full - and one wake drives four producers.
+
+    Held open on an event and asserted on the number of producer runs, so neither half is a
+    race against the clock.
+    """
+    import threading
+    import time as clock
+
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    window = 0.4
+    runs = []
+    arm, started, release = threading.Event(), threading.Event(), threading.Event()
+
+    def produce():
+        """
+        Hold the burst's first render open until the rest of the burst has been delivered.
+        """
+        runs.append(1)
+        if arm.is_set() and len(runs) == 1:
+            started.set()
+            release.wait(timeout=10)
+        return {}
+
+    engine = renders()
+    item = engine.register("slow", "renders/slow",
+                           Render(inputs=["luna.slow"], coalesce="1s"), produce)
+    # The window in the unit the engine compares it in. A manifest cannot say less than a
+    # second, and this test waits out three of these.
+    item.coalesce = window
+    try:
+        runs.clear()
+        arm.set()
+        first = threading.Thread(target=engine.notify, args=("luna.slow",), daemon=True)
+        first.start()
+        assert started.wait(timeout=10), "no render ever began, so there is no burst to count"
+
+        # Past the window as the render's start measures it, which is what made each of these
+        # a full re-render. They block on the lock until the render above lets go of it.
+        clock.sleep(window + 0.2)
+        burst = [threading.Thread(target=engine.notify, args=("luna.slow",), daemon=True)
+                 for _ in range(4)]
+        for thread in burst:
+            thread.start()
+        clock.sleep(0.2)
+        release.set()
+        first.join(timeout=10)
+        for thread in burst:
+            thread.join(timeout=10)
+
+        # Long enough for the trailing pass, and for anything following it to be counted too.
+        clock.sleep(window * 3)
+        assert len(runs) == 2, \
+            f"four changes during one render cost {len(runs)} renders, not the documented two"
+    finally:
+        release.set()
+        engine.forget("slow")
+
+
+def test_a_render_that_failed_is_not_reported_as_rendered(rig):
+    """
+    `POST /system/notify` answers what ran as `rendered` and the hash poller logs the same
+    list as woken. Both were appended to before the producer was called and its result was
+    discarded, so a render that failed was reported as having happened - the same shape as a
+    poll that reported itself answering while every fetch errored, one layer up.
+
+    Both halves asserted together: a return that named nothing at all would satisfy the
+    negative half on its own.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    def broken():
+        """
+        A producer with Luna away behind it.
+        """
+        raise RuntimeError("luna is away")
+
+    def good():
+        """
+        A producer that answers.
+        """
+        return {"ok": True}
+
+    engine = renders()
+    spec = Render(inputs=["luna.node"], coalesce="0s")
+    # These two alone: luna.node is an input of the shipped renders as well, and they would
+    # go out to a Luna no unit test has and crowd the answer being asserted.
+    engine.forget_all()
+    try:
+        engine.register("honest", "renders/broken", spec, broken)
+        engine.register("honest", "renders/good", spec, good)
+        assert engine.notify("luna.node") == ["honest/renders/good"], \
+            "a render that failed was reported as rendered, or the one that ran was not"
+    finally:
+        engine.forget("honest")
+
+
 def test_a_source_missing_its_library_says_so(rig, monkeypatch):
     """
     A library a real source needs is not a source the ini made up, and the log tells them apart.

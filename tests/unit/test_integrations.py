@@ -549,6 +549,12 @@ class FakeRenders:
         self.woken.append(item)
         return [f"render-for-{item}"]
 
+    def retry(self) -> list:
+        """
+        Nothing has failed in this stub, so a pass puts nothing back.
+        """
+        return []
+
 
 def _hashes(monkeypatch, *answers) -> tuple:
     """
@@ -594,6 +600,56 @@ def test_luna_failing_a_hash_pass_is_not_fatal(rig, monkeypatch):
     assert poller.once() == []
     assert poller.once() == []
     assert poller.seen == {"node": "1"}
+
+
+def test_a_render_that_failed_is_produced_again_on_the_next_pass(rig, monkeypatch):
+    """
+    Nothing drove a failed render again, and what that costs is the whole defect: a Luna
+    away during the start-up reconcile fails every render of it, so `renders/targets` 404s
+    on every http_sd poll - new nodes never scraped, deleted ones scraped for ever, and no
+    targets at all after Prometheus restarts. It did not heal: the change that would have
+    woken them is spent either way, because the poller takes its first good reading as a
+    baseline and a failing pass that spotted a moved digest overwrites `seen` regardless.
+
+    Asserted with no change notified at all. A pass that woke the render on a moved digest
+    would be proving the ordinary path instead of the retry.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    attempts = []
+
+    def produce():
+        """
+        Luna away for the first attempt, answering afterwards.
+        """
+        attempts.append(1)
+        if len(attempts) == 1:
+            raise RuntimeError("luna is away")
+        return {"nodes": ["node001"]}
+
+    luna = FakeLuna({"node": "1"}, {"node": "1"})
+    monkeypatch.setattr(hashes, "luna", lambda: luna)
+    poller = hashes.LunaHashes()
+
+    engine = renders()
+    # This render alone, so the reconcile below counts this producer and the retry is not
+    # also sweeping the shipped renders out to a Luna that no unit test has.
+    engine.forget_all()
+    engine.register("retried", "renders/thing",
+                    Render(inputs=["luna.node"], coalesce="0s"), produce)
+    assert engine.run_all() == 0, \
+        "the start-up reconcile was meant to fail, so nothing below is proven"
+    item = engine.renders["retried/renders/thing"]
+    assert item.document is None and item.last_error, \
+        "the render is not in the failed state this is about"
+
+    assert poller.once() == [], "the first reading is a baseline and wakes nothing"
+    assert poller.once() == [], "no digest moved, so no change may be notified"
+    assert len(attempts) == 2, \
+        f"the failed render was never produced again: {len(attempts)} attempt(s)"
+    assert item.document == {"nodes": ["node001"]}, \
+        f"produced again, but it serves nothing: {item.last_error!r}"
 
 
 def test_the_hash_baseline_and_poller_follow_the_interval(rig, monkeypatch):

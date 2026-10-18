@@ -227,21 +227,47 @@ class Engine:
         self.reconciled = True
         return done
 
+    def retry(self) -> list:
+        """
+        Produce again whatever failed the last time it ran.
+
+        What is owed is recorded by the failure itself, so there is nothing kept here and
+        nothing to expire: a producer that failed leaves the error standing, and the next
+        pass produces it again against whatever its source holds then - which is also the
+        change that was lost when it failed. Before the reconcile there is nothing to put
+        back, because start-up has yet to produce anything.
+        """
+        if not self.reconciled:
+            return []
+        recovered = []
+        for item in list(self.renders.values()):
+            if not item.last_error:
+                continue
+            if self.run(item):
+                recovered.append(item.key)
+        return recovered
+
     def notify(self, changed: str = "") -> list:
         """
         A change landed. Render what declared it as an input, now or when its window closes.
         """
         woken = []
-        now = time.monotonic()
         for item in list(self.renders.values()):
             if not item.wants(changed):
                 continue
-            last = self.pending.get(item.key, 0.0)
-            if now - last < item.coalesce:
-                # Inside the window: once more when it closes, so a burst's last change is drawn.
-                self._trail(item.key, item.coalesce - (now - last))
-                continue
             with self.lock:
+                # The window is read under the lock and from the clock as it is once the lock
+                # is held. The lock is what makes renders run one at a time, so a wake that
+                # arrives during one waits here, and a window read before that wait is
+                # measured from before the render it waited for - which costs a burst a full
+                # re-render per wake whenever a producer is slower than its own window.
+                now = time.monotonic()
+                last = self.pending.get(item.key, 0.0)
+                if now - last < item.coalesce:
+                    # Inside the window: once more when it closes, so a burst's last change
+                    # is drawn.
+                    self._trail(item.key, item.coalesce - (now - last))
+                    continue
                 # Looked up again under the lock, as the trailing timer does for the same
                 # reason: a reload can have replaced this render since the sweep above took
                 # its reference, and producing from the one being held then writes output
@@ -250,9 +276,14 @@ class Engine:
                 current = self.renders.get(item.key)
                 if current is None:
                     continue
-                self.pending[item.key] = now
-            woken.append(item.key)
-            self.run(current)
+                produced = self.run(current)
+                # From the end of the render rather than its start, so the window a burst
+                # coalesces into begins where the work finished.
+                self.pending[item.key] = time.monotonic()
+            if produced:
+                # Only what rendered. This is what /system/notify answers as `rendered` and
+                # what the hash poller reports as woken, and a failed render is neither.
+                woken.append(item.key)
         return woken
 
     def _trail(self, key: str, delay: float) -> None:
@@ -276,8 +307,10 @@ class Engine:
             item = self.renders.get(key)
             if item is None:
                 return
+            self.run(item)
+            # From the end, as in notify: a wake landing while this runs belongs to the next
+            # window rather than to the one that has already closed.
             self.pending[key] = time.monotonic()
-        self.run(item)
 
     def listing(self) -> list:
         """

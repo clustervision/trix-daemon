@@ -79,6 +79,14 @@ class LunaHashes:
             return []
         self.failing = False
 
+        # Luna has just answered, so this is where a render it was away for is put back. A
+        # failure is its own record of what is owed, and the producer reads what Luna holds
+        # now - so a digest change that was spent on a render that failed comes back with it,
+        # and the start-up reconcile that failed against an absent Luna stops being final.
+        again = renders().retry()
+        if again:
+            LOGGER.info("produced again after an earlier failure: %s", ", ".join(again))
+
         if not current:
             # Luna answers this only on the HA master, so empty is normal here and
             # is not "nothing changed". Said once, then left alone.
