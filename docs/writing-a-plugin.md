@@ -162,7 +162,9 @@ the reload endpoint answers 409 with the reason.
 | an endpoint names a handler the backend does not have | refused |
 | a schema does not parse, or a verb is not one of the four | refused |
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
+| a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
+| a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |
 
@@ -225,8 +227,8 @@ hooks may already have done part of the work.
 
 Only calls made through the pass-through are seen this way. A change made at Luna
 directly reaches a plugin through its renders, when Luna's table hashes show it:
-on an HA master within `[TRIGGERS] LUNA_HASHES`, and on a single controller only
-when trixd next starts.
+on an HA master within the hour the poller compares them on, and on a single
+controller only when trixd next starts.
 
 ## Shelling out
 
@@ -273,7 +275,7 @@ poll from what it last produced.
 
 | Field | Meaning |
 |---|---|
-| `inputs` | what wakes it: a Luna object (`luna.node`, `luna.group`, `luna.network`), or the name of one of this plugin's own declarations when a new one arrives from the other controller |
+| `inputs` | what wakes it: a Luna object (`luna.node`, `luna.group`, `luna.network`), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
 | `coalesce` | how long a burst of changes is gathered, default `2s` |
 | `serve` | `json` to answer GET with what was produced; without it the render produces files and serves nothing |
 

@@ -170,10 +170,6 @@ LOGFILE =
 [AUTH]
 CHAIN = local
 
-[TRIGGERS]
-; No Luna here, so the hash comparison is off.
-LUNA_HASHES = 0s
-
 [PLUGINS]
 DIRECTORY = trixd/plugins
 SITE_DIRECTORY = dev/plugins
@@ -360,9 +356,10 @@ prometheus plugin, for one, makes the node's hardware rule file carry the name a
 group Luna now holds, whether or not Luna's own hook moved it.
 
 A change made at Luna directly, not through this route, is picked up by comparing
-Luna's table hashes every `[TRIGGERS] LUNA_HASHES`. Luna answers that only on the
-HA master, so on a single controller such a change reaches the rule files when
-trixd next starts, or when the next node change passes through it.
+Luna's table hashes once an hour, which is the poller's own interval and not a
+setting. Luna answers that route only on the HA master, so on a single controller
+such a change reaches the rule files when trixd next starts, or when the next node
+change passes through it.
 
 ## Writing a plugin
 

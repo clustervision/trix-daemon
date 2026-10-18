@@ -2952,3 +2952,159 @@ def test_the_check_refuses_everything_the_loader_refuses_about_a_render(rig, tmp
         (path / "manifest.yaml").read_text(encoding="utf-8").replace("soon", "2s"),
         encoding="utf-8")
     assert check(str(path)) == [], "a render that loads has to pass the check"
+
+
+def test_a_render_has_to_declare_an_input_that_could_wake_it():
+    """
+    A render is produced once at start-up and then only when an input changes, so a render
+    with no inputs, or with one that matches no change there is, serves that first result for
+    ever while reporting a healthy render. `inputs` defaults to an empty list, which made the
+    silent case the easiest one to write.
+
+    Which object names exist is not checkable here - the engine matches an input against
+    <source>.<object>, and those come from Luna's own tables and from a plugin's declaration
+    kinds, neither of which anything in the daemon enumerates. The shape is: an input with an
+    empty segment can match nothing the engine will ever be handed.
+    """
+    def document(**render):
+        """
+        One render endpoint declaring exactly this.
+        """
+        return {"plugin": "example", "endpoints": [
+            {"path": "doc", "methods": ["GET"], "minimum": "reader",
+             "render": {"serve": "json", **render}}]}
+
+    assert parse(document(inputs=["luna.node"])).endpoints[0].render.inputs == ["luna.node"]
+    assert parse(document(inputs=["settings"])).endpoints[0].render.inputs == ["settings"]
+
+    with pytest.raises(PluginRefused, match="declares no inputs"):
+        parse(document())
+    with pytest.raises(PluginRefused, match="declares no inputs"):
+        parse(document(inputs=[]))
+    for unusable in ("", "   ", "luna.", ".node", "luna..node"):
+        with pytest.raises(PluginRefused, match="names no change"):
+            parse(document(inputs=["luna.node", unusable]))
+
+
+def test_every_shipped_render_declares_inputs_that_could_wake_it():
+    """
+    Read from every shipped manifest rather than the ones a test loads, so a render added
+    later is covered: it is the render that is never woken again that this catches, and
+    nothing at run time reports one.
+    """
+    import glob
+    import os
+
+    import yaml
+
+    found = {}
+    for path in glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                       "manifest.yaml")):
+        with open(path, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for endpoint in document["endpoints"]:
+            if endpoint.get("render") is not None:
+                found[f"{document['plugin']}/{endpoint['path']}"] = endpoint["render"]
+    assert found, "no shipped plugin declares a render, so this proves nothing"
+    for where, render in found.items():
+        inputs = render.get("inputs") or []
+        assert inputs, f"{where} declares a render nothing would wake"
+        for item in inputs:
+            assert all(part.strip() for part in str(item).split(".")), f"{where}: {item}"
+
+
+def test_a_hook_handler_the_dispatcher_could_not_call_is_refused(rig, tmp_path):
+    """
+    A change is handed over as `handler(**payload)`, so a parameter that can only be filled
+    positionally never is. The load path checked that the attribute was there and nothing
+    else, where the binder already refuses an endpoint handler whose signature cannot be
+    satisfied - and a hook fails after the caller has its 200, into one log line.
+    """
+    path = tmp_path / "slanted"
+    path.mkdir()
+    (path / "__init__.py").write_text("", encoding="utf-8")
+    (path / "manifest.yaml").write_text(
+        "plugin: slanted\nbackend: backend\nhooks:\n  luna.node.update: on_change\n"
+        "endpoints:\n  - path: doc\n    methods: [GET]\n    minimum: reader\n"
+        "    handler: show\n", encoding="utf-8")
+
+    def backend(signature: str) -> None:
+        """
+        A backend whose hook handler takes its name exactly this way.
+        """
+        (path / "backend.py").write_text(
+            "class Backend:\n    def show(self):\n        return {}\n"
+            f"    def on_change(self, {signature}):\n        return name\n",
+            encoding="utf-8")
+
+    backend("name, /")
+    with pytest.raises(PluginRefused, match="positionally"):
+        loader.load(rig, "slanted", str(path))
+
+    # Not a blanket refusal: the same handler taking the same field by keyword loads.
+    backend("name")
+    assert loader.load(rig, "slanted", str(path)).state == "loaded"
+    loader.unload(rig, "slanted")
+
+
+def test_every_shipped_hook_handler_takes_the_payload_its_publisher_sends():
+    """
+    The payload is splatted into the handler, so a subscriber whose signature does not match
+    it raises TypeError on the queue, after the caller has its answer, and nothing else
+    reports it. Adding a watched field breaks every existing subscriber the same way.
+
+    Derived from the publisher rather than from a list: the payloads are whatever `notice`
+    builds out of the fields it watches, and Python's own binder decides whether a handler
+    can take one. A subscriber to an event whose payload cannot be derived here has to take
+    `**payload`, because nothing says what it will be sent.
+    """
+    import glob
+    import importlib
+    import itertools
+    import json
+    import os
+
+    import yaml
+
+    from trixd.plugins.luna import hooks as luna_hooks
+
+    # Every payload the pass-through can publish, event by event, from the fields it
+    # watches: a rename, a group move, and both at once, plus the delete.
+    published = {}
+    for count in range(1, len(luna_hooks.WATCHED) + 1):
+        for fields in itertools.combinations(luna_hooks.WATCHED, count):
+            body = json.dumps({"config": {"node": {"node001": {
+                field: f"value-{field}" for field in fields}}}}).encode()
+            found = luna_hooks.notice("POST", "config/node/node001", body, 204)
+            assert found is not None, f"the publisher sent nothing for {fields}"
+            published.setdefault(found["event"], []).append(found["payload"])
+    gone = luna_hooks.notice("GET", "config/node/node001/_delete", b"", 204)
+    published.setdefault(gone["event"], []).append(gone["payload"])
+
+    wanted = {}
+    for path in glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                       "manifest.yaml")):
+        with open(path, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for event, handler in (document.get("hooks") or {}).items():
+            module = importlib.import_module(
+                f"trixd.plugins.{document['plugin']}.{document.get('backend', 'backend')}")
+            wanted[(document["plugin"], event)] = getattr(module.Backend(), handler)
+    assert wanted, "no shipped plugin declares a hook, so this proves nothing"
+
+    for (plugin, event), handler in wanted.items():
+        accepted = inspect.signature(handler).parameters
+        payloads = published.get(event)
+        if payloads is None:
+            assert any(item.kind == inspect.Parameter.VAR_KEYWORD
+                       for item in accepted.values()), \
+                (f"{plugin} subscribes to {event}, whose payload is not derivable here, so "
+                 f"its handler has to take **payload")
+            continue
+        for payload in payloads:
+            try:
+                inspect.signature(handler).bind(**payload)
+            except TypeError as error:
+                raise AssertionError(
+                    f"{plugin}'s handler for {event} cannot take the payload it is sent "
+                    f"({sorted(payload)}): {error}") from None

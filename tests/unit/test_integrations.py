@@ -1514,3 +1514,86 @@ def test_a_hash_poller_whose_passes_fail_does_not_report_itself_answering(rig, m
 
     assert poller.once() == [], "the poller did not carry on after the failure"
     assert poller.state()["answering"] is True, "it never recovers once a pass has failed"
+
+
+def test_a_luna_node_answer_this_build_cannot_read_is_not_an_empty_cluster(rig):
+    """
+    Luna answers config/node 404 when it holds no nodes, so nothing to read is genuinely an
+    empty cluster and stays one. An answer that is there in a shape this build does not read
+    is a different thing: read as "no nodes" it emptied the genders file and the slurm blocks
+    for every node at once, while the render recorded a healthy pass and reported nodes: 0.
+    """
+    empty = (Answer(404), Answer(body={"config": {"node": {}}}))
+    unreadable = {
+        "a renamed envelope": Answer(body={"config": {"nodes": {"node001": {}}}}),
+        "a list where the map was": Answer(body={"config": {"node": ["node001"]}}),
+        "another object's envelope": Answer(body={"monitor": {"status": {}}}),
+        "a body that is not JSON": Answer(text="service unavailable"),
+    }
+
+    client, _ = _luna(*empty)
+    assert client.nodes() == {}, "a cluster with no nodes has to keep reading as empty"
+    assert client.nodes() == {}, "an envelope holding no node is still an empty cluster"
+
+    for why, answer in unreadable.items():
+        client, _ = _luna(answer)
+        with pytest.raises(ServiceUnavailable, match="cannot read"):
+            client.nodes()
+        assert client.session.calls, f"{why} was never asked for"
+
+
+def test_the_renders_keep_their_files_when_lunas_node_answer_cannot_be_read(rig, monkeypatch,
+                                                                           tmp_path):
+    """
+    The two renders built from the shared node list treat an unreadable answer as the
+    Prometheus render already does - they fail, so the engine keeps the previous result and
+    what is on disk - while a genuinely empty cluster still writes nothing and answers
+    nodes: 0 exactly as it did.
+    """
+    from trixd.plugins.genders import backend as genders
+    from trixd.plugins.slurm import backend as slurm
+
+    wrote = []
+    package = ModuleType("trinityx_config_genders")
+    package.Generate = lambda: SimpleNamespace(
+        Genders=lambda nodes: wrote.append(nodes) or True)
+    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
+    seen = _slurm(monkeypatch, {}, tmp_path)
+
+    def answering(answer):
+        """
+        Both plugins reading a real client whose session answers this, twice.
+        """
+        client, _ = _luna(answer, answer)
+        monkeypatch.setattr(slurm, "luna", lambda: client)
+
+    # Luna's own answer for a cluster holding no node, which is a 404.
+    answering(Answer(404))
+    assert slurm.Backend().render_config() == {"nodes": 0, "files": []}
+    assert genders.Backend().render_genders() == {"nodes": 0, "file": "/etc/genders"}
+    assert "nodes" not in seen, "the slurm generator ran for a cluster with no nodes"
+    assert wrote == [], "the genders generator ran for a cluster with no nodes"
+
+    # The same two renders over an answer whose shape has moved.
+    answering(Answer(body={"config": {"nodes": {"node001": {"group": "a"}}}}))
+    with pytest.raises(ServiceUnavailable, match="cannot read"):
+        slurm.Backend().render_config()
+    with pytest.raises(ServiceUnavailable, match="cannot read"):
+        genders.Backend().render_genders()
+    assert "nodes" not in seen, "the slurm generator was handed an answer nothing could read"
+    assert wrote == [], "the genders file was rewritten from an answer nothing could read"
+
+
+def test_a_node_name_is_encoded_into_lunas_path(rig):
+    """
+    The node sign-in route takes the name from an unauthenticated caller and this is where it
+    reaches Luna. requests leaves ?, # and / in a path alone, and Starlette has already
+    turned %2f back into / by the time the route matched, so the name is quoted here.
+    """
+    wanted = {"node001": "node001", "a/b": "a%2Fb", "x?secret=1": "x%3Fsecret%3D1",
+              "y#frag": "y%23frag", "z%2fw": "z%252fw"}
+    client, session = _luna(*[Answer(body={"config": {"node": {}}})] * len(wanted))
+
+    for name, quoted in wanted.items():
+        client.node(name)
+        assert session.calls[-1][1] == f"https://luna.test:7050/config/node/{quoted}", name

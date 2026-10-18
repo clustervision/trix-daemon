@@ -231,6 +231,23 @@ def parse(document: dict) -> Manifest:
                 raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
                                     f"serve {', '.join(reads)}: a read that replicated "
                                     f"would write an outbox row for every call")
+        if endpoint.render is not None:
+            # Nothing wakes a render with no inputs, and nothing wakes one whose input has
+            # an empty segment: the engine matches an input against <source>.<object>, so
+            # `luna.` and `` match no change there is. Either way it produces once at
+            # start-up, serves that for ever and reports a healthy render while the files
+            # it writes drift from Luna. Refused rather than logged, because an author's
+            # only other signal is stale data at a customer.
+            if not endpoint.render.inputs:
+                raise PluginRefused(f"{endpoint.path or '/'} is a render and declares no "
+                                    f"inputs, so nothing would ever wake it")
+            unusable = [str(item) for item in endpoint.render.inputs
+                        if not all(part.strip() for part in str(item).split("."))]
+            if unusable:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} declares input {', '.join(unusable)}, which "
+                    f"names no change: an input is <source>.<object>, such as luna.node, "
+                    f"or one of this plugin's own declarations")
         if endpoint.render is not None and (endpoint.variables or endpoint.query):
             # A render is served by a reader that takes no arguments, so a variable or a
             # query parameter is accepted and then ignored: one document answers for every

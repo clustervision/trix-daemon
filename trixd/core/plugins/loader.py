@@ -32,6 +32,7 @@ __status__      = "Production"
 import functools
 import importlib
 import importlib.util
+import inspect
 import os
 import sys
 import threading
@@ -265,6 +266,29 @@ def _register_renders(plugin: str, found: list) -> None:
     renders().replace(plugin, found)
 
 
+def _hook_signature(event: str, handler: str, found) -> None:
+    """
+    Refuse a hook handler the dispatcher could not call, as the binder does for an endpoint.
+
+    A change is handed over as `handler(**payload)`, so every value arrives by keyword and
+    a parameter that can only be filled positionally never is. Nothing else about the shape
+    is checkable here: no plugin declares what an event's payload carries, so whether a
+    handler takes the fields it will be sent is settled by the derived test over the
+    publishers rather than guessed at from the event's name.
+    """
+    try:
+        accepted = inspect.signature(found).parameters
+    except (TypeError, ValueError):
+        return
+    unfillable = [name for name, item in accepted.items()
+                  if item.kind == inspect.Parameter.POSITIONAL_ONLY
+                  and item.default is inspect.Parameter.empty]
+    if unfillable:
+        raise PluginRefused(
+            f"{event} names handler {handler}, which needs {', '.join(unfillable)} "
+            f"positionally; a hook is handed its payload as keyword arguments")
+
+
 def _bind_hooks(manifest, backend) -> dict:
     """
     The backend method behind each change the manifest declares.
@@ -275,6 +299,7 @@ def _bind_hooks(manifest, backend) -> dict:
         if found is None or not callable(found):
             raise PluginRefused(
                 f"{event} names handler {handler}, which {manifest.backend} does not have")
+        _hook_signature(event, handler, found)
         hooks[event] = found
     return hooks
 

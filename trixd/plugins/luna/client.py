@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+from urllib.parse import quote
+
 import requests
 import urllib3
 
@@ -115,15 +117,32 @@ class LunaClient:
     def nodes(self) -> dict:
         """
         Every node, keyed by name.
+
+        Nothing to read is a cluster with no nodes: Luna answers config/node 404 when it
+        holds none, so that is the only empty it has. An answer that is there but is not
+        this envelope is a failure instead, as it is for the cluster flag below: read as
+        "no nodes" it empties every file rendered from this list - the genders file and
+        the slurm blocks - while the render records a healthy pass over nothing.
         """
-        answer = self.get("config/node") or {}
-        return (answer.get("config") or {}).get("node") or {}
+        answer = self.get("config/node")
+        if answer is None:
+            return {}
+        held = answer.get("config") if isinstance(answer, dict) else None
+        found = held.get("node") if isinstance(held, dict) else None
+        if not isinstance(found, dict):
+            raise ServiceUnavailable(
+                "Luna answered config/node in a shape this daemon cannot read, so the "
+                "nodes already configured are kept")
+        return found
 
     def node(self, name: str) -> dict:
         """
         One node by name, or None.
         """
-        answer = self.get(f"config/node/{name}") or {}
+        # Quoted, because the name comes off an unauthenticated route and is interpolated
+        # into a path: requests passes ?, # and / through, and Starlette has already turned
+        # %2f back into / by the time the route is matched.
+        answer = self.get(f"config/node/{quote(str(name), safe='')}") or {}
         found = (answer.get("config") or {}).get("node") or {}
         return found.get(name)
 
