@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import logging
 import os
 from types import SimpleNamespace
 
@@ -146,6 +147,35 @@ def test_the_service_catalogue_round_trips(rig):
     backend = services.Backend()
     backend.catalogue(body={"services": {"demo": "demo.service"}})
     assert backend.catalogue()["services"]["demo"] == "demo.service"
+
+
+def test_a_systemctl_that_did_not_run_is_not_silent(rig, monkeypatch):
+    """
+    A whole-command failure reads as every service being unknown, and one unit systemd
+    answered nothing about reads the same, so only the journal tells the two apart.
+    """
+    from trixd.plugins.services import backend as services
+
+    monkeypatch.setattr(services.shell, "run",
+                        lambda *a, **k: Ran("", 1, "Failed to get properties"))
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    level = services.LOGGER.level
+    services.LOGGER.addHandler(handler)
+    services.LOGGER.setLevel(logging.DEBUG)
+    try:
+        listed = services.Backend().list_services()
+    finally:
+        services.LOGGER.removeHandler(handler)
+        services.LOGGER.setLevel(level)
+
+    assert listed["services"], "the catalogue answered nothing, so nothing was read"
+    assert all(state["active"] == "unknown" for state in listed["services"].values()), \
+        "the stand-in answered a state after all"
+    said = [record.getMessage() for record in records if record.levelno >= logging.ERROR]
+    assert said, "a systemctl that did not run left no trace at all"
+    assert "Failed to get properties" in said[0], said
 
 
 def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch):

@@ -209,6 +209,11 @@ class Backend:
             return {}
         shown = shell.run([_command(), "show", "-p", ",".join(PROPERTIES), *wanted],
                           timeout=TIMEOUT)
+        if not shown.ok:
+            # Every unit then reads unknown, which is also what one unit systemd answered
+            # nothing about reads, so the answer cannot be told from a healthy one.
+            LOGGER.error("%s show exited %s, so no state could be read: %s", _command(),
+                         shown.code, shown.err or shown.out or "it said nothing")
         found = _records(shown.out)
         unknown = {"active": UNKNOWN, "enabled": UNKNOWN}
         # A catalogue may name an alias, which systemd answers for under its real name, and
