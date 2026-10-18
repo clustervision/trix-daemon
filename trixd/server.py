@@ -99,6 +99,11 @@ def serve(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     logger = trixlog.setup(config.logger.level, config.logger.logfile)
+    # Here rather than in the lifespan: serve() refuses below for a second daemon, a
+    # certificate it cannot read and a bind it cannot take, and what reading the ini
+    # found has to be said on those paths too - they are where it most likely explains
+    # the refusal.
+    trixlog.report(LOGGER, config.warnings)
     logger.info("%s %s starting from %s", DAEMON_NAME, DAEMON_VERSION, config.config_file)
 
     # Before the application exists, never at the listeners: hypercorn runs start-up to
@@ -162,6 +167,7 @@ def keygen(config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
+    trixlog.report(LOGGER, config.warnings)
     if config.tokens.shared:
         print(f"[TOKENS] ALGORITHM is {config.tokens.algorithm}, which signs with the "
               f"shared secret and needs no keypair")
@@ -184,6 +190,7 @@ def plugin_new(name: str, config_file: str = "") -> int:
 
     config = configuration.set_current(configuration.load(config_file))
     trixlog.setup(config.logger.level, "")
+    trixlog.report(LOGGER, config.warnings)
     try:
         written = scaffold.new(name, config.plugins.site_directory, config.plugins.directory)
     except Exception as error:
@@ -228,10 +235,17 @@ def main(argv: list = None) -> int:
     if args.command == "plugin" and args.subcommand == "check" and os.path.isdir(args.name):
         # A directory needs no trixd.ini: an author or a pipeline checks before installing.
         return plugin_check(args.name)
+    # Silent: the command that runs next loads the ini again and says what was found
+    # once, with logging configured. Nothing runs after this, so here it would be twice.
+    found: list = []
     try:
-        configuration.load(args.config)
+        configuration.load(args.config, found)
     except ValueError as error:
         # A wrong setting stops the daemon here, named, rather than as a traceback later.
+        # Nothing downstream will run to say what was found before it, and there is no
+        # logfile to say it to, so this is the one path that reports it itself.
+        for message in found:
+            print(f"{DAEMON_NAME}: {message}", file=sys.stderr)
         print(f"{DAEMON_NAME}: {error}", file=sys.stderr)
         return 2
 

@@ -1908,20 +1908,18 @@ def test_luna_settings_in_trixd_ini_are_ignored_and_named(tmp_path):
     assert loaded.tokens.secret_key == "x"
 
 
-# Named rather than reached for through the settings module, so a build that logs
-# nothing here still reaches the assertions instead of failing to set the test up.
-SETTINGS_LOGGER = logmodule.getLogger("trixd.settings")
-
-
 def _loaded(tmp_path, text: str):
     """
-    A trixd.ini holding text, loaded, with everything the settings logger said.
+    A trixd.ini holding text, loaded, with everything load() found to say about it.
+
+    Taken off the settings object rather than from a handler on a settings logger: the
+    ini is read before logging is configured, so a logger there having been called
+    proves nothing about anyone seeing it. Where it lands is pinned separately.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text(text, encoding="utf-8")
-    with _listening(SETTINGS_LOGGER) as records:
-        loaded = configuration.load(str(ini))
-    return loaded, _said(records)
+    loaded = configuration.load(str(ini))
+    return loaded, "\n".join(loaded.warnings)
 
 
 def test_a_max_body_trixd_cannot_read_is_named_rather_than_quietly_the_default(tmp_path):
@@ -1996,11 +1994,10 @@ def test_an_ini_that_cannot_be_read_is_named_rather_than_quietly_the_defaults(tm
     ini.write_text("[DATABASE]\nURL = sqlite:////site/own.db\n", encoding="utf-8")
     ini.chmod(0o000)
     try:
-        with _listening(SETTINGS_LOGGER) as records:
-            loaded = configuration.load(str(ini))
+        loaded = configuration.load(str(ini))
     finally:
         ini.chmod(0o644)
-    said = _said(records)
+    said = "\n".join(loaded.warnings)
     # The precondition first: without this the rest measures a file that was readable.
     assert "own.db" not in loaded.database.url, "the harness did not actually block the read"
     assert loaded.database.url == configuration.DatabaseSettings().url
@@ -2032,9 +2029,7 @@ def test_the_shipped_sample_names_no_key_the_daemon_does_not_read():
     never asks for is either a stale sample or a setting that was dropped.
     """
     sample = os.path.join(os.path.dirname(trixd.__file__), "config", "trixd.ini.sample")
-    with _listening(SETTINGS_LOGGER) as records:
-        configuration.load(sample)
-    said = _said(records)
+    said = "\n".join(configuration.load(sample).warnings)
     assert "does not read" not in said, said
 
 

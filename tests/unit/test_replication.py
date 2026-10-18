@@ -206,6 +206,61 @@ def test_a_single_controller_runs_no_sweep(rig):
     assert sweep().start() is False
 
 
+def _sweep_said(peers: list, enabled: bool, monkeypatch) -> str:
+    """
+    What start() says about a replication section, and whether it started.
+
+    Through a handler on the sweep's own logger at its own level: the daemon's loggers
+    do not propagate once they are configured, so pytest's capture may never see them.
+    """
+    import logging as logmodule
+
+    from trixd.common import settings as configuration
+    from trixd.core.replication import sweep as replication
+
+    config = configuration.Settings()
+    config.replication = configuration.ReplicationSettings(peers=peers, enabled=enabled)
+    monkeypatch.setattr(replication, "settings", lambda: config)
+    records = []
+    handler = logmodule.Handler()
+    handler.emit = records.append
+    logger = replication.LOGGER
+    previous = logger.level
+    logger.setLevel(logmodule.DEBUG)
+    logger.addHandler(handler)
+    try:
+        assert replication.current().start() is False, "neither state may start a sweep"
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(previous)
+    return "\n".join(record.getMessage() for record in records)
+
+
+def test_a_pair_with_the_switch_off_is_not_told_it_has_no_peers(monkeypatch):
+    """
+    A configured pair with ENABLED = no is the state someone greps this line for, and
+    being told the peers are not configured is the opposite of true: the peers are the
+    only reason the switch matters at all. Each state says which of the two it is.
+    """
+    said = _sweep_said(["peer.cluster:8050"], False, monkeypatch)
+    # The precondition: the line was said at all, so the rest is not measuring silence.
+    assert "no sweep is running" in said, "the sweep stopped without saying so"
+    assert "no replication peers configured" not in said, \
+        "a configured pair was told it has no peers, which is the opposite of true"
+    assert "ENABLED" in said, "the switch that actually stopped the sweep was not named"
+    assert "peer.cluster:8050" in said, "the peers left unreconciled were not named"
+
+
+def test_a_controller_with_no_peers_still_says_exactly_that(monkeypatch):
+    """
+    The other half of the split: with nothing configured the original wording stands,
+    because that is the state it describes and it is what a site greps for.
+    """
+    said = _sweep_said([], True, monkeypatch)
+    assert "no replication peers configured, so no sweep is running" in said
+    assert "ENABLED" not in said, "nothing is held up by the switch when there are no peers"
+
+
 def test_one_table_carries_the_whole_of_rbac(rig):
     """
     A user, a password, a role, as the whiteboard drew it: no groups, flags or modes. The

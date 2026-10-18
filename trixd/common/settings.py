@@ -35,11 +35,8 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-from trixd.common import logging as trixlog
 from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM,
                                    TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
-
-LOGGER = trixlog.get("settings")
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
 DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
@@ -186,6 +183,9 @@ class Settings(BaseModel):
     plugins: PluginSettings = Field(default_factory=PluginSettings)
     # Settings trixd.ini still names that are no longer read, to say so at startup.
     ignored: list = Field(default_factory=list)
+    # What load() found wrong in the ini, each worded as it is to be said. Carried
+    # rather than logged, because the ini is read before there is a logfile to log to.
+    warnings: list = Field(default_factory=list)
 
 
 def size(value: str, fallback: int, bare: int = 1) -> int:
@@ -262,7 +262,7 @@ def _protocol(value: str) -> str:
     return wanted
 
 
-def _unknown(parser: RawConfigParser, asked: set, path: str) -> None:
+def _unknown(parser: RawConfigParser, asked: set, path: str, found: list) -> None:
     """
     Name every key the ini carries that this daemon does not read, so a misspelled one
     is not a silent fall back to a default. The known keys are the ones load() just
@@ -274,21 +274,26 @@ def _unknown(parser: RawConfigParser, asked: set, path: str) -> None:
         if section in IGNORED_SECTIONS:
             continue
         if section not in sections:
-            LOGGER.warning("%s has a [%s] section, which trixd does not read; every "
-                           "setting in it is ignored", path, section)
+            found.append("%s has a [%s] section, which trixd does not read; every "
+                         "setting in it is ignored" % (path, section))
             continue
         for option in sorted(parser.options(section)):
             if option in inherited or (section, option) in asked:
                 continue
-            LOGGER.warning("%s names [%s] %s, which trixd does not read; it is ignored "
-                           "and the default is used, so check it against "
-                           "trixd.ini.sample", path, section, option.upper())
+            found.append("%s names [%s] %s, which trixd does not read; it is ignored "
+                         "and the default is used, so check it against "
+                         "trixd.ini.sample" % (path, section, option.upper()))
 
 
-def load(path: str = "") -> Settings:
+def load(path: str = "", found: list = None) -> Settings:
     """
     Read the ini into a Settings object, falling back to the defaults above.
+
+    What is wrong with the ini is appended to found, and is on the returned object as
+    warnings. Pass a list to keep what was found when a later setting raises instead:
+    the caller holds it either way, where a half-built Settings object is gone.
     """
+    found = [] if found is None else found
     path = path or os.environ.get("TRIXD_CONFIG") or DEFAULT_CONFIG
     if not os.path.isfile(path):
         raise ValueError(f"{path} does not exist")
@@ -299,9 +304,9 @@ def load(path: str = "") -> Settings:
     except OSError as error:
         # isfile() passes and RawConfigParser.read() swallows this, so without the open
         # a file it cannot read starts the daemon on its defaults without a word.
-        LOGGER.warning("%s cannot be read (%s); trixd is starting on its built-in "
-                       "defaults, so the bind, the database and the plugins are not "
-                       "the ones that file names", path, error)
+        found.append("%s cannot be read (%s); trixd is starting on its built-in "
+                     "defaults, so the bind, the database and the plugins are not "
+                     "the ones that file names" % (path, error))
         text = ""
     parser.read_string(text, source=path)
     asked: set = set()
@@ -321,8 +326,8 @@ def load(path: str = "") -> Settings:
         A value the daemon could not read, named with what it is using instead. Loud,
         because the daemon comes up on something other than what the ini asked for.
         """
-        LOGGER.warning("[%s] %s is %r, which trixd cannot read; it is using %s instead",
-                       section, option, value, using)
+        found.append("[%s] %s is %r, which trixd cannot read; it is using %s instead"
+                     % (section, option, value, using))
 
     def capacity(section: str, option: str, fallback: int) -> int:
         """
@@ -373,9 +378,9 @@ def load(path: str = "") -> Settings:
     if not data.api.username or not data.api.password:
         # The same check the luna plugin makes on luna.ini. With no account nobody can
         # hold rootus, and the sweep signs in to its peer as nobody at all.
-        LOGGER.warning("%s has no [API] USERNAME and PASSWORD, so nobody can hold "
-                       "rootus: the directory, slurm and replication routes answer 403 "
-                       "to every caller and a peer refuses the sweep", path)
+        found.append("%s has no [API] USERNAME and PASSWORD, so nobody can hold "
+                     "rootus: the directory, slurm and replication routes answer 403 "
+                     "to every caller and a peer refuses the sweep" % (path,))
     secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
@@ -411,7 +416,8 @@ def load(path: str = "") -> Settings:
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
         site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),
         enabled=_csv(get("PLUGINS", "ENABLED", "")))
-    _unknown(parser, asked, path)
+    _unknown(parser, asked, path, found)
+    data.warnings = found
     return data
 
 

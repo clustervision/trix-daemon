@@ -30,12 +30,15 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import logging as logmodule
 import os
 import stat
+from contextlib import contextmanager
 
 import pytest
 
 from trixd import server
+from trixd.common import logging as trixlog
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_VERSION
 from trixd.core import instance
@@ -132,6 +135,136 @@ def test_a_bad_trixd_ini_is_reported_by_name_with_exit_code_2(tmp_path, capsys):
     assert server.main(["--config", str(ini)]) == 2
     assert "[API] EXPIRY" in capsys.readouterr().err
     assert server.main(["--config", str(tmp_path / "absent.ini")]) == 2
+
+
+def _ini_that_starts_up(tmp_path, extra: str = "") -> tuple:
+    """
+    A configuration a real start-up can run against, logging to a file of its own, with
+    extra appended for the reading of it to find fault with.
+    """
+    from tests.conftest import SHARED_SECRET
+
+    for name in ("plugins", "site-plugins"):
+        (tmp_path / name).mkdir()
+    logfile = tmp_path / "log" / "trixd.log"
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(
+        f"[LOGGER]\nLEVEL = warning\nLOGFILE = {logfile}\n"
+        "[API]\nBIND =\nINSECURE_BIND = 127.0.0.1:0\n"
+        f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {SHARED_SECRET}\n"
+        f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
+        f'[PLUGINS]\nDIRECTORY = {tmp_path / "plugins"}\n'
+        f'SITE_DIRECTORY = {tmp_path / "site-plugins"}\nENABLED =\n{extra}',
+        encoding="utf-8")
+    return str(ini), logfile
+
+
+def _started(ini: str, monkeypatch) -> None:
+    """
+    main() through serve() to the end of the start-up, which is everything that happens
+    before the first socket exists.
+
+    What start-up does after it has said what reading the ini found is stood in for. The
+    database, the plugins, the renders and the timers are not what these tests are about,
+    and every one of them runs after that line.
+    """
+    from trixd.core import lifespan
+    from trixd.core.render.engine import Engine
+
+    monkeypatch.setattr(lifespan.database, "start", lambda url: None)
+    monkeypatch.setattr(lifespan.loader, "load_all", lambda app: {})
+    monkeypatch.setattr(lifespan.audit, "start", lambda: None)
+    monkeypatch.setattr(lifespan.tasks, "start", lambda: None)
+    monkeypatch.setattr(lifespan.triggers, "baseline_all", lambda: None)
+    monkeypatch.setattr(lifespan.triggers, "start_all", lambda: None)
+    monkeypatch.setattr(Engine, "run_all", lambda self: 0)
+
+    async def _as_hypercorn_does(hypercorn_serve, application, hypercorn_config) -> None:
+        """
+        The whole startup, which is all that happens before the first socket.
+        """
+        lifespan.start(application)
+
+    monkeypatch.setattr(server, "_run", _as_hypercorn_does)
+    try:
+        assert server.main(["--config", ini]) == 0, "the daemon did not start"
+    finally:
+        # This start-up attached a handler on a file under tmp_path, which is about to
+        # go: leave the daemon logger as the rest of the suite expects to find it.
+        trixlog.setup("info", "")
+
+
+@contextmanager
+def _counting(*names):
+    """
+    Every record the named loggers emit, however the daemon logger is configured around
+    them.
+
+    One name per place a start-up warning can come from. A handler on the daemon logger
+    itself would not do: trixlog.setup() clears that logger's handlers as the daemon
+    starts, and from then on nothing propagates past it either.
+    """
+    records: list = []
+    attached: list = []
+    for name in names:
+        logger = logmodule.getLogger(name)
+        handler = logmodule.Handler()
+        handler.emit = records.append
+        attached.append((logger, handler, logger.level))
+        logger.addHandler(handler)
+        logger.setLevel(logmodule.DEBUG)
+    try:
+        yield records
+    finally:
+        for logger, handler, level in attached:
+            logger.removeHandler(handler)
+            logger.setLevel(level)
+
+
+def test_what_reading_the_ini_found_reaches_the_configured_logfile(tmp_path, monkeypatch):
+    """
+    settings.load() runs before trixlog.setup(), so a warning emitted while the ini is
+    read reaches stderr through logging's last resort: unformatted in the journal on a
+    unit, and absent from [LOGGER] LOGFILE, which is the file a site actually reads.
+    """
+    ini, logfile = _ini_that_starts_up(tmp_path, "[AUDIT]\nKEEPP = 10d\n")
+    _started(ini, monkeypatch)
+    # The precondition first: without this the rest measures a file nobody wrote to.
+    assert logfile.is_file(), "the start-up logged nothing at all to [LOGGER] LOGFILE"
+    said = logfile.read_text(encoding="utf-8")
+    assert "KEEPP" in said, "a key trixd does not read never reached the logfile"
+    assert "nobody can hold rootus" in said, "an empty ini account never reached the logfile"
+
+
+def test_one_problem_in_the_ini_is_reported_once_however_often_it_is_read(tmp_path,
+                                                                         monkeypatch):
+    """
+    main() pre-checks the ini so a bad one fails the command rather than the daemon, and
+    serve() then reads it again. That is two reads of one file, and one empty account is
+    one problem: a site reading its log must not be told about it twice.
+    """
+    ini, _ = _ini_that_starts_up(tmp_path)
+    with _counting("trixd.settings", "trixd.server") as records:
+        _started(ini, monkeypatch)
+    times = sum("nobody can hold rootus" in record.getMessage() for record in records)
+    assert times == 1, f"one empty ini account was reported {times} times"
+
+
+def test_what_was_found_is_still_said_when_a_later_setting_stops_the_command(tmp_path,
+                                                                            capsys):
+    """
+    A daemon refusing to start over one setting still has to say what else was wrong with
+    the ini: nothing runs after this to say it, and there is no logfile to say it to. The
+    unreadable ceiling is found before the duration that raises, so carrying it on the
+    returned object alone would drop it exactly where the operator is already in trouble.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[API]\nMAX_BODY = not a size\n[AUDIT]\nKEEP = sometime\n",
+                   encoding="utf-8")
+    assert server.main(["--config", str(ini)]) == 2
+    said = capsys.readouterr().err
+    assert "[AUDIT] KEEP" in said, "the setting that stopped the command was not named"
+    assert "MAX_BODY" in said, "what was found before it was swallowed by the refusal"
 
 
 def test_the_version_is_the_installed_one(capsys):

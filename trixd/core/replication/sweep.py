@@ -301,8 +301,14 @@ class Sweep:
         Only when peers are configured: one controller has nothing to reconcile.
         """
         config = settings().replication
-        if not config.enabled or not config.peers:
+        # Two different states, and reporting the switch as an empty peer list is the
+        # opposite of true on a pair: peers first, so the switch names what it holds up.
+        if not config.peers:
             LOGGER.info("no replication peers configured, so no sweep is running")
+            return False
+        if not config.enabled:
+            LOGGER.info("[REPLICATION] ENABLED is no, so no sweep is running: %s is "
+                        "configured and is not reconciled", ", ".join(config.peers))
             return False
         if self._trust() is True:
             LOGGER.warning("CA_FILE %s is missing: peers are checked against the system store, "

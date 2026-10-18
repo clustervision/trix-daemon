@@ -76,3 +76,12 @@ def get(name: str = "") -> logging.Logger:
     The daemon logger, or a named child of it.
     """
     return logging.getLogger(f"{LOGGER_NAME}.{name}" if name else LOGGER_NAME)
+
+
+def report(logger: logging.Logger, messages: list) -> None:
+    """
+    Say what was found before this logger was configured, now that it is. Called once
+    per command, so one problem in the ini is reported once however often it was read.
+    """
+    for message in messages:
+        logger.warning("%s", message)
