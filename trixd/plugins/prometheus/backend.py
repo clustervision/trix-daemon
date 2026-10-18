@@ -86,6 +86,10 @@ SAFE_LOADER = getattr(yaml, "CSafeLoader", yaml.SafeLoader)
 # A node or host name as Luna holds it; it ends up in a file name, so nothing else passes.
 NODE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 SETTINGS_FILE: str = "rules_settings.yaml"
+# How many copies of one node's rule file are kept under backup/. One is taken per write and
+# none was ever discarded, so the directory grows with every boot of every node until it fills
+# the filesystem; what a rollback reaches for is the last few.
+KEEP_COPIES: int = 10
 
 # The hardware rules take the shape Luna's generator gave them, so a file written by
 # either daemon reads the same: this metric, these labels, this alert and group.
@@ -471,6 +475,7 @@ class Backend:
         os.makedirs(backup, exist_ok=True)
         kept = os.path.join(backup, f"{os.path.basename(path)}.{time.strftime('%Y%m%d-%H%M%S')}")
         shutil.copy2(path, kept)
+        _prune_copies(backup, os.path.basename(path))
         return kept
 
     def _write_rules(self, path: str, document) -> str:
@@ -601,6 +606,7 @@ class Backend:
             os.replace(path, kept)
         except FileNotFoundError:
             return ""
+        _prune_copies(backup, os.path.basename(path))
         LOGGER.info("retired %s to %s", path, kept)
         return os.path.basename(path)
 
@@ -1233,6 +1239,22 @@ def _discard(path: str) -> None:
         os.remove(path)
     except FileNotFoundError:
         pass
+
+
+def _prune_copies(backup: str, basename: str) -> list:
+    """
+    Discard all but the newest KEEP_COPIES copies of one rule file, and say what went.
+
+    Keyed on the whole file name and the dot that follows it, so one node's copies are never
+    counted as another's where a name is a prefix of a longer one. Ordered by the stamp in the
+    name rather than by mtime: a copy carries the mtime of the file it was taken from, which
+    says when the rules last changed and not when the copy was made.
+    """
+    kept = sorted(name for name in os.listdir(backup) if name.startswith(f"{basename}."))
+    older = kept[:-KEEP_COPIES]
+    for name in older:
+        _discard(os.path.join(backup, name))
+    return older
 
 
 def _read_yaml(path: str) -> dict:

@@ -2795,3 +2795,49 @@ def test_a_luna_that_cannot_answer_does_not_stop_a_retire(rig, tmp_path, monkeyp
     assert answer["retired"] == ["trix.hw.node009.cluster.rules"], \
         f"the file was found by name and not retired: {answer}"
     assert not live.exists(), "the file reported as retired is still in the glob"
+
+
+def test_only_the_last_copies_of_one_node_s_rules_are_kept(rig, tmp_path, monkeypatch):
+    """
+    A copy is taken before every write and none was ever discarded: measured on a four-node
+    controller, backup/ held 170 copies of one node's rule file and 73 of another. Per node
+    rather than over the directory, because one busy node would otherwise push every other
+    node's copies out of a shared cap.
+
+    node10's copies carry node1's name as a prefix. A prune keyed on the node or the host
+    name instead of the whole file name takes one node's copies for the other's, and the
+    node that loses them is the one nobody was writing to.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    keep = getattr(prometheus, "KEEP_COPIES", 10)
+    known = {"node1": {"hostname": "node1.cluster", "group": "compute"},
+             "node10": {"hostname": "node10.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+    _hw_file(tmp_path, "node1.cluster", "compute")
+    backup = tmp_path / "backup"
+    backup.mkdir()
+    planted = [f"20260101-{stamp:06d}" for stamp in range(1, keep + 3)]
+    for host, stamps in (("node1.cluster", planted), ("node10.cluster", planted[:3])):
+        for stamp in stamps:
+            (backup / f"trix.hw.{host}.rules.{stamp}").write_text("", encoding="utf-8")
+
+    backend.set_hw_rules({"nodes": [{"node": "node1", "nhc": False}]})
+
+    def copies(host):
+        """
+        The stamps of the copies held for one node, oldest first.
+        """
+        return sorted(path.name.split(".rules.")[1]
+                      for path in backup.glob(f"trix.hw.{host}.rules.*"))
+
+    held = copies("node1.cluster")
+    assert len(held) == keep, \
+        f"{len(held)} copies of one node's rule file are held, not {keep}: {held}"
+    # The write took a copy of its own, which is the newest of them; the planted ones it
+    # pushed out are the oldest, and the rest are named here rather than counted.
+    assert held[:-1] == planted[-(keep - 1):], \
+        f"the copies kept are not the newest ones: {held}"
+    assert held[-1] not in planted, f"the copy this write took is not among those kept: {held}"
+    assert copies("node10.cluster") == planted[:3], \
+        "pruning one node's copies discarded those of a node whose name it is a prefix of"
