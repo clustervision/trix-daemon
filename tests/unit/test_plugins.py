@@ -406,6 +406,166 @@ def _prometheus_rig(tmp_path, monkeypatch, nodes):
     return backend
 
 
+# Which of Luna's tables each field of the config/node document is assembled from. The
+# document is Luna's, so a producer reading a field depends on every table beneath it -
+# `hostname` is the node's name and the name of the network its provisioning interface
+# has an address on, which is four tables for one string.
+NODE_DOCUMENT: dict = {
+    "hostname": ("node", "nodeinterface", "ipaddress", "network"),
+    "group": ("group",),
+    "provision_interface": ("node", "group"),
+    "interfaces": ("nodeinterface", "ipaddress"),
+    "interface": ("nodeinterface",),
+    "ipaddress": ("ipaddress",),
+    "ipaddress_ipv6": ("ipaddress",),
+    "macaddress": ("nodeinterface",),
+    "network": ("network",),
+}
+
+
+def _watch(value, seen: set):
+    """
+    The same value, with every record inside it watching what is read of it.
+    """
+    if isinstance(value, dict):
+        return _Watched(value, seen)
+    if isinstance(value, list):
+        return [_watch(one, seen) for one in value]
+    return value
+
+
+class _Watched(dict):
+    """
+    A record as Luna answered it, remembering which of its fields a producer read.
+    """
+
+    def __init__(self, record: dict, seen: set) -> None:
+        """
+        Hold the record, and the set every read of it is noted in.
+        """
+        super().__init__({key: _watch(value, seen) for key, value in record.items()})
+        self.seen = seen
+
+    def __getitem__(self, key):
+        """
+        One field, noted.
+        """
+        self.seen.add(key)
+        return super().__getitem__(key)
+
+    def get(self, key, default=None):
+        """
+        One field or a default, noted: a field read and found empty is still read.
+        """
+        self.seen.add(key)
+        return super().get(key, default)
+
+    def __contains__(self, key) -> bool:
+        """
+        Whether a field is here, noted: absence is read as much as presence is.
+        """
+        self.seen.add(key)
+        return super().__contains__(key)
+
+    def keys(self):
+        """
+        Every field, so a producer that takes the whole record depends on all of them.
+        """
+        self.seen.update(super().keys())
+        return super().keys()
+
+    def items(self):
+        """
+        As keys: the whole record was read.
+        """
+        self.seen.update(super().keys())
+        return super().items()
+
+    def values(self):
+        """
+        As keys: the whole record was read.
+        """
+        self.seen.update(super().keys())
+        return super().values()
+
+
+def _declares_every_table_beneath(key: str, declared: dict, seen: set) -> None:
+    """
+    Every Luna table under a field this producer read is one the render declares.
+    """
+    assert key in declared, f"no shipped manifest declares a render at {key}"
+    assert seen, f"{key} read no field of Luna's node document, so this proves nothing"
+    for field in sorted(seen):
+        assert field in NODE_DOCUMENT, \
+            (f"{key} reads {field} of Luna's node document and this test cannot say which "
+             f"of Luna's tables carry it; add it to NODE_DOCUMENT and declare those tables")
+        for table in NODE_DOCUMENT[field]:
+            assert f"luna.{table}" in declared[key], \
+                (f"{key} reads {field}, which Luna builds from {table}, and does not declare "
+                 f"luna.{table} - so nothing wakes it when that table alone moves")
+
+
+def test_every_render_declares_the_luna_tables_its_producer_reads(rig, tmp_path, monkeypatch):
+    """
+    What a render declares is kept by hand beside what its producer reads, and the two had
+    already drifted twice: both prometheus renders label by the group name without declaring
+    the group table, and the address the targets document publishes comes out of two tables
+    no render named - so a group rename and a re-address left the published documents stale
+    with nothing to say so.
+
+    Driven from the shipped manifests, against a Luna whose records note what was read of
+    them, so a field read without its tables declared fails here. What it cannot see is a
+    field read from anything but the node document, and a table whose contribution to a
+    field changes at Luna; NODE_DOCUMENT is where that is written down.
+    """
+    import glob as globbing
+
+    import yaml
+
+    from trixd.plugins.genders import backend as genders
+    from trixd.plugins.slurm import backend as slurm
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    declared = {}
+    for found in sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/manifest.yaml"))):
+        with open(found, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for endpoint in document.get("endpoints") or []:
+            if endpoint.get("render"):
+                declared[f"{document['plugin']}/{endpoint['path']}"] = \
+                    set(endpoint["render"].get("inputs") or [])
+    assert len(declared) >= 4, f"the manifests declared no renders to check: {declared}"
+
+    record = {"hostname": "node001.cluster", "group": "compute",
+              "provision_interface": "BOOTIF",
+              "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                              "network": "cluster", "macaddress": "aa:bb:cc:dd:ee:01"}]}
+
+    held = {}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    _hw_file(tmp_path, "node001.cluster", "compute")
+    for key, produce in (("prometheus/renders/targets", backend.render_targets),
+                         ("prometheus/renders/rule-files", backend.render_rule_files)):
+        seen = set()
+        held.clear()
+        held["node001"] = _Watched(record, seen)
+        produce()
+        _declares_every_table_beneath(key, declared, seen)
+
+    # The genders render reads the slurm plugin's node_set by its canonical path, so one
+    # stand-in covers both; a genders plugin that grows its own reader fails here first.
+    assert genders.node_set is slurm.node_set, \
+        "genders no longer reads the slurm plugin's node_set, so it needs its own run here"
+    seen = set()
+    monkeypatch.setattr(slurm, "luna",
+                        lambda: SimpleNamespace(nodes=lambda: {"node001": _Watched(record,
+                                                                                   seen)}))
+    slurm.node_set()
+    for key in sorted(declared):
+        if key.startswith(("slurm/", "genders/")):
+            _declares_every_table_beneath(key, declared, seen)
+
+
 def test_a_renamed_node_keeps_its_hardware_rules(rig, tmp_path, monkeypatch):
     """
     The file follows the name and every selector names the new host; a near-namesake is untouched.

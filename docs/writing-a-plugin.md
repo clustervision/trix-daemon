@@ -280,9 +280,15 @@ poll from what it last produced.
 
 | Field | Meaning |
 |---|---|
-| `inputs` | what wakes it: a Luna object (`luna.node`, `luna.group`, `luna.network`), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
+| `inputs` | what wakes it: `luna.` and one of Luna's own table names (`luna.node`, `luna.group`, `luna.nodeinterface`, `luna.ipaddress`, `luna.network`, and any other table Luna hashes), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
 | `coalesce` | how long a burst of changes is gathered, default `2s` |
 | `serve` | `json` to answer GET with what was produced; without it the render produces files and serves nothing |
+
+Declare the table that *carries* what the producer reads, including a table it
+reaches only through a field Luna assembles for it, and declare the table rather
+than the field. A wake carries no data: the render is told only that something
+moved and its producer re-reads Luna for the truth, so a declaration keeps
+working when a table gains, loses or renames a column.
 
 The backend provides `render_<path with dashes and slashes as underscores>`, or
 whatever `handler` names, taking no arguments. Every render runs once at startup.

@@ -407,16 +407,20 @@ endpoints:
     public: true
     handler: render_targets
     render:
-      inputs: [luna.node, luna.network, exporter, exporter-scope]
+      # Luna's own table names, one per table this document is built out of: the scraped
+      # address is `ipaddress`, the interface carrying it `nodeinterface`, the domain in
+      # every hostname `network`, and the `luna_group` label `group`.
+      inputs: [luna.node, luna.group, luna.nodeinterface, luna.ipaddress, luna.network,
+               exporter, exporter-scope]
       serve: json
       coalesce: 2s
     summary: Service discovery targets, served from the render
     description: |
       The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
       address Prometheus scrapes and the labels it attaches. It is answered from the last
-      render, which runs when a node or network changes through the luna plugin, on a
-      notify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,
-      because service discovery presents no token.
+      render, which runs when a node, group, interface or network changes through the luna
+      plugin, on a notify, or when Luna's table hashes change, so a poll costs no call to
+      Luna. Public, because service discovery presents no token.
 
       The exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,
       `slurm_job` 14207 and `lshw` 14208.
@@ -433,7 +437,11 @@ endpoints:
     minimum: reader
     handler: render_rule_files
     render:
-      inputs: [settings, rules, luna.node]
+      # Every hardware file is named by its node's hostname and labelled with its group,
+      # and Luna assembles that hostname out of the node, the interface it provisions over,
+      # that interface's address and its network. Each of those decides what to relabel.
+      inputs: [settings, rules, luna.node, luna.group, luna.nodeinterface, luna.ipaddress,
+               luna.network]
     # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk
 

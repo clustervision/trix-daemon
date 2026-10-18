@@ -4661,7 +4661,7 @@
     },
     "/api/v1/prometheus/renders/targets": {
       "get": {
-        "description": "The document Prometheus' `http_sd` polls: one entry per node and exporter, with the\naddress Prometheus scrapes and the labels it attaches. It is answered from the last\nrender, which runs when a node or network changes through the luna plugin, on a\nnotify, or when Luna's table hashes change, so a poll costs no call to Luna. Public,\nbecause service discovery presents no token.\n\nThe exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,\n`slurm_job` 14207 and `lshw` 14208.\n\n**Access:** public, no token",
+        "description": "The document Prometheus' `http_sd` polls: one entry per node and exporter, with the\naddress Prometheus scrapes and the labels it attaches. It is answered from the last\nrender, which runs when a node, group, interface or network changes through the luna\nplugin, on a notify, or when Luna's table hashes change, so a poll costs no call to\nLuna. Public, because service discovery presents no token.\n\nThe exporters and their ports: `node` 14200, `ipmi` 14202, `nvidia` 14203,\n`slurm_job` 14207 and `lshw` 14208.\n\n**Access:** public, no token",
         "operationId": "prometheus_render_targets_get_api_v1_prometheus_renders_targets_get",
         "responses": {
           "200": {
