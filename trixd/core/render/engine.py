@@ -240,11 +240,16 @@ class Engine:
         if not self.reconciled:
             return []
         recovered = []
-        for item in list(self.renders.values()):
-            if not item.last_error:
-                continue
-            if self.run(item):
-                recovered.append(item.key)
+        for key in list(self.renders):
+            with self.lock:
+                # Looked up again under the lock, as notify and the trailing timer are: a
+                # reload landing inside this pass replaces the render sampled above, and
+                # producing from that one writes over what its replacement already wrote.
+                item = self.renders.get(key)
+                if item is None or not item.last_error:
+                    continue
+                if self.run(item):
+                    recovered.append(key)
         return recovered
 
     def notify(self, changed: str = "") -> list:

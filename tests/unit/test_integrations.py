@@ -702,6 +702,72 @@ def test_a_render_that_failed_is_produced_again_where_luna_answers_no_hashes(rig
     assert not item.last_error, "a render that is serving still carries its failure"
 
 
+def test_a_retry_produces_what_the_engine_holds_and_not_what_it_sampled(rig):
+    """
+    The retry sweeps the renders it read before the first producer ran, and a reload
+    landing inside that sweep replaces them. Producing from the sampled object then runs
+    code that has been unplugged, after its replacement has already written, so what is
+    left on disk is the old render's - which is the reason notify and the trailing timer
+    look their render up again under the lock, stated in a comment beside each.
+
+    A retry pass is where this is reachable for long enough to matter: it is one producer
+    after another against a Luna that may be slow, and the reload is an ordinary enable,
+    disable or reload of a plugin.
+
+    The preconditions are asserted too, because the negative half is satisfied by a retry
+    that produced nothing at all.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    spec = Render(inputs=["luna.node"], coalesce="0s")
+    ran, swapped, reconciling = [], [], [1]
+
+    def new_second():
+        """
+        The second render as the reload leaves it, still unable to produce.
+        """
+        ran.append("new")
+        raise RuntimeError("luna is away")
+
+    def old_second():
+        """
+        The second render as it was before the reload. Nothing may call this again.
+        """
+        ran.append("old")
+        raise RuntimeError("luna is away")
+
+    def first():
+        """
+        The first render of the pass: away for the reconcile, and on the retry it succeeds
+        and takes the reload with it.
+        """
+        ran.append("first")
+        if reconciling:
+            reconciling.clear()
+            raise RuntimeError("luna is away")
+        if not swapped:
+            swapped.append(1)
+            engine.replace("reloaded", [("renders/second", spec, new_second)])
+        return {"nodes": []}
+
+    engine = renders()
+    engine.forget_all()
+    engine.register("reloaded", "renders/first", spec, first)
+    engine.register("reloaded", "renders/second", spec, old_second)
+    assert engine.run_all() == 0, \
+        "both renders were meant to fail, so there is nothing for a retry to put back"
+    ran.clear()
+
+    engine.retry()
+    assert ran[:1] == ["first"], \
+        f"the pass never reached the producer that reloads, so nothing is proven: {ran}"
+    assert swapped and engine.renders["reloaded/renders/second"].producer is new_second, \
+        "the reload did not take, so the sampled render is still the one held"
+    assert "old" not in ran, \
+        f"the retry produced from a render the reload had replaced: {ran}"
+
+
 def test_a_failed_render_is_put_back_on_every_pass_that_reached_luna(rig, monkeypatch):
     """
     Recovery rests on the retry standing above every way a pass can end, so it is asserted
