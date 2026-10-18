@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import contextlib
 import inspect
 import os
 import re
@@ -2635,3 +2636,91 @@ def test_a_render_wakes_only_on_the_inputs_it_declares(rig):
         "a change named by its source alone did not reach what declares that source"
     assert woken("luna.cluster") == set(), \
         "something declares a cluster input now, so the import decision needs revisiting"
+
+
+def test_a_refusal_leaves_a_loaded_plugin_serving():
+    """
+    A reload that refuses must not record the plugin as refused: its routes are still in
+    the table and still answering, and the control surface would say otherwise - refused,
+    no routes - over a path that answers 200.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED
+    from trixd.core.plugins.registry import LoadedPlugin, Registry
+
+    known = Registry()
+    serving = LoadedPlugin("example", PLUGIN_STATE_LOADED)
+    serving.routes = ["one live route"]
+    known.put(serving)
+
+    after = known.refuse("example", "the new manifest does not parse")
+    assert after.state == PLUGIN_STATE_LOADED, "a refusal unplugged what was serving"
+    assert after.routes == ["one live route"], "a refusal forgot the routes still bound"
+    assert known.get("example") is serving, "a refusal replaced the serving entry"
+    assert after.reason == "the new manifest does not parse"
+    assert known.listing()[0]["routes"] == 1, "the control surface reports no routes"
+
+
+def test_a_directory_cannot_take_a_reserved_prefix_through_its_manifest(rig, tmp_path):
+    """
+    The reserved-name check reads the directory name and the router prefix comes from the
+    manifest, so the two have to be made to agree: a plugin directory under any name at
+    all would otherwise serve /api/v1/system by saying so in its manifest.
+    """
+    site = tmp_path / "site-plugins" / "impostor"
+    site.mkdir(parents=True)
+    (site / "__init__.py").write_text("", encoding="utf-8")
+    (site / "backend.py").write_text(
+        "class Backend:\n    def show(self):\n        return {}\n", encoding="utf-8")
+    (site / "manifest.yaml").write_text(
+        "plugin: system\nbackend: backend\nendpoints:\n  - path: shadow\n"
+        "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
+
+    # The route table first, so the proof is the prefix and not only the wording.
+    with contextlib.suppress(PluginRefused):
+        loader.load(rig, "impostor", str(site))
+    assert not _serves(rig, f"{API_PREFIX}/system/shadow"), \
+        "a plugin built a route under the prefix the daemon reserves for itself"
+    with pytest.raises(PluginRefused, match="calls itself system but sits at impostor"):
+        loader.load(rig, "impostor", str(site))
+
+
+def test_a_manifest_cannot_take_a_service_token():
+    """
+    `service` is a real token kind, and the gate has no branch for it: it falls through to
+    the user path. The minimum requirement is skipped as well, because that fires for a
+    user token only, so the route would bind with no role floor and no published access
+    line. This refusal is the only thing in the way.
+    """
+    from trixd.common.constants import TOKEN_KIND_SERVICE
+
+    document = {"plugin": "example", "endpoints": [
+        {"path": "thing", "methods": ["GET"], "handler": "show", "minimum": "reader",
+         "token": TOKEN_KIND_SERVICE}]}
+    with pytest.raises(PluginRefused, match="unknown token kind"):
+        parse(document)
+
+    # With no minimum either, to show nothing else would have caught it.
+    document["endpoints"][0].pop("minimum")
+    with pytest.raises(PluginRefused, match="unknown token kind"):
+        parse(document)
+
+    document["endpoints"][0]["token"] = "user"
+    with pytest.raises(PluginRefused, match="must declare a minimum role"):
+        parse(document)
+
+
+def test_a_manifest_cannot_bind_a_schema_it_never_declared():
+    """
+    A typo'd schema name binds the route anyway: the published operation shows no
+    requestBody and the handler is handed body: None, so the author's only signal is a
+    plugin that quietly ignores what is sent to it.
+    """
+    document = {"plugin": "example", "schemas": {"setting": {"value": {"type": "string"}}},
+                "endpoints": [{"path": "setting", "methods": ["PATCH"], "handler": "setting",
+                               "minimum": "manager", "schema": "settings"}]}
+    with pytest.raises(PluginRefused, match="wants schema settings, which is not declared"):
+        parse(document)
+
+    document["endpoints"][0]["schema"] = "setting"
+    assert parse(document).endpoints[0].body_schema == "setting", \
+        "the refusal is about the name, not about declaring a schema at all"
