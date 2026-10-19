@@ -6796,7 +6796,7 @@
     },
     "/api/v1/system/replication/owed": {
       "get": {
-        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many passes have tried it and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many times it has been offered, and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "replication_owed_api_v1_system_replication_owed_get",
         "responses": {
           "200": {

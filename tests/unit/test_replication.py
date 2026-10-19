@@ -927,7 +927,15 @@ def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
     # the peer being down: after a restart every peer starts with nothing held.
     assert not outbox.breaker_open("ctrl2"), "a missing token was blamed on the peer"
 
-    # The sweep may, and does.
+    # The sweep may, and does - on the pass the row is next due on. The inline attempt
+    # counted, and a row is not offered again until its turn, so with the clock standing
+    # still it is the row that has to be moved for this to be the pass that follows.
+    handle = database.session()
+    try:
+        owed = handle.scalar(select(models.Outbox)).id
+    finally:
+        handle.close()
+    age_to_its_first_retry(owed)
     outbox.drain("ctrl2")
     assert signed == ["ctrl2"], "the sweep did not sign in to send what was owed"
 
@@ -1002,12 +1010,25 @@ def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
     outbox._failures.clear()
     outbox._open.clear()
     try:
-        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
-                      {"node": "node001"}, None, "req", "tester")
+        row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                               {"node": "node001"}, None, "req", "tester")
+        # Aged before each pass, which is what keeps these thirty offers real: a row that
+        # has just been offered waits for its turn, so thirty passes over a row nothing
+        # ages are one offer and twenty-nine deferrals - and both counts below read the
+        # same either way, which is the whole of what this test would have stopped saying.
         for _ in range(30):
+            age_past_the_span(row_id)
             outbox.drain("ctrl2")
         assert outbox.states()["failed"] == 0, "a peer merely being away became terminal"
         assert outbox.states()["pending"] == 1, "the row stopped waiting to be sent"
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert row.attempts == 30, \
+                f"the peer was offered the row {row.attempts} times over thirty passes, " \
+                f"so this is no longer thirty passes of being away"
+        finally:
+            handle.close()
     finally:
         outbox._failures.clear()
         outbox._open.clear()
@@ -1760,6 +1781,47 @@ def datetime_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def age_past_the_span(row_id: int):
+    """
+    Put a row's `created` far enough back that its next offer is due whatever its count.
+
+    The wait before a row is offered again grows with the count and is clamped to the span
+    the peer may owe it for, so past the span every pass offers it. Nothing in a test moves
+    the clock, so the row is moved instead.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = datetime_now() - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60)
+        handle.commit()
+    finally:
+        handle.close()
+
+
+def age_to_its_first_retry(row_id: int):
+    """
+    Put a row's `created` back by one sweep interval, which is the pass a row that has been
+    offered once is next due on: the first retry is the interval after the first offer, and
+    nothing in a test moves the clock.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = (datetime_now()
+                       - timedelta(seconds=settings().replication.interval + 1))
+        handle.commit()
+    finally:
+        handle.close()
+
+
 def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):
     """
     A repeat of the same call is answered with the answer given the first time, not by
@@ -1935,6 +1997,186 @@ def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
         assert row.state == outbox.FAILED, \
             f"after {row.attempts} declines the row is still {row.state}, so nothing " \
             f"will ever clear it"
+    finally:
+        handle.close()
+
+
+
+def test_a_row_the_peer_answered_for_is_not_offered_again_on_the_next_pass(
+        rig, monkeypatch):
+    """
+    How often a declining row was offered is the span divided by the sweep interval, so a
+    site sweeping ten times as often retried one row ten times as hard: how hard one row is
+    retried is not a thing a site's interval should decide. Each offer now waits longer
+    than the one before, and the wait is this module's.
+
+    What the interval still decides, and must: the first offer and the first retry. A fresh
+    row is due at once - which is what leaves the caller's inline path needing no change -
+    and its first retry is the pass that follows.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-backoff", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    def offers() -> int:
+        """How many times the row has been offered, read back between passes."""
+        handle = database.session()
+        try:
+            return handle.scalar(select(models.Outbox)
+                                 .where(models.Outbox.id == row_id)).attempts
+        finally:
+            handle.close()
+
+    outbox.drain("ctrl2")
+    assert offers() == 1, \
+        f"a row written down this moment was offered {offers()} times on the pass that " \
+        f"followed, so a fresh row is not due and the inline path is not what it was"
+
+    outbox.drain("ctrl2")
+    assert offers() == 1, \
+        f"the row was offered {offers()} times with no time passing at all, so what " \
+        f"spaces its offers out is still how often the site sweeps"
+
+    row_interval = settings().replication.interval
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = datetime_now() - timedelta(seconds=row_interval + 1)
+        handle.commit()
+    finally:
+        handle.close()
+    outbox.drain("ctrl2")
+    assert offers() == 2, \
+        f"an interval after it was written down the row had been offered {offers()} " \
+        f"times: the first retry has to stay the pass that follows the first offer"
+
+
+def test_a_peer_that_is_silent_many_times_is_only_deferred_and_never_given_up_on(
+        rig, monkeypatch):
+    """
+    What makes keying the wait on `attempts` safe, and the one thing it must not cost. The
+    count includes silence - a dark peer, a pass holding no token - so a peer that was away
+    carries a high count into its next offer. A later offer is all that may follow from the
+    count: a row must never go terminal for not having been answered, which is why the span
+    counts answers and this does not.
+
+    The deferral is asserted from the attempt count, which both builds have, so a build
+    without the wait fails on the assertion rather than on reaching for what it lacks.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                           {"node": "node001"}, None, "req-silent", "tester")
+
+    def reading() -> tuple:
+        """The row's state and attempt count, read back between passes."""
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            return row.state, row.attempts
+        finally:
+            handle.close()
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.drain("ctrl2")
+        assert reading() == (outbox.QUEUED, 1), \
+            f"the row reads {reading()} after one pass at a peer that said nothing, so " \
+            f"the silence the rest of this needs did not happen"
+        outbox.drain("ctrl2")
+        assert reading() == (outbox.QUEUED, 1), \
+            f"the row reads {reading()}: a second offer went out with no time passing, " \
+            f"so silence is still offered at whatever rate the site sweeps at"
+
+        # More silent offers than any count in this module, each one due because the row is
+        # aged past the span - which is also the only way the count can be driven up here.
+        # None of them is an answer, so none of them is a reason to stop asking.
+        for _ in range(20):
+            age_past_the_span(row_id)
+            outbox.drain("ctrl2")
+        state, attempts = reading()
+        assert attempts >= 21, \
+            f"the row was offered {attempts} times, so the count this test needs driven " \
+            f"well past every bound in the module was never driven up"
+        assert state == outbox.QUEUED, \
+            f"{attempts} offers to a peer that never answered left the row {state}: a " \
+            f"peer being away is the one thing that is not a reason to stop asking, and " \
+            f"a wait keyed on a count that includes silence must not change that"
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_row_owed_past_the_span_is_still_offered_so_that_it_can_end(rig, monkeypatch):
+    """
+    The clamp on the wait, which is what keeps the span exact rather than approximate. The
+    pass that gives up on a row is the pass that offers it, so a row whose next offer falls
+    further out than the span would never be offered again and so could never be given up
+    on: a row nothing clears and nothing reaps, which is the wedge the span was added to
+    remove. Unclamped, the wait for this row's count is hours.
+
+    The count is set rather than driven, because the state this guards against is a row
+    that already carried a high count when the wait arrived.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-clamp", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.attempts = 20
+        row.created = datetime_now() - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60)
+        handle.commit()
+    finally:
+        handle.close()
+
+    outbox.drain("ctrl2")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert row.attempts == 21, \
+            f"the row has been offered {row.attempts} times: a row the peer has owed for " \
+            f"longer than the span was not offered, so nothing can ever give up on it"
+        assert row.state == outbox.FAILED, \
+            f"the row is {row.state} after the span it may be owed for, so the wait has " \
+            f"deferred the exit as well as the retry"
     finally:
         handle.close()
 
@@ -2473,7 +2715,16 @@ def test_an_inline_send_waits_for_what_is_already_owed_for_that_node(rig, monkey
         deleted = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
                                    {"node": "node001"}, None, {"changed": True},
                                    "req-delete", "tester")
-        # Whatever the sweep has not delivered yet, it delivers now.
+        # Whatever the sweep has not delivered yet, it delivers on the pass that row is
+        # next due on: the write was offered inline and refused, which counted, so with
+        # the clock standing still the row is what has to be moved.
+        handle = database.session()
+        try:
+            owed = handle.scalar(select(models.Outbox)
+                                 .where(models.Outbox.method == "PATCH")).id
+        finally:
+            handle.close()
+        age_to_its_first_retry(owed)
         outbox.drain("ctrl2")
     finally:
         outbox._failures.clear()

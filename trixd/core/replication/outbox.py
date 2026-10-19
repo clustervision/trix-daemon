@@ -74,11 +74,13 @@ IN_FLIGHT: str = "in-flight"
 # free, and a dark peer must not hold a request thread. The inline path's alone - the drain
 # pays the sweep's, imported rather than repeated, since a merely slow peer drains nothing.
 TIMEOUT: int = 3
-# After this many sweep passes a row still waiting is said loudly, once, and then every
-# this-many passes. It is NOT given up on: a peer away for an hour of patching would
-# otherwise leave a terminal row that stops everything for that target with no way back.
-# What a row needs is to be seen, which is `/system/replication/owed` and the health
-# counts, not to be abandoned.
+# After this many offers a row still waiting is said loudly, once, and then every
+# this-many offers. Offers, not passes: a row the peer keeps answering for is not offered
+# on every pass once it has backed off, so its first loud line lands late in the span it is
+# allowed to be owed rather than twelve passes in. It is NOT given up on: a peer away for
+# an hour of patching would otherwise leave a terminal row that stops everything for that
+# target with no way back. What a row needs is to be seen, which is
+# `/system/replication/owed` and the health counts, not to be abandoned.
 LOUD_AFTER: int = 12
 # How long a finished row is kept, so a caller that polls slowly still sees it.
 KEEP_SECONDS: int = 3600
@@ -99,6 +101,14 @@ KEEP_SECONDS: int = 3600
 # meant all along: how long the peer has owed this without taking it.
 DECLINED: str = "the peer did not apply it"
 DECLINED_FOR_SECONDS: int = 3600
+# How a row the peer has answered for waits before it is offered again: the sweep interval,
+# doubling per offer, and never slower than the cap. The cap is what makes the rate a
+# property of this module rather than of a site's INTERVAL - sweeping every thirty seconds
+# offered a declining row a hundred and twenty times inside the hour it is allowed to be
+# owed, which is a site's sweep frequency deciding how hard one row is retried. At the
+# interval this code defaults to the cap is the interval, so such a site sees no change.
+BACKOFF_FACTOR: int = 2
+BACKOFF_CAP: int = 300
 # How long a refusal nothing has cleared is kept. It holds its node's later actions, and
 # only a newer action for that node clears it - so where nobody acts on that node again,
 # the hold is permanent and lives in a row nothing reaps. A day is long enough to be seen
@@ -142,6 +152,32 @@ def chain_of(target: str) -> str:
     rows nothing can clear, or send a node's actions out of order.
     """
     return target.split("|")[0]
+
+
+def due_in(attempts: int) -> int:
+    """
+    How long after `created` a row that has been offered this many times may be offered
+    again: the interval, doubled per offer already made, capped, and never longer than the
+    span the peer is allowed to owe it for.
+
+    Derived rather than stored, because the two fields it needs are already kept together:
+    `created` is when this intent was written down and `attempts` how many times it has
+    been offered, and `submit` resets both - so a newer intent starts again at the interval
+    with nothing anywhere to put back, and a fresh row is due at once.
+
+    The clamp is what keeps the span exact. The pass that makes a row terminal is the pass
+    that offers it, so a row owed for longer than DECLINED_FOR_SECONDS has to be due, or
+    the wait defers the exit as well as the retry - and a row carrying a large `attempts`
+    would be deferred past any time anyone will wait, which is the wedge the span exists to
+    remove. The interval floors at one second so the loop is bounded by the cap rather than
+    by `attempts`.
+    """
+    base = max(1, settings().replication.interval)
+    grown = 0
+    while grown < attempts and base * BACKOFF_FACTOR ** grown < BACKOFF_CAP:
+        grown += 1
+    waited = base * (BACKOFF_FACTOR ** grown - 1) + (attempts - grown) * BACKOFF_CAP
+    return min(waited, DECLINED_FOR_SECONDS)
 
 
 def peers() -> list:
@@ -468,7 +504,7 @@ def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> N
                          row.path, owed_for / 60, message)
         if state == QUEUED and row.attempts and row.attempts % LOUD_AFTER == 0:
             # Said, not abandoned: it keeps riding the sweep until the peer takes it.
-            LOGGER.error("%s has owed %s a %s %s for %d passes now: %s", row.origin,
+            LOGGER.error("%s has owed %s a %s %s for %d offers now: %s", row.origin,
                          row.peer, row.method, row.path, row.attempts, message)
         if state == FAILED:
             # The row is not permanent evidence - the next action for this node discards it
@@ -640,12 +676,14 @@ def drain(peer: str) -> dict:
         # body digest left off, so a PATCH and a rename for one node are the same chain.
         # Keying on the whole target would not group them: the PATCH carries a digest and
         # the rename a different one, which is precisely the pair that must stay ordered.
-        rows = [(row.id, row.state, (row.plugin, chain_of(row.target)))
-                for row in waiting]
+        rows = [(row.id, row.state, (row.plugin, chain_of(row.target)),
+                 row.created, row.attempts) for row in waiting]
     finally:
         handle.close()
-    sent, refused, blocked, holding, in_flight, stuck = 0, 0, 0, 0, 0, set()
-    for row_id, state, chain in rows:
+    sent, refused, blocked, holding, in_flight, deferred = 0, 0, 0, 0, 0, 0
+    stuck = set()
+    now = datetime.now(timezone.utc).replace(tzinfo=None)
+    for row_id, state, chain, created, attempts in rows:
         if state == FAILED:
             stuck.add(chain)
             refused += 1
@@ -653,6 +691,12 @@ def drain(peer: str) -> dict:
         if chain in stuck:
             # Something earlier for this same target was refused; this one assumes it.
             blocked += 1
+            continue
+        if (now - created).total_seconds() < due_in(attempts):
+            # Offered recently enough. It is not done, so it holds its own node's chain
+            # exactly as a decline does: whatever comes after it assumes it landed.
+            stuck.add(chain)
+            deferred += 1
             continue
         outcome, learned = _attempt(peer, row_id)
         if outcome == DONE:
@@ -705,8 +749,13 @@ def drain(peer: str) -> dict:
     if in_flight:
         LOGGER.info("%d action(s) for %s were already being sent by this daemon's other "
                     "sender, so this pass left them alone", in_flight, peer)
+    if deferred:
+        # Debug, not a warning: a queue being retried is in this state most of the time,
+        # and a line per pass per peer would bury the ones above it. What is still owed by
+        # a deferred row is in `left`, which is what health reports.
+        LOGGER.debug("%d action(s) at %s wait for their next offer", deferred, peer)
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked,
-            "in_flight": in_flight}
+            "in_flight": in_flight, "deferred": deferred}
 
 
 def _reap(peer: str) -> int:

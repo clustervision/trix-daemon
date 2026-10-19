@@ -393,8 +393,9 @@ def replication_table(name: str = Path(description="principal or declaration",
 @router.get("/replication/owed", summary="What this controller still owes its peers",
             description=(
                 "Every replicated call that has not reached a peer yet, oldest first, with "
-                "the peer it is for, what it would do, how many passes have tried it and "
-                "the last refusal verbatim. A peer that is not answering is named first.\n\n"
+                "the peer it is for, what it would do, how many times it has been offered, "
+                "and the last refusal verbatim. A peer that is not answering is named "
+                "first.\n\n"
                 "`/system/health` carries the counts and takes no token; this carries the "
                 "peers and the rows and therefore does, because naming the other "
                 "controllers is not something an unauthenticated port should do.\n\n"
