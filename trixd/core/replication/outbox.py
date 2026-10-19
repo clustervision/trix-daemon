@@ -388,7 +388,8 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
         if answer.status_code >= 500 or answer.status_code in (401, 403):
             return QUEUED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
         # Any other 4xx is terminal: the action is malformed, or names an endpoint this
-        # peer does not serve. No number of passes fixes a version skew.
+        # peer does not serve. No number of passes fixes a version skew - and a peer with
+        # the plugin unplugged answers 503, so it is kept above rather than dropped here.
         return FAILED, f"{answer.status_code}: {answer.text[:200]}", ANSWERED
     return QUEUED, "no answer", NO_ANSWER
 

@@ -544,9 +544,11 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
     assert refused.status_code == 400, refused.text
     assert "replicate" in refused.json()["message"]
 
+    # A plugin this controller does not have is not a malformed action, so it is refused
+    # retryably rather than terminally - see the two tests below this one.
     missing = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
         "plugin": "nosuch", "path": "x", "method": "PATCH", "origin": "ctrl1"})
-    assert missing.status_code == 404, missing.text
+    assert missing.status_code >= 500, missing.text
 
     # An endpoint that takes no body sends a null one, and the envelope must accept that.
     # It did not: `body: dict = None` is not optional to pydantic, so a DELETE was refused
@@ -629,6 +631,141 @@ def test_apply_refuses_a_body_the_endpoint_does_not_declare(rig, client, headers
                        json={**envelope, "body": {"count": 3}, "request_id": "r-good"})
     assert good.status_code == 200, good.text
     assert good.json()["result"]["count"] == 3, good.text
+
+
+def _what_the_sender_does_with(status: int, monkeypatch) -> str:
+    """
+    The state the outbox puts a row in when the peer answers this status, asked of the
+    outbox rather than read off the number here.
+    """
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """One refusal from the peer, in the shape requests hands back."""
+
+        status_code = status
+        text = '{"message": "a refusal"}'
+
+        def json(self):
+            """The body the error handler writes."""
+            return {"message": "a refusal"}
+
+    class Row:
+        """The fields sending reads off an outbox row."""
+
+        plugin, path, method = "crossing", "thing/<node>", "PATCH"
+        payload = '{"variables": {"node": "node001"}, "body": {"count": 1}}'
+        origin, request_id = "ctrl1", "r-class"
+
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    return outbox._send("ctrl2", Row())[0]
+
+
+def test_a_plugin_unplugged_on_the_peer_keeps_the_action_instead_of_dropping_it(
+        rig, client, headers, monkeypatch):
+    """
+    A plugin unplugged on one controller is temporary, and plugging it back in is what makes
+    the action apply. Answered as "no such thing", the sender made the row terminal on its
+    first attempt and discarded it - and the state these endpoints carry is exactly the state
+    no replicated table can repair, so the pair stayed apart with nothing able to heal it.
+
+    Asserted through the sender's own classification, because the number is not the point:
+    what matters is which class the outbox puts the answer in.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication import outbox
+
+    _crossing_plugin(rig)
+    unplugged = client.post(f"{API_PREFIX}/system/plugins/crossing/disable", headers=headers)
+    assert unplugged.status_code == 200, unplugged.text
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 1},
+                "origin": "ctrl1", "request_id": "r-unplugged"}
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                          json=envelope)
+
+    assert refused.status_code >= 400, \
+        f"the plugin is unplugged here, so this call cannot have applied: {refused.text}"
+    assert _what_the_sender_does_with(refused.status_code, monkeypatch) == outbox.QUEUED, \
+        f"the peer answered {refused.status_code} for a plugin it has unplugged, which the " \
+        f"sender treats as {_what_the_sender_does_with(refused.status_code, monkeypatch)}: " \
+        f"the row is discarded on its first attempt and plugging the plugin back in " \
+        f"replays nothing"
+
+
+def test_an_endpoint_this_build_does_not_serve_is_still_terminal(
+        rig, client, headers, monkeypatch):
+    """
+    The other side of the same line, so a fix for the one above cannot quietly make every
+    refusal retryable: a peer naming an endpoint this build does not have is a version skew,
+    and no number of passes changes it.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication import outbox
+
+    _crossing_plugin(rig)
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "crossing", "path": "thing/<gone>", "method": "PATCH",
+        "variables": {"gone": "node001"}, "body": None, "origin": "ctrl1",
+        "request_id": "r-skew"})
+
+    assert refused.status_code >= 400, refused.text
+    assert _what_the_sender_does_with(refused.status_code, monkeypatch) == outbox.FAILED, \
+        f"an endpoint this build does not serve was answered {refused.status_code}, which " \
+        f"the sender keeps offering: it rides the sweep for an hour over a skew that no " \
+        f"pass can settle"
+
+
+def _apply_route_refusals() -> set:
+    """
+    Every error class the apply route raises, read out of the route itself.
+
+    A refusal added later has to be classified by the test below or it fails: one refusal
+    sitting in the wrong class is what this whole pair of tests exists for, and a list of
+    the refusals somebody once knew about is how the next one gets in.
+    """
+    import ast
+    import inspect
+
+    from trixd.api.v1 import system
+
+    tree = ast.parse(inspect.getsource(system.replication_apply))
+    return {node.exc.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)}
+
+
+def test_every_refusal_the_apply_route_raises_is_in_a_class_the_sender_was_told_about(
+        rig, monkeypatch):
+    """
+    What the sender must do with each refusal this route can raise. A class raised here and
+    named nowhere below is the failure: it would ship classified by whichever side of the
+    outbox's 4xx line its status happened to fall on.
+    """
+    from trixd.common import errors
+    from trixd.core.replication import outbox
+
+    # The action is well formed and this controller is not ready for it, against a build
+    # that does not serve or accept what the peer named, which no pass settles.
+    intended = {"ServiceUnavailable": outbox.QUEUED, "NotFound": outbox.FAILED,
+                "BadRequest": outbox.FAILED}
+    raised = _apply_route_refusals()
+
+    assert raised, "no refusal was found in the route, so this read the wrong thing"
+    unclassified = sorted(raised - set(intended))
+    assert not unclassified, (
+        f"the apply route raises {unclassified}, and nothing here says what the sender "
+        f"should do with it: decide, rather than letting its status code decide")
+    for name in sorted(raised):
+        status = getattr(errors, name).status_code
+        assert _what_the_sender_does_with(status, monkeypatch) == intended[name], (
+            f"{name} is {status}, which the sender treats as "
+            f"{_what_the_sender_does_with(status, monkeypatch)} rather than "
+            f"{intended[name]}")
 
 
 def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
