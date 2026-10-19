@@ -930,6 +930,52 @@ def test_a_decline_is_built_to_the_characters_the_sender_keeps(rig, tmp_path, mo
     assert "has not been scraped yet" in said, said
 
 
+def test_a_reason_longer_than_the_budget_does_not_take_the_count_with_it(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    One reason can be longer than the whole budget on its own: a batch met by a Prometheus
+    that is not answering declines with the transport error inside it. Built past the budget
+    and cut at the end, that reason spends every character and the count of what did not fit
+    is cut away with it - so the sender records a sentence stopping mid-word that says
+    nothing about the second cause, which is the defect the budget was built against.
+    """
+    from trixd.core.replication import applied
+    from trixd.plugins.prometheus import backend as prometheus
+
+    def away(url, params=None, **_):
+        """
+        Prometheus, not answering, as requests reports one.
+        """
+        raise prometheus.requests.exceptions.ConnectionError(
+            "HTTPConnectionPool(host='127.0.0.1', port=9): Max retries exceeded with url: "
+            "/api/v1/query (Caused by NewConnectionError('<urllib3.connection."
+            "HTTPConnection object: Failed to establish a new connection: [Errno 111] "
+            "Connection refused'))")
+
+    known = {f"node{index:03d}": {"hostname": f"node{index:03d}.cluster", "group": "compute"}
+             for index in range(30)}
+    backend = _prometheus_rig(tmp_path, monkeypatch, known)
+    monkeypatch.setattr(prometheus.requests, "get", away)
+    answer = backend.set_hw_rules({
+        "nodes": [{"node": name, "force": True} for name in sorted(known)]
+                 + [{"node": f"gone{index:03d}"} for index in range(10)]})
+
+    # The preconditions, before the sentence is read: forty entries declined for two causes,
+    # and the commoner of the two carries a reason longer than the whole budget.
+    reasons = [item.get("message") for item in answer["nodes"] if not item.get("ok")]
+    assert len(reasons) == 40, f"the batch did not decline what this is about: {reasons}"
+    assert len([one for one in reasons if "not a node Luna knows" in one]) == 10, reasons
+    assert len(max(reasons, key=len)) > applied.KEPT, \
+        f"no reason here outruns the budget, so this proves nothing: {sorted(reasons)[0]}"
+
+    said = answer["skipped"]
+    assert said == applied.declined(answer), \
+        f"the sender cuts {len(said) - len(applied.declined(answer))} characters off a " \
+        f"sentence of {len(said)} built past what it keeps"
+    assert said.endswith(prometheus.MORE.format(count=1)), \
+        f"one long reason spent the budget and took the count of the rest with it: {said!r}"
+
+
 def _sentence_makers(source: str) -> set:
     """
     The functions one module defines that say they answer a string.
