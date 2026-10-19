@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import argparse
 import asyncio
+import configparser
 import os
 import signal
 import sys
@@ -240,10 +241,11 @@ def main(argv: list = None) -> int:
     found: list = []
     try:
         configuration.load(args.config, found)
-    except ValueError as error:
-        # A wrong setting stops the daemon here, named, rather than as a traceback later.
-        # Nothing downstream will run to say what was found before it, and there is no
-        # logfile to say it to, so this is the one path that reports it itself.
+    except (ValueError, configparser.Error, OSError) as error:
+        # Named here rather than as a traceback later: a setting trixd cannot read raises
+        # ValueError, a malformed file a configparser.Error and an unreadable secret file an
+        # OSError. Nothing downstream runs to say what was found before it, and no logfile
+        # exists to say it to, so this is the one path that reports it itself.
         for message in found:
             print(f"{DAEMON_NAME}: {message}", file=sys.stderr)
         print(f"{DAEMON_NAME}: {error}", file=sys.stderr)
@@ -255,7 +257,9 @@ def main(argv: list = None) -> int:
         if args.subcommand == "check" and args.name:
             from trixd.core.plugins import loader
 
-            configuration.set_current(configuration.load(args.config))
+            config = configuration.set_current(configuration.load(args.config))
+            trixlog.setup(config.logger.level, "")
+            trixlog.report(config.warnings)
             found = loader.discover().get(args.name, "")
             if not found:
                 print(f"no plugin named {args.name}")

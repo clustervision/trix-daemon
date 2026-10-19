@@ -153,7 +153,8 @@ process. Write `data: dict = None`.
 
 The loader refuses a plugin as a whole rather than serving half of it. On a
 refusal the plugin already serving keeps serving, routes and renders alike, and
-the reload endpoint answers 409 with the reason.
+a refused reload leaves its trigger and its node source registered as well; the
+reload endpoint answers 409 with the reason.
 
 | Check | Outcome |
 |---|---|
@@ -261,6 +262,12 @@ from trixd.utils import declarations
 settings = declarations.read(PLUGIN, "settings", "", {"interval": "60s"})
 declarations.write(PLUGIN, "settings", "", body)
 ```
+
+Every verb that changes a document writes against the version it read, so two callers
+changing one key cannot overwrite each other's change unseen. Where one key is written
+faster than it can be read, the caller is refused `503` rather than answered `200` for a
+document that was not stored - so a handler that stores something should let that refusal
+reach its caller rather than catching it.
 
 ## Renders
 

@@ -43,7 +43,7 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
                                    ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
-from trixd.common.errors import BadRequest, NotFound, PluginRefused
+from trixd.common.errors import BadRequest, NotFound, PluginRefused, ServiceUnavailable
 from trixd.core import tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
@@ -393,8 +393,9 @@ def replication_table(name: str = Path(description="principal or declaration",
 @router.get("/replication/owed", summary="What this controller still owes its peers",
             description=(
                 "Every replicated call that has not reached a peer yet, oldest first, with "
-                "the peer it is for, what it would do, how many passes have tried it and "
-                "the last refusal verbatim. A peer that is not answering is named first.\n\n"
+                "the peer it is for, what it would do, how many times it has been offered, "
+                "and the last refusal verbatim. A peer that is not answering is named "
+                "first.\n\n"
                 "`/system/health` carries the counts and takes no token; this carries the "
                 "peers and the rows and therefore does, because naming the other "
                 "controllers is not something an unauthenticated port should do.\n\n"
@@ -424,7 +425,10 @@ def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
                  "retired, for instance - so it asks this controller to make the same "
                  "call. Only an endpoint whose own manifest says `replicate` can be asked "
                  "for, which is checked here as well as there, so a version-skewed pair "
-                 "refuses instead of being talked into work it does not declare.\n\n"
+                 "refuses instead of being talked into work it does not declare. A plugin "
+                 "this controller does not have plugged in is answered 503 rather than "
+                 "404: the call is well formed and plugging it back in makes it apply, so "
+                 "the sender keeps the action and offers it again.\n\n"
                  "The named handler is called directly rather than the route being "
                  "re-entered, so nothing is written down to send onwards: there is no loop "
                  "to prevent and no hop count to get wrong. rootus only, which is the "
@@ -442,7 +446,8 @@ def replication_owed(caller: Caller = Depends(guard(ROLE_READER))) -> dict:
                                      "origin": "dev2-rocky9-controller1"},
                                     "What was applied",
                                     errors={400: "Not an endpoint that declares replicate",
-                                            404: "No such plugin, or no such endpoint"}))
+                                            404: "No such endpoint on this controller",
+                                            503: "That plugin is not loaded here"}))
 def replication_apply(body: Action = Body(openapi_examples=docs.example(
                           {"plugin": "prometheus", "path": "hw-rules/<node>",
                            "method": "DELETE", "variables": {"node": "node001"},
@@ -464,7 +469,10 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
         return already
     entry = registry().plugins.get(body.plugin)
     if entry is None or entry.state != PLUGIN_STATE_LOADED:
-        raise NotFound(f"no plugin named {body.plugin} is loaded here")
+        # Retryable, not malformed: the action names a plugin, and whether this controller
+        # has that plugin plugged in is this controller's state. Terminal on the first
+        # attempt, every write aimed at it was dropped with no replicated table to repair it.
+        raise ServiceUnavailable(f"no plugin named {body.plugin} is loaded here")
     endpoint = next((item for item in entry.manifest.endpoints
                      if item.path == body.path
                      and body.method.upper() in [verb.upper() for verb in item.methods]),

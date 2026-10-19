@@ -138,15 +138,41 @@ def test_replication_follows_the_protocol_too(monkeypatch):
     assert seen["url"].startswith("http://peer.cluster:8050/")
 
 
+def _refusal(ini: str):
+    """
+    What main() does with an ini it cannot use: its exit code, or the escape itself.
+
+    An exception that leaves main() is what this is about, so it is reported as the
+    outcome rather than raised: a test that let it through would fail on the escape
+    instead of on the assertion that names the rule.
+    """
+    try:
+        return server.main(["--config", ini])
+    except Exception as error:
+        return f"{type(error).__name__} reached the interpreter"
+
+
 def test_a_bad_trixd_ini_is_reported_by_name_with_exit_code_2(tmp_path, capsys):
     """
     A typo in the ini is one line on stderr, not a traceback.
+
+    Every way the file can be wrong, not only a value trixd cannot read: configparser's
+    own refusals are not ValueErrors, so a dropped section header or a key written twice
+    used to leave main() for the interpreter's excepthook - a traceback in the journal and
+    exit 1, from the one block whose whole purpose is that neither happens.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text("[API]\nEXPIRY = tomorrow\n", encoding="utf-8")
     assert server.main(["--config", str(ini)]) == 2
     assert "[API] EXPIRY" in capsys.readouterr().err
     assert server.main(["--config", str(tmp_path / "absent.ini")]) == 2
+    for text, named in (("BIND = 1\n[API]\n", "no section headers"),
+                        ("[API]\nBIND = 1\nBIND = 2\n", "option 'bind'"),
+                        ("[API]\n[API]\n", "section 'API' already exists"),
+                        ("[API]\nnonsense\n", "parsing errors")):
+        ini.write_text(text, encoding="utf-8")
+        assert _refusal(str(ini)) == 2, f"{text!r} did not stop the command by name"
+        assert named in capsys.readouterr().err, f"{text!r} was not named on stderr"
 
 
 def _ini_that_starts_up(tmp_path, extra: str = "", insecure_bind: str = "127.0.0.1:0") -> tuple:
@@ -279,6 +305,42 @@ def test_what_reading_the_ini_found_is_said_even_when_the_bind_refuses_the_start
     finally:
         # This start-up attached a handler on a file under tmp_path, which is about to
         # go: leave the daemon logger as the rest of the suite expects to find it.
+        trixlog.setup("info", "")
+
+
+def test_every_command_that_reads_the_ini_says_what_reading_it_found(tmp_path, capsys):
+    """
+    A finding is collected while the ini is read and said once the command has a logger,
+    so a command that never says it has read the file and thrown the answer away.
+
+    These are the three main() runs to the end without a lifespan; serve is the fourth and
+    the tests above cover it. plugin check by name is the one that read the ini and said
+    nothing: an unknown key, an empty account, a file it could not read at all - every
+    finding on the branch an author uses to ask why their plugin will not load.
+    """
+    for name in ("plugins", "site"):
+        (tmp_path / name).mkdir()
+    shipped = os.path.join(os.path.dirname(server.__file__), "plugins")
+    ini = tmp_path / "trixd.ini"
+    ini.write_text(
+        f"[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
+        f"[TOKENS]\nALGORITHM = EdDSA\nPRIVATE_KEY = {tmp_path / 'keys' / 'trixd.key'}\n"
+        f"[PLUGINS]\nDIRECTORY = {shipped}\nSITE_DIRECTORY = {tmp_path / 'site'}\n"
+        f"[AUDIT]\nKEEPP = 10d\n", encoding="utf-8")
+    try:
+        for command in (["keygen"], ["plugin", "new", "asked"],
+                        ["plugin", "check", "services"]):
+            capsys.readouterr()
+            # The precondition: the command really ran. A refusal says what was found as
+            # well, so without this the assertion below passes on a command that failed.
+            assert server.main(["--config", str(ini)] + command) == 0, \
+                f"{' '.join(command)} did not run: {capsys.readouterr().err}"
+            said = capsys.readouterr()
+            assert "KEEPP" in said.out + said.err, \
+                f"{' '.join(command)} read the ini and never said what it found"
+    finally:
+        # These commands configured the daemon logger for themselves: leave it as the rest
+        # of the suite expects to find it.
         trixlog.setup("info", "")
 
 

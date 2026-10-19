@@ -119,7 +119,7 @@ def _scan(directory: str) -> dict:
     return found
 
 
-def _install(name: str) -> None:
+def _install(name: str, serving: bool = False) -> None:
     """
     Let a plugin plug itself in, once it has loaded.
 
@@ -128,6 +128,9 @@ def _install(name: str) -> None:
     client imports its package on the way, so an import that registers plugs in a plugin
     nobody enabled: it polls, it answers, and the control surface neither shows it nor can
     stop it. A plugin with nothing to offer needs no install.
+
+    `serving` says a version of this plugin is answering its routes already, which is what
+    decides whether a failure here may take this plugin's registrations back.
     """
     # Looked up rather than passed down: the import just above put it here, under the same
     # prefix for a package and for a single-file plugin, so the shape of what loaded does
@@ -141,8 +144,10 @@ def _install(name: str) -> None:
     except Exception as error:
         # A sequence of registrations, so one failing part way through leaves the ones
         # before it: a trigger polling, or a node source answering, for a refused plugin.
-        triggers.forget(name)
-        nodes.forget(name)
+        # Both registries key on the name, so on a reload those are the serving version's.
+        if not serving:
+            triggers.forget(name)
+            nodes.forget(name)
         raise PluginRefused(f"{name} could not plug itself in: {error}") from None
 
 
@@ -347,6 +352,11 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     # from an earlier load, or the hook dispatcher where another plugin declares hooks on
     # this source. Read before the purge, because the import below replaces it.
     standing = tasks.handler(name)
+    # Whether a version of this plugin is answering its routes, read here for the same
+    # reason: on a reload the registries install() writes to still hold that version's
+    # trigger and node source under this name, and a refusal has to leave them alone.
+    previous = known.get(name)
+    serving = previous is not None and previous.state == PLUGIN_STATE_LOADED
     _purge(name)
     try:
         if os.path.isdir(path):
@@ -376,7 +386,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
 
         # Inside the try, because it can fail: plugged in after the routes went live, a
         # plugin that refused was already serving them and the reconcile never ran.
-        _install(name)
+        _install(name, serving)
     except Exception as error:
         # Whatever is already serving keeps serving. The caller decides whether
         # that is fatal: at startup it is not, at the control endpoint it is.

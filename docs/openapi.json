@@ -6602,7 +6602,7 @@
     },
     "/api/v1/system/replication/apply": {
       "post": {
-        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\nTwo conventions a replicating handler's answer carries. `skipped`, as a non-empty string, says what the handler did not do - a node that is not in this controller's Luna, or the entries of a batch it could not apply - and the sender then treats the call as not done and offers it again rather than recording it as applied; it is a reserved key, and a count or list of left-out items must not use it. Offering the same call again is answered with the answer given the first time, since delivery is at-least-once and the sender's wait is bounded: brief when a caller's own request offers the call, longer on a sweep pass.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The other controller made a call whose effect is not in a replicated table and which no render brings back - a hardware rule file written or retired, for instance - so it asks this controller to make the same call. Only an endpoint whose own manifest says `replicate` can be asked for, which is checked here as well as there, so a version-skewed pair refuses instead of being talked into work it does not declare. A plugin this controller does not have plugged in is answered 503 rather than 404: the call is well formed and plugging it back in makes it apply, so the sender keeps the action and offers it again.\n\nThe named handler is called directly rather than the route being re-entered, so nothing is written down to send onwards: there is no loop to prevent and no hop count to get wrong. rootus only, which is the account the pair already shares for replication.\n\nTwo conventions a replicating handler's answer carries. `skipped`, as a non-empty string, says what the handler did not do - a node that is not in this controller's Luna, or the entries of a batch it could not apply - and the sender then treats the call as not done and offers it again rather than recording it as applied; it is a reserved key, and a count or list of left-out items must not use it. Offering the same call again is answered with the answer given the first time, since delivery is at-least-once and the sender's wait is bounded: brief when a caller's own request offers the call, longer on a sweep pass.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "replication_apply_api_v1_system_replication_apply_post",
         "requestBody": {
           "content": {
@@ -6689,7 +6689,7 @@
                 }
               }
             },
-            "description": "No such plugin, or no such endpoint"
+            "description": "No such endpoint on this controller"
           },
           "422": {
             "content": {
@@ -6700,6 +6700,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "That plugin is not loaded here"
           }
         },
         "security": [
@@ -6786,7 +6796,7 @@
     },
     "/api/v1/system/replication/owed": {
       "get": {
-        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many passes have tried it and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Every replicated call that has not reached a peer yet, oldest first, with the peer it is for, what it would do, how many times it has been offered, and the last refusal verbatim. A peer that is not answering is named first.\n\n`/system/health` carries the counts and takes no token; this carries the peers and the rows and therefore does, because naming the other controllers is not something an unauthenticated port should do.\n\nA row listed as `failed` has been given up on and stops everything behind it for that peer: later actions assume the earlier one landed, so carrying on would write over a prerequisite that never happened.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "replication_owed_api_v1_system_replication_owed_get",
         "responses": {
           "200": {

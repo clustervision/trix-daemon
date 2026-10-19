@@ -544,9 +544,11 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
     assert refused.status_code == 400, refused.text
     assert "replicate" in refused.json()["message"]
 
+    # A plugin this controller does not have is not a malformed action, so it is refused
+    # retryably rather than terminally - see the two tests below this one.
     missing = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
         "plugin": "nosuch", "path": "x", "method": "PATCH", "origin": "ctrl1"})
-    assert missing.status_code == 404, missing.text
+    assert missing.status_code >= 500, missing.text
 
     # An endpoint that takes no body sends a null one, and the envelope must accept that.
     # It did not: `body: dict = None` is not optional to pydantic, so a DELETE was refused
@@ -629,6 +631,141 @@ def test_apply_refuses_a_body_the_endpoint_does_not_declare(rig, client, headers
                        json={**envelope, "body": {"count": 3}, "request_id": "r-good"})
     assert good.status_code == 200, good.text
     assert good.json()["result"]["count"] == 3, good.text
+
+
+def _what_the_sender_does_with(status: int, monkeypatch) -> str:
+    """
+    The state the outbox puts a row in when the peer answers this status, asked of the
+    outbox rather than read off the number here.
+    """
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """One refusal from the peer, in the shape requests hands back."""
+
+        status_code = status
+        text = '{"message": "a refusal"}'
+
+        def json(self):
+            """The body the error handler writes."""
+            return {"message": "a refusal"}
+
+    class Row:
+        """The fields sending reads off an outbox row."""
+
+        plugin, path, method = "crossing", "thing/<node>", "PATCH"
+        payload = '{"variables": {"node": "node001"}, "body": {"count": 1}}'
+        origin, request_id = "ctrl1", "r-class"
+
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    return outbox._send("ctrl2", Row())[0]
+
+
+def test_a_plugin_unplugged_on_the_peer_keeps_the_action_instead_of_dropping_it(
+        rig, client, headers, monkeypatch):
+    """
+    A plugin unplugged on one controller is temporary, and plugging it back in is what makes
+    the action apply. Answered as "no such thing", the sender made the row terminal on its
+    first attempt and discarded it - and the state these endpoints carry is exactly the state
+    no replicated table can repair, so the pair stayed apart with nothing able to heal it.
+
+    Asserted through the sender's own classification, because the number is not the point:
+    what matters is which class the outbox puts the answer in.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication import outbox
+
+    _crossing_plugin(rig)
+    unplugged = client.post(f"{API_PREFIX}/system/plugins/crossing/disable", headers=headers)
+    assert unplugged.status_code == 200, unplugged.text
+    envelope = {"plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
+                "variables": {"node": "node001"}, "body": {"count": 1},
+                "origin": "ctrl1", "request_id": "r-unplugged"}
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers,
+                          json=envelope)
+
+    assert refused.status_code >= 400, \
+        f"the plugin is unplugged here, so this call cannot have applied: {refused.text}"
+    assert _what_the_sender_does_with(refused.status_code, monkeypatch) == outbox.QUEUED, \
+        f"the peer answered {refused.status_code} for a plugin it has unplugged, which the " \
+        f"sender treats as {_what_the_sender_does_with(refused.status_code, monkeypatch)}: " \
+        f"the row is discarded on its first attempt and plugging the plugin back in " \
+        f"replays nothing"
+
+
+def test_an_endpoint_this_build_does_not_serve_is_still_terminal(
+        rig, client, headers, monkeypatch):
+    """
+    The other side of the same line, so a fix for the one above cannot quietly make every
+    refusal retryable: a peer naming an endpoint this build does not have is a version skew,
+    and no number of passes changes it.
+    """
+    from trixd.common.constants import API_PREFIX
+    from trixd.core.replication import outbox
+
+    _crossing_plugin(rig)
+
+    refused = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
+        "plugin": "crossing", "path": "thing/<gone>", "method": "PATCH",
+        "variables": {"gone": "node001"}, "body": None, "origin": "ctrl1",
+        "request_id": "r-skew"})
+
+    assert refused.status_code >= 400, refused.text
+    assert _what_the_sender_does_with(refused.status_code, monkeypatch) == outbox.FAILED, \
+        f"an endpoint this build does not serve was answered {refused.status_code}, which " \
+        f"the sender keeps offering: it rides the sweep for an hour over a skew that no " \
+        f"pass can settle"
+
+
+def _apply_route_refusals() -> set:
+    """
+    Every error class the apply route raises, read out of the route itself.
+
+    A refusal added later has to be classified by the test below or it fails: one refusal
+    sitting in the wrong class is what this whole pair of tests exists for, and a list of
+    the refusals somebody once knew about is how the next one gets in.
+    """
+    import ast
+    import inspect
+
+    from trixd.api.v1 import system
+
+    tree = ast.parse(inspect.getsource(system.replication_apply))
+    return {node.exc.func.id for node in ast.walk(tree)
+            if isinstance(node, ast.Raise) and isinstance(node.exc, ast.Call)
+            and isinstance(node.exc.func, ast.Name)}
+
+
+def test_every_refusal_the_apply_route_raises_is_in_a_class_the_sender_was_told_about(
+        rig, monkeypatch):
+    """
+    What the sender must do with each refusal this route can raise. A class raised here and
+    named nowhere below is the failure: it would ship classified by whichever side of the
+    outbox's 4xx line its status happened to fall on.
+    """
+    from trixd.common import errors
+    from trixd.core.replication import outbox
+
+    # The action is well formed and this controller is not ready for it, against a build
+    # that does not serve or accept what the peer named, which no pass settles.
+    intended = {"ServiceUnavailable": outbox.QUEUED, "NotFound": outbox.FAILED,
+                "BadRequest": outbox.FAILED}
+    raised = _apply_route_refusals()
+
+    assert raised, "no refusal was found in the route, so this read the wrong thing"
+    unclassified = sorted(raised - set(intended))
+    assert not unclassified, (
+        f"the apply route raises {unclassified}, and nothing here says what the sender "
+        f"should do with it: decide, rather than letting its status code decide")
+    for name in sorted(raised):
+        status = getattr(errors, name).status_code
+        assert _what_the_sender_does_with(status, monkeypatch) == intended[name], (
+            f"{name} is {status}, which the sender treats as "
+            f"{_what_the_sender_does_with(status, monkeypatch)} rather than "
+            f"{intended[name]}")
 
 
 def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
@@ -790,7 +927,15 @@ def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
     # the peer being down: after a restart every peer starts with nothing held.
     assert not outbox.breaker_open("ctrl2"), "a missing token was blamed on the peer"
 
-    # The sweep may, and does.
+    # The sweep may, and does - on the pass the row is next due on. The inline attempt
+    # counted, and a row is not offered again until its turn, so with the clock standing
+    # still it is the row that has to be moved for this to be the pass that follows.
+    handle = database.session()
+    try:
+        owed = handle.scalar(select(models.Outbox)).id
+    finally:
+        handle.close()
+    age_to_its_first_retry(owed)
     outbox.drain("ctrl2")
     assert signed == ["ctrl2"], "the sweep did not sign in to send what was owed"
 
@@ -865,12 +1010,25 @@ def test_a_peer_away_for_a_long_time_is_never_given_up_on(rig, monkeypatch):
     outbox._failures.clear()
     outbox._open.clear()
     try:
-        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
-                      {"node": "node001"}, None, "req", "tester")
+        row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                               {"node": "node001"}, None, "req", "tester")
+        # Aged before each pass, which is what keeps these thirty offers real: a row that
+        # has just been offered waits for its turn, so thirty passes over a row nothing
+        # ages are one offer and twenty-nine deferrals - and both counts below read the
+        # same either way, which is the whole of what this test would have stopped saying.
         for _ in range(30):
+            age_past_the_span(row_id)
             outbox.drain("ctrl2")
         assert outbox.states()["failed"] == 0, "a peer merely being away became terminal"
         assert outbox.states()["pending"] == 1, "the row stopped waiting to be sent"
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            assert row.attempts == 30, \
+                f"the peer was offered the row {row.attempts} times over thirty passes, " \
+                f"so this is no longer thirty passes of being away"
+        finally:
+            handle.close()
     finally:
         outbox._failures.clear()
         outbox._open.clear()
@@ -1137,6 +1295,100 @@ def test_two_merges_of_a_key_that_does_not_exist_yet_keep_both_fields(rig, inter
     assert stored.get("partition") == "defq", "the merge that won lost its own field"
     assert len(declarations.listing("slurm", "config")) == 1, \
         "a second row was written for one key"
+
+
+def _declaration_entry_points() -> dict:
+    """
+    Every entry point the declarations module offers, read off the module.
+
+    Enumerated rather than listed: the defect below is a precondition that landed on one
+    verb and not its siblings, and a test naming the verbs its author knew about is the same
+    oversight written twice. A verb added later is driven by this without being mentioned.
+    """
+    import inspect
+
+    from trixd.utils import declarations
+
+    return {name: value for name, value in sorted(vars(declarations).items())
+            if inspect.isfunction(value) and not name.startswith("_")
+            and value.__module__ == declarations.__name__}
+
+
+def _declaration_arguments(function, plugin: str, kind: str, name: str, sent: dict) -> dict:
+    """
+    One entry point's arguments, built from its signature rather than from its name.
+
+    A parameter this cannot supply is a failure rather than a skip: enumerating a verb and
+    then not driving it is how a derived test reads as covering something it never ran.
+    """
+    import inspect
+
+    known = {"plugin": plugin, "kind": kind, "name": name, "body": dict(sent),
+             "changes": dict(sent), "defaults": {}, "fallback": None}
+    wanted = list(inspect.signature(function).parameters)
+    unknown = [parameter for parameter in wanted if parameter not in known]
+    assert not unknown, (
+        f"declarations.{function.__name__} takes {unknown}, which this test cannot supply, "
+        f"so it would be enumerated and never driven: say what to pass it")
+    return {parameter: known[parameter] for parameter in wanted}
+
+
+def _declaration_version(plugin: str, kind: str, name: str) -> int:
+    """
+    The version held for one key, read without the module under test.
+    """
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Declaration).where(
+            models.Declaration.plugin == plugin, models.Declaration.kind == kind,
+            models.Declaration.name == name))
+        return (row.version or 0) if row is not None else 0
+    finally:
+        handle.close()
+
+
+@pytest.mark.parametrize("entry_point", sorted(_declaration_entry_points()))
+def test_a_declaration_entry_point_that_writes_writes_against_the_version_it_read(
+        entry_point, rig, interleave_once):
+    """
+    Each verb that changes a document orders its write against the version it read.
+
+    A precondition on one verb alone is no precondition at all: a delete ordered against the
+    version a change had just superseded stored a deletion as that same version, answered
+    its caller 200, and left two documents claiming one version - after which the surviving
+    one replicates like any other, so the pair agrees on it and nothing reports a conflict.
+
+    Whether a verb writes is measured here rather than declared, so a reader that starts
+    writing is covered and a reader that does not is pinned as not writing.
+    """
+    from trixd.utils import declarations
+
+    function = _declaration_entry_points()[entry_point]
+    plugin, kind, name = "prometheus", "exporter-scope", f"node:{entry_point}"
+    declarations.write(plugin, kind, name, {"held": 1})
+    before = _declaration_version(plugin, kind, name)
+
+    function(**_declaration_arguments(function, plugin, kind, name, {"probe": 1}))
+
+    if _declaration_version(plugin, kind, name) == before:
+        return
+
+    # A competing write lands inside this verb's own read, so the version it read is gone
+    # by the time it writes. The row is put back first: the probe above moved it.
+    declarations.write(plugin, kind, name, {"held": 1})
+    at = _declaration_version(plugin, kind, name)
+    fired = interleave_once(
+        lambda: declarations.write(plugin, kind, name, {"held": 2, "peer": True}))
+
+    function(**_declaration_arguments(function, plugin, kind, name, {"mine": 1}))
+
+    settled = _declaration_version(plugin, kind, name)
+    assert fired, "the competing write never ran, so nothing interleaved"
+    assert settled == at + 2, (
+        f"the write that landed inside declarations.{entry_point}'s read is version "
+        f"{at + 1}, and {entry_point} then stored its own document at version {settled}: "
+        f"it wrote against a version that had already moved, so two documents carry one "
+        f"version and the caller that lost was answered 200 for a document nobody holds")
 
 
 def test_a_key_amended_past_the_bound_is_refused_retryably_rather_than_answered_200(
@@ -1529,6 +1781,49 @@ def datetime_now():
     return datetime.now(timezone.utc).replace(tzinfo=None)
 
 
+def age_past_the_span(row_id: int):
+    """
+    Put a row's `created` far enough back that it is past the span and due a new offer.
+
+    Past the span, because that is the state the bounds on a row are about; and past its own
+    next offer, because the wait grows with the count and a row that has just been offered
+    is not due again until the schedule says. Nothing in a test moves the clock, so the row
+    is moved instead.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        behind = max(outbox.DECLINED_FOR_SECONDS + 60, outbox.due_in(row.attempts) + 1)
+        row.created = datetime_now() - timedelta(seconds=behind)
+        handle.commit()
+    finally:
+        handle.close()
+
+
+def age_to_its_first_retry(row_id: int):
+    """
+    Put a row's `created` back by one sweep interval, which is the pass a row that has been
+    offered once is next due on: the first retry is the interval after the first offer, and
+    nothing in a test moves the clock.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = (datetime_now()
+                       - timedelta(seconds=settings().replication.interval + 1))
+        handle.commit()
+    finally:
+        handle.close()
+
+
 def test_the_same_call_offered_twice_is_applied_once(rig, client, headers):
     """
     A repeat of the same call is answered with the answer given the first time, not by
@@ -1706,6 +2001,300 @@ def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
             f"will ever clear it"
     finally:
         handle.close()
+
+
+
+def test_a_row_the_peer_answered_for_is_not_offered_again_on_the_next_pass(
+        rig, monkeypatch):
+    """
+    How often a declining row was offered is the span divided by the sweep interval, so a
+    site sweeping ten times as often retried one row ten times as hard: how hard one row is
+    retried is not a thing a site's interval should decide. Each offer now waits longer
+    than the one before, and the wait is this module's.
+
+    What the interval still decides, and must: the first offer and the first retry. A fresh
+    row is due at once - which is what leaves the caller's inline path needing no change -
+    and its first retry is the pass that follows.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-backoff", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    def offers() -> int:
+        """How many times the row has been offered, read back between passes."""
+        handle = database.session()
+        try:
+            return handle.scalar(select(models.Outbox)
+                                 .where(models.Outbox.id == row_id)).attempts
+        finally:
+            handle.close()
+
+    outbox.drain("ctrl2")
+    assert offers() == 1, \
+        f"a row written down this moment was offered {offers()} times on the pass that " \
+        f"followed, so a fresh row is not due and the inline path is not what it was"
+
+    outbox.drain("ctrl2")
+    assert offers() == 1, \
+        f"the row was offered {offers()} times with no time passing at all, so what " \
+        f"spaces its offers out is still how often the site sweeps"
+
+    row_interval = settings().replication.interval
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.created = datetime_now() - timedelta(seconds=row_interval + 1)
+        handle.commit()
+    finally:
+        handle.close()
+    outbox.drain("ctrl2")
+    assert offers() == 2, \
+        f"an interval after it was written down the row had been offered {offers()} " \
+        f"times: the first retry has to stay the pass that follows the first offer"
+
+
+def test_a_peer_that_is_silent_many_times_is_only_deferred_and_never_given_up_on(
+        rig, monkeypatch):
+    """
+    What makes keying the wait on `attempts` safe, and the one thing it must not cost. The
+    count includes silence - a dark peer, a pass holding no token - so a peer that was away
+    carries a high count into its next offer. A later offer is all that may follow from the
+    count: a row must never go terminal for not having been answered, which is why the span
+    counts answers and this does not.
+
+    The deferral is asserted from the attempt count, which both builds have, so a build
+    without the wait fails on the assertion rather than on reaching for what it lacks.
+    """
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                           {"node": "node001"}, None, "req-silent", "tester")
+
+    def reading() -> tuple:
+        """The row's state and attempt count, read back between passes."""
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            return row.state, row.attempts
+        finally:
+            handle.close()
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        outbox.drain("ctrl2")
+        assert reading() == (outbox.QUEUED, 1), \
+            f"the row reads {reading()} after one pass at a peer that said nothing, so " \
+            f"the silence the rest of this needs did not happen"
+        outbox.drain("ctrl2")
+        assert reading() == (outbox.QUEUED, 1), \
+            f"the row reads {reading()}: a second offer went out with no time passing, " \
+            f"so silence is still offered at whatever rate the site sweeps at"
+
+        # More silent offers than any count in this module, each one due because the row is
+        # aged past the span - which is also the only way the count can be driven up here.
+        # None of them is an answer, so none of them is a reason to stop asking.
+        for _ in range(20):
+            age_past_the_span(row_id)
+            outbox.drain("ctrl2")
+        state, attempts = reading()
+        assert attempts >= 21, \
+            f"the row was offered {attempts} times, so the count this test needs driven " \
+            f"well past every bound in the module was never driven up"
+        assert state == outbox.QUEUED, \
+            f"{attempts} offers to a peer that never answered left the row {state}: a " \
+            f"peer being away is the one thing that is not a reason to stop asking, and " \
+            f"a wait keyed on a count that includes silence must not change that"
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+
+def test_a_row_owed_past_the_span_is_still_offered_so_that_it_can_end(rig, monkeypatch):
+    """
+    A count that did not accumulate under this schedule, which is the one way the wait can
+    reach past the span. The pass that gives up on a row is the pass that offers it, so a
+    row whose next offer falls further out than anyone will wait would never be offered
+    again and so could never be given up on: a row nothing clears and nothing reaps, which
+    is the wedge the span was added to remove. The wait for this row's count is hours, and
+    an answer further out than one cap is what tells `drain` it is not this schedule's.
+
+    The count is set rather than driven, because that is the state this guards against: a
+    row that already carried a high count when the schedule it is now read against arrived,
+    which is what an upgrade and a raised INTERVAL both leave behind.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+
+    class Answer:
+        """What the apply route answers when its handler declined to act."""
+        status_code = 200
+        text = ""
+
+        def json(self):
+            return {"applied": "prometheus hw-rules/<node>", "origin": "ctrl1",
+                    "result": {"node": "node001", "skipped": "not in Luna"}}
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-clamp", "tester")
+    monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.attempts = 20
+        row.created = datetime_now() - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60)
+        handle.commit()
+    finally:
+        handle.close()
+
+    outbox.drain("ctrl2")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        assert row.attempts == 21, \
+            f"the row has been offered {row.attempts} times: a row the peer has owed for " \
+            f"longer than the span was not offered, so nothing can ever give up on it"
+        assert row.state == outbox.FAILED, \
+            f"the row is {row.state} after the span it may be owed for, so the wait has " \
+            f"deferred the exit as well as the retry"
+    finally:
+        handle.close()
+
+def test_a_row_past_the_span_is_still_spaced_out_in_its_second_hour(rig, monkeypatch):
+    """
+    The second hour, which is where the growing wait used to stop growing. The wait was
+    clamped to the span, and a clamp cannot exceed the age of a row already past the span,
+    so such a row was due on every pass: at a thirty-second interval sixteen offers in the
+    first hour and a hundred and twenty in the second.
+
+    Driven at a peer that says nothing, because that is who it reaches. A row the peer
+    answers for is made terminal by the pass at the span and never sees a second hour; a
+    row nothing answers is deliberately never terminal, so it is offered for as long as the
+    peer is away, and at what rate is this module's to say.
+
+    Every pass the real sweep would run is run, and the row is aged to its own next due
+    point by the passes rather than by hand, so what is measured is a schedule the row
+    actually walked. The offers are counted from `attempts`, which both builds keep, so a
+    build without the growing wait fails on the count rather than on reaching for a symbol
+    it does not have.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    interval = 30
+    monkeypatch.setattr(settings().replication, "interval", interval)
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                           {"node": "node001"}, None, "req-second-hour", "tester")
+
+    def pass_with_the_row_aged(age: int) -> tuple:
+        """One sweep pass with the row that old; answers its state and offer count."""
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            row.created = datetime_now() - timedelta(seconds=age)
+            handle.commit()
+        finally:
+            handle.close()
+        outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            return row.state, row.attempts
+        finally:
+            handle.close()
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        first_hour, second_hour, counted = 0, 0, 0
+        for age in range(0, 2 * outbox.DECLINED_FOR_SECONDS + 1, interval):
+            state, offers = pass_with_the_row_aged(age)
+            if offers > counted:
+                counted = offers
+                if age <= outbox.DECLINED_FOR_SECONDS:
+                    first_hour += 1
+                else:
+                    second_hour += 1
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    # The silence has to have happened and the row has to have survived it, or the two
+    # counts below are about something other than a peer that is away.
+    assert state == outbox.QUEUED, \
+        f"the row is {state} after two hours at a peer that never answered, so this is " \
+        f"not the row that is offered for as long as the peer is away"
+    assert first_hour > 1 and second_hour > 0, \
+        f"the row was offered {first_hour} time(s) in its first hour and {second_hour} " \
+        f"in its second, so it was never retried and there is no spacing to measure"
+
+    assert second_hour <= first_hour, \
+        f"the row was offered {first_hour} times in its first hour and {second_hour} in " \
+        f"its second, so the wait stops growing once the row is older than the span and " \
+        f"the spacing is only ever for the first hour"
+    allowed = outbox.DECLINED_FOR_SECONDS // outbox.BACKOFF_CAP
+    assert second_hour <= allowed, \
+        f"the row was offered {second_hour} times in its second hour, where a cap of " \
+        f"{outbox.BACKOFF_CAP} s allows {allowed}: the rate past the span is the site's " \
+        f"INTERVAL again rather than this module's cap"
+
+
+def test_no_two_offers_this_schedule_allows_are_further_apart_than_the_cap(rig, monkeypatch):
+    """
+    What lets the wait stand unclamped, enumerated over the intervals a site can set rather
+    than exampled at one of them: no gap the schedule leaves is longer than the cap.
+
+    That is the whole of why the span stays exact. The pass that makes a row terminal is
+    the pass that offers it, so a row owed past the span is given up on one cap later at
+    worst - where a schedule free to leave a longer gap would defer the exit with the
+    retry, which is what clamping the wait to the span was there to prevent and what it
+    cost the second hour to do.
+    """
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    for interval in (0, 1, 7, 29, 30, 60, 149, 150, 299, 300, 301, 600, 3600):
+        monkeypatch.setattr(settings().replication, "interval", interval)
+        waits = [outbox.due_in(attempts) for attempts in range(0, 200)]
+        gaps = [later - earlier for earlier, later in zip(waits, waits[1:])]
+        assert max(gaps) <= outbox.BACKOFF_CAP, \
+            f"at INTERVAL={interval} the schedule leaves {max(gaps)} s between two " \
+            f"offers against a cap of {outbox.BACKOFF_CAP} s, so a row owed past the " \
+            f"span waits that long for the pass that is able to end it"
+        assert waits == sorted(waits), \
+            f"at INTERVAL={interval} the wait does not grow with the count, so a row is " \
+            f"offered harder the longer the peer has not taken it"
+
 
 
 def test_a_declined_apply_is_not_remembered(rig, client, headers):
@@ -2242,7 +2831,16 @@ def test_an_inline_send_waits_for_what_is_already_owed_for_that_node(rig, monkey
         deleted = outbox.replicate("prometheus", "hw-rules/<node>", "DELETE",
                                    {"node": "node001"}, None, {"changed": True},
                                    "req-delete", "tester")
-        # Whatever the sweep has not delivered yet, it delivers now.
+        # Whatever the sweep has not delivered yet, it delivers on the pass that row is
+        # next due on: the write was offered inline and refused, which counted, so with
+        # the clock standing still the row is what has to be moved.
+        handle = database.session()
+        try:
+            owed = handle.scalar(select(models.Outbox)
+                                 .where(models.Outbox.method == "PATCH")).id
+        finally:
+            handle.close()
+        age_to_its_first_retry(owed)
         outbox.drain("ctrl2")
     finally:
         outbox._failures.clear()
