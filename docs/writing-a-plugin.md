@@ -153,7 +153,8 @@ process. Write `data: dict = None`.
 
 The loader refuses a plugin as a whole rather than serving half of it. On a
 refusal the plugin already serving keeps serving, routes and renders alike, and
-the reload endpoint answers 409 with the reason.
+a refused reload leaves its trigger and its node source registered as well; the
+reload endpoint answers 409 with the reason.
 
 | Check | Outcome |
 |---|---|

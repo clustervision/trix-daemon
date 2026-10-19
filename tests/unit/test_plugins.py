@@ -3138,23 +3138,33 @@ def test_every_reader_agrees_whether_a_node_holds_hardware_rules(rig, tmp_path, 
         f"Luna holds no node999 and no file names one, and the readers answer: {unheld}")
 
 
-def _plugin_whose_install_fails(tmp_path, name: str, before: str = "") -> None:
+def _plugin_whose_install_fails(tmp_path, name: str, before: str = "",
+                                raising: bool = True) -> None:
     """
     A plugin on disk that loads, whose install() runs `before` and then raises.
+
+    Called again for the same name it rewrites install() alone, so a test can load a
+    version that plugs itself in - `raising` false - and then reload one that will not.
     """
     from trixd.core.plugins import scaffold
 
-    scaffold.new(name, str(tmp_path / "plugins"))
+    if not os.path.isdir(tmp_path / "plugins" / name):
+        scaffold.new(name, str(tmp_path / "plugins"))
     (tmp_path / "plugins" / name / "__init__.py").write_text(
         'class Poll:\n    """A trigger that is started, stopped and asked its state."""\n\n'
         '    def state(self) -> dict:\n        """What health would publish."""\n'
         '        return {"answering": True}\n\n'
         '    def start(self) -> None:\n        """Asked to begin."""\n\n'
         '    def shutdown(self) -> None:\n        """Asked to stop."""\n\n\n'
+        'class Source:\n    """A node source the sign-in route can ask about a node."""\n\n'
+        '    def node(self, name: str) -> dict:\n'
+        '        """Not a node this one knows, which is an answer rather than a refusal."""\n'
+        '        return {}\n\n\n'
         'def install() -> None:\n'
         '    """Plug in, as far as it gets."""\n'
         f'{before}'
-        '    raise RuntimeError("this plugin cannot plug itself in")\n',
+        + ('    raise RuntimeError("this plugin cannot plug itself in")\n' if raising
+           else '    return None\n'),
         encoding="utf-8")
 
 
@@ -3211,6 +3221,107 @@ def test_an_install_that_fails_part_way_leaves_nothing_registered(rig, tmp_path,
 
     assert "halfway_poll" not in triggers.states(), "its trigger is still polling"
     assert nodes._owner != "halfway", "its node source still answers a node sign-in"
+
+
+def test_a_reload_refused_by_install_leaves_the_trigger_and_source_it_found(
+        rig, client, headers, tmp_path, monkeypatch):
+    """
+    Both registries install() writes to key on the plugin's name rather than the version,
+    and the purge before the import does not touch either - so the rollback above used to
+    take the trigger and node source of the version that goes on serving. Its routes
+    answered and the plugin read as loaded with its poller stopped and a node sign-in
+    refusing for want of a source, and health published nothing wrong.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import loader
+    from trixd.core.plugins.registry import current as registry
+    from trixd.core.render import triggers
+    from trixd.core.security import nodes
+
+    # Put back afterwards: this install takes the node source over from the rig's own luna
+    # plugin, and nothing else restores it between tests.
+    monkeypatch.setattr(nodes, "_source", nodes._source)
+    monkeypatch.setattr(nodes, "_owner", nodes._owner)
+
+    offers = ("    from trixd.core.render import triggers\n"
+              "    from trixd.core.security import nodes\n"
+              '    triggers.register("settled_poll", Poll(), owner="settled")\n'
+              '    nodes.register(Source(), owner="settled")\n')
+    _plugin_whose_install_fails(tmp_path, "settled", before=offers, raising=False)
+    loader.load(rig, "settled")
+    assert "settled_poll" in triggers.states(), \
+        "it plugged no trigger in, so there is nothing here to lose"
+    assert nodes._owner == "settled", "it offered no node source, so there is none to lose"
+
+    # The same plugin again, refusing before it registers anything: so whatever is still
+    # registered below can only be what the version that is serving put there.
+    _plugin_whose_install_fails(tmp_path, "settled")
+    with pytest.raises(PluginRefused, match="could not plug itself in"):
+        loader.load(rig, "settled")
+
+    entry = registry().get("settled")
+    assert entry.state == PLUGIN_STATE_LOADED and entry.routes, \
+        "the old version stopped serving, so there is nothing here to keep"
+    assert "settled_poll" in triggers.states(), \
+        "the refused reload stopped the trigger of a version that is still serving"
+    assert nodes._owner == "settled", \
+        "the refused reload dropped the node source of a version that is still serving"
+    answer = client.post(f"{API_PREFIX}/auth/node/node001",
+                         json={"username": "tester", "password": "secret"})
+    assert answer.status_code != 503, f"a node sign-in has no source to ask: {answer.text}"
+
+
+def test_every_registry_the_install_rollback_reaches_is_guarded_on_a_reload():
+    """
+    The rollback in _install keys on the plugin's name, which on a reload is the name of the
+    version that goes on serving - so everything it takes back has to sit behind the branch
+    that asks whether one does. A carrier added beside the trigger and the node source
+    inherits that from the guard, and is a reload's defect again the moment it sits outside
+    it; the documentation placeholder, which has no inverse at all today, is the next one.
+
+    Derived rather than listed, because an example test has to be remembered: every forget
+    the rollback calls is read out of the loader's own syntax tree.
+    """
+    import ast
+
+    from trixd.core.plugins import loader
+
+    with open(loader.__file__, encoding="utf-8") as handle:
+        tree = ast.parse(handle.read())
+    install = next(node for node in tree.body
+                   if isinstance(node, ast.FunctionDef) and node.name == "_install")
+    assert "serving" in {item.arg for item
+                         in install.args.args + install.args.kwonlyargs}, \
+        "_install is not told whether a version is serving, so nothing here can be guarded"
+    rollback = next(node for node in ast.walk(install)
+                    if isinstance(node, ast.ExceptHandler))
+
+    parents = {}
+    for node in ast.walk(rollback):
+        for child in ast.iter_child_nodes(node):
+            parents[child] = node
+
+    def _asks_whether_serving(node) -> bool:
+        """
+        Whether this call sits inside a branch that reads whether a version is serving.
+        """
+        while node in parents:
+            node = parents[node]
+            if isinstance(node, ast.If) and any(
+                    isinstance(item, ast.Name) and item.id == "serving"
+                    for item in ast.walk(node.test)):
+                return True
+        return False
+
+    forgets = [node for node in ast.walk(rollback) if isinstance(node, ast.Call)
+               and getattr(node.func, "attr", "") == "forget"]
+    assert forgets, "the rollback takes nothing back, so this test checks nothing"
+    unguarded = sorted(ast.unparse(node) for node in forgets
+                       if not _asks_whether_serving(node))
+    assert unguarded == [], (
+        f"{', '.join(unguarded)} runs on a refused reload too, and that registry keys on "
+        f"the plugin's name: it takes the registration of the version still serving")
 
 
 def test_a_repair_relabels_the_live_file_when_an_older_one_sits_beside_it(rig, tmp_path,
