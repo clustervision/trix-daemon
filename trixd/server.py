@@ -257,7 +257,9 @@ def main(argv: list = None) -> int:
         if args.subcommand == "check" and args.name:
             from trixd.core.plugins import loader
 
-            configuration.set_current(configuration.load(args.config))
+            config = configuration.set_current(configuration.load(args.config))
+            trixlog.setup(config.logger.level, "")
+            trixlog.report(config.warnings)
             found = loader.discover().get(args.name, "")
             if not found:
                 print(f"no plugin named {args.name}")
