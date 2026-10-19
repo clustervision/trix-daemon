@@ -286,9 +286,15 @@ def _not_applied(declined: list, total: int) -> str:
     for index, (reason, count) in enumerate(tally.most_common()):
         piece = reason if count == 1 else f"{count}x {reason}"
         piece = ("; " if index else " ") + piece
-        if index and len(said) + len(piece) > KEPT - len(MORE):
-            said += MORE.format(count=len(tally) - index)
-            break
+        # The tail's own characters are held back while a reason is still to come. One
+        # reason can be longer than the whole budget - a transport error is - so the first
+        # is cut here rather than past the end, which took the tail with it.
+        room = KEPT - len(said) - (len(MORE) if index + 1 < len(tally) else 0)
+        if len(piece) > room:
+            if index:
+                said += MORE.format(count=len(tally) - index)
+                break
+            piece = piece[:room]
         said += piece
     return said[:KEPT]
 
