@@ -138,15 +138,41 @@ def test_replication_follows_the_protocol_too(monkeypatch):
     assert seen["url"].startswith("http://peer.cluster:8050/")
 
 
+def _refusal(ini: str):
+    """
+    What main() does with an ini it cannot use: its exit code, or the escape itself.
+
+    An exception that leaves main() is what this is about, so it is reported as the
+    outcome rather than raised: a test that let it through would fail on the escape
+    instead of on the assertion that names the rule.
+    """
+    try:
+        return server.main(["--config", ini])
+    except Exception as error:
+        return f"{type(error).__name__} reached the interpreter"
+
+
 def test_a_bad_trixd_ini_is_reported_by_name_with_exit_code_2(tmp_path, capsys):
     """
     A typo in the ini is one line on stderr, not a traceback.
+
+    Every way the file can be wrong, not only a value trixd cannot read: configparser's
+    own refusals are not ValueErrors, so a dropped section header or a key written twice
+    used to leave main() for the interpreter's excepthook - a traceback in the journal and
+    exit 1, from the one block whose whole purpose is that neither happens.
     """
     ini = tmp_path / "trixd.ini"
     ini.write_text("[API]\nEXPIRY = tomorrow\n", encoding="utf-8")
     assert server.main(["--config", str(ini)]) == 2
     assert "[API] EXPIRY" in capsys.readouterr().err
     assert server.main(["--config", str(tmp_path / "absent.ini")]) == 2
+    for text, named in (("BIND = 1\n[API]\n", "no section headers"),
+                        ("[API]\nBIND = 1\nBIND = 2\n", "option 'bind'"),
+                        ("[API]\n[API]\n", "section 'API' already exists"),
+                        ("[API]\nnonsense\n", "parsing errors")):
+        ini.write_text(text, encoding="utf-8")
+        assert _refusal(str(ini)) == 2, f"{text!r} did not stop the command by name"
+        assert named in capsys.readouterr().err, f"{text!r} was not named on stderr"
 
 
 def _ini_that_starts_up(tmp_path, extra: str = "", insecure_bind: str = "127.0.0.1:0") -> tuple:
