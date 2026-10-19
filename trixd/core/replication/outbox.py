@@ -107,6 +107,9 @@ DECLINED_FOR_SECONDS: int = 3600
 # offered a declining row a hundred and twenty times inside the hour it is allowed to be
 # owed, which is a site's sweep frequency deciding how hard one row is retried. At the
 # interval this code defaults to the cap is the interval, so such a site sees no change.
+#
+# The cap bounds every gap the schedule produces, which is what lets a row older than the
+# span still be offered - within one cap of it - so the pass that gives up on it happens.
 BACKOFF_FACTOR: int = 2
 BACKOFF_CAP: int = 300
 # How long a refusal nothing has cleared is kept. It holds its node's later actions, and
@@ -157,27 +160,30 @@ def chain_of(target: str) -> str:
 def due_in(attempts: int) -> int:
     """
     How long after `created` a row that has been offered this many times may be offered
-    again: the interval, doubled per offer already made, capped, and never longer than the
-    span the peer is allowed to owe it for.
+    again: the interval, doubled per offer already made, and growing by no more than the
+    cap once the doubling has stopped.
 
     Derived rather than stored, because the two fields it needs are already kept together:
     `created` is when this intent was written down and `attempts` how many times it has
     been offered, and `submit` resets both - so a newer intent starts again at the interval
     with nothing anywhere to put back, and a fresh row is due at once.
 
-    The clamp is what keeps the span exact. The pass that makes a row terminal is the pass
-    that offers it, so a row owed for longer than DECLINED_FOR_SECONDS has to be due, or
-    the wait defers the exit as well as the retry - and a row carrying a large `attempts`
-    would be deferred past any time anyone will wait, which is the wedge the span exists to
-    remove. The interval floors at one second so the loop is bounded by the cap rather than
-    by `attempts`.
+    Every gap it leaves between two offers is at most BACKOFF_CAP, and that is what keeps
+    the span exact rather than the answer being clamped to the span. The pass that makes a
+    row terminal is the pass that offers it, so a row owed for longer than
+    DECLINED_FOR_SECONDS is offered within one cap of the span rather than never. Clamped
+    to the span instead, the answer could never exceed the age of a row already past it, so
+    such a row was due on every pass - no backoff at all beyond the first hour.
+
+    `drain` holds the other half of it: an answer further out than one cap is not this
+    schedule's, so the row is offered rather than waited out. The interval floors at one
+    second so the loop is bounded by the cap rather than by `attempts`.
     """
     base = max(1, settings().replication.interval)
     grown = 0
     while grown < attempts and base * BACKOFF_FACTOR ** grown < BACKOFF_CAP:
         grown += 1
-    waited = base * (BACKOFF_FACTOR ** grown - 1) + (attempts - grown) * BACKOFF_CAP
-    return min(waited, DECLINED_FOR_SECONDS)
+    return base * (BACKOFF_FACTOR ** grown - 1) + (attempts - grown) * BACKOFF_CAP
 
 
 def peers() -> list:
@@ -692,9 +698,14 @@ def drain(peer: str) -> dict:
             # Something earlier for this same target was refused; this one assumes it.
             blocked += 1
             continue
-        if (now - created).total_seconds() < due_in(attempts):
+        waiting = due_in(attempts) - (now - created).total_seconds()
+        if 0 < waiting <= BACKOFF_CAP:
             # Offered recently enough. It is not done, so it holds its own node's chain
             # exactly as a decline does: whatever comes after it assumes it landed.
+            #
+            # Further out than one cap is not this schedule's answer, so the count was
+            # reached under another - an older build's, or one the INTERVAL moved under -
+            # and waiting it out would defer the row's exit along with its retry.
             stuck.add(chain)
             deferred += 1
             continue

@@ -1783,11 +1783,12 @@ def datetime_now():
 
 def age_past_the_span(row_id: int):
     """
-    Put a row's `created` far enough back that its next offer is due whatever its count.
+    Put a row's `created` far enough back that it is past the span and due a new offer.
 
-    The wait before a row is offered again grows with the count and is clamped to the span
-    the peer may owe it for, so past the span every pass offers it. Nothing in a test moves
-    the clock, so the row is moved instead.
+    Past the span, because that is the state the bounds on a row are about; and past its own
+    next offer, because the wait grows with the count and a row that has just been offered
+    is not due again until the schedule says. Nothing in a test moves the clock, so the row
+    is moved instead.
     """
     from datetime import timedelta
 
@@ -1796,7 +1797,8 @@ def age_past_the_span(row_id: int):
     handle = database.session()
     try:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
-        row.created = datetime_now() - timedelta(seconds=outbox.DECLINED_FOR_SECONDS + 60)
+        behind = max(outbox.DECLINED_FOR_SECONDS + 60, outbox.due_in(row.attempts) + 1)
+        row.created = datetime_now() - timedelta(seconds=behind)
         handle.commit()
     finally:
         handle.close()
@@ -2130,14 +2132,16 @@ def test_a_peer_that_is_silent_many_times_is_only_deferred_and_never_given_up_on
 
 def test_a_row_owed_past_the_span_is_still_offered_so_that_it_can_end(rig, monkeypatch):
     """
-    The clamp on the wait, which is what keeps the span exact rather than approximate. The
-    pass that gives up on a row is the pass that offers it, so a row whose next offer falls
-    further out than the span would never be offered again and so could never be given up
-    on: a row nothing clears and nothing reaps, which is the wedge the span was added to
-    remove. Unclamped, the wait for this row's count is hours.
+    A count that did not accumulate under this schedule, which is the one way the wait can
+    reach past the span. The pass that gives up on a row is the pass that offers it, so a
+    row whose next offer falls further out than anyone will wait would never be offered
+    again and so could never be given up on: a row nothing clears and nothing reaps, which
+    is the wedge the span was added to remove. The wait for this row's count is hours, and
+    an answer further out than one cap is what tells `drain` it is not this schedule's.
 
-    The count is set rather than driven, because the state this guards against is a row
-    that already carried a high count when the wait arrived.
+    The count is set rather than driven, because that is the state this guards against: a
+    row that already carried a high count when the schedule it is now read against arrived,
+    which is what an upgrade and a raised INTERVAL both leave behind.
     """
     from datetime import timedelta
 
@@ -2179,6 +2183,118 @@ def test_a_row_owed_past_the_span_is_still_offered_so_that_it_can_end(rig, monke
             f"deferred the exit as well as the retry"
     finally:
         handle.close()
+
+def test_a_row_past_the_span_is_still_spaced_out_in_its_second_hour(rig, monkeypatch):
+    """
+    The second hour, which is where the growing wait used to stop growing. The wait was
+    clamped to the span, and a clamp cannot exceed the age of a row already past the span,
+    so such a row was due on every pass: at a thirty-second interval sixteen offers in the
+    first hour and a hundred and twenty in the second.
+
+    Driven at a peer that says nothing, because that is who it reaches. A row the peer
+    answers for is made terminal by the pass at the span and never sees a second hour; a
+    row nothing answers is deliberately never terminal, so it is offered for as long as the
+    peer is away, and at what rate is this module's to say.
+
+    Every pass the real sweep would run is run, and the row is aged to its own next due
+    point by the passes rather than by hand, so what is measured is a schedule the row
+    actually walked. The offers are counted from `attempts`, which both builds keep, so a
+    build without the growing wait fails on the count rather than on reaching for a symbol
+    it does not have.
+    """
+    from datetime import timedelta
+
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    interval = 30
+    monkeypatch.setattr(settings().replication, "interval", interval)
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "_send",
+                        lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, "away", outbox.NO_ANSWER))
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "DELETE",
+                           {"node": "node001"}, None, "req-second-hour", "tester")
+
+    def pass_with_the_row_aged(age: int) -> tuple:
+        """One sweep pass with the row that old; answers its state and offer count."""
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            row.created = datetime_now() - timedelta(seconds=age)
+            handle.commit()
+        finally:
+            handle.close()
+        outbox.drain("ctrl2")
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+            return row.state, row.attempts
+        finally:
+            handle.close()
+
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        first_hour, second_hour, counted = 0, 0, 0
+        for age in range(0, 2 * outbox.DECLINED_FOR_SECONDS + 1, interval):
+            state, offers = pass_with_the_row_aged(age)
+            if offers > counted:
+                counted = offers
+                if age <= outbox.DECLINED_FOR_SECONDS:
+                    first_hour += 1
+                else:
+                    second_hour += 1
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    # The silence has to have happened and the row has to have survived it, or the two
+    # counts below are about something other than a peer that is away.
+    assert state == outbox.QUEUED, \
+        f"the row is {state} after two hours at a peer that never answered, so this is " \
+        f"not the row that is offered for as long as the peer is away"
+    assert first_hour > 1 and second_hour > 0, \
+        f"the row was offered {first_hour} time(s) in its first hour and {second_hour} " \
+        f"in its second, so it was never retried and there is no spacing to measure"
+
+    assert second_hour <= first_hour, \
+        f"the row was offered {first_hour} times in its first hour and {second_hour} in " \
+        f"its second, so the wait stops growing once the row is older than the span and " \
+        f"the spacing is only ever for the first hour"
+    allowed = outbox.DECLINED_FOR_SECONDS // outbox.BACKOFF_CAP
+    assert second_hour <= allowed, \
+        f"the row was offered {second_hour} times in its second hour, where a cap of " \
+        f"{outbox.BACKOFF_CAP} s allows {allowed}: the rate past the span is the site's " \
+        f"INTERVAL again rather than this module's cap"
+
+
+def test_no_two_offers_this_schedule_allows_are_further_apart_than_the_cap(rig, monkeypatch):
+    """
+    What lets the wait stand unclamped, enumerated over the intervals a site can set rather
+    than exampled at one of them: no gap the schedule leaves is longer than the cap.
+
+    That is the whole of why the span stays exact. The pass that makes a row terminal is
+    the pass that offers it, so a row owed past the span is given up on one cap later at
+    worst - where a schedule free to leave a longer gap would defer the exit with the
+    retry, which is what clamping the wait to the span was there to prevent and what it
+    cost the second hour to do.
+    """
+    from trixd.common.settings import current as settings
+    from trixd.core.replication import outbox
+
+    for interval in (0, 1, 7, 29, 30, 60, 149, 150, 299, 300, 301, 600, 3600):
+        monkeypatch.setattr(settings().replication, "interval", interval)
+        waits = [outbox.due_in(attempts) for attempts in range(0, 200)]
+        gaps = [later - earlier for earlier, later in zip(waits, waits[1:])]
+        assert max(gaps) <= outbox.BACKOFF_CAP, \
+            f"at INTERVAL={interval} the schedule leaves {max(gaps)} s between two " \
+            f"offers against a cap of {outbox.BACKOFF_CAP} s, so a row owed past the " \
+            f"span waits that long for the pass that is able to end it"
+        assert waits == sorted(waits), \
+            f"at INTERVAL={interval} the wait does not grow with the count, so a row is " \
+            f"offered harder the longer the peer has not taken it"
+
 
 
 def test_a_declined_apply_is_not_remembered(rig, client, headers):
