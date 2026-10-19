@@ -263,6 +263,12 @@ settings = declarations.read(PLUGIN, "settings", "", {"interval": "60s"})
 declarations.write(PLUGIN, "settings", "", body)
 ```
 
+Every verb that changes a document writes against the version it read, so two callers
+changing one key cannot overwrite each other's change unseen. Where one key is written
+faster than it can be read, the caller is refused `503` rather than answered `200` for a
+document that was not stored - so a handler that stores something should let that refusal
+reach its caller rather than catching it.
+
 ## Renders
 
 A render is an output computed from inputs, such as the Prometheus target list or

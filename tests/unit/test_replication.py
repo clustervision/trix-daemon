@@ -1139,6 +1139,100 @@ def test_two_merges_of_a_key_that_does_not_exist_yet_keep_both_fields(rig, inter
         "a second row was written for one key"
 
 
+def _declaration_entry_points() -> dict:
+    """
+    Every entry point the declarations module offers, read off the module.
+
+    Enumerated rather than listed: the defect below is a precondition that landed on one
+    verb and not its siblings, and a test naming the verbs its author knew about is the same
+    oversight written twice. A verb added later is driven by this without being mentioned.
+    """
+    import inspect
+
+    from trixd.utils import declarations
+
+    return {name: value for name, value in sorted(vars(declarations).items())
+            if inspect.isfunction(value) and not name.startswith("_")
+            and value.__module__ == declarations.__name__}
+
+
+def _declaration_arguments(function, plugin: str, kind: str, name: str, sent: dict) -> dict:
+    """
+    One entry point's arguments, built from its signature rather than from its name.
+
+    A parameter this cannot supply is a failure rather than a skip: enumerating a verb and
+    then not driving it is how a derived test reads as covering something it never ran.
+    """
+    import inspect
+
+    known = {"plugin": plugin, "kind": kind, "name": name, "body": dict(sent),
+             "changes": dict(sent), "defaults": {}, "fallback": None}
+    wanted = list(inspect.signature(function).parameters)
+    unknown = [parameter for parameter in wanted if parameter not in known]
+    assert not unknown, (
+        f"declarations.{function.__name__} takes {unknown}, which this test cannot supply, "
+        f"so it would be enumerated and never driven: say what to pass it")
+    return {parameter: known[parameter] for parameter in wanted}
+
+
+def _declaration_version(plugin: str, kind: str, name: str) -> int:
+    """
+    The version held for one key, read without the module under test.
+    """
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Declaration).where(
+            models.Declaration.plugin == plugin, models.Declaration.kind == kind,
+            models.Declaration.name == name))
+        return (row.version or 0) if row is not None else 0
+    finally:
+        handle.close()
+
+
+@pytest.mark.parametrize("entry_point", sorted(_declaration_entry_points()))
+def test_a_declaration_entry_point_that_writes_writes_against_the_version_it_read(
+        entry_point, rig, interleave_once):
+    """
+    Each verb that changes a document orders its write against the version it read.
+
+    A precondition on one verb alone is no precondition at all: a delete ordered against the
+    version a change had just superseded stored a deletion as that same version, answered
+    its caller 200, and left two documents claiming one version - after which the surviving
+    one replicates like any other, so the pair agrees on it and nothing reports a conflict.
+
+    Whether a verb writes is measured here rather than declared, so a reader that starts
+    writing is covered and a reader that does not is pinned as not writing.
+    """
+    from trixd.utils import declarations
+
+    function = _declaration_entry_points()[entry_point]
+    plugin, kind, name = "prometheus", "exporter-scope", f"node:{entry_point}"
+    declarations.write(plugin, kind, name, {"held": 1})
+    before = _declaration_version(plugin, kind, name)
+
+    function(**_declaration_arguments(function, plugin, kind, name, {"probe": 1}))
+
+    if _declaration_version(plugin, kind, name) == before:
+        return
+
+    # A competing write lands inside this verb's own read, so the version it read is gone
+    # by the time it writes. The row is put back first: the probe above moved it.
+    declarations.write(plugin, kind, name, {"held": 1})
+    at = _declaration_version(plugin, kind, name)
+    fired = interleave_once(
+        lambda: declarations.write(plugin, kind, name, {"held": 2, "peer": True}))
+
+    function(**_declaration_arguments(function, plugin, kind, name, {"mine": 1}))
+
+    settled = _declaration_version(plugin, kind, name)
+    assert fired, "the competing write never ran, so nothing interleaved"
+    assert settled == at + 2, (
+        f"the write that landed inside declarations.{entry_point}'s read is version "
+        f"{at + 1}, and {entry_point} then stored its own document at version {settled}: "
+        f"it wrote against a version that had already moved, so two documents carry one "
+        f"version and the caller that lost was answered 200 for a document nobody holds")
+
+
 def test_a_key_amended_past_the_bound_is_refused_retryably_rather_than_answered_200(
         rig, interleave_once):
     """

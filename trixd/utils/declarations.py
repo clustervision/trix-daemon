@@ -41,7 +41,7 @@ from trixd.db import models
 
 LOGGER = trixlog.get("declarations")
 
-# How many times an amend reads the row again after losing the version it wrote against. A
+# How many times a change reads the row again after losing the version it wrote against. A
 # round is only lost to a write that landed, so the bound is reached by a key being written
 # faster than it can be read, not by a race. Past it the caller is refused: answering 200
 # with a document that was never stored is the one outcome this must not produce.
@@ -55,6 +55,75 @@ def _origin() -> str:
     return socket.gethostname().split(".")[0]
 
 
+def _settle(plugin: str, kind: str, name: str, decide):
+    """
+    Read the document, let `decide` say what it should become, and write that conditional on
+    the version that was read.
+
+    Every change to a document goes through here, so the precondition cannot be on one verb
+    and absent from the next. Read and write in two steps and a second caller lands in
+    between: both read one version, both wrote a whole document, the later one won, and the
+    caller that lost was answered 200 with a document that was never stored - after which
+    the surviving document replicates like any other, so the peer agrees with it and nothing
+    reports a conflict. Written against the version that was read, a row that moved
+    underneath is read again and `decide` asked over what is there now.
+
+    `decide` is handed the row as it stands, or None, and answers the body to store, whether
+    the document is now deleted, and what the caller is told. None means there is nothing to
+    write. Answers the version written and that answer, or None.
+    """
+    handle = database.session()
+    try:
+        for _ in range(ROUNDS):
+            # The round that lost has a transaction open on the snapshot it read, so without
+            # ending it here every later round reads the same stale row and none can settle.
+            handle.rollback()
+            row = handle.scalar(
+                select(models.Declaration).where(
+                    models.Declaration.plugin == plugin,
+                    models.Declaration.kind == kind,
+                    models.Declaration.name == name))
+            decided = decide(row)
+            if decided is None:
+                return None
+            body, deleted, answer = decided
+            if row is None:
+                try:
+                    handle.add(models.Declaration(plugin=plugin, kind=kind, name=name,
+                                                  body=body, deleted=deleted,
+                                                  origin=_origin()))
+                    handle.commit()
+                except IntegrityError:
+                    # Somebody inserted this key between the read and here. The unique
+                    # constraint is what makes that another round rather than a second row.
+                    continue
+                return 1, answer
+            version = (row.version or 0) + 1
+            settled = handle.execute(
+                update(models.Declaration)
+                .where(models.Declaration.id == row.id,
+                       models.Declaration.version == row.version)
+                .values(body=body, deleted=deleted, version=version, origin=_origin()))
+            if settled.rowcount != 1:
+                continue
+            handle.commit()
+            return version, answer
+        handle.rollback()
+        LOGGER.error("declaration %s/%s/%s moved under every one of %s attempts to change "
+                     "it, so nothing was stored", plugin, kind, name or "-", ROUNDS)
+        # Typed, and 5xx on purpose. A bare exception never reaches the TrixdError handler,
+        # so the caller would be told nothing at all; and the outbox keeps a 5xx queued
+        # while it makes any other 4xx terminal, so a conflict here would lose a replicated
+        # write on the peer for good over contention a retry settles.
+        raise ServiceUnavailable(f"{plugin}/{kind}/{name or '-'} is being written faster "
+                                 f"than it can be changed; nothing was stored, so try again")
+    except Exception:
+        handle.rollback()
+        raise
+    finally:
+        handle.close()
+
+
 def forget(plugin: str, kind: str, name: str) -> bool:
     """
     Mark one document deleted, so the deletion reaches the peer instead of being undone by it.
@@ -62,36 +131,28 @@ def forget(plugin: str, kind: str, name: str) -> bool:
     The row stays: the sweep re-adds a row that is missing here and present there, so a real
     delete comes back within the interval. Marked, it counts as no row on both.
     """
-    handle = database.session()
-    try:
-        row = handle.scalar(select(models.Declaration).where(
-            models.Declaration.plugin == plugin, models.Declaration.kind == kind,
-            models.Declaration.name == name))
+    def decide(row):
+        """
+        A live row is marked; one already marked is re-marked so the delete can be restated.
+        """
         if row is None:
-            return False
-        if row.deleted:
-            # Marked here already, but the peer may still hold a live row at this version.
-            # Bumping is what lets the delete, issued again, settle that; a silent no-op
-            # leaves the operator no way to break the tie.
-            row.version = (row.version or 0) + 1
-            row.origin = _origin()
-            handle.commit()
-            LOGGER.info("declaration %s/%s/%s was already forgotten, re-marked at version %s",
-                        plugin, kind, name or "-", row.version)
-            return False
-        row.deleted = True
-        row.body = {}
-        row.version = (row.version or 0) + 1
-        row.origin = _origin()
-        handle.commit()
+            return None
+        # Marked here already, but the peer may still hold a live row at this version.
+        # Bumping is what lets the delete, issued again, settle that; a silent no-op leaves
+        # the operator no way to break the tie.
+        return {}, True, not row.deleted
+
+    settled = _settle(plugin, kind, name, decide)
+    if settled is None:
+        return False
+    version, gone = settled
+    if gone:
         LOGGER.info("declaration %s/%s/%s forgotten at version %s",
-                    plugin, kind, name or "-", row.version)
-        return True
-    except Exception:
-        handle.rollback()
-        raise
-    finally:
-        handle.close()
+                    plugin, kind, name or "-", version)
+    else:
+        LOGGER.info("declaration %s/%s/%s was already forgotten, re-marked at version %s",
+                    plugin, kind, name or "-", version)
+    return gone
 
 
 def read(plugin: str, kind: str, name: str = "", fallback=None):
@@ -115,98 +176,40 @@ def write(plugin: str, kind: str, name: str, body: dict) -> dict:
     """
     Replace the document, bumping its version so a peer can order the two.
     """
-    handle = database.session()
-    try:
-        row = handle.scalar(
-            select(models.Declaration).where(
-                models.Declaration.plugin == plugin,
-                models.Declaration.kind == kind,
-                models.Declaration.name == name))
-        if row is None:
-            row = models.Declaration(plugin=plugin, kind=kind, name=name,
-                                     body=dict(body), origin=_origin())
-            handle.add(row)
-        else:
-            row.body = dict(body)
-            # Writing a key again revives it: the marker is how a deletion travels, and it has
-            # travelled by the time anyone writes here.
-            row.deleted = False
-            row.version = (row.version or 0) + 1
-            row.origin = _origin()
-        handle.commit()
-        LOGGER.info("declaration %s/%s/%s written at version %s",
-                    plugin, kind, name or "-", row.version)
-        return dict(row.body)
-    except Exception:
-        handle.rollback()
-        raise
-    finally:
-        handle.close()
+    def decide(_row):
+        """
+        The whole document, whatever is held. Writing a key again revives it: the marker is
+        how a deletion travels, and it has travelled by the time anyone writes here.
+        """
+        return dict(body), False, dict(body)
+
+    version, stored = _settle(plugin, kind, name, decide)
+    LOGGER.info("declaration %s/%s/%s written at version %s",
+                plugin, kind, name or "-", version)
+    return stored
 
 
 def amend(plugin: str, kind: str, name: str, changes: dict, defaults: dict) -> dict:
     """
     Put `changes` over the stored document and write the result, as one step.
 
-    Reading and writing in two sessions let a second caller land in between: both read one
-    version, both wrote the whole document, the later one won, and the earlier caller was
-    answered 200 with the value it sent rather than the value that was stored - after which
-    the truncated document replicates like any other, so the peer agrees with it and nothing
-    reports a conflict. The write is therefore conditional on the version that was read, and
-    a row that moved underneath is read again and the changes put over what is there now.
+    Taken separately the read and the write lose one of two callers; what makes them one
+    step is `_settle`, which writes against the version it read.
     """
-    handle = database.session()
-    try:
-        for _ in range(ROUNDS):
-            # The round that lost has a transaction open on the snapshot it read, so without
-            # ending it here every later round reads the same stale row and none can settle.
-            handle.rollback()
-            row = handle.scalar(
-                select(models.Declaration).where(
-                    models.Declaration.plugin == plugin,
-                    models.Declaration.kind == kind,
-                    models.Declaration.name == name))
-            # A marked row is the record of a deletion, not a document; writing a key again
-            # revives it, as the marker has travelled by the time anyone writes here.
-            held = dict(row.body) if row is not None and not row.deleted else dict(defaults)
-            held.update(changes or {})
-            if row is None:
-                version = 1
-                try:
-                    handle.add(models.Declaration(plugin=plugin, kind=kind, name=name,
-                                                  body=held, origin=_origin()))
-                    handle.commit()
-                except IntegrityError:
-                    # Somebody inserted this key between the read and here. The unique
-                    # constraint is what makes that another round rather than a second row.
-                    continue
-            else:
-                version = (row.version or 0) + 1
-                settled = handle.execute(
-                    update(models.Declaration)
-                    .where(models.Declaration.id == row.id,
-                           models.Declaration.version == row.version)
-                    .values(body=held, deleted=False, version=version, origin=_origin()))
-                if settled.rowcount != 1:
-                    continue
-                handle.commit()
-            LOGGER.info("declaration %s/%s/%s written at version %s",
-                        plugin, kind, name or "-", version)
-            return held
-        handle.rollback()
-        LOGGER.error("declaration %s/%s/%s moved under every one of %s attempts to amend it, "
-                     "so nothing was stored", plugin, kind, name or "-", ROUNDS)
-        # Typed, and 5xx on purpose. A bare exception never reaches the TrixdError handler,
-        # so the caller would be told nothing at all; and the outbox keeps a 5xx queued
-        # while it makes any other 4xx terminal, so a conflict here would lose a replicated
-        # write on the peer for good over contention a retry settles.
-        raise ServiceUnavailable(f"{plugin}/{kind}/{name or '-'} is being written faster than "
-                                 f"it can be amended; nothing was stored, so try again")
-    except Exception:
-        handle.rollback()
-        raise
-    finally:
-        handle.close()
+    def decide(row):
+        """
+        What is held with `changes` over it, or the defaults where nothing is held.
+        """
+        # A marked row is the record of a deletion, not a document; writing a key again
+        # revives it, as the marker has travelled by the time anyone writes here.
+        held = dict(row.body) if row is not None and not row.deleted else dict(defaults)
+        held.update(changes or {})
+        return held, False, held
+
+    version, held = _settle(plugin, kind, name, decide)
+    LOGGER.info("declaration %s/%s/%s written at version %s",
+                plugin, kind, name or "-", version)
+    return held
 
 
 def merge(plugin: str, kind: str, name: str, body: dict, defaults: dict) -> dict:
