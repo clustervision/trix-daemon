@@ -623,6 +623,21 @@
             ],
             "title": "Exporters File"
           },
+          "hw_alert_grace": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long a component must stay absent before a generated hardware alert fires, as a duration such as 5m. Rules sent in keep the grace period they were sent with.\n",
+            "examples": [
+              "5m"
+            ],
+            "title": "Hw Alert Grace"
+          },
           "prometheus_url": {
             "anyOf": [
               {
@@ -3161,7 +3176,7 @@
     },
     "/api/v1/prometheus/config": {
       "get": {
-        "description": "The four settings the prometheus plugin works with. `exporters_file` is the baseline it\nreads the exporters from, `rules_directory` is where it writes the rule files Prometheus\nreads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and\n`reload_command` is what it runs after writing a rule file. When the scheme in\n`prometheus_url` is the wrong one, the plugin tries the other and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The five settings the prometheus plugin works with. `exporters_file` is the baseline it\nreads the exporters from, `rules_directory` is where it writes the rule files Prometheus\nreads, `prometheus_url` is where it asks Prometheus which hardware each node reports,\n`reload_command` is what it runs after writing a rule file, and `hw_alert_grace` is how\nlong a component must be absent before a generated hardware alert fires. When the scheme\nin `prometheus_url` is the wrong one, the plugin tries the other and remembers it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_config_get_api_v1_prometheus_config_get",
         "responses": {
           "200": {
@@ -3169,6 +3184,7 @@
               "application/json": {
                 "example": {
                   "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
+                  "hw_alert_grace": "5m",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3221,7 +3237,7 @@
         "x-trixd-minimum": "reader"
       },
       "patch": {
-        "description": "Send any of the four settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Send any of the five settings; those left out keep their value. rootus only, because\nthe daemon writes into `rules_directory` and runs `reload_command`, both as root.\n`hw_alert_grace` reaches a node's rules when they are next generated.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "prometheus_config_patch_api_v1_prometheus_config_patch",
         "requestBody": {
           "content": {
@@ -3246,6 +3262,7 @@
               "application/json": {
                 "example": {
                   "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
+                  "hw_alert_grace": "5m",
                   "prometheus_url": "https://localhost:9090",
                   "reload_command": "systemctl reload prometheus-server",
                   "rules_directory": "/trinity/local/etc/prometheus_server/rules/"
@@ -3253,7 +3270,7 @@
                 "schema": {}
               }
             },
-            "description": "All four settings as now held"
+            "description": "All five settings as now held"
           },
           "401": {
             "content": {
@@ -4218,7 +4235,7 @@
         "x-trixd-minimum": "manager"
       },
       "get": {
-        "description": "The Prometheus rule file trixd holds for one node, as YAML loads it: one group,\n`trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported\nwhen the file was generated. An alert fires when its part stops being reported, so a\nmissing DIMM, disk or card is noticed.\n\nEach rule's labels say how its alert counts: `nhc`, whether it counts for the node's\nhealth check, and `disabled`, whether it fires at all. A manager changes them with\n`PATCH /api/v1/prometheus/hw-rules`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The Prometheus rule file trixd holds for one node, as YAML loads it: one group,\n`trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported\nwhen the file was generated. An alert fires when its part has stopped being reported\nfor the whole of `hw_alert_grace`, so a missing DIMM, disk or card is noticed without\na node being drained for a rule file that was momentarily stale.\n\nEach rule's labels say how its alert counts: `nhc`, whether it counts for the node's\nhealth check, and `disabled`, whether it fires at all. A manager changes them with\n`PATCH /api/v1/prometheus/hw-rules`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_get_hw_rules_get_api_v1_prometheus_hw_rules__node__get",
         "parameters": [
           {
@@ -4253,6 +4270,7 @@
                             "description": "Hardware component {{ $labels.class }} with {{ $labels.product }} {{ $labels.vendor }} {{ $labels.serial }} is missing."
                           },
                           "expr": "absent(lshw_device{hostname=\"node001.cluster\",luna_group=\"compute-group\",class=\"memory\",description=\"System Memory\"})",
+                          "for": "5m",
                           "labels": {
                             "category": "hardware",
                             "disabled": false,

@@ -110,6 +110,13 @@ schemas:
       optional: true
       description: Run after a rule file changes, so Prometheus reads it
       example: systemctl reload prometheus-server
+    hw_alert_grace:
+      type: string
+      optional: true
+      description: >
+        How long a component must stay absent before a generated hardware alert fires, as a
+        duration such as 5m. Rules sent in keep the grace period they were sent with.
+      example: 5m
 
 endpoints:
   - path: config
@@ -118,14 +125,15 @@ endpoints:
     handler: config
     summary: Where the plugin writes rule files, reaches Prometheus, and what it reloads
     description: |
-      The four settings the prometheus plugin works with. `exporters_file` is the baseline it
+      The five settings the prometheus plugin works with. `exporters_file` is the baseline it
       reads the exporters from, `rules_directory` is where it writes the rule files Prometheus
-      reads, `prometheus_url` is where it asks Prometheus which hardware each node reports, and
-      `reload_command` is what it runs after writing a rule file. When the scheme in
-      `prometheus_url` is the wrong one, the plugin tries the other and remembers it.
+      reads, `prometheus_url` is where it asks Prometheus which hardware each node reports,
+      `reload_command` is what it runs after writing a rule file, and `hw_alert_grace` is how
+      long a component must be absent before a generated hardware alert fires. When the scheme
+      in `prometheus_url` is the wrong one, the plugin tries the other and remembers it.
     response:
       description: The settings as held
-      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server, hw_alert_grace: 5m}
 
   - path: config
     methods: [PATCH]
@@ -135,12 +143,13 @@ endpoints:
     schema: config
     summary: Change where the plugin writes rule files, reaches Prometheus, or reloads
     description: |
-      Send any of the four settings; those left out keep their value. rootus only, because
+      Send any of the five settings; those left out keep their value. rootus only, because
       the daemon writes into `rules_directory` and runs `reload_command`, both as root.
+      `hw_alert_grace` reaches a node's rules when they are next generated.
     request_example: {prometheus_url: "https://localhost:9090"}
     response:
-      description: All four settings as now held
-      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server}
+      description: All five settings as now held
+      example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server, hw_alert_grace: 5m}
 
   - path: rules
     methods: [GET]
@@ -233,8 +242,9 @@ endpoints:
     description: |
       The Prometheus rule file trixd holds for one node, as YAML loads it: one group,
       `trinityx_hw`, with one `MissingHardwareComponent` alert for each part `lshw` reported
-      when the file was generated. An alert fires when its part stops being reported, so a
-      missing DIMM, disk or card is noticed.
+      when the file was generated. An alert fires when its part has stopped being reported
+      for the whole of `hw_alert_grace`, so a missing DIMM, disk or card is noticed without
+      a node being drained for a rule file that was momentarily stale.
 
       Each rule's labels say how its alert counts: `nhc`, whether it counts for the node's
       health check, and `disabled`, whether it fires at all. A manager changes them with
@@ -249,6 +259,7 @@ endpoints:
             rules:
               - alert: MissingHardwareComponent
                 expr: absent(lshw_device{hostname="node001.cluster",luna_group="compute-group",class="memory",description="System Memory"})
+                for: 5m
                 labels: {severity: warning, category: hardware, nhc: true, disabled: false}
                 annotations:
                   description: "Hardware component {{ $labels.class }} with {{ $labels.product }} {{ $labels.vendor }} {{ $labels.serial }} is missing."

@@ -71,6 +71,10 @@ DEFAULT_CONFIG: dict = {
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
     "prometheus_url": "https://localhost:9090",
     "reload_command": "systemctl reload prometheus-server",
+    # A rule file is briefly stale after its node changes group, and absent() is true while
+    # it is, so an alert that fires at once drains a node that was never out. Settable
+    # because how long that window is depends on the size of the estate.
+    "hw_alert_grace": "5m",
 }
 
 # Exporter name to the port it answers on. A node is a target once per exporter.
@@ -718,6 +722,7 @@ class Backend:
             raise BackendFailure(
                 f"no data found for {host}; the hardware exporter has not been scraped yet")
         hardware = (self.settings().get("settings") or {}).get("hw") or {}
+        grace = self._config().get("hw_alert_grace") or DEFAULT_CONFIG["hw_alert_grace"]
         rules = []
         for component in components:
             labels = COMPONENT_LABELS
@@ -728,6 +733,7 @@ class Backend:
             rules.append({
                 "alert": HW_ALERT,
                 "expr": f"absent({HW_METRIC}{{{selector}}})",
+                "for": grace,
                 "labels": {"severity": "warning", "category": "hardware",
                            "nhc": bool(hardware.get("nhc", True)),
                            "disabled": bool(hardware.get("disabled", False))},

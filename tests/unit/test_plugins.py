@@ -347,12 +347,71 @@ def test_the_hardware_rules_take_lunas_shape(rig, tmp_path, monkeypatch):
     group = backend.get_hw_rules("node001")["groups"][0]
     assert group["name"] == "trinityx_hw"
     memory, infiniband = group["rules"]
-    assert memory["alert"] == "MissingHardwareComponent" and "for" not in memory
+    assert memory["alert"] == "MissingHardwareComponent"
+    assert memory.get("for") == prometheus.DEFAULT_CONFIG["hw_alert_grace"]
     assert memory["expr"] == ('absent(lshw_device{hostname="node001.cluster",luna_group="compute",'
                               'class="memory",description="DIMM",product="P",vendor="V",'
                               'serial="S1"})')
     assert "serial=" not in infiniband["expr"]
     assert (tmp_path / "trix.hw.node001.cluster.rules").is_file()
+
+
+def test_a_generated_hardware_alert_waits_before_it_fires(rig, monkeypatch):
+    """
+    A generated hardware alert carries a grace period, and its length is the configured one
+    rather than a constant.
+
+    absent() is true while a node's rule file is stale, which it briefly is after the node
+    changes group, and the drainer acts on the nhc label as soon as an alert fires - so an
+    alert with nothing to wait out drains a node that was never away.
+    """
+    from trixd.plugins.prometheus.backend import COMPONENT_LABELS, DEFAULT_CONFIG, Backend
+
+    backend = Backend()
+    monkeypatch.setattr(backend, "_components",
+                        lambda host: [{label: "x" for label in COMPONENT_LABELS}])
+    monkeypatch.setattr(backend, "settings", lambda: {})
+
+    shipped = backend._generate_hw_rules("node001")["groups"][0]["rules"][0]
+    assert shipped.get("for"), \
+        "a generated hardware alert has no for clause, so it fires on the first evaluation"
+
+    backend.config(body={"hw_alert_grace": "11m"})
+    configured = backend._generate_hw_rules("node001")["groups"][0]["rules"][0]
+    assert configured.get("for") == "11m", \
+        f"the grace period is not read from the configuration: {configured.get('for')!r}"
+    assert shipped["for"] == DEFAULT_CONFIG["hw_alert_grace"]
+
+
+def test_rules_sent_in_keep_the_grace_period_they_were_sent_with(rig, tmp_path, monkeypatch):
+    """
+    The grace period on a generated hardware rule is this plugin's; the one on a rule written
+    in the alertx wizard is the user's, and it survives being stored and written.
+
+    The two paths share only the writer, which takes the document as it is given. A default
+    applied there instead would replace a length the user chose, and nothing would say so.
+    """
+    import yaml
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    sent = {"groups": [
+        {"name": "trinityx_generic",
+         "rules": [{"alert": "NodeDown", "expr": 'up{exporter="node"} == 0', "for": "90s",
+                    "labels": {"severity": "critical"},
+                    "annotations": {"description": "it has not answered"}}]},
+        {"name": "service_slurm",
+         "rules": [{"alert": "SlurmDown", "expr": 'up{exporter="slurm"} == 0',
+                    "labels": {"severity": "warning"}}]}]}
+
+    backend.rules(body=sent)
+
+    assert backend.rules()["groups"][0]["rules"][0].get("for") == "90s"
+    written = yaml.safe_load((tmp_path / "trix.generic.rules").read_text(encoding="utf-8"))
+    assert written["groups"][0]["rules"][0].get("for") == "90s", written
+    # And one sent without a grace period is left without one, rather than taking a default
+    # meant for the rules this plugin generates itself.
+    service = yaml.safe_load((tmp_path / "trix.service.rules").read_text(encoding="utf-8"))
+    assert "for" not in service["groups"][0]["rules"][0], service
 
 
 def _hw_file(directory, host, group, parts=("memory", "disk")):
