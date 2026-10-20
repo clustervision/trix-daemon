@@ -50,7 +50,7 @@ IMPORTED_AS = {"pyjwt": "jwt", "pyyaml": "yaml", "python-pam": "pam"}
 # Imported inside a try because a controller may not have them: the installer puts them
 # there per cluster, and trixd runs without them. Declaring them would make them
 # required, which is the opposite of what they are.
-OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders", "trinityx_config_slinky"}
+OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders"}
 
 
 def test_everything_the_daemon_imports_is_in_requirements():
