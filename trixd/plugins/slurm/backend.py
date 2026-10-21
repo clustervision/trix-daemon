@@ -29,7 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import hashlib
+import os
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
@@ -67,19 +67,59 @@ def _generator():
     return Generate()
 
 
-def _digests(paths) -> dict:
+def _contents(paths) -> dict:
     """
-    What each managed file hashes to now. A file that is not there yet hashes to nothing,
-    so its first write counts as a change.
+    What each managed file holds now. A file that is not there yet holds nothing, so its
+    first write counts as a change and putting it back takes it away again.
     """
     found = {}
     for path in paths:
         try:
             with open(path, "rb") as handle:
-                found[path] = hashlib.sha256(handle.read()).hexdigest()
+                found[path] = handle.read()
         except OSError:
-            found[path] = ""
+            found[path] = None
     return found
+
+
+def _restore(before: dict) -> list:
+    """
+    Put the managed files back as they were found, and name the ones that would not go
+    back. A path that held nothing did not exist, so it goes away again rather than being
+    left behind as an empty file slurm still includes.
+    """
+    unrestored = []
+    for path, content in before.items():
+        try:
+            if content is None:
+                if os.path.exists(path):
+                    os.remove(path)
+            else:
+                with open(path, "wb") as handle:
+                    handle.write(content)
+        except OSError as error:
+            unrestored.append(path)
+            LOGGER.error("the slurm block at %s could not be put back: %s", path, error)
+    return sorted(unrestored)
+
+
+def _refused(result) -> str:
+    """
+    The line slurm refused on. It prints the directive it could not parse, the include that
+    carried it and a fatal line; the first names the directive, which is what to act on.
+    """
+    spoken = [line.strip() for line in (result.err or result.out).splitlines()
+              if line.strip()]
+    return spoken[0] if spoken else f"exit status {result.code}"
+
+
+def _usable(entry: dict) -> bool:
+    """
+    Whether a pair renders into directives slurm will load: each half has to be one bare
+    token. An empty half is taken in silence with exit code zero, so nothing downstream
+    reports it; one carrying whitespace is refused, and skipping it saves a rollback.
+    """
+    return all(value.split() == [value] for value in (entry["name"], entry["group"]))
 
 
 def node_set() -> list:
@@ -121,14 +161,14 @@ class Backend:
         # partition configuration of every other node with it. Left out and named, rather
         # than refusing the lot: the nodes that do have a group are configurable without it.
         # The genders render leaves the same node out, for its own reason.
-        skipped = sorted(one["name"] for one in fullset if not one["group"])
+        skipped = sorted(one["name"] for one in fullset if not _usable(one))
         if skipped:
-            LOGGER.error("no group in Luna, so left out of the slurm configuration: %s",
-                         ", ".join(skipped))
-            fullset = [one for one in fullset if one["group"]]
+            LOGGER.error("no usable name or group in Luna, so left out of the slurm "
+                         "configuration: %s", ", ".join(skipped))
+            fullset = [one for one in fullset if _usable(one)]
         if not fullset:
-            LOGGER.error("every node Luna holds is without a group, so there is nothing to "
-                         "configure slurm with")
+            LOGGER.error("every node Luna holds is without a usable name or group, so "
+                         "there is nothing to configure slurm with")
             return {"nodes": 0, "files": [], "skipped": skipped}
 
         files = {
@@ -136,7 +176,7 @@ class Backend:
             "partitions": settings["partitions_file"],
             "gres": settings["gres_file"],
         }
-        before = _digests(files.values())
+        before = _contents(files.values())
         written = _generator().all_configs(nodes=fullset, configs=files,
                                            manager=settings["manager"])
         if not written:
@@ -146,7 +186,7 @@ class Backend:
         # ran on every pass: at start-up, where it is the one thing slow enough to put the
         # whole start over the lifespan timeout, and again on every node event, so a boot
         # storm reconfigured slurm once per node for files that had not moved.
-        if _digests(files.values()) == before:
+        if _contents(files.values()) == before:
             LOGGER.info("the slurm blocks are unchanged for %d node(s), so slurm is not "
                         "reconfigured", len(fullset))
             return {"nodes": len(fullset), "files": sorted(files.values()),
@@ -154,8 +194,23 @@ class Backend:
                     **({"skipped": skipped} if skipped else {})}
         result = shell.run(settings["reconfigure"].split(), timeout=60)
         if not result.ok:
+            # The running slurmctld keeps the configuration it had, but every client parses
+            # these files for itself, so sinfo and sbatch fail until the refused bytes are
+            # off the disk - and they are on shared storage, so a cold start meets them too.
             LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
+            unrestored = _restore(before)
+            again = shell.run(settings["reconfigure"].split(), timeout=60)
+            trouble = []
+            if unrestored:
+                trouble.append(f"the restore is incomplete, because "
+                               f"{', '.join(unrestored)} could not be put back")
+            if not again.ok:
+                trouble.append("slurm refused the previous blocks as well, so it and its "
+                               "clients are on a configuration that does not load")
+            state = "; ".join(trouble) or "the previous blocks are back in place"
+            raise BackendFailure(f"scontrol reconfigure refused the slurm blocks written "
+                                 f"for {len(fullset)} node(s): {_refused(result)}; {state}")
         LOGGER.info("wrote the slurm blocks for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "files": sorted(files.values()),
-                "reconfigured": result.ok, "changed": True,
+                "reconfigured": True, "changed": True,
                 **({"skipped": skipped} if skipped else {})}
