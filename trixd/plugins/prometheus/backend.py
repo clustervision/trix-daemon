@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import copy
 import glob
+import ipaddress
 import os
 import re
 import shutil
@@ -1357,10 +1358,26 @@ def _stamp(path: str, want: dict) -> tuple:
 
 def _provision_address(node: dict) -> str:
     """
-    The address on the interface the node provisions over.
+    The address on the interface the node provisions over, and it has to parse as one.
+
+    Luna substitutes a placeholder rather than omitting the field when an interface holds no
+    address. A placeholder is truthy, so it was published as a target - carrying the node's
+    own hostname and group labels, addressed to a host no resolver answers. Answering nothing
+    is what engages the hostname the caller falls back to, as an absent address already does.
+
+    Parsed rather than compared against that placeholder's text, which would go stale here
+    with nothing to say so and would pass whatever Luna substituted next.
     """
     wanted = node.get("provision_interface")
     for interface in node.get("interfaces") or []:
         if interface.get("interface") == wanted:
-            return interface.get("ipaddress") or ""
+            held = interface.get("ipaddress") or ""
+            # Either family parses. Luna keeps v6 in a column this function does not read, so
+            # none arrives here - and _target formats an address unbracketed, so one would not
+            # survive the journey if it did.
+            try:
+                ipaddress.ip_address(held)
+            except ValueError:
+                return ""
+            return held
     return ""

@@ -2424,6 +2424,37 @@ def test_a_provisioning_interface_with_no_address_publishes_the_hostname(rig, tm
         "an interface with no address did not fall back to the hostname"
 
 
+def test_a_provisioning_address_that_does_not_parse_publishes_the_hostname(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    The case above is an interface Luna hands over with no address field. This is the same
+    cluster state reached by the other route Luna takes for it - an interface on a network
+    with DHCP on, nodes kept out of the pool and nothing assigned - where Luna substitutes a
+    placeholder into the field instead of leaving it out. The two have to publish the same
+    thing, and only the first one did: a placeholder is truthy, so it was published as the
+    scrape address under the node's own hostname and group labels. That reads as a healthy
+    node and names a host no resolver will answer, and every node in that state collapses
+    onto one instance label, which is the value a series is told apart by.
+
+    The rule is that the address has to parse, so the first value asserted is not the
+    placeholder's text: a check matching that one string would pass whatever Luna substituted
+    next, across a repository boundary that would say nothing when it moved. The address that
+    does parse is asserted too, because a selection answering nothing at all would satisfy
+    the other two.
+    """
+    for held, published in (("10.141.0.1", "10.141.0.1"),
+                            ("not an address", "node001.cluster"),
+                            ("!!Invalid!!", "node001.cluster")):
+        backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+            "hostname": "node001.cluster", "group": "compute",
+            "provision_interface": "BOOTIF",
+            "interfaces": [{"interface": "BOOTIF", "ipaddress": held, "network": "cluster",
+                            "macaddress": "aa:bb:cc:dd:ee:01"}]}})
+
+        assert _scrape_addresses(backend) == [published], \
+            f"an interface holding {held!r} is not scraped on {published}"
+
+
 def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, tmp_path,
                                                                            monkeypatch):
     """
