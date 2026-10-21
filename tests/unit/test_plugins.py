@@ -682,6 +682,75 @@ def test_a_group_change_rewrites_the_selector(rig, tmp_path, monkeypatch):
     assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text
 
 
+def test_a_node_update_carrying_fields_the_handler_does_not_use_still_repairs(
+        rig, tmp_path, monkeypatch):
+    """
+    What a Luna hook sends is its business, and a field this handler has no use for must
+    not stop it: the payload of an interface write names the interface, its address and
+    its network, and none of those are parameters here.
+
+    The dispatcher wakes the renders outside the guard that catches a handler raising, so
+    a refused key wakes every render and leaves the rule files untouched - the one failure
+    shape that reads as success from both ends.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    rules = _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_updated(name="node001", interface="BOOTIF", ipaddress="10.141.0.9",
+                             ipaddress_ipv6=None, network="cluster", networktype="ethernet",
+                             zone="cluster")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    text = rules.read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text, (
+        f"the payload was taken and the rules were left as they were: {text}")
+
+
+def test_a_node_update_carrying_only_the_name_still_repairs(rig, tmp_path, monkeypatch):
+    """
+    A short payload is as legitimate as a long one: an interface removal can name the node
+    and the interface and have nothing else cheaply to hand.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    rules = _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_updated(name="node001", interface="BOOTIF")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    text = rules.read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text, (
+        f"the payload was taken and the rules were left as they were: {text}")
+
+
+def test_a_node_delete_carrying_fields_the_handler_does_not_use_still_retires(
+        rig, tmp_path, monkeypatch):
+    """
+    The same for the delete handler, which a node hook reaches with its own payload.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_deleted(name="node001.cluster", group="compute")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    assert not (tmp_path / "trix.hw.node001.cluster.rules").exists(), \
+        "the payload was taken and the rule file was left loading"
+
+
 def test_relabel_touches_only_equality_matchers_on_node_labels():
     """
     A regex matcher, a negation and any other label keep their text to the character.
@@ -2254,6 +2323,105 @@ def test_a_deviation_changes_what_one_group_is_scraped_on(rig, tmp_path, monkeyp
                                                   "node001.cluster:14208"]
     assert by_host["node002.cluster"] == ["node002.cluster:24200"], \
         "the gpu group did not get its own port, or kept the exporter it switched off"
+
+
+def _scrape_addresses(backend) -> list:
+    """
+    The distinct addresses the service discovery document scrapes this cluster on.
+
+    A node is rendered once per exporter, so the count is checked here: "every target" is
+    the claim each caller below makes, and a document holding one target would satisfy it
+    by accident.
+    """
+    rendered = backend.render_targets()
+    assert len(rendered) > 1, \
+        f"one target says nothing about every target: {rendered}"
+    return sorted({entry["targets"][0].rsplit(":", 1)[0] for entry in rendered})
+
+
+def test_a_node_with_a_bmc_is_scraped_on_the_interface_it_provisions_over(rig, tmp_path,
+                                                                          monkeypatch):
+    """
+    A node holds an address on every network it is on, and the exporters answer on one of
+    them. Published on its BMC address a node is scraped on a board that runs no exporter,
+    and every series it has stops.
+
+    Both halves are asserted: that the provisioning address is published, and that the
+    other interface's address is published nowhere. Only the second fails on a render that
+    emits both, which reads as a working cluster with every node counted twice.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                        "network": "cluster"},
+                       {"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["10.141.0.1"], \
+        "a target names an address the node does not provision over, so the BMC is being " \
+        "scraped as though it answered for the node"
+
+
+def test_the_scrape_address_follows_provision_interface_and_not_the_name_bootif(rig, tmp_path,
+                                                                                monkeypatch):
+    """
+    Which interface a node provisions over is a field Luna holds, and BOOTIF is what that
+    field usually says rather than what it means. A selector carrying the name instead
+    agrees with the field on every cluster that has not moved it, so the two are only ever
+    told apart by a node that provisions over something else.
+
+    The record is the one above with that field moved and nothing else changed, so the
+    field is the only thing that can account for the address.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BMC",
+        "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                        "network": "cluster"},
+                       {"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["10.148.0.1"], \
+        "the address came from somewhere other than the interface provision_interface names"
+
+
+def test_a_provision_interface_the_node_has_no_interface_for_falls_back_to_the_hostname(
+        rig, tmp_path, monkeypatch):
+    """
+    The field and the interface rows are separate tables at Luna and nothing reconciles
+    them, so a node can name an interface it no longer holds - renamed, or removed with the
+    field left behind. The render still has to publish a target for it.
+
+    What it publishes is the hostname, which is what Prometheus resolved before any address
+    selection existed. An addressed interface the node does hold must not stand in for the
+    one named: taking the only interface there is would be right on most nodes and wrong on
+    this one, where it is the BMC.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["node001.cluster"], \
+        "an interface the node holds was published although provision_interface names another"
+
+
+def test_a_provisioning_interface_with_no_address_publishes_the_hostname(rig, tmp_path,
+                                                                         monkeypatch):
+    """
+    Luna carries an interface and its address in two tables, so an interface held with no
+    address at all is an ordinary state rather than a broken record.
+
+    Read by subscript that one node would take the whole document down: http_sd is answered
+    nothing and every node on the cluster leaves the scrape pool. What is published instead
+    is the hostname, never a target with nothing in front of its port.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BOOTIF", "network": "cluster",
+                        "macaddress": "aa:bb:cc:dd:ee:01"}]}})
+
+    assert _scrape_addresses(backend) == ["node001.cluster"], \
+        "an interface with no address did not fall back to the hostname"
 
 
 def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, tmp_path,
