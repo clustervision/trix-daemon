@@ -1288,7 +1288,8 @@ def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatc
 def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch,
                                                                      tmp_path):
     """
-    No nodes is not an error; a failing generator is; a failing reconfigure is reported.
+    No nodes is not an error; a failing generator is; a reconfigure slurm refuses fails
+    the render, because the blocks it refused are put back first.
     """
     from trixd.plugins.slurm.backend import Backend
 
@@ -1301,7 +1302,8 @@ def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeyp
         Backend().render_config()
 
     _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, reconfigured=1)
-    assert Backend().render_config()["reconfigured"] is False
+    with pytest.raises(BackendFailure, match="reconfigure refused the slurm blocks"):
+        Backend().render_config()
 
 
 def test_slurm_without_its_generator_says_so(rig, monkeypatch):
