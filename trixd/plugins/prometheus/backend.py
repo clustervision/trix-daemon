@@ -969,7 +969,7 @@ class Backend:
                 carried[label] = str(fields[field])
         # Last, so a site cannot rename the labels dashboards and alert rules group by.
         carried.update(labels)
-        return {"targets": [f"{address}:{fields['port']}"], "labels": carried}
+        return {"targets": [f"{_bracket_if_v6(address)}:{fields['port']}"], "labels": carried}
 
     # --------------------------------------------------------------- renders
 
@@ -1356,6 +1356,19 @@ def _stamp(path: str, want: dict) -> tuple:
     return (found.st_mtime_ns, found.st_size, want["hostname"], want["luna_group"])
 
 
+def _bracket_if_v6(address: str) -> str:
+    """
+    An address as it goes in front of a port. A v6 address carries colons of its own, so
+    without brackets nothing can tell where it ends and the port begins. A hostname is
+    neither and goes through as it is.
+    """
+    try:
+        parsed = ipaddress.ip_address(address)
+    except ValueError:
+        return address
+    return f"[{address}]" if parsed.version == 6 else address
+
+
 def _provision_address(node: dict) -> str:
     """
     The address on the interface the node provisions over, and it has to parse as one.
@@ -1373,8 +1386,8 @@ def _provision_address(node: dict) -> str:
         if interface.get("interface") == wanted:
             held = interface.get("ipaddress") or ""
             # Either family parses. Luna keeps v6 in a column this function does not read, so
-            # none arrives here - and _target formats an address unbracketed, so one would not
-            # survive the journey if it did.
+            # none arrives here; _target brackets one that does, for the controllers the
+            # exporter file names with an address of their own.
             try:
                 ipaddress.ip_address(held)
             except ValueError:

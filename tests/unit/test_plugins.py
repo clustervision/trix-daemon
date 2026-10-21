@@ -2455,6 +2455,51 @@ def test_a_provisioning_address_that_does_not_parse_publishes_the_hostname(rig, 
             f"an interface holding {held!r} is not scraped on {published}"
 
 
+def test_only_a_v6_scrape_address_is_bracketed_in_front_of_its_port(rig, tmp_path,
+                                                                    monkeypatch):
+    """
+    A v6 address carries colons of its own, so put in front of a port it reads as one run of
+    colons with no boundary. Prometheus takes the document, admits the target and reports
+    `too many colons in address` against that target alone - so the series is never
+    collected while the document it arrived in stays valid, and nothing outside that one
+    target's own error says so.
+
+    The exporter file's `hosts` is where such an address arrives: what a site writes there is
+    carried through as it stands, unlike a node's, which Luna keeps in a column this render
+    does not read.
+
+    Asserted on the whole target string, the port included. Taking the port off first leaves
+    a v6 address looking unharmed whether it was bracketed or not, which is how a check here
+    reads as proof while passing without the fix. The v4 and hostname cases are asserted
+    beside it, and the node's v4 address on every pass, because bracketing everything would
+    satisfy the v6 case on its own.
+    """
+    for case, (held, published) in enumerate((("2001:db8::1", "[2001:db8::1]:14200"),
+                                              ("10.141.255.252", "10.141.255.252:14200"),
+                                              ("controller1.cluster",
+                                               "controller1.cluster:14200"))):
+        room = tmp_path / f"case{case}"
+        room.mkdir()
+        backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+            "hostname": "node001.cluster", "group": "compute",
+            "provision_interface": "BOOTIF",
+            "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                            "network": "cluster"}]}})
+        backend.config(body={"exporters_file": _factory_file(room, {
+            "nodes": {"node": {"port": 14200}},
+            "controllers": {"node": {"port": 14200}},
+            "hosts": {"controller1.cluster": {"address": held}}})})
+
+        by_host = {}
+        for entry in backend.render_targets():
+            by_host.setdefault(entry["labels"]["hostname"], []).append(entry["targets"][0])
+
+        assert by_host.get("controller1.cluster") == [published], \
+            f"a controller held at {held!r} is not scraped on {published}"
+        assert by_host.get("node001.cluster") == ["10.141.0.1:14200"], \
+            "a v4 address did not come through the same pass unchanged"
+
+
 def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, tmp_path,
                                                                            monkeypatch):
     """
