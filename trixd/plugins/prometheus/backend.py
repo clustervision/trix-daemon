@@ -633,16 +633,22 @@ class Backend:
             answer["reloaded"] = self.reload_reported()
         return answer
 
-    def node_updated(self, name: str, newnodename: str = "", group: str = "") -> str:
+    def node_updated(self, name: str, newnodename: str = "", group: str = "", **_) -> str:
         """
         Luna accepted a rename or a move between groups: the rule files follow.
+
+        Fields a Luna hook gains later are taken and ignored. Refusing them would raise
+        inside the dispatcher, which wakes the renders outside its own guard: the renders
+        would wake and the rule files would be left unrepaired, reading as success.
         """
         outcome = self.repair_hw_rules(newnodename or name, was=name if newnodename else "")
         return f"{name}: moved {outcome.get('moved', [])}, rewritten {outcome.get('rewritten', [])}"
 
-    def node_deleted(self, name: str) -> str:
+    def node_deleted(self, name: str, **_) -> str:
         """
         Luna removed the node: whatever still names it is retired.
+
+        Lenient about what else it is handed, for the reason node_updated is.
         """
         return f"{name}: retired {self.remove_hw_rules(name)['retired']}"
 

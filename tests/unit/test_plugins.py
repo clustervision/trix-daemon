@@ -682,6 +682,75 @@ def test_a_group_change_rewrites_the_selector(rig, tmp_path, monkeypatch):
     assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text
 
 
+def test_a_node_update_carrying_fields_the_handler_does_not_use_still_repairs(
+        rig, tmp_path, monkeypatch):
+    """
+    What a Luna hook sends is its business, and a field this handler has no use for must
+    not stop it: the payload of an interface write names the interface, its address and
+    its network, and none of those are parameters here.
+
+    The dispatcher wakes the renders outside the guard that catches a handler raising, so
+    a refused key wakes every render and leaves the rule files untouched - the one failure
+    shape that reads as success from both ends.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    rules = _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_updated(name="node001", interface="BOOTIF", ipaddress="10.141.0.9",
+                             ipaddress_ipv6=None, network="cluster", networktype="ethernet",
+                             zone="cluster")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    text = rules.read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text, (
+        f"the payload was taken and the rules were left as they were: {text}")
+
+
+def test_a_node_update_carrying_only_the_name_still_repairs(rig, tmp_path, monkeypatch):
+    """
+    A short payload is as legitimate as a long one: an interface removal can name the node
+    and the interface and have nothing else cheaply to hand.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch,
+                              {"node001": {"hostname": "node001.cluster", "group": "gpu"}})
+    rules = _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_updated(name="node001", interface="BOOTIF")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    text = rules.read_text(encoding="utf-8")
+    assert 'luna_group="gpu"' in text and 'luna_group="compute"' not in text, (
+        f"the payload was taken and the rules were left as they were: {text}")
+
+
+def test_a_node_delete_carrying_fields_the_handler_does_not_use_still_retires(
+        rig, tmp_path, monkeypatch):
+    """
+    The same for the delete handler, which a node hook reaches with its own payload.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _hw_file(tmp_path, "node001.cluster", "compute")
+
+    refused = ""
+    try:
+        backend.node_deleted(name="node001.cluster", group="compute")
+    except TypeError as error:
+        refused = str(error)
+
+    assert not refused, f"the handler refused what a hook sent it: {refused}"
+    assert not (tmp_path / "trix.hw.node001.cluster.rules").exists(), \
+        "the payload was taken and the rule file was left loading"
+
+
 def test_relabel_touches_only_equality_matchers_on_node_labels():
     """
     A regex matcher, a negation and any other label keep their text to the character.
