@@ -2325,6 +2325,105 @@ def test_a_deviation_changes_what_one_group_is_scraped_on(rig, tmp_path, monkeyp
         "the gpu group did not get its own port, or kept the exporter it switched off"
 
 
+def _scrape_addresses(backend) -> list:
+    """
+    The distinct addresses the service discovery document scrapes this cluster on.
+
+    A node is rendered once per exporter, so the count is checked here: "every target" is
+    the claim each caller below makes, and a document holding one target would satisfy it
+    by accident.
+    """
+    rendered = backend.render_targets()
+    assert len(rendered) > 1, \
+        f"one target says nothing about every target: {rendered}"
+    return sorted({entry["targets"][0].rsplit(":", 1)[0] for entry in rendered})
+
+
+def test_a_node_with_a_bmc_is_scraped_on_the_interface_it_provisions_over(rig, tmp_path,
+                                                                          monkeypatch):
+    """
+    A node holds an address on every network it is on, and the exporters answer on one of
+    them. Published on its BMC address a node is scraped on a board that runs no exporter,
+    and every series it has stops.
+
+    Both halves are asserted: that the provisioning address is published, and that the
+    other interface's address is published nowhere. Only the second fails on a render that
+    emits both, which reads as a working cluster with every node counted twice.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                        "network": "cluster"},
+                       {"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["10.141.0.1"], \
+        "a target names an address the node does not provision over, so the BMC is being " \
+        "scraped as though it answered for the node"
+
+
+def test_the_scrape_address_follows_provision_interface_and_not_the_name_bootif(rig, tmp_path,
+                                                                                monkeypatch):
+    """
+    Which interface a node provisions over is a field Luna holds, and BOOTIF is what that
+    field usually says rather than what it means. A selector carrying the name instead
+    agrees with the field on every cluster that has not moved it, so the two are only ever
+    told apart by a node that provisions over something else.
+
+    The record is the one above with that field moved and nothing else changed, so the
+    field is the only thing that can account for the address.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BMC",
+        "interfaces": [{"interface": "BOOTIF", "ipaddress": "10.141.0.1",
+                        "network": "cluster"},
+                       {"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["10.148.0.1"], \
+        "the address came from somewhere other than the interface provision_interface names"
+
+
+def test_a_provision_interface_the_node_has_no_interface_for_falls_back_to_the_hostname(
+        rig, tmp_path, monkeypatch):
+    """
+    The field and the interface rows are separate tables at Luna and nothing reconciles
+    them, so a node can name an interface it no longer holds - renamed, or removed with the
+    field left behind. The render still has to publish a target for it.
+
+    What it publishes is the hostname, which is what Prometheus resolved before any address
+    selection existed. An addressed interface the node does hold must not stand in for the
+    one named: taking the only interface there is would be right on most nodes and wrong on
+    this one, where it is the BMC.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BMC", "ipaddress": "10.148.0.1",
+                        "network": "ipmi"}]}})
+
+    assert _scrape_addresses(backend) == ["node001.cluster"], \
+        "an interface the node holds was published although provision_interface names another"
+
+
+def test_a_provisioning_interface_with_no_address_publishes_the_hostname(rig, tmp_path,
+                                                                         monkeypatch):
+    """
+    Luna carries an interface and its address in two tables, so an interface held with no
+    address at all is an ordinary state rather than a broken record.
+
+    Read by subscript that one node would take the whole document down: http_sd is answered
+    nothing and every node on the cluster leaves the scrape pool. What is published instead
+    is the hostname, never a target with nothing in front of its port.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {"node001": {
+        "hostname": "node001.cluster", "group": "compute", "provision_interface": "BOOTIF",
+        "interfaces": [{"interface": "BOOTIF", "network": "cluster",
+                        "macaddress": "aa:bb:cc:dd:ee:01"}]}})
+
+    assert _scrape_addresses(backend) == ["node001.cluster"], \
+        "an interface with no address did not fall back to the hostname"
+
+
 def test_an_over_long_scope_is_refused_rather_than_failing_in_the_database(rig, tmp_path,
                                                                            monkeypatch):
     """
