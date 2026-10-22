@@ -63,26 +63,26 @@ def _pair(tmp_path) -> tuple:
 
 def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path):
     """
-    https and the shipped binds: TLS on 8050, and plain 8051 open to the nodes.
+    https and the shipped binds: TLS on 7070, and plain 7071 open to the nodes.
     """
     cert, key = _pair(tmp_path)
     shipped = configuration.ApiSettings()
     served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
                                            protocol="https", certfile=cert, keyfile=key))
-    assert served.bind == ["0.0.0.0:8050"]
-    assert served.insecure_bind == ["0.0.0.0:8051"]
+    assert served.bind == ["0.0.0.0:7070"]
+    assert served.insecure_bind == ["0.0.0.0:7071"]
     assert (served.certfile, served.keyfile) == (cert, key)
     assert served.workers == 1, "one process: the plugin registry is in memory"
 
 
 def test_http_serves_plain_on_both_with_no_certificate():
     """
-    http, as a site may choose: 8050 and 8051 both plain, both open.
+    http, as a site may choose: 7070 and 7071 both plain, both open.
     """
     shipped = configuration.ApiSettings()
     served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
                                            protocol="http"))
-    assert served.bind == ["0.0.0.0:8050", "0.0.0.0:8051"]
+    assert served.bind == ["0.0.0.0:7070", "0.0.0.0:7071"]
     assert served.insecure_bind == []
     assert not served.ssl_enabled
 
@@ -93,10 +93,10 @@ def test_https_without_its_certificate_stops_the_start_by_name(tmp_path):
     """
     cert, _ = _pair(tmp_path)
     with pytest.raises(SystemExit, match=r"needs \[API\] KEYFILE"):
-        server.build_config(_settings(bind="0.0.0.0:8050", protocol="https", certfile=cert,
+        server.build_config(_settings(bind="0.0.0.0:7070", protocol="https", certfile=cert,
                                       keyfile=str(tmp_path / "absent.key")))
     with pytest.raises(SystemExit, match=r"needs \[API\] CERTFILE"):
-        server.build_config(_settings(bind="0.0.0.0:8050", protocol="https"))
+        server.build_config(_settings(bind="0.0.0.0:7070", protocol="https"))
 
 
 def test_no_listener_at_all_stops_the_start():
@@ -134,8 +134,8 @@ def test_replication_follows_the_protocol_too(monkeypatch):
     monkeypatch.setattr(replication, "_token", lambda peer, verify, renew=False: "t")
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: (
         seen.setdefault("url", url), SimpleNamespace(status_code=200, json=lambda: {}))[1])
-    replication.Sweep()._get("peer.cluster:8050", "hashes")
-    assert seen["url"].startswith("http://peer.cluster:8050/")
+    replication.Sweep()._get("peer.cluster:7070", "hashes")
+    assert seen["url"].startswith("http://peer.cluster:7070/")
 
 
 def _refusal(ini: str):

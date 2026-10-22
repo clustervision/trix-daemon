@@ -1993,7 +1993,7 @@ def test_replication_reads_the_yes_and_no_an_operator_writes(tmp_path, written, 
     ENABLED = Y switching replication off on an HA pair is silent divergence: the outbox
     never drains and the sweep reports no peers where peers are configured.
     """
-    loaded, said = _loaded(tmp_path, f"[REPLICATION]\nPEERS = other:8050\nENABLED = {written}\n")
+    loaded, said = _loaded(tmp_path, f"[REPLICATION]\nPEERS = other:7070\nENABLED = {written}\n")
     assert loaded.replication.enabled is expected, f"{written} did not read as {expected}"
     assert "ENABLED" not in said, f"{written} is a spelling trixd should read in silence"
 
@@ -2003,7 +2003,7 @@ def test_a_replication_switch_trixd_cannot_read_leaves_replication_on(tmp_path):
     Reading an unreadable switch as off is the dangerous guess on a pair, so it is named
     and replication stays on rather than stopping where nobody asked it to.
     """
-    loaded, said = _loaded(tmp_path, "[REPLICATION]\nPEERS = other:8050\nENABLED = maybe\n")
+    loaded, said = _loaded(tmp_path, "[REPLICATION]\nPEERS = other:7070\nENABLED = maybe\n")
     assert loaded.replication.enabled is True, "an unreadable switch must not disable a pair"
     assert "ENABLED" in said and "maybe" in said, "an unreadable switch was silent"
 

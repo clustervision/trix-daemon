@@ -110,7 +110,7 @@ lowest role, shown as **Access** under its description. **rootus**, the account 
 it is, with `GET /api/v1/auth/whoami`.
 
 ### Ports
-**8050** speaks the protocol `trixd.ini` names, https or http. **8051** is plain \
+**7070** speaks the protocol `trixd.ini` names, https or http. **7071** is plain \
 HTTP on every address, for nodes; a password or token sent there crosses the network in \
 clear text.
 

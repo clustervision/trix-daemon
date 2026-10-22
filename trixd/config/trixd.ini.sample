@@ -23,8 +23,8 @@ LOGFILE = /var/log/trixd/trixd.log
 ; One of debug, info, warning, error, critical.
 
 [API]
-BIND = 0.0.0.0:8050
-INSECURE_BIND = 0.0.0.0:8051
+BIND = 0.0.0.0:7070
+INSECURE_BIND = 0.0.0.0:7071
 PROTOCOL = https
 CERTFILE =
 KEYFILE =
@@ -46,7 +46,7 @@ MAX_BODY = 8M
 ; either empty leaves nobody able to call the directory, slurm or replication routes, and
 ; is said at startup.
 ; INSECURE_BIND is plain HTTP on every address, for nodes; it is clear text on the network.
-; 127.0.0.1:8051 keeps it on the controller alone.
+; 127.0.0.1:7071 keeps it on the controller alone.
 
 [TOKENS]
 ALGORITHM = HS256

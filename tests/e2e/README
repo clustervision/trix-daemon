@@ -13,10 +13,10 @@ starts a trixd process here, on free ports, against fakeluna.py: a stand-in for 
 and Prometheus that checks tokens as Luna does. Needs nothing but the repository, so a
 pipeline runs it.
 
-    TRIXD_E2E_URL=http://<controller>:8051 python -m pytest tests/e2e
+    TRIXD_E2E_URL=http://<controller>:7071 python -m pytest tests/e2e
 
 runs the same suite against a controller, signing in as TRIXD_E2E_USER and
-TRIXD_E2E_PASSWORD (trixd and trixd by default). Port 8051 is on the loopback by
+TRIXD_E2E_PASSWORD (trixd and trixd by default). Port 7071 is on the loopback by
 default, so run it on the controller or open the port. The cases that need the shared
 secret read it from TRIXD_E2E_SECRET, or from luna.ini when they run on the controller.
 Every name the suite creates starts with e2e-, and it removes them when it ends.

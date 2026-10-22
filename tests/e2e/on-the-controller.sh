@@ -19,8 +19,8 @@
 # End to end against a running trixd and a real Luna. Every check prints
 # PASS or FAIL and the script exits non-zero if any failed.
 
-PLAIN=${PLAIN:-http://localhost:8051}
-TLS=${TLS:-https://localhost:8050}
+PLAIN=${PLAIN:-http://localhost:7071}
+TLS=${TLS:-https://localhost:7070}
 # The interpreter the unit actually runs, so this works wherever it is installed.
 PY=${PY:-$(systemctl show trixd -p ExecStart --value 2>/dev/null |
            grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}
@@ -34,8 +34,8 @@ code() { curl -sk -o /dev/null -w "%{http_code}" "$@"; }
 jq_() { $PY -c "import sys,json;d=json.load(sys.stdin);print($1)" 2>/dev/null; }
 
 echo "=== 1. the listeners ==="
-check "8051 answers plain HTTP"        "$(code $PLAIN/api/v1/system/health)" 200
-check "8050 answers TLS"               "$(code $TLS/api/v1/system/health)" 200
+check "7071 answers plain HTTP"        "$(code $PLAIN/api/v1/system/health)" 200
+check "7070 answers TLS"               "$(code $TLS/api/v1/system/health)" 200
 check "health needs no token"          "$(code $PLAIN/api/v1/system/health)" 200
 check "the document is published"      "$(code $PLAIN/api/v1/openapi.json)" 200
 check "the docs page renders"          "$(code $PLAIN/api/v1/docs)" 200
