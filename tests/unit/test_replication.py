@@ -242,13 +242,13 @@ def test_a_pair_with_the_switch_off_is_not_told_it_has_no_peers(monkeypatch):
     being told the peers are not configured is the opposite of true: the peers are the
     only reason the switch matters at all. Each state says which of the two it is.
     """
-    said = _sweep_said(["peer.cluster:8050"], False, monkeypatch)
+    said = _sweep_said(["peer.cluster:7070"], False, monkeypatch)
     # The precondition: the line was said at all, so the rest is not measuring silence.
     assert "no sweep is running" in said, "the sweep stopped without saying so"
     assert "no replication peers configured" not in said, \
         "a configured pair was told it has no peers, which is the opposite of true"
     assert "ENABLED" in said, "the switch that actually stopped the sweep was not named"
-    assert "peer.cluster:8050" in said, "the peers left unreconciled were not named"
+    assert "peer.cluster:7070" in said, "the peers left unreconciled were not named"
 
 
 def test_a_controller_with_no_peers_still_says_exactly_that(monkeypatch):

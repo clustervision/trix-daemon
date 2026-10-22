@@ -44,10 +44,10 @@ token for the ini account first; on the controller the plain listener answers on
 loopback too:
 
 ```
-TOKEN=$(curl -s -X POST http://127.0.0.1:8051/api/v1/auth/token \
+TOKEN=$(curl -s -X POST http://127.0.0.1:7071/api/v1/auth/token \
         -H 'Content-Type: application/json' -d '{"username":"<ini account>","password":"<its password>"}' \
         | python3 -c 'import sys, json; print(json.load(sys.stdin)["token"])')
-curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload -H "x-access-tokens: $TOKEN"
+curl -X POST http://127.0.0.1:7071/api/v1/system/plugins/hello/reload -H "x-access-tokens: $TOKEN"
 ```
 
 Two things to know before you rely on it:
@@ -202,7 +202,7 @@ Everyone else holds what the `principal` table says, and a user with no row is
 whose read admits `none`. rootus gives a user a role:
 
 ```
-curl -X PUT http://127.0.0.1:8051/api/v1/identity/users/harry \
+curl -X PUT http://127.0.0.1:7071/api/v1/identity/users/harry \
      -H "x-access-tokens: $TOKEN" -H 'Content-Type: application/json' \
      -d '{"role": "operator"}'
 ```

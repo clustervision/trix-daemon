@@ -23,7 +23,7 @@ Exercise every endpoint of a running trixd at every role, and replication across
 
 Run as root on a controller, with the other controller's address as the argument:
 
-    api-probe.py ha2-controller1.cluster:8050
+    api-probe.py ha2-controller1.cluster:7070
 
 What it is for: the suites cannot reach a pair of real controllers, so nothing else
 exercises the role gate, the node endpoint and the crossing of a row where they actually
@@ -61,7 +61,7 @@ import urllib.request
 import ssl
 
 PREFIX = "/api/v1"
-API = f"https://localhost:8050{PREFIX}"
+API = f"https://localhost:7070{PREFIX}"
 INI = "/trinity/local/trixd/daemon/config/trixd.ini"
 PROBE = "trixd-probe-absent"
 LADDER = ["none", "reader", "operator", "manager", "rootus"]

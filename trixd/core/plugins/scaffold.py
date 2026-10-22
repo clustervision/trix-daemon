@@ -105,7 +105,7 @@ README: str = '''{name}
 A plugin for trixd. The manifest declares the endpoints; the backend answers
 them. Drop this directory into the plugins directory the ini names and reload:
 
-    curl -X POST http://<controller>:8051/api/v1/system/plugins/{name}/reload \\
+    curl -X POST http://<controller>:7071/api/v1/system/plugins/{name}/reload \\
          -H "x-access-tokens: $TOKEN"
 
 The daemon does not restart. If the manifest is wrong the call answers 409 and

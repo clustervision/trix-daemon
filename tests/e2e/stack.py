@@ -20,7 +20,7 @@
 """
 The daemon the end-to-end suite talks to: a real trixd process started here against the
 stand-in Luna (TRIXD_E2E=local), or one already running on a controller
-(TRIXD_E2E_URL=http://<host>:8051). Either way the suite only speaks HTTP to it.
+(TRIXD_E2E_URL=http://<host>:7071). Either way the suite only speaks HTTP to it.
 """
 
 __author__      = "Sumit Sharma"

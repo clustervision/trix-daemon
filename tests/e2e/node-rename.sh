@@ -27,7 +27,7 @@
 set -u
 NODE=${1:?usage: node-rename.sh <node> [temporary-name]}
 TEMP=${2:-${NODE}r}
-PLAIN=${PLAIN:-http://localhost:8051}
+PLAIN=${PLAIN:-http://localhost:7071}
 RULES=${RULES:-/trinity/local/etc/prometheus_server/rules}
 PY=${PY:-$(systemctl show trixd -p ExecStart --value 2>/dev/null |
            grep -oE '/[^ ]*/bin/python[0-9.]*' | head -1)}

@@ -157,7 +157,7 @@ becomes part of the value.
 [API]
 ; No BIND, so only the plain listener on the loopback opens and no certificate is needed.
 BIND =
-INSECURE_BIND = 127.0.0.1:8051
+INSECURE_BIND = 127.0.0.1:7071
 USERNAME = trixd
 PASSWORD = trixd
 
@@ -180,15 +180,15 @@ Then:
 
 ```
 python -m trixd.server --config dev/trixd.ini
-curl -s http://127.0.0.1:8051/api/v1/system/health
-TOKEN=$(curl -s -X POST http://127.0.0.1:8051/api/v1/auth/token \
+curl -s http://127.0.0.1:7071/api/v1/system/health
+TOKEN=$(curl -s -X POST http://127.0.0.1:7071/api/v1/auth/token \
         -H 'Content-Type: application/json' -d '{"username":"trixd","password":"trixd"}' \
         | python -c 'import sys, json; print(json.load(sys.stdin)["token"])')
-curl -s http://127.0.0.1:8051/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
+curl -s http://127.0.0.1:7071/api/v1/system/plugins -H "x-access-tokens: $TOKEN"
 ```
 
 A token goes in the `x-access-tokens` header, or as `Authorization: Bearer <token>`.
-`http://127.0.0.1:8051/api/v1/docs` lists every route, with what it does, what to send,
+`http://127.0.0.1:7071/api/v1/docs` lists every route, with what it does, what to send,
 what comes back and who may call it; **Authorize** there takes a token for **Try it out**.
 The page is FastAPI's own, on Swagger UI files shipped in the package, so it loads nothing
 from the internet; `trixd/static/trixd.css` gives it the TrinityX look. Without Luna, obol or
@@ -206,19 +206,19 @@ from disk without a restart; a change to `trixd.ini` needs a restart.
 
 | Port | Setting | When Luna's `luna.ini` says `https` | When it says `http` |
 |---|---|---|---|
-| 8050 | `BIND` | HTTPS on `CERTFILE` and `KEYFILE`, the cluster pair; a missing one stops the start, by name | plain HTTP, no certificate |
-| 8051 | `INSECURE_BIND` | plain HTTP, on every address | plain HTTP, on every address |
+| 7070 | `BIND` | HTTPS on `CERTFILE` and `KEYFILE`, the cluster pair; a missing one stops the start, by name | plain HTTP, no certificate |
+| 7071 | `INSECURE_BIND` | plain HTTP, on every address | plain HTTP, on every address |
 
 The protocol is the one `all.yml` chose for Luna (`luna_protocol`), read from Luna's own
-`luna.ini`, as Luna's 7050 follows it. Clients always use 8050; only the scheme changes,
+`luna.ini`, as Luna's 7050 follows it. Clients always use 7070; only the scheme changes,
 and they take it from their own ini. There is no redirect between the two: a client on
 the wrong scheme is a misconfiguration to fix, not to hide. The replication link to the
 other controller follows the same protocol.
 
-Both ports answer on every address, because nodes call trixd too. 8051 is clear text:
+Both ports answer on every address, because nodes call trixd too. 7071 is clear text:
 a password or token sent to it is readable on the network it crosses, so anything that
-can use https on 8050 should. A site that wants 8051 on the controller alone sets
-`INSECURE_BIND = 127.0.0.1:8051`.
+can use https on 7070 should. A site that wants 7071 on the controller alone sets
+`INSECURE_BIND = 127.0.0.1:7071`.
 
 ## trixd.ini
 
@@ -409,7 +409,7 @@ class Backend:
 restart keeps it:
 
 ```
-curl -X POST http://127.0.0.1:8051/api/v1/system/plugins/hello/reload \
+curl -X POST http://127.0.0.1:7071/api/v1/system/plugins/hello/reload \
      -H "x-access-tokens: $TOKEN"
 ```
 
@@ -448,7 +448,7 @@ End to end, a real daemon over HTTP, about 1,500 cases generated mostly from
 
 ```
 TRIXD_E2E=local python -m pytest tests/e2e                    # a trixd started here, against a stand-in Luna
-TRIXD_E2E_URL=http://<controller>:8051 python -m pytest tests/e2e
+TRIXD_E2E_URL=http://<controller>:7071 python -m pytest tests/e2e
 TRIXD_E2E=local python -m pytest tests/e2e -m stress -s       # sustained reads and a boot storm
 ```
 

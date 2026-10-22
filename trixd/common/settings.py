@@ -80,8 +80,8 @@ class ApiSettings(BaseModel):
     """
     The two listeners, the certificate and the ini account.
     """
-    bind: str = "0.0.0.0:8050"
-    insecure_bind: str = "0.0.0.0:8051"
+    bind: str = "0.0.0.0:7070"
+    insecure_bind: str = "0.0.0.0:7071"
     protocol: str = "https"
     certfile: str = ""
     keyfile: str = ""

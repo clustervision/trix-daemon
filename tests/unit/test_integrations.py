@@ -844,17 +844,17 @@ def test_the_peer_signs_us_in_and_the_ca_is_checked(rig, tmp_path, monkeypatch):
         signed_in.append((url, kwargs.get("verify"))),
         Answer(201, body={"token": _signed("s" * 32)}))[1])
     monkeypatch.setattr(replication.requests, "get", get)
-    assert replication.Sweep()._get("peer.cluster:8050", "hashes") == {"hashes": {}}
-    assert signed_in[0][0] == "https://peer.cluster:8050/api/v1/auth/token"
+    assert replication.Sweep()._get("peer.cluster:7070", "hashes") == {"hashes": {}}
+    assert signed_in[0][0] == "https://peer.cluster:7070/api/v1/auth/token"
     assert signed_in[0][1] == str(ca), "the peer's certificate is checked before the password"
-    assert seen["url"] == "https://peer.cluster:8050/api/v1/system/replication/hashes"
+    assert seen["url"] == "https://peer.cluster:7070/api/v1/system/replication/hashes"
     assert seen["verify"] == str(ca)
     assert seen["headers"]["x-access-tokens"]
 
     # A refusal that a fresh token does not cure: signed in again, refused again, raised.
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: Answer(403))
     with pytest.raises(RuntimeError, match="answered 403"):
-        replication.Sweep()._get("peer.cluster:8050", "hashes")
+        replication.Sweep()._get("peer.cluster:7070", "hashes")
     assert len(signed_in) == 2, "the refusal was retried once with a new token"
 
 
@@ -877,10 +877,10 @@ def test_a_pass_takes_what_differs_from_the_peer_and_then_nothing(rig, tmp_path,
     monkeypatch.setattr(replication.Sweep, "_get", from_peer)
     sweep = replication.Sweep()
     try:
-        first = sweep.pass_over("peer.cluster:8050")
+        first = sweep.pass_over("peer.cluster:7070")
         assert first["tables"] == ["principal"]
         assert first["changes"]["principal"]["added"] == 1
-        assert sweep.pass_over("peer.cluster:8050")["tables"] == []
+        assert sweep.pass_over("peer.cluster:7070")["tables"] == []
     finally:
         peer.close()
     handle = database.session()
@@ -894,7 +894,7 @@ def test_a_peer_that_is_away_is_reported_and_skipped(rig, monkeypatch):
     """
     The pass records the error for that peer and the daemon carries on.
     """
-    monkeypatch.setattr(configuration.current().replication, "peers", ["away.cluster:8050"])
+    monkeypatch.setattr(configuration.current().replication, "peers", ["away.cluster:7070"])
 
     def away(self, address, path):
         """
@@ -905,7 +905,7 @@ def test_a_peer_that_is_away_is_reported_and_skipped(rig, monkeypatch):
     monkeypatch.setattr(replication.Sweep, "_get", away)
     sweep = replication.Sweep()
     results = sweep.once()
-    assert results == [{"peer": "away.cluster:8050", "error": "no route to host"}]
+    assert results == [{"peer": "away.cluster:7070", "error": "no route to host"}]
     assert sweep.last["results"] == results
 
 
@@ -915,7 +915,7 @@ def test_the_sweep_runs_only_with_peers_and_stops_when_asked(rig, monkeypatch):
     """
     sweep = replication.Sweep()
     assert sweep.start() is False
-    monkeypatch.setattr(configuration.current().replication, "peers", ["peer.cluster:8050"])
+    monkeypatch.setattr(configuration.current().replication, "peers", ["peer.cluster:7070"])
     monkeypatch.setattr(configuration.current().replication, "interval", 3600)
     assert sweep.start() is True
     sweep.shutdown()
