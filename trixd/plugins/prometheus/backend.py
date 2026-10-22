@@ -322,6 +322,9 @@ class Backend:
         # reconcile with nothing to change reads no file: at a thousand nodes, the parse is
         # the whole cost.
         self.seen: dict = {}
+        # Rule files the reconcile retired because Luna did not name their node. A rename
+        # can be undone at Luna before its hook has run, and that hook needs the file back.
+        self.reconciled_away: set = set()
         # Where Prometheus really answered, when that differs from the configured scheme.
         self.prometheus_url: str = ""
 
@@ -579,6 +582,14 @@ class Backend:
         # happen and the node's alerts go on matching a group it has left.
         if os.path.isfile(target) and target not in paths:
             paths.append(target)
+        if was and not paths:
+            # Luna can hold this name again before the hook for it runs, and a reconcile in
+            # between retires the file under the name being left. Only one the reconcile took.
+            names = [name for name in self.reconciled_away if _names_node(_hw_host(name), was)]
+            if len(names) == 1:
+                self.reconciled_away.discard(names[0])
+                backup = os.path.join(self._rules_dir(), "backup")
+                paths = sorted(glob.glob(os.path.join(backup, glob.escape(names[0]) + ".*")))[-1:]
         moved, rewritten, superseded = [], [], []
         for path in dict.fromkeys(paths):
             if not os.path.isfile(path):
@@ -1058,6 +1069,7 @@ class Backend:
                 gone = self._retire(path)
                 if gone:
                     retired.append(gone)
+                    self.reconciled_away.add(gone)
                 continue
             record = nodes[name]
             want = {"hostname": record.get("hostname") or name,

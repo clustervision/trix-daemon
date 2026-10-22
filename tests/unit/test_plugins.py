@@ -667,6 +667,30 @@ def test_a_rename_luna_already_did_is_finished(rig, tmp_path, monkeypatch):
     assert 'hostname="node002.cluster"' in text and 'hostname="node001.cluster"' not in text
 
 
+def test_a_rename_straight_back_keeps_the_rules_a_reconcile_retired_in_between(
+        rig, tmp_path, monkeypatch):
+    """
+    Luna holds the name a node went back to before that rename's hook is queued, so a
+    reconcile between the two hooks retires the file the second one has to move back.
+    """
+    held = {"node006": {"hostname": "node006.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    _hw_file(tmp_path, "node005.cluster", "compute")
+
+    backend.node_updated(name="node005", newnodename="node006")
+    assert (tmp_path / "trix.hw.node006.cluster.rules").exists()
+    held.clear()
+    held["node005"] = {"hostname": "node005.cluster", "group": "compute"}
+    assert backend.render_rule_files()["retired"] == ["trix.hw.node006.cluster.rules"]
+
+    backend.node_updated(name="node006", newnodename="node005")
+
+    live = tmp_path / "trix.hw.node005.cluster.rules"
+    assert live.exists(), f"node005 was left with no rule file: {sorted(os.listdir(tmp_path))}"
+    text = live.read_text(encoding="utf-8")
+    assert 'hostname="node005.cluster"' in text and 'hostname="node006' not in text
+
+
 def test_a_group_change_rewrites_the_selector(rig, tmp_path, monkeypatch):
     """
     luna_group sits in the same selector, so a node moved between groups breaks the same way.
