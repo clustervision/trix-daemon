@@ -713,6 +713,32 @@ def test_a_rename_straight_back_keeps_the_rules_a_reconcile_retired_before_eithe
     assert 'hostname="node005.cluster"' in live.read_text(encoding="utf-8")
 
 
+def test_a_hook_for_a_node_luna_no_longer_holds_says_it_skipped(rig, tmp_path, monkeypatch):
+    """
+    A rename undone before its hook runs leaves that hook nothing to do, and the journal
+    is the only place that can say so.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    held = {"node005": {"hostname": "node005.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    level = prometheus.LOGGER.level
+    prometheus.LOGGER.addHandler(handler)
+    prometheus.LOGGER.setLevel(logging.DEBUG)
+    try:
+        backend.node_updated(name="node005", newnodename="node006")
+    finally:
+        prometheus.LOGGER.removeHandler(handler)
+        prometheus.LOGGER.setLevel(level)
+
+    said = [record.getMessage() for record in records if "skipped" in record.getMessage()]
+    assert said, "a hook Luna had already overtaken left no trace at all"
+    assert "node006" in said[0] and "node005" in said[0], said
+
+
 @pytest.mark.parametrize("was, now", [("node009", "node005"), ("node005", "node006")],
                          ids=["renamed onto its name", "renamed from its name"])
 def test_a_deleted_node_leaves_nothing_for_a_rename_to_restore(rig, tmp_path, monkeypatch,

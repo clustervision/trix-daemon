@@ -569,6 +569,8 @@ class Backend:
         """
         record = luna().node(node.split(".")[0])
         if record is None:
+            LOGGER.info("hardware rules for %s%s: skipped (not in Luna), Luna does not hold %s now",
+                        node, f" (renamed from {was})" if was else "", node)
             return {"node": node, "skipped": "not in Luna"}
         host = record.get("hostname") or node
         want = {"hostname": host, "luna_group": record.get("group") or ""}
