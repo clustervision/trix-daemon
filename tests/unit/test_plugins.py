@@ -691,6 +691,120 @@ def test_a_rename_straight_back_keeps_the_rules_a_reconcile_retired_in_between(
     assert 'hostname="node005.cluster"' in text and 'hostname="node006' not in text
 
 
+def test_a_rename_straight_back_keeps_the_rules_a_reconcile_retired_before_either_hook(
+        rig, tmp_path, monkeypatch):
+    """
+    A reconcile between Luna's first rename and its hook retires the file under the name
+    the node goes back to; the first hook then finds the node gone, and only the second
+    can return the file.
+    """
+    held = {"node006": {"hostname": "node006.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    _hw_file(tmp_path, "node005.cluster", "compute")
+    assert backend.render_rule_files()["retired"] == ["trix.hw.node005.cluster.rules"]
+    held.clear()
+    held["node005"] = {"hostname": "node005.cluster", "group": "compute"}
+
+    backend.node_updated(name="node005", newnodename="node006")
+    backend.node_updated(name="node006", newnodename="node005")
+
+    live = tmp_path / "trix.hw.node005.cluster.rules"
+    assert live.exists(), f"node005 was left with no rule file: {sorted(os.listdir(tmp_path))}"
+    assert 'hostname="node005.cluster"' in live.read_text(encoding="utf-8")
+
+
+def test_a_hook_for_a_node_luna_no_longer_holds_says_it_skipped(rig, tmp_path, monkeypatch):
+    """
+    A rename undone before its hook runs leaves that hook nothing to do, and the journal
+    is the only place that can say so.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    held = {"node005": {"hostname": "node005.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    level = prometheus.LOGGER.level
+    prometheus.LOGGER.addHandler(handler)
+    prometheus.LOGGER.setLevel(logging.DEBUG)
+    try:
+        backend.node_updated(name="node005", newnodename="node006")
+    finally:
+        prometheus.LOGGER.removeHandler(handler)
+        prometheus.LOGGER.setLevel(level)
+
+    said = [record.getMessage() for record in records if "skipped" in record.getMessage()]
+    assert said, "a hook Luna had already overtaken left no trace at all"
+    assert "node006" in said[0] and "node005" in said[0], said
+
+
+@pytest.mark.parametrize("was, now", [("node009", "node005"), ("node005", "node006")],
+                         ids=["renamed onto its name", "renamed from its name"])
+def test_a_deleted_node_leaves_nothing_for_a_rename_to_restore(rig, tmp_path, monkeypatch,
+                                                                was, now):
+    """
+    A file the reconcile retired for a node Luna then deletes is never handed to another
+    node that is later renamed to, or from, the same name.
+    """
+    held = {"node001": {"hostname": "node001.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    _hw_file(tmp_path, "node005.cluster", "compute")
+    assert backend.render_rule_files()["retired"] == ["trix.hw.node005.cluster.rules"]
+
+    backend.node_deleted(name="node005")
+    held[now] = {"hostname": f"{now}.cluster", "group": "compute"}
+    backend.node_updated(name=was, newnodename=now)
+
+    assert sorted(p.name for p in tmp_path.glob("trix.hw.*.rules")) == [], \
+        f"a deleted node's rules were restored onto the node now called {now}"
+
+
+def _rename_and_back():
+    """
+    Every order of Luna's two renames, their two hooks and up to two reconciles: a hook
+    runs after its own rename, the second hook after the first.
+    """
+    import itertools
+
+    for base in (("L1", "L2", "H1", "H2"), ("L1", "H1", "L2", "H2")):
+        for count in (0, 1, 2):
+            for slots in itertools.combinations_with_replacement(range(5), count):
+                steps = list(base)
+                for offset, slot in enumerate(sorted(slots)):
+                    steps.insert(slot + offset, "R")
+                yield tuple(steps)
+
+
+@pytest.mark.parametrize("steps", sorted(set(_rename_and_back())), ids=" ".join)
+def test_a_rename_straight_back_keeps_the_rules_in_every_order(rig, tmp_path, monkeypatch,
+                                                               steps):
+    """
+    However the hooks and reconciles of a rename and its undo interleave, the node ends with
+    its own file and nothing is left remembered for a later rename to take.
+    """
+    held = {"node005": {"hostname": "node005.cluster", "group": "compute"}}
+    backend = _prometheus_rig(tmp_path, monkeypatch, held)
+    _hw_file(tmp_path, "node005.cluster", "compute")
+    for step in steps:
+        if step in ("L1", "L2"):
+            name = "node006" if step == "L1" else "node005"
+            held.clear()
+            held[name] = {"hostname": f"{name}.cluster", "group": "compute"}
+        elif step == "R":
+            backend.render_rule_files()
+        elif step == "H1":
+            backend.node_updated(name="node005", newnodename="node006")
+        else:
+            backend.node_updated(name="node006", newnodename="node005")
+
+    live = sorted(p.name for p in tmp_path.glob("trix.hw.*.rules"))
+    assert live == ["trix.hw.node005.cluster.rules"], f"left with {live}"
+    text = (tmp_path / live[0]).read_text(encoding="utf-8")
+    assert 'hostname="node005.cluster"' in text and "node006" not in text
+    assert backend.reconciled_away == set()
+
+
 def test_a_group_change_rewrites_the_selector(rig, tmp_path, monkeypatch):
     """
     luna_group sits in the same selector, so a node moved between groups breaks the same way.
