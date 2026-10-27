@@ -569,6 +569,8 @@ class Backend:
         """
         record = luna().node(node.split(".")[0])
         if record is None:
+            LOGGER.info("hardware rules for %s%s: skipped (not in Luna), Luna does not hold %s now",
+                        node, f" (renamed from {was})" if was else "", node)
             return {"node": node, "skipped": "not in Luna"}
         host = record.get("hostname") or node
         want = {"hostname": host, "luna_group": record.get("group") or ""}
@@ -583,9 +585,10 @@ class Backend:
         if os.path.isfile(target) and target not in paths:
             paths.append(target)
         if was and not paths:
-            # Luna can hold this name again before the hook for it runs, and a reconcile in
-            # between retires the file under the name being left. Only one the reconcile took.
-            names = [name for name in self.reconciled_away if _names_node(_hw_host(name), was)]
+            # Luna can hold either name again before the hook for it runs, and a reconcile in
+            # between retires the file under it. Only one the reconcile took.
+            names = [name for name in self.reconciled_away
+                     if _names_node(_hw_host(name), was) or _names_node(_hw_host(name), host)]
             if len(names) == 1:
                 self.reconciled_away.discard(names[0])
                 backup = os.path.join(self._rules_dir(), "backup")
@@ -662,6 +665,8 @@ class Backend:
 
         Lenient about what else it is handed, for the reason node_updated is.
         """
+        self.reconciled_away -= {gone for gone in self.reconciled_away
+                                 if _names_node(_hw_host(gone), name)}
         return f"{name}: retired {self.remove_hw_rules(name)['retired']}"
 
     def _retire(self, path: str) -> str:
