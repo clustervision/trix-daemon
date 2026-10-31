@@ -29,12 +29,30 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import contextlib
+import errno
+import ipaddress
+import fcntl
+import grp
+import hashlib
+import json
 import os
+import pwd
+import sys
+import time
+from urllib.parse import urlsplit
+
+import requests
 
 from trixd.common import logging as trixlog
-from trixd.common.errors import BackendFailure
+from trixd.common.errors import (BackendFailure, BadRequest, Conflict, Forbidden,
+                                 ServiceUnavailable)
+from trixd.core.security import audit
+from trixd.plugins.luna import config as luna_config
 from trixd.plugins.luna.client import current as luna
 from trixd.utils import declarations, shell
+
+from . import rbac, rules
 
 LOGGER = trixlog.get("slurm")
 
@@ -46,7 +64,358 @@ DEFAULT_CONFIG: dict = {
     "gres_file": "/etc/slurm/gres.conf",
     "manager": "TrinityX",
     "reconfigure": "/usr/bin/scontrol reconfigure",
+    "gate_account": "trinityx-gate",
+    "admin_group": "admins",
+    "luna_ca": "",
 }
+
+# -- the person's changes, through the helper ---------------------------------------------------
+# The trixd gate calls these routes as its own account, on behalf of a person whose own Luna token
+# rides in LUNA_TOKEN; the plugin asks Luna as that person (whoami, the nodes, the cluster) and
+# judges Luna's bits itself, so the gate's word is never the last check. The handlers then run
+# nothing but helper.py, stepped down to ACCOUNT (slurm's AdminLevel Administrator), with the
+# request on stdin; the token never reaches the helper or a log. The six files are root's and of
+# the cluster's admin group with group write (config-slurm sets them so): only a save and a
+# restore, which start no child process, run with that group, given to that process alone.
+WRITERS = ("save", "restore")
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+HELPER = os.path.join(HERE, "helper.py")
+ACCOUNT = "trinityx-slurm"
+STATE_DIR = "/var/lib/trixd/slurm"   # this controller's: the grant answer
+SHARE = ".trinityx-slurm"            # beside the files, one per cluster: the lock and the mark
+SETPRIV = "/usr/bin/setpriv"
+PRLIMIT = "/usr/bin/prlimit"
+MEMORY = 512 * 1024 * 1024
+RENDER_WAIT = 50.0   # seconds the render waits for a save: longer than a save's helper (45)
+LUNA_TOKEN = "x-luna-token"   # the person's own Luna token, beside the gate's trixd token
+LUNA_WAIT = (3, 5)   # seconds to connect to Luna and to have its answer: 8 s a read
+NAMES_MAX = 4096     # the helper's own bound (helper.NAMES_MAX), checked before any Luna read
+NAMED = 20           # refused nodes a sentence names; the rest are counted
+
+# Seconds each verb's helper may run, each longer than the Slurm call or the lock it waits on
+# inside: sacctmgr 3, the lock 5, scontrol update 6, a save 40, the lock and reconfigure 5 + 48.
+TIMEOUTS: dict = {"files": 5, "drain": 15, "resume": 15, "preview": 10,
+                  "save": 45, "restore": 45, "apply": 55}
+
+ANSWERED: dict = {400: BadRequest, 403: Forbidden, 409: Conflict, 502: BackendFailure,
+                  503: ServiceUnavailable}
+
+
+def _share(settings: dict) -> str:
+    """
+    The directory of the lock and the mark: beside the node file, so both controllers of a pair
+    reach the same one wherever the files are shared.
+    """
+    return os.path.join(os.path.dirname(settings["nodes_file"]), SHARE)
+
+
+def rules_digest() -> str:
+    """
+    The sha256 of the save rules this plugin holds, which the console compares with its own.
+    """
+    with open(os.path.join(HERE, "rules.py"), "rb") as handle:
+        return hashlib.sha256(handle.read()).hexdigest()
+
+
+def _only_gate(caller, settings: dict) -> None:
+    """
+    A Slurm change is the trixd gate's to ask, on behalf of a person; trixd itself checks the
+    role only. The ini account (rootus) may ask too, for the tests.
+    """
+    if caller is None or not (caller.rootus or (caller.kind == "user"
+                                                and caller.name == settings["gate_account"])):
+        name = getattr(caller, "name", "nobody")
+        raise Forbidden(f"{name} may not change Slurm here: the trixd gate asks, after it "
+                        f"checked the person's rights in Luna")
+
+
+def _on_this_box(base: str) -> bool:
+    """
+    Whether Luna's address is this host's loopback, the one place plain http carries no
+    sign-in over a wire.
+    """
+    host = (urlsplit(base).hostname or "").lower()
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
+
+
+def _luna_as(token: str, path: str, settings: dict, absent: dict = None) -> dict:
+    """
+    Luna's answer to the person's own token; `absent` where Luna answers 404, which on a list
+    means it shows the person none of it. The token is the person's whole Luna for an hour, so
+    it goes over https checked against the cluster CA (`luna_ca`) where one is set, and never
+    over plain http off this host.
+    """
+    config = luna_config.current()
+    authority = settings.get("luna_ca") or config.verify
+    if isinstance(authority, str) and not os.path.isfile(authority):
+        raise ServiceUnavailable(f"the slurm plugin's luna_ca names {authority}, which is not a file on "
+                                 f"this controller: set it to the cluster CA, or to \"\" for luna.ini's "
+                                 f"VERIFY_CERTIFICATE; nothing was changed")
+    if urlsplit(config.base).scheme != "https" and not _on_this_box(config.base):
+        raise ServiceUnavailable(f"Luna is reached over plain http at {config.base}: the slurm "
+                                 f"plugin sends no sign-in over it; nothing was changed")
+    try:
+        answer = requests.get(f"{config.base}/{path}", headers={"x-access-tokens": token},
+                              timeout=LUNA_WAIT, verify=authority, allow_redirects=False)
+    except (requests.RequestException, OSError) as error:  # OSError: a CA file requests cannot read
+        LOGGER.error("Luna did not answer %s: %s", path, type(error).__name__)
+        raise ServiceUnavailable(f"Luna did not answer {path}: nothing was changed") from None
+    if answer.status_code == 401 or (path == "whoami" and answer.status_code in (403, 404)):
+        raise Forbidden("Luna no longer knows this sign-in: sign in again")
+    if answer.status_code == 404 and absent is not None:
+        return absent
+    try:
+        body = answer.json() if answer.content else {}
+    except ValueError:
+        body = None
+    if answer.status_code != 200 or not isinstance(body, dict):
+        LOGGER.error("Luna answered %s to %s", answer.status_code, path)
+        raise ServiceUnavailable(f"Luna answered {answer.status_code} to {path}: nothing was "
+                                 f"changed")
+    return body
+
+
+def _rows(token: str, table: str, settings: dict) -> dict:
+    """
+    The rows of a Luna table the person may see, by name (the cluster: its one row).
+    """
+    rows = (_luna_as(token, f"config/{table}", settings, absent={}).get("config")
+            or {}).get(table) or {}
+    if not isinstance(rows, dict):
+        raise ServiceUnavailable(f"Luna's {table} answer is not one this plugin reads")
+    return rows
+
+
+def _governed(row: dict, who: dict, table: str) -> dict:
+    """
+    A row Luna answers without its `access` column is one this plugin cannot judge: the shared
+    ladder holds such a row fully, which the console may show but nothing here may act on. An
+    admin holds every row whatever it carries.
+    """
+    if row and not who["admin"] and not row.get("access"):
+        raise ServiceUnavailable(f"Luna's {table} answer carries no access column: the slurm "
+                                 f"plugin cannot judge the person; nothing was changed")
+    return row
+
+
+def _bounded(names, least: int = 1, key: str = "names") -> list:
+    """
+    The names a change asks for, held to the helper's bounds before any Luna read: `least` to
+    NAMES_MAX node names (a save's `judged` may be empty).
+    """
+    if (not isinstance(names, list) or not least <= len(names) <= NAMES_MAX
+            or not all(isinstance(n, str) and rules.NAME.fullmatch(n) for n in names)):
+        raise BadRequest(f"{key}: the list of {least} to {NAMES_MAX} node names to change")
+    return names
+
+
+def _person(request, body: dict, settings: dict) -> tuple:
+    """
+    The person's own Luna token and Luna's word on who holds it, which must be the person the
+    gate names.
+    """
+    token = (request.headers.get(LUNA_TOKEN) or "").strip() if request is not None else ""
+    if not token:
+        raise Forbidden(f"no Luna sign-in came with the request ({LUNA_TOKEN}): sign in again")
+    said = _luna_as(token, "whoami", settings)
+    if "user" not in said:
+        raise Forbidden("Luna no longer knows this sign-in: sign in again")
+    try:
+        who = rbac.who_from(said)
+    except (TypeError, ValueError):
+        raise ServiceUnavailable("Luna's whoami answer is not one this plugin reads: nothing was "
+                                 "changed") from None
+    if who["user"] != (body or {}).get("person"):
+        audit.refused(who["user"], "slurm sign-in", str((body or {}).get("person"))[:64],
+                      detail="the gate named another person")
+        raise Forbidden(f"the Luna sign-in is {who['user']}'s, not {(body or {}).get('person')}'s")
+    return token, who
+
+
+def _refuse(who: dict, verb: str, what: str, why: str):
+    """
+    A refusal of the person, recorded in trixd's audit under their name before it is raised.
+    """
+    audit.refused(who["user"], f"slurm {verb}", what, detail=why[:500])
+    return Forbidden(why)
+
+
+def _refused_nodes(rows: dict, who: dict, nodes: list, held, verb: str) -> None:
+    """
+    Every node must pass `held`, else the whole request is refused, as Luna refuses a hostlist;
+    the sentence names the first NAMED and counts the rest.
+    """
+    why = {name: held(_governed(rows.get(name) or {}, who, "node"), name)
+           for name in sorted(set(nodes))}
+    refused = [f"{name} ({reason})" for name, reason in why.items() if reason]
+    if refused:
+        more = f"; and {len(refused) - NAMED} more" if len(refused) > NAMED else ""
+        raise _refuse(who, verb, ",".join(sorted(why))[:200],
+                       f"not permitted for {len(refused)} of {len(why)} nodes: "
+                       f"{'; '.join(refused[:NAMED])}{more}")
+
+
+def _may_operate(request, body: dict, settings: dict, verb: str) -> dict:
+    """
+    Drain and resume: Luna's x on every named node, for the person, whom it answers.
+    """
+    token, who = _person(request, body, settings)
+    rows = _rows(token, "node", settings)
+    _refused_nodes(rows, who, body.get("names") or [],
+                   lambda row, name: rbac.refusal("node", name, row, who, "x"), verb)
+    return who
+
+
+def _may_change(request, body: dict, settings: dict, verb: str, states: bool) -> dict:
+    """
+    Save, restore and apply: Luna's w on the cluster; a changed State takes a node out of
+    Slurm or back, as removing it does, so each judged node needs the hardware axis too.
+    """
+    token, who = _person(request, body, settings)
+    cluster = _governed(_rows(token, "cluster", settings), who, "cluster")
+    why = rbac.refusal("cluster", "", cluster, who, "w")
+    if why:
+        raise _refuse(who, verb, "cluster", why)
+    judged = body.get("judged") or []
+    if states and judged:
+        rows = _rows(token, "node", settings)
+        _refused_nodes(rows, who, judged, lambda row, name: "" if rbac.can(row, who)["hardware"]
+                       else "changing its State needs the hardware right", verb)
+    return who
+
+
+def _run(who: dict, verb: str, what, caller, settings: dict, body: dict) -> dict:
+    """
+    The helper run for the person the plugin verified, recorded in trixd's audit with what they
+    changed (trixd's own row names only the gate's account), never the token: granted when it
+    answered, refused when the helper refused before acting, and `unknown` when it did not finish
+    or Slurm refused, since the change may have landed.
+    """
+    via = f"via {getattr(caller, 'name', 'nobody')}"
+    try:
+        answer = helper(verb, settings, body)
+    except BackendFailure as error:
+        audit.record(who["user"], f"slurm {verb}", str(what(None))[:200], outcome="unknown",
+                     detail=f"{via}: {error}"[:500])
+        raise
+    except (BadRequest, Conflict, Forbidden, ServiceUnavailable) as error:
+        audit.refused(who["user"], f"slurm {verb}", str(what(None))[:200],
+                      detail=f"{via}: {error}"[:500])
+        raise
+    done = str(what(answer))[:200]
+    audit.granted(who["user"], f"slurm {verb}", done, detail=via)
+    LOGGER.info("%s: slurm %s %s", who["user"], verb, done)
+    return answer
+
+
+def _judged_names(body: dict) -> None:
+    """
+    The gate judged each node it lists; the helper changes the names, so the two must agree.
+    """
+    if sorted(set(body.get("judged") or [])) != sorted(set(body.get("names") or [])):
+        raise Conflict("the nodes judged are not the nodes named: reload and try again")
+
+
+def helper(verb: str, settings: dict, body: dict) -> dict:
+    """
+    One helper run: the request as JSON on stdin, its answer as JSON on stdout, a refusal
+    raised as the class it names.
+    """
+    try:
+        pwd.getpwnam(ACCOUNT)
+    except KeyError:
+        raise ServiceUnavailable(f"there is no account {ACCOUNT} on this controller: the slurm "
+                                 f"plugin's setup creates it") from None
+    for tool in (SETPRIV, PRLIMIT):
+        if not os.access(tool, os.X_OK):
+            raise ServiceUnavailable(f"{tool} is not here: util-linux carries it")
+    try:
+        group = grp.getgrnam(settings["admin_group"]).gr_gid
+    except KeyError:
+        raise ServiceUnavailable(f"there is no group {settings['admin_group']} on this "
+                                 f"controller: the Slurm files' group is the plugin's "
+                                 f"admin_group setting") from None
+    request = {**(body or {}),  # the plugin's own values last: no body key overrides them
+               "files": {"nodes": settings["nodes_file"],
+                         "partitions": settings["partitions_file"],
+                         "gres": settings["gres_file"]},
+               "share_dir": _share(settings), "state_dir": STATE_DIR, "group": group}
+    groups = ["--groups", str(group)] if verb in WRITERS else ["--clear-groups"]
+    argv = [SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
+            "--no-new-privs", "--reset-env", PRLIMIT, f"--as={MEMORY}", "--",
+            sys.executable, "-I", "-B", "-X", "utf8", HELPER, verb]
+    try:
+        result = shell.run(argv, timeout=TIMEOUTS[verb], secret_input=json.dumps(request))
+    except BackendFailure as error:
+        LOGGER.error("the slurm helper's %s did not finish: %s", verb, error)
+        raise BackendFailure(f"the Slurm helper did not finish {verb} in {TIMEOUTS[verb]} s: "
+                             f"the outcome is unknown, reload") from None
+    try:
+        said = json.loads(result.out) if result.ok else None
+    except ValueError:
+        said = None
+    if not isinstance(said, dict) or "ok" not in said:
+        LOGGER.error("the slurm helper's %s exited %s: %s", verb, result.code,
+                     (result.err or result.out)[:2000])
+        raise BackendFailure(f"the Slurm helper did not answer {verb}; the reason is in the "
+                             f"journal")
+    if not said["ok"]:
+        message = str(said.get("message"))
+        if said.get("put_back"):  # a cut save put back: say which files went back
+            message += " (put back: %s)" % ", ".join(map(str, said["put_back"]))
+        raise ANSWERED.get(said.get("code"), BackendFailure)(message)
+    return {k: v for k, v in said.items() if k not in ("ok", "code")}
+
+
+@contextlib.contextmanager
+def render_lock(settings: dict, wait: float = None, clock=time.monotonic, sleep=time.sleep):
+    """
+    The render holds the helper's lock, so a save on either controller and a render never write
+    the files at once; while a cut save's mark is there the render writes nothing. Where the
+    share directory is not set up no save can run either, and the render goes on unlocked.
+    """
+    wait = RENDER_WAIT if wait is None else wait
+    share = _share(settings)
+    if not os.path.isdir(share):
+        LOGGER.info("%s is not set up, so the render takes no lock: no save can run here", share)
+        yield
+        return
+    try:
+        fd = os.open(os.path.join(share, "lock"), os.O_RDWR | os.O_CREAT | os.O_NOFOLLOW, 0o600)
+    except OSError as error:  # a share that squashes root, say
+        raise BackendFailure(f"the render cannot take the lock in {share} ({error.strerror}), so "
+                             f"it wrote nothing") from None
+    try:
+        try:
+            owner = os.stat(share)
+            os.fchown(fd, owner.st_uid, owner.st_gid)  # the helper's account opens it too
+        except OSError as error:
+            raise BackendFailure(f"the render cannot hand the lock in {share} to the helper's "
+                                 f"account ({error.strerror}), so it wrote nothing") from None
+        end = clock() + wait
+        while True:
+            try:
+                fcntl.lockf(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                break
+            except OSError as error:
+                if error.errno not in (errno.EACCES, errno.EAGAIN) or clock() >= end:
+                    raise BackendFailure(f"a save held the slurm files for {wait:.0f} s, so the "
+                                         f"render wrote nothing; the next change renders "
+                                         f"again") from None
+                sleep(0.5)
+        if os.path.exists(os.path.join(share, "pending", "paths.json")):
+            raise BackendFailure("a save was cut short and its files are not put back yet, so "
+                                 "the render wrote nothing; the next Slurm save or restore "
+                                 "puts them back")
+        yield
+    finally:
+        os.close(fd)
 
 
 def _generator():
@@ -145,11 +514,98 @@ class Backend:
             return declarations.merge(PLUGIN, "config", "", body, DEFAULT_CONFIG)
         return declarations.read(PLUGIN, "config", "", DEFAULT_CONFIG)
 
+    def files(self, caller=None) -> dict:
+        """
+        Whether the helper can write, as sentences; the files' stamp and the rules' digest.
+        """
+        return helper("files", self.config(), {})
+
+    def drain(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Drain the named nodes with the person's reason, as the gate asked.
+        """
+        settings = self.config()
+        _only_gate(caller, settings)
+        _bounded((body or {}).get("names"))
+        _judged_names(body)
+        who = _may_operate(request, body, settings, "drain")
+        return _run(who, "drain", lambda said: ",".join((said or {}).get("names") or body["names"]),
+                    caller, settings, body)
+
+    def resume(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Resume the named nodes, as the gate asked.
+        """
+        settings = self.config()
+        _only_gate(caller, settings)
+        _bounded((body or {}).get("names"))
+        _judged_names(body)
+        who = _may_operate(request, body, settings, "resume")
+        return _run(who, "resume", lambda said: ",".join((said or {}).get("names") or body["names"]),
+                    caller, settings, body)
+
+    def preview(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        The nodes whose State a save or a restore would change, for the gate to judge.
+        """
+        settings = self.config()
+        _only_gate(caller, settings)
+        _person(request, body, settings)
+        return helper("preview", settings, {k: v for k, v in body.items() if v is not None})
+
+    def _write(self, verb: str, body: dict, caller, request) -> dict:
+        """
+        Save, restore or apply for the person the gate speaks for. Takes the verb, the request
+        body (the files' new text or the backup to restore, the judged node states and the
+        console's rules digest), the caller trixd verified and the HTTP request carrying the
+        person's Luna token. Returns the helper's answer. Raises Forbidden for any caller but the
+        gate's account, Conflict when the console's rules digest is not this plugin's, BadRequest
+        for an unbounded judged list, and what _may_change and _run raise. Depends on config(),
+        rules_digest(), _may_change() and _run().
+        """
+        settings = self.config()
+        _only_gate(caller, settings)
+        if body.get("rules") != rules_digest():
+            raise Conflict("the console's Slurm rules are not this daemon's: update the one "
+                           "that is behind")
+        _bounded(body.get("judged") or [], least=0, key="judged")
+        who = _may_change(request, body, settings, verb, states=True)
+        return _run(who, verb, lambda said: "cluster", caller, settings,
+                    {k: v for k, v in body.items() if v is not None})
+
+    def save(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Write the person's texts of the three files, the backups first.
+        """
+        return self._write("save", body, caller, request)
+
+    def restore(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Write the backups' texts back, the backups kept.
+        """
+        return self._write("restore", body, caller, request)
+
+    def apply(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Make slurm read the files again.
+        """
+        settings = self.config()
+        _only_gate(caller, settings)
+        who = _may_change(request, body, settings, "apply", states=False)
+        return _run(who, "apply", lambda said: "cluster", caller, settings, {})
+
     def render_config(self) -> dict:
         """
         Write the managed blocks, then reconfigure slurm.
         """
         settings = self.config()
+        with render_lock(settings):
+            return self._render(settings)
+
+    def _render(self, settings: dict) -> dict:
+        """
+        The render proper, under the lock.
+        """
         fullset = node_set()
         if not fullset:
             LOGGER.info("no nodes yet, so nothing to write")
@@ -192,14 +648,20 @@ class Backend:
             return {"nodes": len(fullset), "files": sorted(files.values()),
                     "reconfigured": False, "changed": False,
                     **({"skipped": skipped} if skipped else {})}
-        result = shell.run(settings["reconfigure"].split(), timeout=60)
+        try:
+            result = shell.run(settings["reconfigure"].split(), timeout=60)
+        except BackendFailure as error:  # silent or not installed: the bytes go back too
+            result = shell.Result(-1, "", str(error))
         if not result.ok:
             # The running slurmctld keeps the configuration it had, but every client parses
             # these files for itself, so sinfo and sbatch fail until the refused bytes are
             # off the disk - and they are on shared storage, so a cold start meets them too.
             LOGGER.error("scontrol reconfigure failed: %s", result.err or result.out)
             unrestored = _restore(before)
-            again = shell.run(settings["reconfigure"].split(), timeout=60)
+            try:
+                again = shell.run(settings["reconfigure"].split(), timeout=60)
+            except BackendFailure as error:
+                again = shell.Result(-1, "", str(error))
             trouble = []
             if unrestored:
                 trouble.append(f"the restore is incomplete, because "

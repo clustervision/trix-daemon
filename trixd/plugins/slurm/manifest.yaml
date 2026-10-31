@@ -18,23 +18,30 @@ plugin: slurm
 backend: backend
 description: >
   The managed blocks of the slurm node, partition and gres files, rendered from
-  Luna's nodes through the trinityx-config-slurm package. One writer per file.
+  Luna's nodes through the trinityx-config-slurm package, and the person's own
+  changes to them (drain, resume, save, restore, apply), asked by the trixd gate
+  and run by helper.py as the account trinityx-slurm. Each change carries the
+  person's own Luna token in the header x-luna-token; the plugin asks Luna as
+  that person (whoami, the nodes, the cluster) and judges Luna's rights itself.
 
 schemas:
   config:
     nodes_file:
       type: string
       optional: true
+      pattern: "^/"
       description: The slurm file holding the node block
       example: /etc/slurm/slurm-nodes.conf
     partitions_file:
       type: string
       optional: true
+      pattern: "^/"
       description: The slurm file holding the partition block
       example: /etc/slurm/slurm-partitions.conf
     gres_file:
       type: string
       optional: true
+      pattern: "^/"
       description: The slurm file holding the gres block
       example: /etc/slurm/gres.conf
     manager:
@@ -45,8 +52,91 @@ schemas:
     reconfigure:
       type: string
       optional: true
+      pattern: "^/\\S+"
       description: Run after a write, so slurm reads the files again
       example: /usr/bin/scontrol reconfigure
+    gate_account:
+      type: string
+      optional: true
+      pattern: "^[a-z_][a-z0-9_-]*$"
+      description: The trixd user the trixd gate signs in as; the only caller of the change routes besides rootus
+      example: trinityx-gate
+    admin_group:
+      type: string
+      optional: true
+      pattern: "^[a-z_][a-z0-9_-]*$"
+      description: The group the Slurm files belong to with group write (config-slurm's admin group); a save and a restore run with it
+      example: admins
+    luna_ca:
+      type: string
+      optional: true
+      pattern: "^(/.*)?$"
+      description: The cluster CA file Luna's certificate is checked against when the plugin asks Luna as the person; "" or unset, luna.ini's VERIFY_CERTIFICATE decides
+      example: /etc/trinity/pki/ca.crt
+  drain:
+    person: &person
+      type: string
+      pattern: "^[A-Za-z0-9_.-]([A-Za-z0-9_. -]{0,62}[A-Za-z0-9_.-])?$"
+      description: Whose change this is, as the trixd gate signed them in; written in front of a drain's reason
+      example: admin
+    names: &names
+      type: array
+      items: string
+      description: The nodes to change, each a name Luna renders into the node file
+      example: [node001, node002]
+    judged: &judged
+      type: array
+      items: string
+      description: The nodes the gate judged the person may change; must be the nodes named
+      example: [node001, node002]
+    reason:
+      type: string
+      description: Why, one line of at most 200 characters, never the drainer's mark
+      example: bad DIMM
+  resume:
+    person: *person
+    names: *names
+    judged: *judged
+  preview:
+    person: *person
+    mode:
+      type: string
+      pattern: "^(save|restore)$"
+      description: save (the texts sent) or restore (the backups' texts)
+      example: save
+    stamp: &stamp
+      type: object
+      description: The sha256 of each file as the page loaded it (GET files' stamp)
+      example: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}
+    texts: &texts
+      type: object
+      optional: true
+      description: The new text of nodes, partitions and gres
+      example: {nodes: "...", partitions: "...", gres: "..."}
+  save:
+    person: *person
+    texts:
+      type: object
+      description: The new text of nodes, partitions and gres
+      example: {nodes: "...", partitions: "...", gres: "..."}
+    stamp: *stamp
+    judged: &states
+      type: array
+      items: string
+      description: The nodes whose State the texts change, as the gate judged them (preview's states)
+      example: []
+    rules: &rules
+      type: string
+      pattern: "^[0-9a-f]{64}$"
+      description: The sha256 of the console's save rules; refused when it is not this plugin's
+      example: 66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b
+  restore:
+    person: *person
+    stamp: *stamp
+    judged: *states
+    rules: *rules
+  apply:
+    person: *person
 
 endpoints:
   - path: config
@@ -96,3 +186,142 @@ endpoints:
       example: {nodes: 10, files: [/etc/slurm/gres.conf, /etc/slurm/slurm-nodes.conf, /etc/slurm/slurm-partitions.conf], reconfigured: true}
     errors:
       404: The render has not run yet, or its last run failed; the message says why
+
+  - path: files
+    methods: [GET]
+    minimum: reader
+    handler: files
+    summary: Whether the person's Slurm changes can be written, and the files as they are
+    description: |
+      Every gap that stops a save, a restore, a drain or a resume, as a sentence (`why`):
+      a file or its `.bkp` missing or not writable by the helper's account, slurm not
+      granting the account AdminLevel Administrator (`granted`, asked once a minute). The
+      sha256 of each file (`stamp`, sent back with a save), the sha256 of the save rules
+      (`rules`) and the account the helper runs as.
+    response:
+      description: The gaps, the stamp and the rules' digest
+      example: {why: [], granted: "", stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, rules: 66e57fbc..., account: trinityx-slurm}
+    errors:
+      502: The helper did not answer
+      503: The helper's account, setpriv or prlimit is missing, or the files are not configured
+
+  - path: nodes/actions/drain
+    methods: [POST]
+    minimum: operator
+    handler: drain
+    schema: drain
+    summary: Drain nodes, the person written in front of the reason
+    description: |
+      `scontrol update NodeName=<names> State=DRAIN Reason="[person] reason"`, run by the
+      helper as its account. The trixd gate's account only (or rootus), with the person's
+      Luna token in `x-luna-token`: Luna's x on every node named, asked as the person; `judged`
+      is the gate's own list and must agree. Refused whole when a name is
+      not a node Luna renders into the node file.
+    request_example: {person: admin, names: [node001], judged: [node001], reason: bad DIMM}
+    response:
+      description: The nodes changed
+      example: {names: [node001], did: drain node001}
+    errors:
+      400: A name, the reason or the person is refused; the message says which
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      409: The nodes judged are not the nodes named
+      502: scontrol refused or did not answer; the outcome of a silent one is unknown
+      503: slurm has not made the account an Administrator, or a tool is missing; or Luna did not answer
+
+  - path: nodes/actions/resume
+    methods: [POST]
+    minimum: operator
+    handler: resume
+    schema: resume
+    summary: Resume nodes
+    description: |
+      `scontrol update NodeName=<names> State=RESUME`, as drain is asked and refused.
+    request_example: {person: admin, names: [node001], judged: [node001]}
+    response:
+      description: The nodes changed
+      example: {names: [node001], did: resume node001}
+    errors:
+      400: A name is refused
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      409: The nodes judged are not the nodes named
+      502: scontrol refused or did not answer; the outcome of a silent one is unknown
+      503: slurm has not made the account an Administrator, or a tool is missing; or Luna did not answer
+
+  - path: files/actions/preview
+    methods: [POST]
+    minimum: manager
+    handler: preview
+    schema: preview
+    summary: The nodes whose State a save or a restore would change
+    description: |
+      Judged as the write would be (the stamp, the TrinityX block, the lines the editor may
+      change, slurmlint), writing nothing; a refusal the write would meet comes back in
+      `refused`, so the gate can say it before it judges the person.
+    request_example: {person: admin, mode: save, stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, texts: {nodes: "...", partitions: "...", gres: "..."}}
+    response:
+      description: The State changes, or why the write would be refused
+      example: {states: [node004], refused: ""}
+    errors:
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      502: The helper did not answer
+      503: A file or backup is missing or not writable, or a tool is missing; or Luna did not answer
+
+  - path: files/actions/save
+    methods: [POST]
+    minimum: manager
+    handler: save
+    schema: save
+    summary: Write the person's texts of the node, partition and gres files
+    request_example: {person: admin, texts: {nodes: "...", partitions: "...", gres: "..."}, stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, judged: [], rules: 66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b}
+    description: |
+      The backups first, then the three files, whole or not at all: one save, restore, apply
+      or render at a time on either controller (a lock beside the files), a mark before the
+      first byte so a cut write is put back. Refused when the files changed since the page
+      loaded them (`stamp`), when a changed line is not one the editor makes, when slurmlint
+      refuses, when `judged` is not the State changes the texts make, and when `rules` is not
+      this plugin's. Slurm reads the files on apply.
+    response:
+      description: The files' new stamp
+      example: {stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}}
+    errors:
+      400: A text, or slurmlint's lines
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      409: Stale, not Luna's files, a line the editor cannot make, the State changes or the rules differ, another write under way, or a file rewritten while the helper wrote it
+      502: A write failed and what the helper wrote is put back, or the helper did not answer
+      503: A file or backup is missing or not writable, slurmlint is absent, or a tool is missing; or Luna did not answer
+
+  - path: files/actions/restore
+    methods: [POST]
+    minimum: manager
+    handler: restore
+    schema: restore
+    summary: Write the backups' texts back to the three files
+    request_example: {person: admin, stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, judged: [], rules: 66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b}
+    description: |
+      As a save of the `.bkp` texts, the backups kept.
+    response:
+      description: The files' new stamp
+      example: {stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}}
+    errors:
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      409: As a save
+      502: As a save
+      503: A backup cannot be read, or as a save; or Luna did not answer
+
+  - path: files/actions/apply
+    methods: [POST]
+    minimum: manager
+    handler: apply
+    schema: apply
+    summary: Make slurm read its files again
+    description: |
+      `scontrol reconfigure`, run by the helper under the lock; slurmctld refuses what it
+      cannot load and keeps serving.
+    request_example: {person: admin}
+    response:
+      description: Done
+      example: {}
+    errors:
+      403: The caller is not the trixd gate's account, or Luna refuses the person (x-luna-token)
+      409: Another write is under way
+      502: scontrol refused or did not answer

@@ -739,6 +739,27 @@ def test_one_write_at_a_time_across_processes(slurm, monkeypatch):
         pass
 
 
+@pytest.mark.parametrize("setting, value", [
+    (setting, value)
+    for setting in ("nodes_file", "partitions_file", "gres_file", "reconfigure", "luna_ca")
+    for value in ("", "etc/slurm/x.conf", "scontrol reconfigure")
+    if (setting, value) != ("luna_ca", "")])  # luna_ca "" clears it: test_luna_ca_may_be_cleared
+def test_config_refuses_an_empty_or_relative_setting(rig, client, headers, setting, value):
+    """AC-12 (R2): an empty or relative path, or a command not named by its absolute path, is
+    refused at the schema and nothing is stored: the render would write it relative to trixd's
+    working directory, or run it from PATH, as root."""
+    from trixd.core.plugins import loader
+    from trixd.plugins.slurm import backend
+
+    assert loader.load(rig, "slurm").state == "loaded"
+    before = backend.Backend().config()
+    answer = client.patch("/api/v1/slurm/config", json={setting: value}, headers=headers)
+    assert answer.status_code == 422, answer.text  # trixd's schema refusal
+    assert backend.Backend().config() == before
+    kept = client.patch("/api/v1/slurm/config", json={"manager": "TrinityX"}, headers=headers)
+    assert kept.status_code == 200, kept.text
+
+
 def test_scontrol_update_runs_under_the_share_lock(slurm, monkeypatch):
     """F9 (PLAN-r140a section 16): the lock is held across `scontrol update`, so no render or save
     lands between the read of the node file and the update. Another process tries the lock while
@@ -762,3 +783,16 @@ def test_scontrol_update_runs_under_the_share_lock(slurm, monkeypatch):
     assert slurm.ask("drain", names=["node001"], reason="fan", person="admin")["code"] == 200
     assert slurm.ask("resume", names=["node001"])["code"] == 200
     assert held == [True, True]
+
+
+def test_luna_ca_may_be_cleared(rig, client, headers):
+    """Review 3 (1): luna_ca set wrong is undone through the API: "" stores "", which reads as
+    luna.ini's VERIFY_CERTIFICATE."""
+    from trixd.core.plugins import loader
+    from trixd.plugins.slurm import backend
+
+    assert loader.load(rig, "slurm").state == "loaded"
+    for value in ("/etc/trinity/pki/ca.crt", ""):
+        answer = client.patch("/api/v1/slurm/config", json={"luna_ca": value}, headers=headers)
+        assert answer.status_code == 200, answer.text
+        assert backend.Backend().config()["luna_ca"] == value
