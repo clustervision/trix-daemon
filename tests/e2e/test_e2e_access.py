@@ -300,3 +300,32 @@ def test_luna_decides_on_the_route_to_luna(stack):
     assert stack.call("GET", "/luna/config/node", stack.rootus()).status_code == 200
     assert stack.call("GET", "/luna/config/node", stack.as_role("manager")).status_code == 401
     assert stack.call("GET", "/luna/config/node").status_code == 401
+
+
+def test_a_person_signs_in_at_luna_through_the_route_and_luna_knows_her(stack):
+    """
+    A person gets her Luna token from Luna, through /luna/token with her own password, and
+    sends it on the route to Luna: Luna receives that very token and answers as her, with
+    her rights rather than the ini account's. A wrong password is Luna's refusal, unchanged.
+    """
+    if stack.luna is None:
+        pytest.skip("needs the stand-in Luna, which knows the person: TRIXD_E2E=local")
+    with stack.luna.lock:
+        stack.luna.people["anna"] = {"password": "anna-password", "id": 7001}
+
+    refused = stack.call("POST", "/luna/token", json={"username": "anna", "password": "wrong"})
+    assert refused.status_code == 401, refused.text
+    assert refused.json() == {"message": "Invalid username or password"}
+
+    signed = stack.call("POST", "/luna/token",
+                        json={"username": "anna", "password": "anna-password"})
+    assert signed.status_code == 201, signed.text
+    token = signed.json()["token"]
+
+    mark = len(stack.luna.calls)
+    me = stack.call("GET", "/luna/whoami", token)
+    assert [call for call in stack.luna.calls[mark:] if call[1] == "whoami"] == [
+        ("GET", "whoami", token)]
+    assert me.status_code == 200, me.text
+    assert me.json() == {"user": "anna", "id": 7001, "admin": False}
+    assert stack.call("GET", "/luna/config/node", token).status_code == 403

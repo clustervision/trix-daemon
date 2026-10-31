@@ -93,13 +93,14 @@ Every route below says what it does, what to send, what comes back, and who may 
 nodes, groups, images, networks and boot. It answers at {luna}, and \
 [{luna}/version]({luna}/version) says which version it runs. A request to \
 `/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides \
-who may.
+who may: sign in at Luna through `POST /api/v1/luna/token` and send the token Luna answers. \
+A token from this page is not a Luna token, save the ini account's.
 
 ### Signing in
 1. `POST /api/v1/auth/token` with `{"username": "...", "password": "..."}` answers \
 `201` and `{"token": "..."}`, valid for an hour unless `trixd.ini` says otherwise.
-2. Send the token on every call as `x-access-tokens: <token>`, as Luna takes it, or as \
-`Authorization: Bearer <token>`.
+2. Send the token on every call to trixd's own routes as `x-access-tokens: <token>`, as \
+Luna takes it, or as `Authorization: Bearer <token>`.
 3. On this page: **Authorize**, paste the token into either field, and every \
 **Try it out** sends it.
 
