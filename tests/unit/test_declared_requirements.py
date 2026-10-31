@@ -50,7 +50,9 @@ IMPORTED_AS = {"pyjwt": "jwt", "pyyaml": "yaml", "python-pam": "pam"}
 # Imported inside a try because a controller may not have them: the installer puts them
 # there per cluster, and trixd runs without them. Declaring them would make them
 # required, which is the opposite of what they are.
-OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders"}
+# hostlist and slurmlint come with trinityx_config_slurm where slurm runs; the slurm plugin's helper
+# imports them inside a try and answers 503 without them.
+OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders", "hostlist", "slurmlint"}
 
 
 def test_everything_the_daemon_imports_is_in_requirements():
@@ -92,7 +94,8 @@ def test_everything_the_daemon_imports_is_in_requirements():
                 else:
                     continue
                 for head in heads:
-                    if (head in sys.stdlib_module_names or head == "trixd"
+                    beside = os.path.isfile(os.path.join(folder, head + ".py"))  # a script's own module
+                    if (head in sys.stdlib_module_names or head == "trixd" or beside
                             or head in declared or head in OPTIONAL):
                         continue
                     missing[head] = os.path.relpath(source, root)
