@@ -940,3 +940,36 @@ def test_a_cut_saves_put_back_files_reach_the_answer(slurm):
         _calls(slurm, person="admin")["restore"](request=_request())
     assert str(refused.value) == ("a save was cut short and its files are put back (put back: "
                                   "/etc/slurm/gres.conf)")
+
+
+# -- the package file -----------------------------------------------------------------------------
+
+
+def test_the_package_file_names_its_steps_and_proves_its_checklist():
+    """
+    package.yaml holds exactly the keys the installer reads and the plugin's own account and
+    memory limit; every preflight and step command is an argv with an absolute program; and each
+    checklist item names a test that exists.
+    """
+    import yaml
+
+    from trixd.plugins.slurm import backend
+
+    folder = os.path.dirname(backend.__file__)
+    with open(os.path.join(folder, "package.yaml"), encoding="ascii") as handle:
+        package = yaml.safe_load(handle)
+    assert set(package) == {"name", "version", "description", "depends", "runs_as", "creates",
+                            "preflight", "steps", "checklist"}
+    assert package["name"] == backend.PLUGIN
+    assert package["runs_as"]["helper"]["account"] == backend.ACCOUNT
+    assert package["runs_as"]["helper"]["memory"] == backend.MEMORY
+    assert set(package["steps"]) == {"install", "start", "stop", "remove"}
+    for argv in package["preflight"] + [a for step in package["steps"].values() for a in step]:
+        assert isinstance(argv, list) and all(isinstance(word, str) for word in argv), argv
+        assert os.path.isabs(argv[0]), argv
+    here = os.path.dirname(os.path.abspath(__file__))
+    root = os.path.dirname(os.path.dirname(here))
+    for item in package["checklist"]:
+        path, name = item["test"].split("::")
+        with open(os.path.join(root, path), encoding="utf-8") as handle:
+            assert f"def {name}(" in handle.read(), item["test"]

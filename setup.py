@@ -127,7 +127,7 @@ setup(
     # Namespace packages too: the migrations directories hold modules but no __init__.py.
     packages=find_namespace_packages(include=["trixd", "trixd.*"], exclude=["*.__pycache__"]),
     package_data={"trixd": ["config/*.sample", "config/*.service", "config/*.yaml",
-                           "plugins/*/manifest.yaml", "core/security/sources/README",
+                           "plugins/*/manifest.yaml", "plugins/*/package.yaml", "core/security/sources/README",
                            "db/migrations/script.py.mako",
                            "static/*.txt", "static/*.css", "static/*.png", "static/*.ico",
                            "static/vendor/swagger-ui/*"]},

@@ -1,0 +1,80 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+
+# What installing the slurm plugin's change routes needs on a controller, beyond the daemon: read by
+# people and by the installer today; meant for a generic `plugin setup` step (preflight, then the
+# steps, as root, idempotent). Every path a step touches is in `creates` or `depends`.
+
+name: slurm
+version: "1.0"
+description: >
+  The managed blocks of the slurm files, rendered from Luna, and the person's own changes to them
+  (drain, resume, save, restore, apply), asked by the trixd gate and run by helper.py as the
+  account trinityx-slurm.
+
+depends:
+  daemon: trixd with the luna plugin enabled (the person's rights are Luna's)
+  commands: [/usr/bin/scontrol, /usr/bin/sacctmgr, /usr/bin/setpriv, /usr/bin/prlimit]
+  python: [hostlist, slurmlint, trinityx_config_slurm]
+  slurm: accounting answers (sacctmgr), the node, partition and gres files exist
+
+runs_as:
+  handlers: root, inside trixd; they run nothing but helper.py
+  helper:
+    account: trinityx-slurm
+    uid: 889
+    memory: 536870912
+    writes: [the three files and their .bkp, /var/lib/trixd/slurm, <slurm dir>/.trinityx-slurm]
+    files_group: the admin group config-slurm gives the six (setting admin_group), held by a save and a restore alone
+    slurm: AdminLevel Administrator
+
+creates:
+  - the account trinityx-slurm, uid and gid 889 on every controller of a pair, no shell, no home
+  - its AdminLevel Administrator in Slurm's accounting
+  - a .bkp beside each of the three files where none is
+  - nothing on the three files and their .bkp: config-slurm leaves them root's, of the admin group, group write
+  - /var/lib/trixd/slurm, 0700, the account's
+  - <slurm dir>/.trinityx-slurm, 0700, the account's, beside the files on the share
+
+preflight:
+  - [/usr/bin/sacctmgr, -n, -P, show, cluster, format=cluster]
+  - [/usr/bin/test, -x, /usr/bin/setpriv]
+  - [/usr/bin/test, -x, /usr/bin/prlimit]
+  - [/usr/bin/test, -f, /etc/slurm/slurm-nodes.conf]
+
+steps:
+  install:
+    - [/usr/sbin/groupadd, --system, --gid, "889", trinityx-slurm]
+    - [/usr/sbin/useradd, --system, --uid, "889", --gid, "889", --no-create-home,
+       --home-dir, /nonexistent, --shell, /sbin/nologin, trinityx-slurm]
+    - [/usr/bin/sacctmgr, -i, add, user, trinityx-slurm, account=root, adminlevel=Administrator]
+    - [/usr/bin/install, -d, -o, trinityx-slurm, -g, trinityx-slurm, -m, "0700", /var/lib/trixd/slurm]
+  start:
+    - [/usr/bin/systemctl, try-restart, trixd.service]
+  stop: []
+  remove:
+    - [/usr/bin/rm, -rf, /var/lib/trixd/slurm]
+
+checklist:
+  - text: only the trixd gate's account or rootus asks for a change
+    test: tests/unit/test_slurm_changes.py::test_only_the_gates_account_or_rootus_asks_for_a_change
+  - text: the person is judged from their own Luna token before the helper runs
+    test: tests/unit/test_slurm_changes.py::test_the_plugin_judges_the_person_from_their_luna_token
+  - text: the helper runs stepped down, with the request on stdin
+    test: tests/unit/test_slurm_changes.py::test_the_helper_runs_stepped_down_with_the_request_on_stdin
+  - text: the render and a save take one lock
+    test: tests/unit/test_slurm_changes.py::test_the_render_waits_for_a_save_then_fails_loud
