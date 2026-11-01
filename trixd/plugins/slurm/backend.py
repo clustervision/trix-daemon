@@ -67,6 +67,7 @@ DEFAULT_CONFIG: dict = {
     "gate_account": "trinityx-gate",
     "admin_group": "admins",
     "luna_ca": "",
+    "luna_url": "",
 }
 
 # -- the person's changes, through the helper ---------------------------------------------------
@@ -149,19 +150,21 @@ def _luna_as(token: str, path: str, settings: dict, absent: dict = None) -> dict
     Luna's answer to the person's own token; `absent` where Luna answers 404, which on a list
     means it shows the person none of it. The token is the person's whole Luna for an hour, so
     it goes over https checked against the cluster CA (`luna_ca`) where one is set, and never
-    over plain http off this host.
+    over plain http off this host. It is asked of the Luna that signed it, `luna_url` (a controller
+    pair's floating name: each controller's Luna signs with a key of its own), else luna.ini's.
     """
     config = luna_config.current()
+    base = (settings.get("luna_url") or "").rstrip("/") or config.base
     authority = settings.get("luna_ca") or config.verify
     if isinstance(authority, str) and not os.path.isfile(authority):
         raise ServiceUnavailable(f"the slurm plugin's luna_ca names {authority}, which is not a file on "
                                  f"this controller: set it to the cluster CA, or to \"\" for luna.ini's "
                                  f"VERIFY_CERTIFICATE; nothing was changed")
-    if urlsplit(config.base).scheme != "https" and not _on_this_box(config.base):
-        raise ServiceUnavailable(f"Luna is reached over plain http at {config.base}: the slurm "
+    if urlsplit(base).scheme != "https" and not _on_this_box(base):
+        raise ServiceUnavailable(f"Luna is reached over plain http at {base}: the slurm "
                                  f"plugin sends no sign-in over it; nothing was changed")
     try:
-        answer = requests.get(f"{config.base}/{path}", headers={"x-access-tokens": token},
+        answer = requests.get(f"{base}/{path}", headers={"x-access-tokens": token},
                               timeout=LUNA_WAIT, verify=authority, allow_redirects=False)
     except (requests.RequestException, OSError) as error:  # OSError: a CA file requests cannot read
         LOGGER.error("Luna did not answer %s: %s", path, type(error).__name__)

@@ -756,6 +756,40 @@ def test_no_sign_in_goes_over_plain_http_off_this_host(slurm, monkeypatch, base,
         assert len(slurm.ran) == 1
 
 
+def test_the_persons_token_is_judged_at_luna_url_when_one_is_set(slurm, monkeypatch):
+    """On a controller pair each controller's Luna signs its tokens with a key of its own, and
+    luna.ini names this controller's Luna: luna_url, where set, is the Luna the person's token
+    came from (the floating name) and is judged at; unset or "", luna.ini's base."""
+    from trixd.utils import declarations
+
+    urls = []
+    monkeypatch.setattr(slurm.backend.luna_config, "current",
+                        lambda: SimpleNamespace(base="https://controller2:7050", verify=True))
+    monkeypatch.setattr(slurm.backend.requests, "get",
+                        lambda url, **kw: (urls.append(url),
+                                           _Answer(*slurm.luna[url.split("/", 3)[3]]))[1])
+    declarations.merge("slurm", "config", "", {"luna_url": "https://controller:7050/"},
+                       slurm.backend.DEFAULT_CONFIG)
+    slurm.plugin.drain(body=_drain(), caller=GATE)
+    assert urls and {url.split("/", 3)[2] for url in urls} == {"controller:7050"}
+    declarations.merge("slurm", "config", "", {"luna_url": ""}, slurm.backend.DEFAULT_CONFIG)
+    urls.clear()
+    slurm.plugin.drain(body=_drain(), caller=GATE)
+    assert urls and {url.split("/", 3)[2] for url in urls} == {"controller2:7050"}
+
+
+def test_a_luna_url_over_plain_http_off_this_host_sends_no_sign_in(slurm):
+    from trixd.utils import declarations
+
+    declarations.merge("slurm", "config", "", {"luna_url": "http://controller:7050"},
+                       slurm.backend.DEFAULT_CONFIG)
+    with pytest.raises(ServiceUnavailable) as said:
+        slurm.plugin.drain(body=_drain(), caller=GATE)
+    assert "plain http" in str(said.value)
+    assert slurm.luna["asked"] == [] and slurm.ran == []
+    declarations.merge("slurm", "config", "", {"luna_url": ""}, slurm.backend.DEFAULT_CONFIG)
+
+
 def test_a_row_without_an_access_column_is_refused_for_anyone_but_an_admin(slurm):
     """F2: the shared ladder holds a row without `access` fully; nothing stands behind the
     plugin, so here such a row is 503 for a non-admin, and nothing runs."""

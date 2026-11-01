@@ -1014,6 +1014,22 @@
             ],
             "title": "Luna Ca"
           },
+          "luna_url": {
+            "anyOf": [
+              {
+                "pattern": "^(https?://[^/\\s]+/?)?$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Luna the person's token came from and is judged at (a controller pair's floating name; each controller's Luna signs with a key of its own); \"\" or unset, luna.ini's PROTOCOL and ENDPOINT",
+            "examples": [
+              "https://controller:7050"
+            ],
+            "title": "Luna Url"
+          },
           "manager": {
             "anyOf": [
               {
