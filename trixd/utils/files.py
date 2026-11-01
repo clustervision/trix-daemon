@@ -29,7 +29,10 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import contextlib
 import os
+import secrets
+import stat
 import tempfile
 
 import yaml
@@ -49,6 +52,9 @@ SAFE_DUMPER = getattr(yaml, "CSafeDumper", yaml.SafeDumper)
 
 BLOCK_START: str = "# --- {manager} managed block, do not edit by hand ---"
 BLOCK_END: str = "# --- end {manager} managed block ---"
+# Absent where the platform has no such flag; a person's files are only ever written on Linux.
+NO_FOLLOW: int = getattr(os, "O_NOFOLLOW", 0)
+DIRECTORY: int = getattr(os, "O_DIRECTORY", 0)
 
 
 def write(path: str, content: str, mode: int = 0o644) -> str:
@@ -149,3 +155,111 @@ def get_managed_block(path: str, manager: str) -> str:
     if start not in existing or end not in existing:
         return ""
     return existing.split(start, 1)[1].split(end, 1)[0].strip("\n")
+
+
+def _owned(found: os.stat_result, uid: int, path: str, kind) -> None:
+    """
+    Refuse what is not the expected kind of thing, or not the person's own.
+    """
+    if not kind(found.st_mode) or found.st_uid != uid:
+        raise BackendFailure(f"{path} is not a plain file or folder owned by uid {uid}; "
+                             f"it is left alone")
+
+
+@contextlib.contextmanager
+def _folder(home: str, folder: str, uid: int, gid: int = None):
+    """
+    A folder in a person's home, the home and the folder each opened without following a
+    link and checked to be theirs. Created 0700 and handed to them, through its descriptor,
+    when gid is given and it is missing, as the Luna command line creates ~/.luna.
+    """
+    top = os.open(home, os.O_RDONLY | DIRECTORY | NO_FOLLOW)
+    try:
+        _owned(os.fstat(top), uid, home, stat.S_ISDIR)
+        created = False
+        if gid is not None:
+            try:
+                os.mkdir(folder, 0o700, dir_fd=top)
+                created = True
+            except FileExistsError:
+                pass
+        inner = os.open(folder, os.O_RDONLY | DIRECTORY | NO_FOLLOW, dir_fd=top)
+        try:
+            if created and os.fstat(inner).st_uid != uid:
+                os.fchown(inner, uid, gid)
+                os.fchmod(inner, 0o700)
+            _owned(os.fstat(inner), uid, os.path.join(home, folder), stat.S_ISDIR)
+            yield inner
+        finally:
+            os.close(inner)
+    finally:
+        os.close(top)
+
+
+def read_private(home: str, folder: str, name: str, uid: int) -> tuple:
+    """
+    A person's own file, home/folder/name, as (text, mtime_ns), or ("", 0) when there is none.
+
+    Read as root on the person's behalf, so only a plain file of theirs with one link is
+    read: through a link, or a hard link to somebody else's file, the person would be
+    handed what is not theirs.
+    """
+    path = os.path.join(home, folder, name)
+    try:
+        with _folder(home, folder, uid) as directory:
+            handle = os.open(name, os.O_RDONLY | NO_FOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                found = os.fstat(handle)
+                _owned(found, uid, path, stat.S_ISREG)
+                if found.st_nlink != 1:
+                    raise BackendFailure(f"{path} has more than one link; it is left alone")
+                chunks = []
+                while True:
+                    chunk = os.read(handle, 65536)
+                    if not chunk:
+                        break
+                    chunks.append(chunk)
+            finally:
+                os.close(handle)
+    except FileNotFoundError:
+        return "", 0
+    except OSError as error:
+        raise BackendFailure(f"cannot read {path}: {type(error).__name__}") from None
+    return b"".join(chunks).decode("utf-8", errors="replace"), found.st_mtime_ns
+
+
+def write_private(home: str, folder: str, name: str, content: str, uid: int,
+                  gid: int) -> str:
+    """
+    Write a person's own file, home/folder/name, as root on their behalf: 0600 and theirs
+    before the first byte, in a folder of theirs, through a temporary file and a rename
+    that replaces whatever is at the name rather than writing through it. A file there that
+    is not theirs is not replaced.
+    """
+    path = os.path.join(home, folder, name)
+    temporary = f".{name}.{secrets.token_hex(8)}"
+    try:
+        with _folder(home, folder, uid, gid) as directory:
+            try:
+                _owned(os.stat(name, dir_fd=directory, follow_symlinks=False), uid, path,
+                       stat.S_ISREG)
+            except FileNotFoundError:
+                pass
+            handle = os.open(temporary, os.O_WRONLY | os.O_CREAT | os.O_EXCL | NO_FOLLOW,
+                             0o600, dir_fd=directory)
+            try:
+                with os.fdopen(handle, "w", encoding="utf-8") as target:
+                    os.fchown(target.fileno(), uid, gid)
+                    os.fchmod(target.fileno(), 0o600)
+                    target.write(content)
+                    target.flush()
+                    os.fsync(target.fileno())
+                os.replace(temporary, name, src_dir_fd=directory, dst_dir_fd=directory)
+            except OSError:
+                with contextlib.suppress(OSError):
+                    os.unlink(temporary, dir_fd=directory)
+                raise
+    except OSError as error:
+        raise BackendFailure(f"cannot write {path}: {type(error).__name__}") from None
+    LOGGER.debug("wrote %s", path)
+    return path

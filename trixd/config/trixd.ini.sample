@@ -63,8 +63,9 @@ TRUST = /trinity/local/etc/ssl/trust.d
 ; ALGORITHM = EdDSA uses PRIVATE_KEY, KEY_ID and TRUST instead, so a daemon that
 ; verifies cannot mint. It needs Luna to speak EdDSA too, and today Luna does not.
 
-; There is no [LUNA] section, and no [TRIGGERS] one. Where Luna answers, its protocol and
-; its certificate check are read from Luna's own luna.ini,
+; There is no [LUNA] section, and no [TRIGGERS] one; [DELEGATE:LUNA] below is trixd's own
+; account at Luna. Where Luna answers, its protocol and its certificate check are read
+; from Luna's own luna.ini,
 ; /trinity/local/luna/daemon/config/luna.ini, by the luna plugin, so they are changed in
 ; one place. A plugin's own settings are its own: they are set through its config
 ; endpoint and kept with the plugin, not here.
@@ -88,6 +89,17 @@ BIND_DN =
 BIND_PASSWORD =
 USER_ATTRIBUTE = uid
 ; Only read when ldap is in CHAIN. USER_ATTRIBUTE is sAMAccountName on Active Directory.
+
+[DELEGATE:LUNA]
+USERNAME = trixd-delegate
+PASSWORD =
+; One [DELEGATE:<component>] section per component trixd signs a person in at on their
+; behalf, holding trixd's own account there. At Luna it is a Luna user carrying Luna's
+; delegate flag, never the account luna.ini names, which Luna refuses as a delegate. A
+; person who signed in here through pam or ldap and calls /api/v1/luna with no Luna token
+; of their own is signed in at Luna by this account, as themselves. With no PASSWORD such a
+; person signs in at Luna through POST /api/v1/luna/token. The installer generates the
+; password; keep this file readable by root alone.
 
 [REPLICATION]
 PEERS =

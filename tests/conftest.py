@@ -47,7 +47,7 @@ from trixd.core.replication import sweep as replication_sweep
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
 from trixd.db import engine as database
-from trixd.plugins.luna import hashes
+from trixd.plugins.luna import hashes, persons
 from trixd.plugins.luna.config import LUNA_INI_ENV
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
@@ -138,8 +138,9 @@ def _own_process_state():
     reviewer who found it three probes that stopped reproducing their own defects.
 
     The rest - the render engine, the applied record, the stall counts, the breaker, the
-    sweep's last pass and its peer tokens - are cleared because they are process state that
-    no rig owns, not because a test fails without them today.
+    sweep's last pass and its peer tokens, and what is held, refused and already said for
+    a person reaching Luna - are cleared because they are process state that no rig owns,
+    not because a test fails without them today.
     """
     standing = set(registry().plugins)
     yield
@@ -155,6 +156,10 @@ def _own_process_state():
     outbox._failures.clear()
     outbox._open.clear()
     outbox._sending.clear()
+    persons._held.clear()
+    persons._refused.clear()
+    persons._warned.clear()
+    persons._said_no_delegate.clear()
 
 
 @pytest.fixture()

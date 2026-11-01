@@ -92,9 +92,11 @@ Every route below says what it does, what to send, what comes back, and who may 
 **Luna**, luna2-daemon, runs beside it on this controller and owns the physical estate: \
 nodes, groups, images, networks and boot. It answers at {luna}, and \
 [{luna}/version]({luna}/version) says which version it runs. A request to \
-`/api/v1/luna/<path>` here is handed to Luna as `/<path>`, unchanged, and Luna decides \
-who may: sign in at Luna through `POST /api/v1/luna/token` and send the token Luna answers. \
-A token from this page is not a Luna token, save the ini account's.
+`/api/v1/luna/<path>` here is handed to Luna as `/<path>`, and Luna decides who may. \
+Send the token from this page: trixd hands Luna your own Luna token in its place, the one \
+in `~/.luna/token` or one it signs in for, with your `~/.luna/luna.ini` or on your behalf. \
+When it cannot, sign in at Luna once through `POST /api/v1/luna/token`; trixd keeps the \
+token rather than answering it.
 
 ### Signing in
 1. `POST /api/v1/auth/token` with `{"username": "...", "password": "..."}` answers \

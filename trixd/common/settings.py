@@ -44,6 +44,8 @@ DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
 # Sections trixd.ini may still name that this daemon does not read. Named at startup as
 # ignored rather than complained about as unknown, and the one place they are listed.
 IGNORED_SECTIONS: tuple = ("LUNA", "TRIGGERS")
+# One section per component this daemon holds a delegate account at, named after it.
+DELEGATE_PREFIX: str = "DELEGATE:"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
 # K, M and G with the suffix an operator writes them with: 8M, 64MB and 16MiB alike.
@@ -177,6 +179,9 @@ class Settings(BaseModel):
     tokens: TokenSettings = Field(default_factory=TokenSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    # [DELEGATE:<component>]: the account this daemon holds at another component, which
+    # signs a person in there on their behalf. Component name to (username, password).
+    delegates: dict = Field(default_factory=dict)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
@@ -404,6 +409,9 @@ def load(path: str = "", found: list = None) -> Settings:
         ldap_bind_dn=get("AUTH_LDAP", "BIND_DN", ""),
         ldap_bind_password=get("AUTH_LDAP", "BIND_PASSWORD", ""),
         ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"))
+    data.delegates = {section[len(DELEGATE_PREFIX):]: (get(section, "USERNAME", ""),
+                                                       get(section, "PASSWORD", ""))
+                      for section in parser.sections() if section.startswith(DELEGATE_PREFIX)}
     data.services = ServicesSettings(
         command=get("SERVICES", "COMMAND", data.services.command))
     data.replication = ReplicationSettings(

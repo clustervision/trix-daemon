@@ -34,13 +34,14 @@ __status__      = "Production"
 import requests
 import urllib3
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import ServiceUnavailable
 from trixd.plugins.luna import config as luna_config
-from trixd.plugins.luna import hooks
+from trixd.plugins.luna import hooks, persons
 
 LOGGER = trixlog.get("plugin.luna")
 
@@ -79,6 +80,15 @@ class Backend:
         headers = {key: value for key, value in request.headers.items()
                    if key.lower() not in HOP_BY_HOP}
         body = await request.body()
+        person = await run_in_threadpool(persons.caller, headers)
+        if person is not None:
+            # A person signed in here reaches Luna with their own Luna token, never with
+            # the trixd one, and signing in at Luna keeps that token here.
+            if request.method == "POST" and rest == persons.SIGN_IN:
+                return JSONResponse(await run_in_threadpool(persons.sign_in, person, body),
+                                    status_code=201)
+            headers = persons.as_person(headers,
+                                        await run_in_threadpool(persons.token_for, person))
         answer = await run_in_threadpool(_forward, request.method, url, headers, body)
         passed = {key: value for key, value in answer.headers.items()
                   if key.lower() not in HOP_BY_HOP}

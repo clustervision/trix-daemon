@@ -163,18 +163,25 @@ def _self_signed() -> str:
     return jwt.encode(payload, luna_config.current().secret, algorithm=TOKEN_ALGORITHM_SHARED)
 
 
-def _sign_in(username: str, password: str) -> str:
+def _sign_in(username: str, password: str, refused: TrixdError = None,
+             on_behalf_of: str = "") -> str:
     """
     Luna's own /token, with the account its ini names. Every failure here is the same to
-    a caller: Luna cannot be used right now, and the log says why.
+    a caller: Luna cannot be used right now, and the log says why. A caller signing a
+    person in passes `refused`, raised instead when Luna turns the request down, and a
+    delegate account names that person in `on_behalf_of`.
     """
     config = luna_config.current()
+    asked = {"username": username, "password": password}
+    if on_behalf_of:
+        asked["on_behalf_of"] = on_behalf_of
     try:
-        answer = requests.post(f"{config.base}/token",
-                               json={"username": username, "password": password},
+        answer = requests.post(f"{config.base}/token", json=asked,
                                timeout=luna_config.TIMEOUT, verify=config.verify)
     except requests.RequestException as error:
         raise ServiceUnavailable(f"Luna is not answering: {error}") from None
+    if refused is not None and answer.status_code in (401, 403):
+        raise refused
     if answer.status_code >= 400:
         raise ServiceUnavailable(
             f"Luna refused the account {config.path} names: {answer.status_code}")
@@ -182,7 +189,8 @@ def _sign_in(username: str, password: str) -> str:
         token = answer.json()["token"]
     except (ValueError, KeyError, TypeError):
         raise ServiceUnavailable("Luna answered the token request without a token") from None
-    LOGGER.info("signed in at Luna as %s", username)
+    LOGGER.info("signed in at Luna as %s", f"{on_behalf_of}, vouched for by {username}"
+                if on_behalf_of else username)
     return token
 
 

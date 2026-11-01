@@ -1840,3 +1840,533 @@ def test_a_node_name_is_encoded_into_lunas_path(rig):
     for name, quoted in wanted.items():
         client.node(name)
         assert session.calls[-1][1] == f"https://luna.test:7050/config/node/{quoted}", name
+
+
+# A person signed in to trixd reaches Luna through the route to Luna with their own Luna
+# token, kept in their home as the Luna command line keeps it, and no password is written.
+# Anything the change added is reached through _new or hasattr, so on a build without it
+# these fail on what Luna received rather than on a missing name.
+
+PERSON: str = "harry"
+PERSON_PASSWORD: str = "harry-password"
+DELEGATE: str = "trixd-portal"
+DELEGATE_PASSWORD: str = "portal-password"
+
+
+def _new(module: str):
+    """
+    A module the change added, or None on a build that has none.
+    """
+    import importlib
+
+    try:
+        return importlib.import_module(module)
+    except ImportError:
+        return None
+
+
+def _luna_minted(name: str, seconds: int = 300) -> str:
+    """
+    A token as Luna mints one for a person: an id and an expiry, nothing else.
+    """
+    from datetime import datetime, timedelta, timezone
+
+    expiry = datetime.now(timezone.utc) + timedelta(seconds=seconds)
+    return jwt.encode({"id": 7000 + len(name), "exp": expiry, "for": name}, "luna-secret",
+                      algorithm="HS256")
+
+
+class _Luna:
+    """
+    Luna's /token, delegation included, and every other route: who signed in, and which
+    token each call carried.
+    """
+
+    def __init__(self, monkeypatch, people: dict) -> None:
+        """
+        Stand in for both ends the plugin reaches Luna by.
+        """
+        self.people = people
+        self.signed = []
+        self.seen = []
+        self.issued = []
+        monkeypatch.setattr(credentials.requests, "post", self.post)
+        monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", self.request)
+
+    def post(self, url, json=None, **kwargs):
+        """
+        POST /token: a person with the right password, or the delegate for a known person.
+        """
+        self.signed.append(dict(json))
+        name, behalf = json.get("username"), json.get("on_behalf_of")
+        if self.people.get(name) != json.get("password"):
+            return Answer(401, {"message": "Invalid username or password"})
+        if behalf and (name != DELEGATE or behalf not in self.people):
+            return Answer(403, {"message": f"{name} may not obtain a token for {behalf}"})
+        self.issued.append(_luna_minted(behalf or name))
+        return Answer(201, {"token": self.issued[-1]})
+
+    def request(self, method, url, headers=None, **kwargs):
+        """
+        Any other call: answered, with the token it carried remembered.
+        """
+        if method == "POST" and url.endswith("/token"):
+            self.issued.append(_luna_minted(PERSON))
+            body = {"token": self.issued[-1]}
+            return SimpleNamespace(content=json.dumps(body).encode(), status_code=201,
+                                   headers={"content-type": "application/json"})
+        self.seen.append((headers or {}).get("x-access-tokens"))
+        return SimpleNamespace(content=b'{"answered": true}', status_code=200,
+                               headers={"content-type": "application/json"})
+
+
+def _delegate(monkeypatch, username: str = DELEGATE, password: str = DELEGATE_PASSWORD):
+    """
+    [DELEGATE:LUNA] as trixd.ini would set it, where this build reads such sections.
+    """
+    current = configuration.current()
+    if hasattr(current, "delegates"):
+        monkeypatch.setitem(current.delegates, "LUNA", (username, password))
+
+
+def _person(client, headers, tmp_path, monkeypatch, source: str = "pam"):
+    """
+    harry: a principal here, a home of his own under tmp_path, and a trixd token naming the
+    source he signed in through.
+    """
+    from trixd.core.security import tokens
+
+    made = client.put(f"/api/v1/identity/users/{PERSON}", json={}, headers=headers)
+    assert made.status_code == 200, made.text
+    home = tmp_path / "home" / PERSON
+    home.mkdir(parents=True)
+    entry = SimpleNamespace(pw_name=PERSON, pw_dir=str(home), pw_uid=os.getuid(),
+                            pw_gid=os.getgid())
+    persons = _new("trixd.plugins.luna.persons")
+    if persons is not None:
+        monkeypatch.setattr(persons, "_home", lambda name, came: (
+            entry if name == PERSON and came in ("pam", "ldap") else None))
+    return SimpleNamespace(home=home,
+                           headers={"x-access-tokens": tokens.mint(PERSON, source=source)})
+
+
+def _luna_folder(home, **files) -> None:
+    """
+    ~/.luna as the command line leaves it, holding the files given.
+    """
+    folder = home / ".luna"
+    folder.mkdir(mode=0o700, exist_ok=True)
+    for name, text in files.items():
+        (folder / name.replace("_", ".")).write_text(text, encoding="utf-8")
+
+
+def _login(name: str, password: str) -> str:
+    """
+    ~/.luna/luna.ini as luna access login writes it.
+    """
+    return f"[API]\nusername = {name}\npassword = {password}\n"
+
+
+def _no_password_in(home, *passwords) -> None:
+    """
+    No file anywhere under the home carries any of these passwords.
+    """
+    for path in home.rglob("*"):
+        if path.is_file():
+            text = path.read_text(encoding="utf-8", errors="replace")
+            for password in passwords:
+                assert password not in text, f"{path} holds a password"
+
+
+posix_only = pytest.mark.skipif(os.name != "posix", reason="homes, owners and modes are POSIX")
+
+
+def test_only_pam_and_ldap_people_with_an_ordinary_account_spelt_exactly_have_a_home(
+        monkeypatch):
+    """
+    The home rule: a source that vouches for an operating-system account, an account that
+    could log in itself, spelt as the person signed in, and never uid 0.
+    """
+    persons = _new("trixd.plugins.luna.persons")
+    assert persons is not None, "nothing decides which people have a home here"
+    from trixd.core.security.sources import pam as pam_source
+
+    accounts = {"harry": ("harry", 1001), "root": ("root", 0), "Harry": ("harry", 1001)}
+
+    class Source:
+        """
+        The pam source's own test, answered from the table above.
+        """
+
+        def resolve(self, name):
+            """
+            Known when the table has the name.
+            """
+            return (name in accounts), {"name": name}
+
+    import pwd
+    monkeypatch.setattr(pam_source, "Source", Source)
+    monkeypatch.setattr(pwd, "getpwnam", lambda name: SimpleNamespace(
+        pw_name=accounts[name][0], pw_uid=accounts[name][1], pw_gid=100,
+        pw_dir=f"/home/{accounts[name][0]}"))
+
+    assert persons._home("harry", "pam").pw_dir == "/home/harry"
+    assert persons._home("harry", "ldap").pw_dir == "/home/harry"
+    for name, source in (("harry", "local"), ("harry", "oidc"), ("harry", "ini"),
+                         ("root", "pam"), ("svc", "pam"), ("Harry", "ldap")):
+        assert persons._home(name, source) is None, (name, source)
+
+
+@posix_only
+def test_a_person_s_luna_token_in_their_home_is_what_luna_receives(
+        client, headers, tmp_path, monkeypatch):
+    """
+    harry sends his trixd token; Luna receives the token in ~harry/.luna/token instead,
+    and nothing is signed in for.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    kept = _luna_minted(PERSON)
+    _luna_folder(harry.home, token=kept)
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.seen == [kept], "Luna was not handed harry's own Luna token"
+    assert answer.status_code == 200, answer.text
+    assert luna.signed == []
+
+
+@posix_only
+def test_with_his_own_luna_ini_trixd_signs_in_as_the_command_line_renews(
+        client, headers, tmp_path, monkeypatch):
+    """
+    No usable token: harry's own ~/.luna/luna.ini signs in, Luna receives what it answered,
+    and that lands in ~/.luna/token as the command line writes it, with luna.ini untouched.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _luna_folder(harry.home, luna_ini=_login(PERSON, PERSON_PASSWORD))
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.signed == [{"username": PERSON, "password": PERSON_PASSWORD}], luna.signed
+    assert luna.seen == luna.issued[-1:], "Luna was not handed the token it just issued"
+    assert answer.status_code == 200, answer.text
+    token = harry.home / ".luna" / "token"
+    assert token.read_bytes() == luna.issued[-1].encode()
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600 and token.stat().st_uid == os.getuid()
+    assert (harry.home / ".luna" / "luna.ini").read_text(encoding="utf-8") == _login(
+        PERSON, PERSON_PASSWORD)
+
+    client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert len(luna.signed) == 1, "the kept token was not used the second time"
+
+
+@posix_only
+def test_with_nothing_of_his_own_the_delegate_signs_him_in_and_no_password_is_written(
+        client, headers, tmp_path, monkeypatch):
+    """
+    No token and no luna.ini: the delegate account signs harry in at Luna on his behalf,
+    Luna receives harry's token, it is kept in ~/.luna/token, and no luna.ini or any
+    password is written into his home.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.signed == [{"username": DELEGATE, "password": DELEGATE_PASSWORD,
+                            "on_behalf_of": PERSON}], luna.signed
+    assert luna.seen == luna.issued[-1:], "Luna was not handed the token issued for harry"
+    assert answer.status_code == 200, answer.text
+    token = harry.home / ".luna" / "token"
+    assert token.read_bytes() == luna.issued[-1].encode()
+    assert stat.S_IMODE(token.stat().st_mode) == 0o600
+    assert stat.S_IMODE((harry.home / ".luna").stat().st_mode) == 0o700
+    assert not (harry.home / ".luna" / "luna.ini").exists()
+    assert not (harry.home / ".trixd").exists()
+    _no_password_in(harry.home, PERSON_PASSWORD, DELEGATE_PASSWORD)
+
+
+@posix_only
+def test_a_luna_ini_naming_somebody_else_is_not_used(client, headers, tmp_path,
+                                                       monkeypatch):
+    """
+    ~harry/.luna/luna.ini naming bob is treated as no file, said once: the delegate signs
+    harry in, and bob's password is never tried from here.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, "bob": "bob-password",
+                               DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    _luna_folder(harry.home, luna_ini=_login("bob", "bob-password"))
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert [asked["username"] for asked in luna.signed] == [DELEGATE], luna.signed
+    assert answer.status_code == 200, answer.text
+
+
+@posix_only
+def test_with_no_delegate_configured_the_client_is_asked_and_it_is_said_once(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Nothing of harry's own and no [DELEGATE:LUNA]: a 401 asking for Luna credentials, Luna
+    never asked, and the missing account named in the log once, not per call.
+    """
+    from tests.unit.test_daemon import _listening, _said
+    from trixd.common import logging as trixlog
+
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _delegate(monkeypatch, "", "")
+    with _listening(trixlog.get()) as records:
+        first = client.get("/api/v1/luna/whoami", headers=harry.headers)
+        second = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert first.status_code == second.status_code == 401, (first.text, second.text)
+    assert "sign in at Luna" in first.json()["message"], first.text
+    assert luna.signed == [] and luna.seen == []
+    said = [record for record in records if "DELEGATE:LUNA" in record.getMessage()]
+    assert len(said) == 1, _said(records)
+
+
+@posix_only
+def test_his_refused_luna_ini_is_not_offered_again_until_it_changes(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Luna turning harry's own luna.ini down is a 401 asking for Luna credentials, and the
+    same file is not offered again until it changes.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _luna_folder(harry.home, luna_ini=_login(PERSON, "stale"))
+
+    first = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert first.status_code == 401, first.text
+    assert "sign in at Luna" in first.json()["message"], first.text
+    second = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert second.status_code == 401, second.text
+    assert len(luna.signed) == 1, "refused credentials were offered again"
+
+    _luna_folder(harry.home, luna_ini=_login(PERSON, PERSON_PASSWORD) + "\n")
+    os.utime(harry.home / ".luna" / "luna.ini", ns=(1, 1))
+    assert client.get("/api/v1/luna/whoami", headers=harry.headers).status_code == 200
+    assert len(luna.signed) == 2
+
+
+@posix_only
+def test_a_refused_delegated_sign_in_waits_out_the_cool_off(client, headers, tmp_path,
+                                                            monkeypatch):
+    """
+    Luna refusing the delegate for harry is a 401, and harry's next calls do not ask Luna
+    again until the cool-off has passed: a wrong delegate password is not a login attempt
+    per call.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch, DELEGATE, "wrong")
+
+    first = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert first.status_code == 401, first.text
+    assert client.get("/api/v1/luna/whoami", headers=harry.headers).status_code == 401
+    assert len(luna.signed) == 1, "the refused delegate was asked again at once"
+
+    persons = _new("trixd.plugins.luna.persons")
+    monkeypatch.setattr(persons.time, "monotonic",
+                        lambda: 10 ** 9)
+    client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert len(luna.signed) == 2, "the cool-off never ended"
+
+
+@posix_only
+def test_a_home_that_cannot_keep_the_token_holds_it_and_says_so_once(
+        client, headers, tmp_path, monkeypatch):
+    """
+    ~/.luna cannot be written: the call still goes through as harry with the token held
+    here, the next call uses it without signing in again, and the log says so once.
+    """
+    from tests.unit.test_daemon import _listening, _said
+    from trixd.common import logging as trixlog
+
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    (harry.home / ".luna").write_text("not a folder", encoding="utf-8")
+
+    with _listening(trixlog.get()) as records:
+        first = client.get("/api/v1/luna/whoami", headers=harry.headers)
+        second = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.seen == luna.issued[-1:] * 2, "the calls did not reach Luna as harry"
+    assert first.status_code == second.status_code == 200, (first.text, second.text)
+    assert len(luna.signed) == 1, "the held token was not used for the second call"
+    warnings = [record for record in records if record.levelname == "WARNING"
+                and PERSON in record.getMessage()]
+    assert len(warnings) == 1, _said(records)
+
+
+@posix_only
+def test_a_home_that_does_not_answer_is_a_503_for_that_person_alone(
+        client, headers, token, tmp_path, monkeypatch):
+    """
+    Every turn at the homes taken: harry's call answers 503 within the wait, and the ini
+    account's call to Luna, which touches no home, still goes through.
+    """
+    import threading
+
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {})
+    persons = _new("trixd.plugins.luna.persons")
+    if persons is not None:
+        taken = threading.BoundedSemaphore(1)
+        taken.acquire()
+        monkeypatch.setattr(persons, "HOME_CALLS", taken)
+        monkeypatch.setattr(persons, "HOME_WAIT", 0.05)
+
+    stuck = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert stuck.status_code == 503, stuck.text
+    assert "harry" in stuck.json()["message"], stuck.text
+    assert client.get("/api/v1/luna/whoami", headers={"x-access-tokens": token}
+                      ).status_code == 200
+    assert luna.seen == [token]
+
+
+@posix_only
+def test_signing_in_at_luna_with_a_trixd_token_keeps_the_token_and_never_returns_it(
+        client, headers, tmp_path, monkeypatch):
+    """
+    POST /luna/token from harry, holding only his trixd token: 201 with no token in the
+    answer, the token kept in ~/.luna and his password nowhere; another name is a 403.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, "sally": "sally-password"})
+
+    answer = client.post("/api/v1/luna/token", headers=harry.headers,
+                         json={"username": PERSON, "password": PERSON_PASSWORD})
+    assert "token" not in answer.json(), "the Luna token went back to the client"
+    assert answer.status_code == 201, answer.text
+    assert (harry.home / ".luna" / "token").read_bytes() == luna.issued[-1].encode()
+    assert not (harry.home / ".luna" / "luna.ini").exists()
+    _no_password_in(harry.home, PERSON_PASSWORD)
+
+    other = client.post("/api/v1/luna/token", headers=harry.headers,
+                        json={"username": "sally", "password": "sally-password"})
+    assert other.status_code == 403, other.text
+
+
+@posix_only
+def test_links_in_the_home_are_never_read_through(client, headers, tmp_path, monkeypatch):
+    """
+    ~/.luna/luna.ini linked to Luna's own ini, ~/.luna/token hard-linked to another file,
+    and ~/.luna linked to somebody else's folder: none is used as harry's, Luna receives
+    no sign-in with what they hold, and nothing is written through them.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {"luna": "admin-password"})
+    _delegate(monkeypatch, "", "")
+    controller = tmp_path / "controller-luna.ini"
+    controller.write_text(_login("luna", "admin-password"), encoding="utf-8")
+    other = tmp_path / "other-token"
+    other.write_text(_luna_minted("root"), encoding="utf-8")
+    _luna_folder(harry.home)
+    (harry.home / ".luna" / "luna.ini").symlink_to(controller)
+    os.link(other, harry.home / ".luna" / "token")
+
+    linked = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.signed == [], "a login behind a link was signed in with"
+    assert luna.seen == [], "a token behind a hard link was handed to Luna as harry's"
+    assert linked.status_code == 401, linked.text
+
+    elsewhere = tmp_path / "root-luna"
+    elsewhere.mkdir()
+    planted = _luna_minted("root")
+    (elsewhere / "token").write_text(planted, encoding="utf-8")
+    for path in (harry.home / ".luna").iterdir():
+        path.unlink()
+    (harry.home / ".luna").rmdir()
+    (harry.home / ".luna").symlink_to(elsewhere, target_is_directory=True)
+    folder = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert planted not in luna.seen, "a token behind a linked folder was handed to Luna"
+    assert folder.status_code == 401, folder.text
+    assert (elsewhere / "token").read_text(encoding="utf-8") == planted
+
+
+@posix_only
+def test_a_person_never_falls_through_to_the_daemons_own_token(
+        client, headers, tmp_path, monkeypatch):
+    """
+    With nothing in his home and no delegate, harry gets C - never the daemon's own token,
+    which is Luna's administrator.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _delegate(monkeypatch, "", "")
+
+    def daemons_own(*args, **kwargs):
+        """
+        The daemon's own token: a person's call must never ask for it.
+        """
+        raise AssertionError("a person's call asked for the daemon's own Luna token")
+
+    monkeypatch.setattr(credentials, "get_token", daemons_own)
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.seen == [], "Luna was called for harry with nothing of his"
+    assert answer.status_code == 401, answer.text
+
+
+@posix_only
+def test_what_is_not_a_person_s_trixd_token_goes_to_luna_as_sent(
+        client, headers, token, tmp_path, monkeypatch):
+    """
+    The ini account's token, one Luna minted, a node's, the daemon's own service token
+    and none at all reach Luna exactly as they were sent.
+    """
+    from trixd.core.security import tokens
+
+    _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {})
+    sent = [token, _luna_minted("anna"), tokens.mint("node001", kind="node"),
+            credentials._self_signed()]
+    for each in sent:
+        client.get("/api/v1/luna/whoami", headers={"x-access-tokens": each})
+    client.get("/api/v1/luna/whoami")
+    assert luna.seen == sent + [None]
+
+
+@posix_only
+def test_no_password_reaches_the_log(client, headers, tmp_path, monkeypatch):
+    """
+    A luna.ini the parser chokes on at its password line, a Luna refusal and a delegated
+    sign-in: the passwords are nowhere in what the daemon says.
+    """
+    from tests.unit.test_daemon import _listening, _said
+    from trixd.common import logging as trixlog
+
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    with _listening(trixlog.get()) as records:
+        _luna_folder(harry.home, luna_ini=f"[API]\nusername = {PERSON}\n{PERSON_PASSWORD}\n")
+        client.get("/api/v1/luna/whoami", headers=harry.headers)
+        client.post("/api/v1/luna/token", headers=harry.headers,
+                    json={"username": PERSON, "password": "not-" + PERSON_PASSWORD})
+    assert any("cannot be read" in record.getMessage() for record in records), (
+        "the broken luna.ini was not said, so this proves nothing: " + _said(records))
+    for password in (PERSON_PASSWORD, DELEGATE_PASSWORD):
+        assert password not in _said(records)
+
+
+def test_delegate_sections_are_read_alike_and_are_not_unknown(tmp_path):
+    """
+    Every [DELEGATE:<component>] is read the same way, as that component's account, with
+    no component known by name; none is named at start as a section trixd does not read,
+    while a key the section does not take still is.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[API]\nUSERNAME = tester\nPASSWORD = secret\n"
+                   f"[DELEGATE:LUNA]\nUSERNAME = {DELEGATE}\nPASSWORD = {DELEGATE_PASSWORD}\n"
+                   "[DELEGATE:OTHER]\nUSERNAME = them\nPASSWORD = theirs\nTOKEN = x\n",
+                   encoding="utf-8")
+    found = []
+    loaded = configuration.load(str(ini), found)
+    assert not [said for said in found if "has a [DELEGATE" in said], found
+    delegates = getattr(loaded, "delegates", None)
+    assert delegates is not None, "trixd.ini's delegate accounts are not read"
+    assert delegates == {"LUNA": (DELEGATE, DELEGATE_PASSWORD), "OTHER": ("them", "theirs")}
+    assert [said for said in found if "[DELEGATE:OTHER] TOKEN" in said], found
