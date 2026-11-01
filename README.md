@@ -419,12 +419,16 @@ for any plugin that declared a hook on them.
 
 ### Where Luna's settings come from
 
-**Nothing about where Luna is or how it signs is in `trixd.ini`.** Its one Luna entry is
+**Nothing about how Luna signs is in `trixd.ini`.** Its one Luna entry is
 trixd's own account there, `[DELEGATE:LUNA]`, which signs a person in at Luna on their
 behalf; core reads every `[DELEGATE:<component>]` section alike and knows none by name. Where Luna answers, its protocol, whether
 its certificate is checked, and the token secret both daemons share are read from
 Luna's own `luna.ini` (`/trinity/local/luna/daemon/config/luna.ini`), and read again
-when it changes. An engineer changes Luna in one place and trixd follows. A `trixd.ini`
+when it changes. The one exception is `[DELEGATE:LUNA] ENDPOINT`: when it is set, a
+person's calls and sign-ins go to that host:port instead, with `luna.ini`'s protocol and
+certificate check. On an HA pair it names the floating name, so a person's Luna token
+always comes from the active Luna. trixd's own calls still go where `luna.ini` says.
+An engineer changes Luna in one place and trixd follows. A `trixd.ini`
 that still has a `[LUNA]` section or a `[TOKENS] SECRET_KEY` starts as before, with a
 warning that names them as ignored.
 

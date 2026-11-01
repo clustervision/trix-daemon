@@ -67,7 +67,8 @@ TRUST = /trinity/local/etc/ssl/trust.d
 ; account at Luna. Where Luna answers, its protocol and its certificate check are read
 ; from Luna's own luna.ini,
 ; /trinity/local/luna/daemon/config/luna.ini, by the luna plugin, so they are changed in
-; one place. A plugin's own settings are its own: they are set through its config
+; one place. The one exception is [DELEGATE:LUNA] ENDPOINT, where a person's calls go.
+; A plugin's own settings are its own: they are set through its config
 ; endpoint and kept with the plugin, not here.
 
 [DATABASE]
@@ -93,6 +94,7 @@ USER_ATTRIBUTE = uid
 [DELEGATE:LUNA]
 USERNAME = trixd-delegate
 PASSWORD =
+ENDPOINT =
 ; One [DELEGATE:<component>] section per component trixd signs a person in at on their
 ; behalf, holding trixd's own account there. At Luna it is a Luna user carrying Luna's
 ; delegate flag, never the account luna.ini names, which Luna refuses as a delegate. A
@@ -100,6 +102,10 @@ PASSWORD =
 ; of their own is signed in at Luna by this account, as themselves. With no PASSWORD such a
 ; person signs in at Luna through POST /api/v1/luna/token. The installer generates the
 ; password; keep this file readable by root alone.
+; ENDPOINT, as host:port, is where a person's calls and sign-ins go when not where luna.ini
+; says Luna answers: on an HA pair, the floating name, so a person's token always comes
+; from the active Luna. The protocol and the certificate check are still luna.ini's, and
+; trixd's own calls still go where luna.ini says. Empty, a person's calls go there too.
 
 [REPLICATION]
 PEERS =

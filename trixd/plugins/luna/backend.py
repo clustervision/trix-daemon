@@ -71,25 +71,37 @@ class Backend:
     async def forward(self, rest: str, request: Request) -> Response:
         """
         Method, query, headers and body as sent, less the connection headers, to the Luna
-        luna.ini names. The hooks run once the answer has left.
+        luna.ini names, or for a person to where their calls go. The hooks run once the
+        answer has left.
         """
-        url = f"{luna_config.current().base}/{rest}"
-        if request.url.query:
-            # As sent: a parsed copy would keep only the last of a repeated key.
-            url = f"{url}?{request.url.query}"
         headers = {key: value for key, value in request.headers.items()
                    if key.lower() not in HOP_BY_HOP}
         body = await request.body()
         person = await run_in_threadpool(persons.caller, headers)
+        base = luna_config.current().base if person is None else persons.base()
+        url = f"{base}/{rest}"
+        if request.url.query:
+            # As sent: a parsed copy would keep only the last of a repeated key.
+            url = f"{url}?{request.url.query}"
+        kept = False
         if person is not None:
             # A person signed in here reaches Luna with their own Luna token, never with
             # the trixd one, and signing in at Luna keeps that token here.
             if request.method == "POST" and rest == persons.SIGN_IN:
                 return JSONResponse(await run_in_threadpool(persons.sign_in, person, body),
                                     status_code=201)
-            headers = persons.as_person(headers,
-                                        await run_in_threadpool(persons.token_for, person))
+            token, kept = await run_in_threadpool(persons.token_for, person)
+            headers = persons.as_person(headers, token)
         answer = await run_in_threadpool(_forward, request.method, url, headers, body)
+        if kept and answer.status_code == 401:
+            # A kept token another Luna signed, as on the other controller of a pair whose
+            # homes are shared: signed in again, and the same request sent once more.
+            await run_in_threadpool(persons.drop, person, token)
+            token, _ = await run_in_threadpool(persons.token_for, person)
+            answer = await run_in_threadpool(_forward, request.method, url,
+                                             persons.as_person(headers, token), body)
+            if answer.status_code == 401:
+                raise persons.ask(person, "Luna refused a fresh Luna token for")
         passed = {key: value for key, value in answer.headers.items()
                   if key.lower() not in HOP_BY_HOP}
         return Response(content=answer.content, status_code=answer.status_code,

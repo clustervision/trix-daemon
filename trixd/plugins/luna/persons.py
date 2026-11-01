@@ -46,6 +46,7 @@ from trixd.common.errors import (BackendFailure, BadRequest, Forbidden, ServiceU
 from trixd.common.settings import current as settings
 from trixd.core.security import access, principals, tokens
 from trixd.db import engine
+from trixd.plugins.luna import config as luna_config
 from trixd.plugins.luna import credentials
 from trixd.utils import files
 
@@ -118,6 +119,17 @@ def caller(headers: dict):
     return Person(who.name, _home(who.name, claims.source))
 
 
+def base() -> str:
+    """
+    Where a person's calls and sign-ins go: [DELEGATE:LUNA] ENDPOINT when trixd.ini names
+    one, as on a pair where only the active Luna should be asked, with luna.ini's protocol;
+    otherwise where luna.ini says Luna answers.
+    """
+    endpoint = settings().delegates.get(DELEGATE, ("", "", ""))[2]
+    config = luna_config.current()
+    return f"{config.protocol}://{endpoint}" if endpoint else config.base
+
+
 def as_person(headers: dict, token: str) -> dict:
     """
     The headers with the person's Luna token in place of whatever they sent.
@@ -128,22 +140,38 @@ def as_person(headers: dict, token: str) -> dict:
     return passed
 
 
-def token_for(person: Person) -> str:
+def token_for(person: Person) -> tuple:
     """
     The person's Luna token: ~/.luna/token, else the one held for them, else signed in for,
-    one sign-in at a time per person.
+    one sign-in at a time per person; and whether it was kept rather than signed in for.
     """
     found = _from_home(person) or _from_memory(person)
     if found:
-        return found
+        return found, True
     with _lock:
         signing = _signing.setdefault(person.name, threading.Lock())
     with signing:
         # Another call for this person may have signed in while this one waited.
         found = _from_home(person) or _from_memory(person)
         if found:
-            return found
-        return _sign_in_for(person)
+            return found, True
+        return _sign_in_for(person), False
+
+
+def drop(person: Person, token: str) -> None:
+    """
+    Forget a kept token Luna refused: ~/.luna/token while it still holds that token, so
+    one written meanwhile stays, and the one held here.
+    """
+    if person.home is not None:
+        try:
+            _at_home(person, files.remove_private, person.home.pw_dir, FOLDER, TOKEN_FILE,
+                     token, person.home.pw_uid)
+        except BackendFailure as error:
+            _warn_once(person.name, error.message)
+    with _lock:
+        if _held.get(person.name, ("", ()))[0] == token:
+            del _held[person.name]
 
 
 def sign_in(person: Person, body: bytes) -> dict:
@@ -161,7 +189,8 @@ def sign_in(person: Person, body: bytes) -> dict:
     if username != person.name:
         raise Forbidden(f"{person.name} may sign in at Luna only as {person.name}")
     _keep(person, credentials._sign_in(username, password,
-                                       refused=_ask(person, "Luna refused the credentials for")))
+                                       refused=ask(person, "Luna refused the credentials for"),
+                                       base=base()))
     return {"message": f"signed in at Luna as {person.name}"}
 
 
@@ -193,7 +222,7 @@ def _bearer(value: str) -> str:
     return token.strip() if scheme.lower() == "bearer" else ""
 
 
-def _ask(person: Person, why: str) -> Unauthenticated:
+def ask(person: Person, why: str) -> Unauthenticated:
     """
     The 401 that tells the client to ask the person for their Luna credentials.
     """
@@ -247,13 +276,21 @@ def _from_home(person: Person) -> str:
     return found if credentials._usable(found) else ""
 
 
+def _obtained_under() -> tuple:
+    """
+    What a token held for a person was obtained under: luna.ini's, and the Luna it was
+    signed in at, so one from another Luna is not presented here.
+    """
+    return credentials._fingerprint() + (base(),)
+
+
 def _from_memory(person: Person) -> str:
     """
     The token held for a person whose home could not keep it.
     """
     with _lock:
         token, obtained = _held.get(person.name, ("", ()))
-    if obtained == credentials._fingerprint() and credentials._usable(token):
+    if obtained == _obtained_under() and credentials._usable(token):
         return token
     return ""
 
@@ -269,20 +306,20 @@ def _sign_in_for(person: Person) -> str:
         username, password = _account(person, text)
         if username == person.name and password:
             return _signed_in(person, (person.name, LOGIN_FILE, stamp), float("inf"),
-                              _ask(person, "Luna refused ~/.luna/luna.ini for"),
+                              ask(person, "Luna refused ~/.luna/luna.ini for"),
                               username, password)
         _warn_once(person.name, f"{os.path.join(person.home.pw_dir, FOLDER, LOGIN_FILE)} "
                                 f"does not name {person.name}; it is not used")
-    username, password = settings().delegates.get(DELEGATE, ("", ""))
+    username, password, _ = settings().delegates.get(DELEGATE, ("", "", ""))
     if not username or not password:
         if not _said_no_delegate:
             _said_no_delegate.append(True)
             LOGGER.warning("trixd.ini has no [DELEGATE:%s] USERNAME and PASSWORD, so a person "
                            "with no Luna token of their own signs in at Luna themselves",
                            DELEGATE)
-        raise _ask(person, "no Luna token is kept for")
+        raise ask(person, "no Luna token is kept for")
     return _signed_in(person, (person.name, DELEGATED), time.monotonic() + DELEGATE_COOL_OFF,
-                      _ask(person, "Luna would not sign in on behalf of"),
+                      ask(person, "Luna would not sign in on behalf of"),
                       username, password, on_behalf_of=person.name)
 
 
@@ -298,7 +335,7 @@ def _signed_in(person: Person, seen: tuple, until: float, refusal: Unauthenticat
             raise refusal
     try:
         token = credentials._sign_in(username, password, refused=refusal,
-                                     on_behalf_of=on_behalf_of)
+                                     on_behalf_of=on_behalf_of, base=base())
     except Unauthenticated:
         with _lock:
             for stale in [key for key, ends in _refused.items() if ends <= now]:
@@ -343,7 +380,7 @@ def _keep(person: Person, token: str) -> None:
             for name in [name for name, (held, _) in _held.items()
                          if not credentials._usable(held)]:
                 del _held[name]
-            _held[person.name] = (token, credentials._fingerprint())
+            _held[person.name] = (token, _obtained_under())
         else:
             _held.pop(person.name, None)
             _warned.discard(person.name)

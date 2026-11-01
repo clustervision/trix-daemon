@@ -180,7 +180,8 @@ class Settings(BaseModel):
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
     # [DELEGATE:<component>]: the account this daemon holds at another component, which
-    # signs a person in there on their behalf. Component name to (username, password).
+    # signs a person in there on their behalf, and the host:port a person's calls go to
+    # when not the component's own. Component name to (username, password, endpoint).
     delegates: dict = Field(default_factory=dict)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
@@ -410,7 +411,8 @@ def load(path: str = "", found: list = None) -> Settings:
         ldap_bind_password=get("AUTH_LDAP", "BIND_PASSWORD", ""),
         ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"))
     data.delegates = {section[len(DELEGATE_PREFIX):]: (get(section, "USERNAME", ""),
-                                                       get(section, "PASSWORD", ""))
+                                                       get(section, "PASSWORD", ""),
+                                                       get(section, "ENDPOINT", ""))
                       for section in parser.sections() if section.startswith(DELEGATE_PREFIX)}
     data.services = ServicesSettings(
         command=get("SERVICES", "COMMAND", data.services.command))

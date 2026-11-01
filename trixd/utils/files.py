@@ -228,6 +228,34 @@ def read_private(home: str, folder: str, name: str, uid: int) -> tuple:
     return b"".join(chunks).decode("utf-8", errors="replace"), found.st_mtime_ns
 
 
+def remove_private(home: str, folder: str, name: str, content: str, uid: int) -> None:
+    """
+    Remove a person's own file, home/folder/name, as root on their behalf, only while it
+    still holds `content`: one written there meanwhile is left in place.
+    """
+    path = os.path.join(home, folder, name)
+    try:
+        with _folder(home, folder, uid) as directory:
+            handle = os.open(name, os.O_RDONLY | NO_FOLLOW | os.O_NONBLOCK, dir_fd=directory)
+            try:
+                found = os.fstat(handle)
+                _owned(found, uid, path, stat.S_ISREG)
+                held = os.read(handle, found.st_size + 1).decode("utf-8", errors="replace")
+            finally:
+                os.close(handle)
+            # A writer replaces the file by a rename, so the inode just read still being at
+            # the name means nothing was written meanwhile.
+            if (held.strip() != content or os.stat(name, dir_fd=directory,
+                                                   follow_symlinks=False).st_ino != found.st_ino):
+                return
+            os.unlink(name, dir_fd=directory)
+    except FileNotFoundError:
+        return
+    except OSError as error:
+        raise BackendFailure(f"cannot remove {path}: {type(error).__name__}") from None
+    LOGGER.debug("removed %s", path)
+
+
 def write_private(home: str, folder: str, name: str, content: str, uid: int,
                   gid: int) -> str:
     """

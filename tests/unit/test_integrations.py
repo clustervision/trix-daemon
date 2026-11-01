@@ -1890,6 +1890,9 @@ class _Luna:
         self.signed = []
         self.seen = []
         self.issued = []
+        self.refused = set()
+        self.posted_to = []
+        self.sent_to = []
         monkeypatch.setattr(credentials.requests, "post", self.post)
         monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", self.request)
 
@@ -1897,6 +1900,7 @@ class _Luna:
         """
         POST /token: a person with the right password, or the delegate for a known person.
         """
+        self.posted_to.append(url)
         self.signed.append(dict(json))
         name, behalf = json.get("username"), json.get("on_behalf_of")
         if self.people.get(name) != json.get("password"):
@@ -1910,23 +1914,37 @@ class _Luna:
         """
         Any other call: answered, with the token it carried remembered.
         """
+        self.sent_to.append(url)
         if method == "POST" and url.endswith("/token"):
             self.issued.append(_luna_minted(PERSON))
             body = {"token": self.issued[-1]}
             return SimpleNamespace(content=json.dumps(body).encode(), status_code=201,
                                    headers={"content-type": "application/json"})
         self.seen.append((headers or {}).get("x-access-tokens"))
+        if self.seen[-1] in self.refused:
+            return SimpleNamespace(content=b'{"message": "Token is invalid"}', status_code=401,
+                                   headers={"content-type": "application/json"})
         return SimpleNamespace(content=b'{"answered": true}', status_code=200,
                                headers={"content-type": "application/json"})
 
 
-def _delegate(monkeypatch, username: str = DELEGATE, password: str = DELEGATE_PASSWORD):
+def _delegate(monkeypatch, username: str = DELEGATE, password: str = DELEGATE_PASSWORD,
+              endpoint: str = ""):
     """
-    [DELEGATE:LUNA] as trixd.ini would set it, where this build reads such sections.
+    [DELEGATE:LUNA] as trixd.ini would set it, read by this build's own loader, where this
+    build reads such sections.
     """
+    import tempfile
+
     current = configuration.current()
-    if hasattr(current, "delegates"):
-        monkeypatch.setitem(current.delegates, "LUNA", (username, password))
+    if not hasattr(current, "delegates"):
+        return
+    with tempfile.TemporaryDirectory() as folder:
+        ini = os.path.join(folder, "trixd.ini")
+        with open(ini, "w", encoding="utf-8") as handle:
+            handle.write(f"[DELEGATE:LUNA]\nUSERNAME = {username}\nPASSWORD = {password}\n"
+                         f"ENDPOINT = {endpoint}\n")
+        monkeypatch.setitem(current.delegates, "LUNA", configuration.load(ini).delegates["LUNA"])
 
 
 def _person(client, headers, tmp_path, monkeypatch, source: str = "pam"):
@@ -2330,6 +2348,219 @@ def test_what_is_not_a_person_s_trixd_token_goes_to_luna_as_sent(
 
 
 @posix_only
+def test_a_kept_token_luna_refuses_is_signed_in_again_and_the_call_sent_once_more(
+        client, headers, tmp_path, monkeypatch):
+    """
+    ~/.luna/token signed by the other controller's Luna: refused here, so the delegate signs
+    harry in once, the same request goes again with the new token, and that is what is kept.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    stale = _luna_minted(PERSON, seconds=200)
+    luna.refused.add(stale)
+    _luna_folder(harry.home, token=stale)
+    answering, bodies = luna.request, []
+
+    def answering_and_keeping_the_body(method, url, headers=None, **kwargs):
+        """
+        Luna's answer, with the body each send carried remembered.
+        """
+        bodies.append(kwargs.get("data"))
+        return answering(method, url, headers=headers, **kwargs)
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request",
+                        answering_and_keeping_the_body)
+    sent = b'{"config": {"node": {"node001": {}}}}'
+    answer = client.post("/api/v1/luna/node/node001", headers=harry.headers, content=sent)
+    assert [asked["username"] for asked in luna.signed] == [DELEGATE], luna.signed
+    assert luna.seen == [stale, luna.issued[-1]], "the call was not sent again, once"
+    assert answer.status_code == 200, answer.text
+    assert (harry.home / ".luna" / "token").read_text(encoding="utf-8") == luna.issued[-1]
+    assert bodies == [sent, sent], bodies
+
+
+@posix_only
+def test_a_call_is_sent_again_once_only_and_then_the_client_is_asked(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Luna refusing the fresh token as well: one sign-in, two sends, and C.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    stale = _luna_minted(PERSON, seconds=200)
+    luna.refused.add(stale)
+    luna.refused.add(_luna_minted(PERSON))
+    _luna_folder(harry.home, token=stale)
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert len(luna.signed) == 1, luna.signed
+    assert len(luna.seen) == 2, luna.seen
+    assert answer.status_code == 401, answer.text
+    assert "sign in at Luna with POST /api/v1/luna/token" in answer.text, answer.text
+
+
+@posix_only
+def test_a_token_written_meanwhile_is_not_removed_and_is_what_is_sent_again(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Another call keeps a new token while Luna is refusing the stale one: that file stays,
+    and the call is sent again with it rather than signing in once more.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    stale, meanwhile = _luna_minted(PERSON, seconds=200), _luna_minted(PERSON, seconds=250)
+    luna.refused.add(stale)
+    _luna_folder(harry.home, token=stale)
+    answering = luna.request
+
+    def refusing_while_another_call_keeps(method, url, headers=None, **kwargs):
+        """
+        Luna's answer, with the other call's token landing in the home as it is given.
+        """
+        if (headers or {}).get("x-access-tokens") == stale:
+            kept = harry.home / ".luna" / ".token.other"
+            kept.write_text(meanwhile, encoding="utf-8")
+            os.replace(kept, harry.home / ".luna" / "token")
+        return answering(method, url, headers=headers, **kwargs)
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request",
+                        refusing_while_another_call_keeps)
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert luna.seen == [stale, meanwhile], "the call was not sent again with the kept token"
+    assert (harry.home / ".luna" / "token").read_text(encoding="utf-8") == meanwhile
+    assert luna.signed == [], luna.signed
+    assert answer.status_code == 200, answer.text
+
+
+@posix_only
+def test_a_refusal_of_what_is_not_a_person_s_call_goes_back_as_luna_said_it(
+        client, headers, tmp_path, monkeypatch):
+    """
+    A token Luna minted, sent as it is and refused: Luna's 401 unchanged, sent once, and
+    nobody signed in for.
+    """
+    _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+    sent = _luna_minted("anna")
+    luna.refused.add(sent)
+
+    answer = client.get("/api/v1/luna/whoami", headers={"x-access-tokens": sent})
+    assert luna.seen == [sent] and luna.signed == [], (luna.seen, luna.signed)
+    assert answer.status_code == 401
+    assert answer.json() == {"message": "Token is invalid"}
+
+
+FLOATING: str = "luna-float.test:7050"
+LOCAL_BASE: str = "https://luna.test:7050"
+FLOATING_BASE: str = f"https://{FLOATING}"
+
+
+@posix_only
+def test_a_person_s_call_and_delegated_sign_in_go_to_the_delegate_endpoint(
+        client, headers, tmp_path, monkeypatch):
+    """
+    [DELEGATE:LUNA] ENDPOINT set: harry is signed in there and his call goes there, with
+    luna.ini's protocol, so the token he holds comes from the Luna that verifies it.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch, endpoint=FLOATING)
+
+    answer = client.get("/api/v1/luna/whoami?a=1", headers=harry.headers)
+    assert luna.posted_to == [f"{FLOATING_BASE}/token"], luna.posted_to
+    assert luna.sent_to == [f"{FLOATING_BASE}/whoami?a=1"], luna.sent_to
+    assert answer.status_code == 200, answer.text
+
+
+@posix_only
+def test_a_person_s_own_sign_ins_go_to_the_delegate_endpoint(client, headers, tmp_path,
+                                                             monkeypatch):
+    """
+    Both ways a person signs in as themselves, their own ~/.luna/luna.ini and POST
+    /api/v1/luna/token, are asked of the Luna at [DELEGATE:LUNA] ENDPOINT.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch, endpoint=FLOATING)
+    _luna_folder(harry.home, luna_ini=_login(PERSON, PERSON_PASSWORD))
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert answer.status_code == 200, answer.text
+    signed = client.post("/api/v1/luna/token", headers=harry.headers,
+                         json={"username": PERSON, "password": PERSON_PASSWORD})
+    assert signed.status_code == 201, signed.text
+    assert [asked["username"] for asked in luna.signed] == [PERSON, PERSON], luna.signed
+    assert luna.posted_to == [f"{FLOATING_BASE}/token"] * 2, luna.posted_to
+
+
+@posix_only
+def test_without_a_delegate_endpoint_a_person_s_calls_go_where_luna_ini_says(
+        client, headers, tmp_path, monkeypatch):
+    """
+    No ENDPOINT, or an empty one: the delegated sign-in and the call go to luna.ini's
+    address, as they did before trixd.ini could name one.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch)
+
+    answer = client.get("/api/v1/luna/whoami", headers=harry.headers)
+    assert answer.status_code == 200, answer.text
+    assert luna.posted_to == [f"{LOCAL_BASE}/token"], luna.posted_to
+    assert luna.sent_to == [f"{LOCAL_BASE}/whoami"], luna.sent_to
+
+
+def test_trixd_s_own_calls_stay_where_luna_ini_says_with_a_delegate_endpoint(
+        rig, client, tmp_path, monkeypatch):
+    """
+    ENDPOINT is for a person's calls only: trixd's client, a token sent as it is, and the
+    ini account's sign-in all still go to luna.ini's address.
+    """
+    _delegate(monkeypatch, endpoint=FLOATING)
+    own, session = _luna(Answer(body={"config": {"node": {}}}))
+    own.node("node001")
+    assert session.calls[-1][1] == f"{LOCAL_BASE}/config/node/node001"
+
+    luna = _Luna(monkeypatch, {"luna": "p"})
+    answer = client.get("/api/v1/luna/whoami", headers={"x-access-tokens": _luna_minted("anna")})
+    assert answer.status_code == 200, answer.text
+    assert luna.sent_to == [f"{LOCAL_BASE}/whoami"], luna.sent_to
+
+    # A luna.ini with no secret of its own, so the ini account signs in.
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    monkeypatch.setenv("TRIXD_LUNA_INI", _luna_ini(plain, username="luna", password="p"))
+    monkeypatch.setenv(credentials.TOKEN_FILE_ENV, str(tmp_path / "cache" / "token"))
+    credentials.get_token(renew=True)
+    assert luna.posted_to == [f"{LOCAL_BASE}/token"], luna.posted_to
+
+
+def test_a_token_held_for_a_person_is_not_presented_at_another_endpoint(
+        client, headers, tmp_path, monkeypatch):
+    """
+    A person with no home here has their token held in memory. Once ENDPOINT names another
+    Luna, that token is not offered there: the delegate signs them in again.
+    """
+    nobody = _person(client, headers, tmp_path, monkeypatch, source="local")
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch, endpoint=FLOATING)
+    client.get("/api/v1/luna/whoami", headers=nobody.headers)
+    client.get("/api/v1/luna/whoami", headers=nobody.headers)
+    assert len(luna.signed) == 1, "the held token was not used at the same endpoint"
+
+    _delegate(monkeypatch, endpoint="luna-other.test:7050")
+    answer = client.get("/api/v1/luna/whoami", headers=nobody.headers)
+    assert len(luna.signed) == 2, "a token held for one Luna was presented to another"
+    assert luna.seen[-1] == luna.issued[-1], luna.seen
+    assert luna.posted_to[-1] == "https://luna-other.test:7050/token", luna.posted_to
+    assert answer.status_code == 200, answer.text
+
+
+@posix_only
 def test_no_password_reaches_the_log(client, headers, tmp_path, monkeypatch):
     """
     A luna.ini the parser chokes on at its password line, a Luna refusal and a delegated
@@ -2361,6 +2592,7 @@ def test_delegate_sections_are_read_alike_and_are_not_unknown(tmp_path):
     ini = tmp_path / "trixd.ini"
     ini.write_text("[API]\nUSERNAME = tester\nPASSWORD = secret\n"
                    f"[DELEGATE:LUNA]\nUSERNAME = {DELEGATE}\nPASSWORD = {DELEGATE_PASSWORD}\n"
+                   "ENDPOINT = luna-float.test:7050\n"
                    "[DELEGATE:OTHER]\nUSERNAME = them\nPASSWORD = theirs\nTOKEN = x\n",
                    encoding="utf-8")
     found = []
@@ -2368,5 +2600,6 @@ def test_delegate_sections_are_read_alike_and_are_not_unknown(tmp_path):
     assert not [said for said in found if "has a [DELEGATE" in said], found
     delegates = getattr(loaded, "delegates", None)
     assert delegates is not None, "trixd.ini's delegate accounts are not read"
-    assert delegates == {"LUNA": (DELEGATE, DELEGATE_PASSWORD), "OTHER": ("them", "theirs")}
+    assert delegates == {"LUNA": (DELEGATE, DELEGATE_PASSWORD, "luna-float.test:7050"),
+                         "OTHER": ("them", "theirs", "")}
     assert [said for said in found if "[DELEGATE:OTHER] TOKEN" in said], found
