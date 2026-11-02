@@ -228,7 +228,7 @@ def may(person: Person, table: str, names: list, bit: str) -> dict:
     return refused
 
 
-def token(person: Person) -> str:
+def get_token(person: Person) -> str:
     """
     The person's own Luna token, for a plugin that hands it on itself rather than calling
     Luna through call(): kept, signed in for with their own luna.ini, or delegated. A token

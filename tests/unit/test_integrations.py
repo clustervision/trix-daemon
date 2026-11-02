@@ -2784,28 +2784,28 @@ def test_may_passes_luna_s_refusal_of_access_through(
 
 
 @posix_only
-def test_token_is_the_person_s_kept_luna_token(client, headers, tmp_path, monkeypatch):
+def test_get_token_is_the_person_s_kept_luna_token(client, headers, tmp_path, monkeypatch):
     """
-    persons.token: ~/.luna/token as it is, nothing signed in for and nothing sent.
+    persons.get_token: ~/.luna/token as it is, nothing signed in for and nothing sent.
     """
     harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
     kept = _luna_minted(PERSON)
     _luna_folder(harry.home, token=kept)
-    token = getattr(persons, "token", lambda *args, **kwargs: None)
+    token = getattr(persons, "get_token", lambda *args, **kwargs: None)
 
     assert token(person) == kept
     assert luna.signed == [] and luna.seen == [], (luna.signed, luna.seen)
 
 
 @posix_only
-def test_token_is_signed_in_for_by_the_delegate_and_kept(
+def test_get_token_is_signed_in_for_by_the_delegate_and_kept(
         client, headers, tmp_path, monkeypatch):
     """
-    persons.token with nothing kept: the delegate signs harry in, that token is answered
-    and kept where the command line keeps it.
+    persons.get_token with nothing kept: the delegate signs harry in, that token is
+    answered and kept where the command line keeps it.
     """
     harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
-    token = getattr(persons, "token", lambda *args, **kwargs: None)
+    token = getattr(persons, "get_token", lambda *args, **kwargs: None)
 
     answered = token(person)
     assert [asked.get("on_behalf_of") for asked in luna.signed] == [PERSON], luna.signed

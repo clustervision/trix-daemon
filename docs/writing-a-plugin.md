@@ -236,18 +236,33 @@ directly reaches a plugin through its renders, when Luna's table hashes show it:
 on an HA master within the hour the poller compares them on, and on a single
 controller only when trixd next starts.
 
-## Calling Luna as a person
+## Calling Luna
 
-A handler acting for a person asks Luna as that person, never with the daemon's own
-token, so Luna's own rules decide what they may do. `trixd.plugins.luna.persons` offers
-three methods, each usable on its own, none needing another called first:
+A plugin reaches Luna either as trixd itself or as the person behind the request, and
+the two never mix. Whose work it is decides which:
+
+| Whose work | From `trixd.plugins.luna` | Luna sees |
+|---|---|---|
+| trixd's own: a render, a hook handler, a task nobody asked for as themselves | `client()`, `get_token()`, `get_credentials()` | its administrator, the account `luna.ini` names: rootus there |
+| a person's: a route handler acting for whoever called it | `persons.caller`, `persons.call`, `persons.may`, `persons.get_token` | that person, with their own Luna token, so Luna's rights for them decide |
+
+A route acting for a person never uses the client or `get_token()`: that would hand the
+person rootus at Luna, whatever Luna allows them. `get_token()` and
+`persons.get_token(person)` share a name, not an owner: the first is trixd's token, the
+second the person's. `get_token_for(username, password)` signs in as an account the
+plugin holds the password for, and is never a way to act as the person behind a request.
+
+### Calling Luna as a person
+
+`trixd.plugins.luna.persons` offers three methods, each usable on its own, none needing
+another called first:
 
 - `persons.call(person, method, path, body=b"", headers=None)`: one request to Luna as
   the person, answered with Luna's response.
 - `persons.may(person, table, names, bit)`: which of the named objects the person may
   not read, change or operate (`r`, `w`, `x`), as `{name: refusal}` in Luna's words.
-- `persons.token(person)`: the person's own Luna token, for a plugin that does something
-  with Luna other than these calls, such as handing it to a client of its own.
+- `persons.get_token(person)`: the person's own Luna token, for a plugin that does
+  something with Luna other than these calls, such as handing it to a client of its own.
 
 ```python
 from trixd.common.errors import Forbidden
@@ -270,7 +285,7 @@ The token is the one in `~/.luna/token`, else one signed in for with the person'
 `~/.luna/luna.ini`, else one the `[DELEGATE:LUNA]` account obtains on their behalf, and
 requests go where a person's calls go. `call` alone drops a kept token Luna refuses and
 sends the request once more; a second refusal is a 401 asking the person to sign in at
-Luna, and Luna not answering is a 503. `token` hands over what it found and drops
+Luna, and Luna not answering is a 503. `get_token` hands over what it found and drops
 nothing. `may` asks Luna once what the person holds and is empty when every name is
 held; when Luna will not say, it raises Luna's own status and message. The cluster is
 one row: ask for it as `persons.may(person, "cluster", ["cluster"], "w")`. All three
