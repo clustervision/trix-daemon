@@ -56,7 +56,7 @@ LOGGER = trixlog.get("luna.persons")
 
 # The sources that vouch for an operating-system account, so the name is that account's
 # and the home is the person's own. A local principal is only trixd's name.
-HOME_SOURCES: frozenset = frozenset({"pam", "ldap"})
+HOME_SOURCES: frozenset = frozenset({"pam", "ldap", "peercred"})
 # Where the Luna command line keeps a person's login and token, under their home.
 FOLDER: str = ".luna"
 TOKEN_FILE: str = "token"

@@ -1281,7 +1281,7 @@
     },
     "/api/v1/auth/whoami": {
       "get": {
-        "description": "Who the token names and how trixd sees them: `kind` is `user`, `node` or `service`; `source` is where the name was checked, `ini`, `local`, `pam`, `ldap`, or `luna` for a token Luna issued; `role` is the role held here; `rootus` is true for the ini account, which passes every check whatever its role. Any signed-in user may ask, role `none` included.\n\n**Access:** any signed-in user",
+        "description": "Who the token names and how trixd sees them: `kind` is `user`, `node` or `service`; `source` is where the name was checked, `ini`, `local`, `pam`, `ldap`, `peercred`, or `luna` for a token Luna issued; `role` is the role held here; `rootus` is true for the ini account, which passes every check whatever its role. Any signed-in user may ask, role `none` included.\n\n**Access:** any signed-in user",
         "operationId": "whoami_api_v1_auth_whoami_get",
         "responses": {
           "200": {

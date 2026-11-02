@@ -35,7 +35,7 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM,
+from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM, ROLES,
                                    TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
@@ -126,6 +126,8 @@ class AuthSettings(BaseModel):
     """
     chain: list = Field(default_factory=lambda: ["local", "pam"])
     cache: int = 60
+    socket: str = "/run/trixd/peercred.sock"
+    group_roles: dict = Field(default_factory=dict)
     pam_service: str = "login"
     ldap_uri: str = ""
     ldap_base: str = ""
@@ -229,6 +231,20 @@ def _algorithm(value: str) -> str:
             return known
     raise ValueError(f"[TOKENS] ALGORITHM is {wanted}, which is not one of "
                      f"{', '.join(TOKEN_ALGORITHMS)}")
+
+
+def _group_roles(value: str) -> dict:
+    """
+    GROUP_ROLES as group to role, refusing a role that is not on the ladder.
+    """
+    mapped = {}
+    for item in _csv(value):
+        group, _, role = (part.strip() for part in item.partition(":"))
+        if not group or role not in ROLES:
+            raise ValueError(f"[AUTH] GROUP_ROLES names {item}, which is not group:role "
+                             f"with a role of {', '.join(ROLES)}")
+        mapped[group] = role
+    return mapped
 
 
 def _bool(value: str, fallback: bool = False) -> bool:
@@ -404,6 +420,8 @@ def load(path: str = "", found: list = None) -> Settings:
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
         cache=duration("AUTH", "CACHE", "60s"),
+        socket=get("AUTH", "SOCKET", data.auth.socket),
+        group_roles=_group_roles(get("AUTH", "GROUP_ROLES", "")),
         pam_service=get("AUTH_PAM", "SERVICE", "login"),
         ldap_uri=get("AUTH_LDAP", "URI", ""),
         ldap_base=get("AUTH_LDAP", "BASE", ""),

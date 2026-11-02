@@ -77,8 +77,16 @@ URL = sqlite:////trinity/local/trixd/daemon/var/trixd.db
 [AUTH]
 CHAIN = local, pam
 CACHE = 60s
+SOCKET = /run/trixd/peercred.sock
+GROUP_ROLES =
 ; First answer wins and a failing source is skipped. local is the principal table;
 ; pam is the controller OS, which reaches 389ds through sssd on a TrinityX box.
+; Naming peercred in CHAIN opens SOCKET, where a process on this controller gets a token
+; for the account it runs as, with no password.
+; GROUP_ROLES = admins:manager, ops:operator gives a member of an operating-system group
+; that role here when it is higher than their own. It is worked out again on each lookup,
+; so leaving the group takes the role away within CACHE. A role off the ladder stops the
+; daemon at start-up.
 
 [AUTH_PAM]
 SERVICE = login

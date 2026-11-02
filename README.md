@@ -356,6 +356,19 @@ refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone 
 signs in through PAM or LDAP gets a row on first sign-in, with role none, and can
 read nothing until rootus gives them a role.
 
+`peercred` signs a person in with no password. Named in `[AUTH] CHAIN`, it opens
+`[AUTH] SOCKET` (`/run/trixd/peercred.sock`), where a process on this controller asks
+`GET` or `POST /api/v1/auth/token` and gets a token for the account it runs as, which
+the kernel reports; nothing else of the API is served there. uid 0, a uid whose name
+does not lead back to it, the ini account, a system account, a disabled user and an
+account PAM's account check refuses (expired or locked) are refused, in the log and the
+audit trail.
+
+`[AUTH] GROUP_ROLES = admins:manager` gives a member of an operating-system group that
+role when it is higher than the role they hold, for any user whose name is an
+operating-system account. It is worked out on each lookup and never stored, so leaving
+the group takes it away within `[AUTH] CACHE`.
+
 ## Tokens
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with

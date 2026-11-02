@@ -993,6 +993,197 @@ def test_pam_resolves_a_person_and_not_a_service_account(rig, monkeypatch):
     assert source.resolve("backup")[0] is False
 
 
+def _peercred(monkeypatch, tmp_path, name: str = "carol", shell: str = "/bin/bash",
+              account: tuple = (True, "Success"), back: int = None, uid: int = None,
+              request: bytes = b"POST /api/v1/auth/token HTTP/1.1\r\n\r\n") -> tuple:
+    """
+    Open the peercred socket, send one request from this process and read the answer, with
+    this process's uid named `name` and PAM's account check answering `account`. Gives
+    (status, body), or (None, {}) on a build with no socket to ask.
+    """
+    import asyncio
+
+    listener = _new("trixd.core.security.peercred")
+    if listener is None:
+        return None, {}
+    from trixd.core.security.sources import pam as pam_source
+
+    own = os.getuid() if uid is None else uid
+    entry = SimpleNamespace(pw_name=name, pw_uid=own if back is None else back, pw_gid=own)
+    monkeypatch.setattr(listener, "pwd", SimpleNamespace(getpwuid=lambda wanted: entry,
+                                                         getpwnam=lambda wanted: entry))
+    if uid is not None:
+        monkeypatch.setattr(listener, "_peer", lambda writer: (1, uid))
+    _pam(monkeypatch, {name: (max(own, 1000), shell)})
+    monkeypatch.setattr(pam_source.Source, "account", lambda self, who: account,
+                        raising=False)
+    # Relative, because a socket path is limited to about a hundred bytes.
+    monkeypatch.chdir(tmp_path)
+    path = "peercred.sock"
+    monkeypatch.setitem(configuration.current().auth.__dict__, "socket", path)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["local", "peercred"])
+
+    async def exchange() -> tuple:
+        """
+        One connection to the socket, read to its close.
+        """
+        server = await listener.start()
+        if server is None:
+            return None, {}
+        try:
+            reader, writer = await asyncio.open_unix_connection(path)
+            writer.write(request)
+            await writer.drain()
+            answer = await reader.read()
+            writer.close()
+        finally:
+            listener.stop(server)
+        head, _, body = answer.partition(b"\r\n\r\n")
+        return int(head.split()[1]), json.loads(body or b"{}")
+
+    return asyncio.run(exchange())
+
+
+def _refusals(name: str) -> list:
+    """
+    The audit trail's refused sign-ins for a name.
+    """
+    from trixd.core.security import audit
+
+    return [row["detail"] for row in audit.read(principal=name, outcome="refused")
+            if row["action"] == "auth.token"]
+
+
+def test_peercred_signs_the_caller_in_as_their_own_account(rig, client, tmp_path,
+                                                            monkeypatch):
+    """
+    The kernel's uid is the identity: the token names that account, came through peercred,
+    and the gate takes it.
+    """
+    from trixd.core.security import tokens
+
+    status, body = _peercred(monkeypatch, tmp_path)
+    assert status == 201, body
+    claims = tokens.verify(body["token"])
+    assert (claims.subject, claims.source) == ("carol", "peercred")
+    shown = client.get("/api/v1/auth/whoami", headers={"x-access-tokens": body["token"]})
+    assert shown.status_code == 200, shown.text
+    assert (shown.json()["principal"], shown.json()["source"]) == ("carol", "peercred")
+
+
+@pytest.mark.parametrize("case, why", [
+    ({"uid": 0, "name": "root"}, "uid 0"),
+    ({"shell": "/sbin/nologin"}, "system account"),
+    ({"name": "tester"}, "ini account"),
+    ({"back": 4242}, "leads back"),
+    ({"account": (False, "Authentication token is no longer valid")}, "PAM refused"),
+])
+def test_peercred_refuses_and_says_why_in_the_trail(rig, tmp_path, monkeypatch, case, why):
+    """
+    uid 0, a system account, the ini account, a name that leads to another uid and an
+    account PAM refuses get no token, and the trail says which.
+    """
+    status, body = _peercred(monkeypatch, tmp_path, **case)
+    assert status == 401 and "token" not in body, (status, body)
+    principal = "uid 0" if case.get("uid") == 0 else (
+        f"uid {os.getuid()}" if "back" in case else case.get("name", "carol"))
+    assert any(why in detail for detail in _refusals(principal)), _refusals(principal)
+
+
+def test_peercred_refuses_a_disabled_user(rig, tmp_path, monkeypatch):
+    """
+    Disabling somebody cuts them here too, whatever the kernel says.
+    """
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="carol", enabled=False))
+        handle.commit()
+    finally:
+        handle.close()
+    status, body = _peercred(monkeypatch, tmp_path)
+    assert status == 401 and "token" not in body, (status, body)
+    assert any("disabled" in detail for detail in _refusals("carol")), _refusals("carol")
+
+
+def test_peercred_serves_the_token_path_alone(rig, tmp_path, monkeypatch):
+    """
+    Nothing else of the API is reachable on the socket.
+    """
+    status, _ = _peercred(monkeypatch, tmp_path,
+                          request=b"GET /api/v1/identity/users HTTP/1.1\r\n\r\n")
+    assert status == 404
+
+
+def test_a_peercred_socket_that_cannot_open_is_said(rig, tmp_path, monkeypatch):
+    """
+    A socket in a directory that does not exist is an error in the log, not a silence.
+    """
+    import asyncio
+
+    listener = _new("trixd.core.security.peercred")
+    said = []
+    if listener is not None:
+        monkeypatch.setattr(listener.LOGGER, "error",
+                            lambda text, *args: said.append(text % args))
+        monkeypatch.setitem(configuration.current().auth.__dict__, "socket",
+                            str(tmp_path / "missing" / "peercred.sock"))
+        monkeypatch.setattr(configuration.current().auth, "chain", ["peercred"])
+        assert asyncio.run(listener.start()) is None
+    assert any("cannot be opened" in line for line in said), said
+
+
+def test_group_roles_give_the_higher_role_and_never_store_it(rig, monkeypatch):
+    """
+    The role is the higher of the person's own and their groups', worked out on each
+    resolve: leaving a group takes its role away, and the row keeps its own.
+    """
+    from trixd.core.security import principals
+
+    gids = {"admins": 500, "ops": 501}
+    groups = {"admins", "ops"}
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="carol", role="reader"))
+        handle.commit()
+    finally:
+        handle.close()
+    monkeypatch.setitem(configuration.current().auth.__dict__, "group_roles",
+                        {"admins": "manager", "ops": "operator"})
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(
+        getpwnam=lambda name: SimpleNamespace(pw_name=name, pw_uid=1500, pw_gid=100)))
+    monkeypatch.setitem(sys.modules, "grp", SimpleNamespace(
+        getgrnam=lambda group: SimpleNamespace(gr_gid=gids[group])))
+    monkeypatch.setattr(os, "getgrouplist",
+                        lambda name, gid: [gid] + [gids[group] for group in groups])
+    handle = database.session()
+    try:
+        assert principals.resolve(handle, "carol").role == "manager"
+        groups.discard("admins")
+        assert principals.resolve(handle, "carol").role == "operator"
+        groups.clear()
+        assert principals.resolve(handle, "carol").role == "reader"
+        groups.add("ops")
+        principals.row_for(handle, "carol").role = "manager"
+        handle.commit()
+        assert principals.resolve(handle, "carol").role == "manager"
+    finally:
+        handle.close()
+
+
+def test_group_roles_are_read_and_a_role_off_the_ladder_stops_the_daemon(tmp_path):
+    """
+    GROUP_ROLES maps a group to a rung; rootus is not a rung and no typo is a guess.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[AUTH]\nGROUP_ROLES = admins:manager, ops : operator\n", encoding="utf-8")
+    loaded = configuration.load(str(ini))
+    assert getattr(loaded.auth, "group_roles", None) == {"admins": "manager", "ops": "operator"}
+    for wrong in ("admins:rootus", "admins:boss", "admins", ":manager"):
+        ini.write_text(f"[AUTH]\nGROUP_ROLES = {wrong}\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            configuration.load(str(ini))
+
+
 def _ldap(monkeypatch):
     """
     The LDAP source against ldap3's own offline directory, with one person and a reader.
@@ -2030,6 +2221,7 @@ def test_only_pam_and_ldap_people_with_an_ordinary_account_spelt_exactly_have_a_
 
     assert persons._home("harry", "pam").pw_dir == "/home/harry"
     assert persons._home("harry", "ldap").pw_dir == "/home/harry"
+    assert getattr(persons._home("harry", "peercred"), "pw_dir", None) == "/home/harry"
     for name, source in (("harry", "local"), ("harry", "oidc"), ("harry", "ini"),
                          ("root", "pam"), ("svc", "pam"), ("Harry", "ldap")):
         assert persons._home(name, source) is None, (name, source)
