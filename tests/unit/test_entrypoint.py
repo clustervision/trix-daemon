@@ -73,6 +73,8 @@ def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path):
     assert served.insecure_bind == ["0.0.0.0:7071"]
     assert (served.certfile, served.keyfile) == (cert, key)
     assert served.workers == 1, "one process: the plugin registry is in memory"
+    assert served.websocket_max_message_size == 256 * 1024 + 9, \
+        "a WebSocket message is buffered whole before any plugin sees it"
 
 
 def test_http_serves_plain_on_both_with_no_certificate():

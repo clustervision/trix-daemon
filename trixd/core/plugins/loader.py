@@ -413,6 +413,9 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     entry.digest = manifest.digest
     entry.origin = path
     entry.routes = exchange(app, name, router)
+    if serving:
+        # After the new routes are live, so nothing answers in between.
+        _close_backend(name, previous.backend)
     known.put(entry)
     _remember(entry)
     # The hooks it declared may name a source nothing answered for yet, and dispatch is the
@@ -420,6 +423,20 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
     dispatch.reconcile()
     LOGGER.info("plugin %s loaded from %s with %d routes", name, path, len(entry.routes))
     return entry
+
+
+def _close_backend(name: str, backend) -> None:
+    """
+    Tell a backend that is let go of, where it has a close(): a WebSocket it accepted is
+    not a route, so taking its routes away does not end it. A failing close changes nothing.
+    """
+    close = getattr(backend, "close", None)
+    if close is None:
+        return
+    try:
+        close()
+    except Exception as error:
+        LOGGER.error("plugin %s: close() of the backend let go of failed: %s", name, error)
 
 
 @_serialised
@@ -431,6 +448,7 @@ def unload(app: FastAPI, name: str) -> LoadedPlugin:
     if known.get(name) is None:
         raise NotFound(f"no plugin named {name}")
     exchange(app, name, None)
+    _close_backend(name, known.get(name).backend)
     renders().forget(name)
     # Routes and renders were the only things let go of. Its task handler stayed, so the
     # daemon still accepted notifications for it and dispatched them into unplugged code,

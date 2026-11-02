@@ -77,6 +77,9 @@ def build_config(config):
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 
     served.workers = 1
+    # Hypercorn buffers a WebSocket message whole, 16 MiB by default, before a plugin sees
+    # a byte of it. The ceiling is the largest message a plugin needs: 256 KiB and a 9-byte head.
+    served.websocket_max_message_size = 256 * 1024 + 9
     served.accesslog = "-"
     served.errorlog = "-"
     # Chosen rather than inherited. Start-up runs the migrations, loads every plugin, takes

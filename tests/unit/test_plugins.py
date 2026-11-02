@@ -1666,6 +1666,30 @@ def test_a_websocket_handler_the_route_could_not_call_is_refused(rig, tmp_path, 
         loader.load(rig, "talker")
 
 
+def test_a_swap_and_an_unload_each_tell_the_dropped_backend_once(rig, tmp_path):
+    """
+    A socket the old backend accepted is not a route, so taking the routes away does not
+    end it: the backend is told with close(), and a failing close changes nothing.
+    """
+    from trixd.core.plugins import loader
+    from trixd.core.plugins.registry import current as registry
+
+    _talker(tmp_path)
+    loader.load(rig, "talker")
+    told = []
+    registry().get("talker").backend.close = lambda: told.append("swap")
+    loader.load(rig, "talker")
+    assert told == ["swap"]
+
+    def stuck():
+        told.append("unload")
+        raise RuntimeError("stuck")
+    registry().get("talker").backend.close = stuck
+    loader.unload(rig, "talker")
+    assert told == ["swap", "unload"]
+    assert registry().get("talker").backend is None, "a failing close stopped the unload"
+
+
 def test_a_site_plugin_cannot_take_a_shipped_name(rig):
     """
     A site copy of services would replace shipped code unseen, so the shipped one wins.
