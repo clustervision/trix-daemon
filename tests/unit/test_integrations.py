@@ -993,13 +993,18 @@ def test_pam_resolves_a_person_and_not_a_service_account(rig, monkeypatch):
     assert source.resolve("backup")[0] is False
 
 
+# The uid the kernel reports for the peer: an ordinary account's, never the runner's own,
+# which is 0 under CI and would be refused before the case under test is reached.
+PEER_UID = 1500
+
+
 def _peercred(monkeypatch, tmp_path, name: str = "carol", shell: str = "/bin/bash",
-              account: tuple = (True, "Success"), back: int = None, uid: int = None,
+              account: tuple = (True, "Success"), back: int = None, uid: int = PEER_UID,
               request: bytes = b"POST /api/v1/auth/token HTTP/1.1\r\n\r\n") -> tuple:
     """
-    Open the peercred socket, send one request from this process and read the answer, with
-    this process's uid named `name` and PAM's account check answering `account`. Gives
-    (status, body), or (None, {}) on a build with no socket to ask.
+    Open the peercred socket, send one request and read the answer, with the kernel saying
+    the peer is `uid`, that uid named `name` and PAM's account check answering `account`.
+    Gives (status, body), or (None, {}) on a build with no socket to ask.
     """
     import asyncio
 
@@ -1008,13 +1013,11 @@ def _peercred(monkeypatch, tmp_path, name: str = "carol", shell: str = "/bin/bas
         return None, {}
     from trixd.core.security.sources import pam as pam_source
 
-    own = os.getuid() if uid is None else uid
-    entry = SimpleNamespace(pw_name=name, pw_uid=own if back is None else back, pw_gid=own)
+    entry = SimpleNamespace(pw_name=name, pw_uid=uid if back is None else back, pw_gid=uid)
     monkeypatch.setattr(listener, "pwd", SimpleNamespace(getpwuid=lambda wanted: entry,
                                                          getpwnam=lambda wanted: entry))
-    if uid is not None:
-        monkeypatch.setattr(listener, "_peer", lambda writer: (1, uid))
-    _pam(monkeypatch, {name: (max(own, 1000), shell)})
+    monkeypatch.setattr(listener, "_peer", lambda writer: (1, uid))
+    _pam(monkeypatch, {name: (max(uid, 1000), shell)})
     monkeypatch.setattr(pam_source.Source, "account", lambda self, who: account,
                         raising=False)
     # Relative, because a socket path is limited to about a hundred bytes.
@@ -1086,7 +1089,7 @@ def test_peercred_refuses_and_says_why_in_the_trail(rig, tmp_path, monkeypatch, 
     status, body = _peercred(monkeypatch, tmp_path, **case)
     assert status == 401 and "token" not in body, (status, body)
     principal = "uid 0" if case.get("uid") == 0 else (
-        f"uid {os.getuid()}" if "back" in case else case.get("name", "carol"))
+        f"uid {PEER_UID}" if "back" in case else case.get("name", "carol"))
     assert any(why in detail for detail in _refusals(principal)), _refusals(principal)
 
 
