@@ -86,6 +86,9 @@ def manifest_schema() -> dict:
             "replicate": {"type": "boolean", "default": False,
                           "description": "do this at the other controller too, for a write "
                                          "no replicated table or render carries"},
+            "websocket": {"type": "boolean", "default": False,
+                          "description": "a WebSocket handed to an async handler; public "
+                                         "and GET only"},
             "description": {"type": "string",
                             "description": "Markdown for /api/v1/docs: what the route does, "
                                            "what to send and what comes back"},

@@ -32,7 +32,7 @@ __status__      = "Production"
 import inspect
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request, WebSocket
 from pydantic import BaseModel
 
 from trixd.common import logging as trixlog
@@ -49,11 +49,12 @@ LOGGER = trixlog.get("binder")
 SUPPLIED: tuple = ("body", "caller", "request")
 
 
-def signature_problems(handler, endpoint: Endpoint) -> list:
+def signature_problems(handler, endpoint: Endpoint, supplied: tuple = SUPPLIED) -> list:
     """
     What the binder could not give this handler: a path variable it does not take, an
     argument it will only take positionally, or an argument with no default that nothing
-    supplies. Each would be a 500 at the first call.
+    supplies. Each would be a 500 at the first call. `supplied` is what the binder hands
+    over besides the path variables and the query.
     """
     try:
         accepted = inspect.signature(handler).parameters
@@ -63,7 +64,7 @@ def signature_problems(handler, endpoint: Endpoint) -> list:
         return []
     problems = [f"{endpoint.handler} does not take the path variable {name}"
                 for name in endpoint.variables if name not in accepted]
-    known = set(endpoint.variables) | set(SUPPLIED) | set(endpoint.query)
+    known = set(endpoint.variables) | set(supplied) | set(endpoint.query)
     for name, item in accepted.items():
         if item.kind == inspect.Parameter.VAR_POSITIONAL:
             continue
@@ -95,6 +96,14 @@ def endpoint_problems(manifest: Manifest, backend, endpoint: Endpoint) -> list:
     if handler is None or not callable(handler):
         return [f"{where} names handler {endpoint.handler}, "
                 f"which {manifest.backend} does not have"]
+    if endpoint.websocket:
+        if not inspect.iscoroutinefunction(handler):
+            # A plain function would block the one event loop for as long as the socket is open.
+            return [f"{where}: {endpoint.handler} serves a websocket, so it must be async"]
+        if "websocket" not in inspect.signature(handler).parameters:
+            return [f"{where}: {endpoint.handler} does not take the websocket"]
+        return [f"{where}: {problem}"
+                for problem in signature_problems(handler, endpoint, supplied=("websocket",))]
     return [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
 
 
@@ -219,6 +228,9 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
             return answer
 
     parameters = _documented(endpoint)
+    if endpoint.websocket:
+        parameters.append(inspect.Parameter("websocket", inspect.Parameter.KEYWORD_ONLY,
+                                            annotation=WebSocket))
     if "request" in inspect.signature(handler).parameters:
         parameters.append(inspect.Parameter("request", inspect.Parameter.KEYWORD_ONLY,
                                             annotation=Request))
@@ -258,12 +270,19 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 raise PluginRefused(problems[0])
             handler = getattr(backend, endpoint.handler)
 
+        path = "/" + endpoint.route_path if endpoint.route_path else ""
+        if endpoint.websocket:
+            router.add_api_websocket_route(
+                path, _endpoint_function(handler, endpoint, None),
+                name=f"{manifest.plugin}.{endpoint.handler}.websocket")
+            LOGGER.debug("bound websocket %s%s", router.prefix, path)
+            continue
         body_model = models.get(endpoint.body_schema) if endpoint.body_schema else None
         for verb in endpoint.methods:
             verb = verb.upper()
             wants_body = body_model if verb in BODY_VERBS else None
             router.add_api_route(
-                "/" + endpoint.route_path if endpoint.route_path else "",
+                path,
                 _endpoint_function(handler, endpoint, wants_body, manifest.plugin, verb),
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",

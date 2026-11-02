@@ -1594,6 +1594,78 @@ def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
         loader.load(rig, "twofold")
 
 
+TALKER = (
+    'class Backend:\n    """Echoes one frame, reversed."""\n\n'
+    '    async def talk(self, websocket):\n        """Hold the socket for one frame."""\n'
+    '        await websocket.accept()\n'
+    '        await websocket.send_bytes((await websocket.receive_bytes())[::-1])\n'
+    '        await websocket.close()\n')
+
+
+def _talker(tmp_path, backend: str = TALKER) -> None:
+    """
+    A plugin with one public WebSocket endpoint, where the rig looks for plugins.
+    """
+    plugin = tmp_path / "plugins" / "talker"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: talker\nbackend: backend\nendpoints:\n"
+        "  - path: ws\n    websocket: true\n    public: true\n    handler: talk\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(backend, encoding="utf-8")
+
+
+def test_a_websocket_endpoint_is_served_by_the_backends_coroutine(rig, client, tmp_path):
+    """
+    The socket opens with no token and the handler holds it.
+    """
+    from trixd.core.plugins import loader
+
+    _talker(tmp_path)
+    loader.load(rig, "talker")
+    with client.websocket_connect(f"{API_PREFIX}/talker/ws") as socket:
+        socket.send_bytes(b"abc")
+        assert socket.receive_bytes() == b"cba"
+
+
+@pytest.mark.parametrize("declared, refusal", [
+    ({}, "must say public"),
+    ({"public": True, "methods": ["POST"]}, "GET only"),
+    ({"public": True, "render": {"inputs": ["luna.node"]}}, "a render"),
+    ({"public": True, "forward": True}, "forwarded"),
+    ({"public": True, "replicate": True}, "replicated"),
+    ({"public": True, "schema": "config"}, "body schema"),
+])
+def test_a_websocket_asking_for_what_only_a_request_has_is_refused(declared, refusal):
+    """
+    A socket carries no token and no body, and is neither forwarded nor replicated.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    with pytest.raises(PluginRefused, match=refusal):
+        manifests.parse({"plugin": "talker", "endpoints": [
+            {"path": "ws", "handler": "talk", "websocket": True, **declared}]})
+
+
+@pytest.mark.parametrize("handler, refusal", [
+    ("    def talk(self, websocket):\n", "must be async"),
+    ("    async def talk(self):\n", "does not take the websocket"),
+    ("    async def talk(self, websocket, extra):\n", "needs extra"),
+])
+def test_a_websocket_handler_the_route_could_not_call_is_refused(rig, tmp_path, handler, refusal):
+    """
+    A plain function would block the event loop while the socket is open; the other two
+    would fail on every connect.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import loader
+
+    _talker(tmp_path, f'class Backend:\n    """Unservable."""\n\n{handler}        """Bad."""\n')
+    with pytest.raises(PluginRefused, match=refusal):
+        loader.load(rig, "talker")
+
+
 def test_a_site_plugin_cannot_take_a_shipped_name(rig):
     """
     A site copy of services would replace shipped code unseen, so the shipped one wins.

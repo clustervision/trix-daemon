@@ -177,6 +177,11 @@
               "user",
               "node"
             ]
+          },
+          "websocket": {
+            "default": false,
+            "description": "a WebSocket handed to an async handler; public and GET only",
+            "type": "boolean"
           }
         },
         "required": [

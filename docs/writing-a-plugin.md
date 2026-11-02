@@ -98,6 +98,7 @@ Each endpoint:
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
 | `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
+| `websocket` | a WebSocket: the async handler takes `websocket`, accepts, reads and closes it; `public` and `GET` only | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
 | `params` | each path variable: `description` and `example` | no |
