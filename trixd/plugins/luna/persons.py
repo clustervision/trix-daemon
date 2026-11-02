@@ -39,6 +39,8 @@ import time
 from configparser import Error as IniError
 from configparser import RawConfigParser
 
+import requests
+
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER, TOKEN_KIND_USER
 from trixd.common.errors import (BackendFailure, BadRequest, Forbidden, ServiceUnavailable,
@@ -69,6 +71,9 @@ DELEGATE_COOL_OFF: float = 60.0
 DELEGATED: str = "delegated"
 # This plugin's entry among trixd.ini's [DELEGATE:<component>] sections.
 DELEGATE: str = "LUNA"
+# The bits in words, as Luna's own refusals say them (luna2-daemon utils/access.py).
+ACTION: dict = {"r": "reading", "w": "changing or removing", "x": "operating"}
+MAY: dict = {"r": "read", "w": "change", "x": "operate"}
 
 _lock = threading.Lock()
 _signing: dict = {}
@@ -172,6 +177,87 @@ def drop(person: Person, token: str) -> None:
     with _lock:
         if _held.get(person.name, ("", ()))[0] == token:
             del _held[person.name]
+
+
+def call(person: Person, method: str, path: str, body: bytes = b"",
+         headers: dict = None) -> requests.Response:
+    """
+    Luna's answer to `path`, asked as the person with their own Luna token where their
+    calls go. A kept token Luna refuses is dropped and the call sent once more; refused
+    again, the person is asked to sign in.
+    """
+    url = f"{base()}/{path}"
+    luna_token, kept = token_for(person)
+    answer = _send(method, url, as_person(headers or {}, luna_token), body)
+    if kept and answer.status_code == 401:
+        # A kept token another Luna signed, as on the other controller of a pair whose
+        # homes are shared: signed in again, and the same request sent once more.
+        drop(person, luna_token)
+        luna_token, _ = token_for(person)
+        answer = _send(method, url, as_person(headers or {}, luna_token), body)
+        if answer.status_code == 401:
+            raise ask(person, "Luna refused a fresh Luna token for")
+    return answer
+
+
+def may(person: Person, table: str, names: list, bit: str) -> dict:
+    """
+    {name: why not, in Luna's words} for each name in `table` the person does not hold
+    `bit` ('r', 'w' or 'x') on, as Luna itself answers what they hold; empty when all are.
+    """
+    answer = call(person, "GET", f"config/user/{person.name}/_access")
+    if answer.status_code != 200:
+        # Luna's refusal as Luna gave it: no error class here carries an arbitrary status.
+        refusal = TrixdError(_luna_message(answer))
+        refusal.status_code = answer.status_code
+        raise refusal
+    held = json.loads(answer.content)["config"]["user"][person.name]["access"].get(table, {})
+    if table == "cluster":
+        # One row, held under the cluster's own name; Luna's gate needs no name for it.
+        held = dict.fromkeys(names, next(iter(held.values()), ""))
+    refused = {}
+    for name in names:
+        bits = held.get(name, "")
+        # Access.allowed in luna2-daemon utils/access.py, less the class it names.
+        if "r" not in bits:
+            refused[name] = f"{table} {name} is not available"
+        elif bit not in bits:
+            words = [MAY[each] for each in "rwx" if each in bits]
+            said = " and ".join([", ".join(words[:-1]), words[-1]]) if words[1:] else words[0]
+            refused[name] = f"{ACTION[bit]} {table} {name} is not permitted: you may {said} it"
+    return refused
+
+
+def token(person: Person) -> str:
+    """
+    The person's own Luna token, for a plugin that hands it on itself rather than calling
+    Luna through call(): kept, signed in for with their own luna.ini, or delegated. A token
+    Luna then refuses is not dropped here; call() does that.
+    """
+    return token_for(person)[0]
+
+
+def _luna_message(answer) -> str:
+    """
+    The message in Luna's answer, or its body as text when it carries none.
+    """
+    text = answer.content.decode("utf-8", "replace")
+    try:
+        return str(json.loads(text)["message"])
+    except (ValueError, KeyError, TypeError):
+        return text
+
+
+def _send(method: str, url: str, headers: dict, body: bytes):
+    """
+    One call to Luna as it is given, run in the caller's thread.
+    """
+    try:
+        return requests.request(method, url, headers=headers, data=body or None,
+                                timeout=luna_config.TIMEOUT,
+                                verify=luna_config.current().verify)
+    except requests.RequestException as error:
+        raise ServiceUnavailable(f"Luna is not answering: {error}") from None
 
 
 def sign_in(person: Person, body: bytes) -> dict:

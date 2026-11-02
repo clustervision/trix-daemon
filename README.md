@@ -398,7 +398,9 @@ changed for it, and neither imports the other.
 `/api/v1/luna/<path>` is the pass-through: it hands the request to Luna unchanged, up
 to `[API] MAX_BODY`, and Luna decides who may. After Luna has answered, the plugin
 publishes what changed as events, `luna.node.update` and `luna.node.delete` among them,
-for any plugin that declared a hook on them.
+for any plugin that declared a hook on them. Any plugin can call Luna as the person
+too, with `persons.call` and `persons.may`; see
+[Calling Luna as a person](docs/writing-a-plugin.md#calling-luna-as-a-person).
 
 ### A call to Luna, for example renaming a node
 

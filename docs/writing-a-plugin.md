@@ -236,6 +236,46 @@ directly reaches a plugin through its renders, when Luna's table hashes show it:
 on an HA master within the hour the poller compares them on, and on a single
 controller only when trixd next starts.
 
+## Calling Luna as a person
+
+A handler acting for a person asks Luna as that person, never with the daemon's own
+token, so Luna's own rules decide what they may do. `trixd.plugins.luna.persons` offers
+three methods, each usable on its own, none needing another called first:
+
+- `persons.call(person, method, path, body=b"", headers=None)`: one request to Luna as
+  the person, answered with Luna's response.
+- `persons.may(person, table, names, bit)`: which of the named objects the person may
+  not read, change or operate (`r`, `w`, `x`), as `{name: refusal}` in Luna's words.
+- `persons.token(person)`: the person's own Luna token, for a plugin that does something
+  with Luna other than these calls, such as handing it to a client of its own.
+
+```python
+from trixd.common.errors import Forbidden
+from trixd.plugins.luna import persons
+
+def drain(self, body, request):
+    person = persons.caller(request.headers)
+    if person is None:
+        raise Forbidden("draining is done as a person, with their own trixd token")
+    refused = persons.may(person, "node", body["nodes"], "x")
+    if refused:
+        raise Forbidden("; ".join(refused.values()))
+    for name in body["nodes"]:
+        answer = persons.call(person, "GET", f"config/node/{name}")
+```
+
+`persons.caller` is the person behind a user's trixd token, and `None` for no token,
+rootus, a node, a service or a token Luna minted: the plugin decides what those get.
+The token is the one in `~/.luna/token`, else one signed in for with the person's own
+`~/.luna/luna.ini`, else one the `[DELEGATE:LUNA]` account obtains on their behalf, and
+requests go where a person's calls go. `call` alone drops a kept token Luna refuses and
+sends the request once more; a second refusal is a 401 asking the person to sign in at
+Luna, and Luna not answering is a 503. `token` hands over what it found and drops
+nothing. `may` asks Luna once what the person holds and is empty when every name is
+held; when Luna will not say, it raises Luna's own status and message. The cluster is
+one row: ask for it as `persons.may(person, "cluster", ["cluster"], "w")`. All three
+block, so an `async` handler runs them in the worker pool.
+
 ## Shelling out
 
 Every subprocess goes through `trixd.utils.shell`: an argument list, never a shell
