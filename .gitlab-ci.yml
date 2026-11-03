@@ -27,7 +27,7 @@ unit-and-e2e:
   stage: build
   image: python:3.10-slim
   script:
-    - pip install -q -r requirements.txt pytest httpx setuptools wheel
+    - pip install -q -r requirements.txt pytest httpx setuptools wheel python-hostlist==1.23.0 slurmlint
     - python -m pytest -q -p no:cacheprovider
     - TRIXD_E2E=local python -m pytest tests/e2e -q -p no:cacheprovider
 

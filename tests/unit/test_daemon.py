@@ -1638,6 +1638,29 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
     assert seen == [1, 2], seen
 
 
+def test_a_render_asked_again_runs_once_more_after_the_delay(rig):
+    """
+    A producer that could not run now asks for one more run later: it comes after the delay,
+    once however often it was asked, and not before.
+    """
+    import time as clock
+
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    runs = []
+    engine = renders()
+    engine.register("later", "renders/later", Render(inputs=["luna.later"]),
+                    lambda: runs.append(1) or {})
+    runs.clear()
+    again = getattr(engine, "again", lambda key, delay: None)
+    again("later/renders/later", 0.3)
+    again("later/renders/later", 0.3)
+    assert runs == [], "it ran before the delay"
+    clock.sleep(0.8)
+    assert runs == [1], runs
+
+
 def test_a_burst_during_a_slow_render_coalesces_into_one_more_pass(rig):
     """
     Two passes for a burst whatever the producer costs, which is what the plugin guide

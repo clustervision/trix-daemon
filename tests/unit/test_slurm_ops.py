@@ -97,6 +97,11 @@ def slurm(tmp_path, monkeypatch):
         return subprocess.CompletedProcess(args, 0, out, "")
 
     monkeypatch.setattr(helper.os, "geteuid", lambda: os.getuid() + 1)  # the account owns nothing here
+    # The machine's directories above tmp_path are not the test's: they read as a controller's.
+    real_stat, above = os.stat, set(map(str, tmp_path.parents))
+    monkeypatch.setattr(helper.os, "stat", lambda path, *args, **kwargs: os.stat_result(
+        (0o40755, 0, 0, 2, 0, 0, 0, 0, 0, 0)) if str(path) in above
+        else real_stat(path, *args, **kwargs))
     monkeypatch.setattr(helper, "OWNER", os.getuid())  # this uid stands in for root
     monkeypatch.setattr(helper, "subprocess",
                         SimpleNamespace(run=run, TimeoutExpired=subprocess.TimeoutExpired))
@@ -562,6 +567,65 @@ def test_the_state_changes_judged_must_be_the_ones_the_text_makes(slurm):
     assert said["code"] == 200 and slurm.files["nodes"].read_text() == texts["nodes"]
 
 
+NODE004 = "Gres=mps:100 State=DOWN # GroupName"  # node004's line in Luna's block
+TWICE = {
+    "Luna's block": (NODE004, "Gres=mps:100 State=DOWN State=IDLE # GroupName"),
+    "a Defaults entry": ("Gres=mps:100 State=DOWN # HWPreset",
+                         "Gres=mps:100 State=DOWN State=IDLE # HWPreset"),
+}
+
+
+@pytest.mark.parametrize("case", sorted(TWICE))
+def test_a_key_set_twice_on_one_line_is_refused(slurm, case):
+    """
+    Slurm keeps the last of a key set twice: a save setting State twice is refused 409 and writes
+    nothing, so a second State cannot pass with no node judged.
+    """
+    old, new = TWICE[case]
+    texts = {**PRESETS, "nodes": PRESETS["nodes"].replace(old, new, 1)}
+    assert texts["nodes"] != PRESETS["nodes"]
+    before = _bytes(slurm)
+    said = slurm.ask("save", texts=texts, stamp=_stamp(slurm), judged=[])
+    assert said.get("code") == 409, said
+    assert "NodeName=node004: State is set twice" in said.get("message", ""), said
+    assert _bytes(slurm) == before
+
+
+def test_a_key_set_twice_in_another_case_is_refused():
+    """Slurm reads a key in any case, so `State=` after a carried `state=` sets it twice."""
+    old = PRESETS["nodes"].replace(NODE004, NODE004.replace("State=", "state="), 1)
+    new = old.replace("state=DOWN #", "state=DOWN State=IDLE #", 1)
+    assert PRESETS["nodes"] != old != new
+    files = {**PRESETS, "nodes": old}
+    why = helper.rules.changed_lines_refused(files, {**files, "nodes": new})
+    assert any("is set twice" in w for w in why), why
+
+
+def test_the_state_judged_is_the_last_one_on_the_line():
+    """A State set twice is judged by the last one, the one Slurm keeps."""
+    new = PRESETS["nodes"].replace(NODE004, TWICE["Luna's block"][1], 1)
+    assert new != PRESETS["nodes"]
+    assert helper.rules.states_changed(PRESETS["nodes"], new) == {"node004"}
+
+
+def test_every_line_of_the_files_sets_each_key_once():
+    """
+    Each block line of the files as the Slurm app saved them, judged again as a new line, passes:
+    refusing a key set twice refuses none of them.
+    """
+    def judged_again(text: str) -> str:
+        """The text with a blank after each line inside a block, which changes no token."""
+        lines, inside = [], False
+        for line in text.split("\n"):
+            inside = (inside or "Managed block start" in line) and "Managed block end" not in line
+            lines.append(line + " " if inside and line and "####" not in line else line)
+        return "\n".join(lines)
+
+    texts = {kind: judged_again(text) for kind, text in PRESETS.items()}
+    assert all(texts[kind] != PRESETS[kind] for kind in PRESETS)
+    assert helper.rules.changed_lines_refused(PRESETS, texts) == []
+
+
 GPU_DEFAULTS = "# GRESPresetName=gpu Name=gpu Type=a100 Count=2 File=/dev/nvidia[0-1] # Nodes=node001\n"
 GPU_LINE = "NodeName=node001 Name=gpu Type=a100 Count=2 File=/dev/nvidia[0-1]\n"
 
@@ -640,6 +704,7 @@ def test_a_luna_write_during_a_save_is_named_and_kept(slurm, monkeypatch):
     texts = {**PRESETS, "nodes": _boards(PRESETS["nodes"], 2)}
     said = slurm.ask("save", texts=texts, stamp=_stamp(slurm), judged=[])
     assert said["code"] == 409 and said["message"].startswith(f"{gres} changed while")
+    assert "may hold a mix of both writes: Restore puts back the set before" in said["message"]
     assert gres.read_bytes().endswith(b"# rendered by Luna\n")
     assert slurm.files["nodes"].read_text() == texts["nodes"]
 
@@ -731,6 +796,7 @@ def test_one_write_at_a_time_across_processes(slurm, monkeypatch):
         with pytest.raises(helper.Refused) as refused, helper.locked(slurm.share, wait=0.3):
             pass
         assert refused.value.code == 409
+        assert "a save, restore, apply, drain or the render" in str(refused.value)
         assert _bytes(slurm) == before
     finally:
         done.set()
@@ -741,11 +807,10 @@ def test_one_write_at_a_time_across_processes(slurm, monkeypatch):
 
 @pytest.mark.parametrize("setting, value", [
     (setting, value)
-    for setting in ("nodes_file", "partitions_file", "gres_file", "reconfigure", "luna_ca")
-    for value in ("", "etc/slurm/x.conf", "scontrol reconfigure")
-    if (setting, value) != ("luna_ca", "")])  # luna_ca "" clears it: test_luna_ca_may_be_cleared
+    for setting in ("nodes_file", "partitions_file", "gres_file", "reconfigure")
+    for value in ("", "etc/slurm/x.conf", "scontrol reconfigure")])
 def test_config_refuses_an_empty_or_relative_setting(rig, client, headers, setting, value):
-    """AC-12 (R2): an empty or relative path, or a command not named by its absolute path, is
+    """An empty or relative path, or a command not named by its absolute path, is
     refused at the schema and nothing is stored: the render would write it relative to trixd's
     working directory, or run it from PATH, as root."""
     from trixd.core.plugins import loader
@@ -761,7 +826,7 @@ def test_config_refuses_an_empty_or_relative_setting(rig, client, headers, setti
 
 
 def test_scontrol_update_runs_under_the_share_lock(slurm, monkeypatch):
-    """F9 (PLAN-r140a section 16): the lock is held across `scontrol update`, so no render or save
+    """The lock is held across `scontrol update`, so no render or save
     lands between the read of the node file and the update. Another process tries the lock while
     scontrol runs."""
     held = []
@@ -783,16 +848,3 @@ def test_scontrol_update_runs_under_the_share_lock(slurm, monkeypatch):
     assert slurm.ask("drain", names=["node001"], reason="fan", person="admin")["code"] == 200
     assert slurm.ask("resume", names=["node001"])["code"] == 200
     assert held == [True, True]
-
-
-def test_luna_ca_may_be_cleared(rig, client, headers):
-    """Review 3 (1): luna_ca set wrong is undone through the API: "" stores "", which reads as
-    luna.ini's VERIFY_CERTIFICATE."""
-    from trixd.core.plugins import loader
-    from trixd.plugins.slurm import backend
-
-    assert loader.load(rig, "slurm").state == "loaded"
-    for value in ("/etc/trinity/pki/ca.crt", ""):
-        answer = client.patch("/api/v1/slurm/config", json={"luna_ca": value}, headers=headers)
-        assert answer.status_code == 200, answer.text
-        assert backend.Backend().config()["luna_ca"] == value

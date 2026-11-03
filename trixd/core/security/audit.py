@@ -45,6 +45,8 @@ LOGGER = trixlog.get("audit")
 
 GRANTED: str = "granted"
 REFUSED: str = "refused"
+# Asked for, and whether it happened cannot be told: a command that did not finish.
+UNKNOWN: str = "unknown"
 
 DETAIL_LIMIT: int = 1024
 # How wide each text column actually is, read from the model rather than repeated here. A

@@ -74,6 +74,8 @@ DELEGATE: str = "LUNA"
 # The bits in words, as Luna's own refusals say them (luna2-daemon utils/access.py).
 ACTION: dict = {"r": "reading", "w": "changing or removing", "x": "operating"}
 MAY: dict = {"r": "read", "w": "change", "x": "operate"}
+# What sets a 401 asking for the person's own Luna sign-in apart from trixd's own 401s.
+SIGN_IN_AT_LUNA: dict = {"WWW-Authenticate": 'Bearer realm="luna"'}
 
 _lock = threading.Lock()
 _signing: dict = {}
@@ -204,6 +206,8 @@ def may(person: Person, table: str, names: list, bit: str) -> dict:
     """
     {name: why not, in Luna's words} for each name in `table` the person does not hold
     `bit` ('r', 'w' or 'x') on, as Luna itself answers what they hold; empty when all are.
+    'h' is the hardware right on a node or group: w on it, then a usergroup with the
+    hardware flag. A Luna that does not answer it refuses every 'h' as a BackendFailure.
     """
     answer = call(person, "GET", f"config/user/{person.name}/_access")
     if answer.status_code != 200:
@@ -211,20 +215,30 @@ def may(person: Person, table: str, names: list, bit: str) -> dict:
         refusal = TrixdError(_luna_message(answer))
         refusal.status_code = answer.status_code
         raise refusal
-    held = json.loads(answer.content)["config"]["user"][person.name]["access"].get(table, {})
+    user = json.loads(answer.content)["config"]["user"][person.name]
+    if bit == "h" and "hardware_access" not in user:
+        raise BackendFailure("Luna on this controller does not say who holds the hardware "
+                             "right, so a change that needs it is refused: update luna2-daemon")
+    hardware = user.get("hardware_access", {}).get(table, [])
+    held = user["access"].get(table, {})
     if table == "cluster":
         # One row, held under the cluster's own name; Luna's gate needs no name for it.
         held = dict.fromkeys(names, next(iter(held.values()), ""))
+    step = "w" if bit == "h" else bit
     refused = {}
     for name in names:
         bits = held.get(name, "")
         # Access.allowed in luna2-daemon utils/access.py, less the class it names.
         if "r" not in bits:
             refused[name] = f"{table} {name} is not available"
-        elif bit not in bits:
+        elif step not in bits:
             words = [MAY[each] for each in "rwx" if each in bits]
             said = " and ".join([", ".join(words[:-1]), words[-1]]) if words[1:] else words[0]
-            refused[name] = f"{ACTION[bit]} {table} {name} is not permitted: you may {said} it"
+            refused[name] = f"{ACTION[step]} {table} {name} is not permitted: you may {said} it"
+        elif bit == "h" and name not in hardware:
+            refused[name] = (f"changing the hardware of {table} {name} is not permitted: that "
+                             f"is hardware, for rootus, admin or a usergroup with the hardware "
+                             f"flag")
     return refused
 
 
@@ -312,8 +326,10 @@ def ask(person: Person, why: str) -> Unauthenticated:
     """
     The 401 that tells the client to ask the person for their Luna credentials.
     """
-    return Unauthenticated(f"{why} {person.name}; sign in at Luna with POST "
-                           f"{API_PREFIX}/luna/{SIGN_IN} and your username and password")
+    refusal = Unauthenticated(f"{why} {person.name}; sign in at Luna with POST "
+                              f"{API_PREFIX}/luna/{SIGN_IN} and your username and password")
+    refusal.headers = SIGN_IN_AT_LUNA
+    return refusal
 
 
 def _warn_once(name: str, reason: str) -> None:

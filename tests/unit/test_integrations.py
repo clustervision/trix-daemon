@@ -2340,6 +2340,26 @@ def test_with_no_delegate_configured_the_client_is_asked_and_it_is_said_once(
     assert len(said) == 1, _said(records)
 
 
+def test_a_401_asking_for_luna_sign_in_is_marked_and_trixd_s_own_are_not(
+        client, headers, tmp_path, monkeypatch):
+    """
+    The 401 asking for the person's own Luna sign-in carries WWW-Authenticate naming Luna,
+    which is how a client tells it from trixd's own 401s (no token, a bad one): those carry
+    none.
+    """
+    nobody = _person(client, headers, tmp_path, monkeypatch, source="local")
+    _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _delegate(monkeypatch, "", "")
+
+    asked = client.get("/api/v1/luna/whoami", headers=nobody.headers)
+    assert asked.status_code == 401, asked.text
+    assert asked.headers.get("www-authenticate") == 'Bearer realm="luna"', asked.headers
+    for own in ({}, {"x-access-tokens": "not.a.token"}):
+        refused = client.get("/api/v1/auth/whoami", headers=own)
+        assert refused.status_code == 401, refused.text
+        assert "www-authenticate" not in refused.headers, refused.headers
+
+
 @posix_only
 def test_his_refused_luna_ini_is_not_offered_again_until_it_changes(
         client, headers, tmp_path, monkeypatch):
@@ -2755,9 +2775,10 @@ def test_a_token_held_for_a_person_is_not_presented_at_another_endpoint(
     assert answer.status_code == 200, answer.text
 
 
-def _person_calls(client, headers, tmp_path, monkeypatch, **access):
+def _person_calls(client, headers, tmp_path, monkeypatch, hardware_access=None, **access):
     """
-    harry as a plugin holds him, Luna faked, and what his GET .../_access answers.
+    harry as a plugin holds him, Luna faked, and what his GET .../_access answers: no
+    hardware_access field unless one is given, as an older luna2-daemon answers.
     """
     harry = _person(client, headers, tmp_path, monkeypatch)
     luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
@@ -2771,7 +2792,10 @@ def _person_calls(client, headers, tmp_path, monkeypatch, **access):
         if url.endswith(f"/config/user/{PERSON}/_access"):
             luna.sent_to.append(url)
             luna.seen.append((headers or {}).get("x-access-tokens"))
-            body = {"config": {"user": {PERSON: {"access": access}}}}
+            held = {"access": access}
+            if hardware_access is not None:
+                held["hardware_access"] = hardware_access
+            body = {"config": {"user": {PERSON: held}}}
             return SimpleNamespace(content=json.dumps(body).encode(), status_code=200,
                                    headers={"content-type": "application/json"})
         return answering(method, url, headers=headers, **kwargs)
@@ -2976,6 +3000,66 @@ def test_may_passes_luna_s_refusal_of_access_through(
     assert luna.sent_to == [f"{FLOATING_BASE}/config/user/{PERSON}/_access"], luna.sent_to
     assert getattr(raised, "status_code", None) == status, raised
     assert raised.message == message
+
+
+def _answer(work, *args):
+    """
+    What the work returned, or what it raised.
+    """
+    try:
+        return work(*args)
+    except Exception as error:                      # pylint: disable=broad-except
+        return error
+
+
+HARDWARE_REFUSAL = ("is not permitted: that is hardware, for rootus, admin or a usergroup "
+                    "with the hardware flag")
+
+
+@posix_only
+def test_may_h_is_luna_s_hardware_right_in_its_own_words(client, headers, tmp_path, monkeypatch):
+    """
+    persons.may with 'h': granted only where hardware_access names the node or group; w held
+    without it, or a table hardware_access leaves out, is Luna's hardware refusal, and a node
+    without w is refused w first, as Luna's gate refuses it.
+    """
+    harry, luna, persons, person = _person_calls(
+        client, headers, tmp_path, monkeypatch, hardware_access={"node": ["node001"]},
+        node={"node001": "rwx", "node002": "rwx", "node003": "r-x"}, group={"compute": "rwx"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    assert _answer(may, person, "node", ["node001"], "h") == {}
+    refused = _answer(may, person, "node", ["node001", "node002", "node003", "node004"], "h")
+    assert refused == {
+        "node002": f"changing the hardware of node node002 {HARDWARE_REFUSAL}",
+        "node003": "changing or removing node node003 is not permitted: you may read and "
+                   "operate it",
+        "node004": "node node004 is not available",
+    }, refused
+    refused = _answer(may, person, "group", ["compute"], "h")
+    assert refused == {"compute": f"changing the hardware of group compute {HARDWARE_REFUSAL}"}, \
+        refused
+    assert len(luna.sent_to) == 3, luna.sent_to
+
+
+@posix_only
+def test_may_h_fails_closed_against_a_luna_without_hardware_access(
+        client, headers, tmp_path, monkeypatch):
+    """
+    An older luna2-daemon, whose _access has no hardware_access: 'h' is refused as a
+    BackendFailure asking for luna2-daemon to be updated, never answered from x or w, while
+    the other bits are answered as before.
+    """
+    harry, _, persons, person = _person_calls(client, headers, tmp_path, monkeypatch,
+                                              node={"node001": "rwx"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    raised = _answer(may, person, "node", ["node001"], "h")
+    assert isinstance(raised, BackendFailure), raised
+    assert raised.status_code == 502 and "update luna2-daemon" in raised.message, raised.message
+    assert may(person, "node", ["node001"], "x") == {}
 
 
 @posix_only

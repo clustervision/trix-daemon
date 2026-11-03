@@ -30,10 +30,10 @@ declaration), `share_dir` (beside the files: the lock and the mark, one per clus
 `state_dir` (this controller's: the grant answer), and the route's body. The answer is one JSON
 object on stdout, `{ok, code, ...}`, exit 0; `code` is the HTTP status the plugin raises.
 
-Who may ask is not judged here: the trixd gate judged the person against Luna and the plugin
-took only its account. What a save may write is `rules` (the console's
+Who may ask is not judged here: the plugin asked Luna as the person before it ran the helper.
+What a save may write is `rules` (the console's
 `slurmrules.py`, byte for byte), slurmlint runs through `lintcheck` (the console's
-`slurmcheck.py`); both moved from the console's Slurm gate with this code.
+`slurmcheck.py`); both moved from the console with this code.
 """
 
 __author__      = "Alex Ninaber"
@@ -63,7 +63,7 @@ import rules  # noqa: E402  # the console's slurmrules.py, beside this file
 
 KINDS = ("nodes", "partitions", "gres")
 NAMES_MAX = 4096
-TEXTS_MAX = 4 * 1024 * 1024   # bytes of a save's three texts, encoded (C1.5)
+TEXTS_MAX = 4 * 1024 * 1024   # bytes of a save's three texts, encoded
 WAIT = 5.0           # seconds a write waits for the one before it
 QUICK = 6            # seconds for scontrol update
 GRANT_WAIT = 3       # seconds for sacctmgr's answer: inside GET files' 5
@@ -165,7 +165,8 @@ def locked(share: Path, wait: float = None, clock=time.monotonic, sleep=time.sle
                 break
             except OSError as error:
                 if error.errno not in (errno.EACCES, errno.EAGAIN) or clock() >= end:
-                    raise Refused(409, "another save, restore or apply is under way: try again") from None
+                    raise Refused(409, "another Slurm change (a save, restore, apply, drain or "
+                                       "the render) is under way: try again") from None
                 sleep(0.1)
         yield
     finally:
@@ -400,7 +401,7 @@ def drain(request: dict, files: dict, share: Path, state: Path) -> dict:
         raise Refused(400, why)
     person = request.get("person")
     if not isinstance(person, str) or not person:
-        raise Refused(400, "person: whose drain this is (the gate sends it)")
+        raise Refused(400, "person: whose drain this is (the plugin sends it)")
     return _update(request, files, share, state, "DRAIN", rules.authored(person, reason))
 
 
@@ -461,8 +462,8 @@ def _judged(files: dict, request: dict, texts: dict) -> tuple:
 
 
 def preview(request: dict, files: dict, share: Path, state: Path) -> dict:
-    """The nodes whose State a save or a restore would change, for the gate to judge; a refusal
-    the write would meet is said in `refused`, not raised (the gate asks before it judges)."""
+    """The nodes whose State a save or a restore would change; a refusal the write would meet
+    is said in `refused`, not raised (the console asks before the person saves)."""
     try:
         texts = _texts(request, files)
         with locked(share):
@@ -476,8 +477,8 @@ def preview(request: dict, files: dict, share: Path, state: Path) -> dict:
 
 def write(request: dict, files: dict, share: Path, state: Path) -> dict:
     """A save (`mode` save, the backups first) or a restore (the backups' texts, the backups
-    kept): judged under the lock, `judged` the gate's list of State changes, then the mark, the
-    files, the read-back."""
+    kept): judged under the lock, `judged` the State changes Luna was asked about, then the mark,
+    the files, the read-back."""
     texts = _texts(request, files)
     with locked(share):
         back = recover(share, files)  # under the lock: never a save in flight
@@ -502,8 +503,9 @@ def write(request: dict, files: dict, share: Path, state: Path) -> dict:
         clear_mark(share)  # every write is done: a read-back that fails reverts nothing
         lost = [str(p) for p, _b, after in steps if p.read_bytes() != after]
     if lost:
-        raise Refused(409, "%s changed while the helper wrote it (Luna re-renders on node changes): "
-                           "reload and redo the change" % ", ".join(lost))
+        raise Refused(409, "%s changed while the helper wrote it (Luna re-renders on node changes), "
+                           "so it may hold a mix of both writes: Restore puts back the set before "
+                           "this save, or reload and redo the change" % ", ".join(lost))
     return {"ok": True, "code": 200, "stamp": {k: sha(v) for k, v in new.items()}}
 
 

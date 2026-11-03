@@ -16,9 +16,9 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-"""What the Slurm editor may write, as rules over the files' text (PLAN-r25 section 7). Standard library
-only: the plugin's routes read it, and the Slurm gate runs a copy of it (step 2), so a line the
-editor cannot make is refused by both. `changed_lines_refused` holds a save: outside the Defaults
+"""What the Slurm editor may write, as rules over the files' text. Standard library only: the
+plugin's routes read it, and the console runs a copy of it, byte for byte, so a line the editor
+cannot make is refused by both. `changed_lines_refused` holds a save: outside the Defaults
 and TrinityX blocks every byte stays; inside, each changed line is a note or an entry the editor
 writes, with its own keys, keys that entry already carried, and one token per value."""
 
@@ -27,22 +27,11 @@ from __future__ import annotations
 import re
 from collections.abc import Mapping
 
-#: the files the editor and the gate write, each with a `.bkp` beside it
-FILES = {
-    "nodes": "/etc/slurm/slurm-nodes.conf",
-    "partitions": "/etc/slurm/slurm-partitions.conf",
-    "gres": "/etc/slurm/gres.conf",
-}
 SCONTROL = "/usr/bin/scontrol"
 SACCTMGR = "/usr/bin/sacctmgr"
 #: who may change a node's state in Slurm besides root and SlurmUser: AdminLevel Administrator
 #: (an Operator may change the accounting database, not the controller's nodes)
 NODE_ADMINS = ("Administrator",)
-#: a save changing a node's State: it takes the node out of Slurm or back, as removing it does
-STATE_NEEDS = (
-    "setting the Slurm State of node %s is not permitted: like removing it, it needs the admin or"
-    " manager role in a usergroup with the hardware flag"
-)
 STALE = (
     "%s changed since this page loaded it (Luna re-renders the files on node changes, or someone"
     " saved): reload and redo the change"
@@ -79,9 +68,9 @@ VALUE = re.compile(r"[^\s#=\\]{1,256}")
 #: drained once the node's NHC alert is gone, so a person's drain never carries it
 DRAINER = "TRIX-DRAINER: "
 REASON_MAX = 200  # one line a person reads in sinfo's REASON column
-#: the Slurm gate's account (slurm-gate.service `User=`): Slurm records it as a reason's author, so
-#: the gate writes the person in front of the reason, and only from it is that prefix believed
-GATE_ACCOUNT = "trinityx-slurm"
+#: the account the helper runs as: Slurm records it as a reason's author, so the helper writes the
+#: person in front of the reason, and only from it is that prefix believed
+ACCOUNT = "trinityx-slurm"
 #: a person as Luna names one (the manifest's `person`): either case, digits, `_ . -`,
 #: a blank inside, 64 at most
 PERSON = r"[A-Za-z0-9_.-](?:[A-Za-z0-9_. -]{0,62}[A-Za-z0-9_.-])?"
@@ -89,14 +78,14 @@ _AUTHORED = re.compile(r"\[(%s)\] (.*)" % PERSON, re.DOTALL)
 
 
 def authored(person: str, reason: str) -> str:
-    """A drain's reason as the gate hands it to Slurm: the person first."""
+    """A drain's reason as the helper hands it to Slurm: the person first."""
     return "[%s] %s" % (person, reason)
 
 
 def author_of(reason: str, recorded_by: str) -> tuple[str, str]:
     """(who set the reason, the reason as they wrote it): the person in front of it when Slurm
-    records the gate's account as its author, else that account and the reason whole."""
-    found = _AUTHORED.fullmatch(reason) if recorded_by == GATE_ACCOUNT else None
+    records the helper's account as its author, else that account and the reason whole."""
+    found = _AUTHORED.fullmatch(reason) if recorded_by == ACCOUNT else None
     return (found[1], found[2]) if found else (recorded_by, reason)
 
 
@@ -230,9 +219,12 @@ def _groups(blocks: Mapping[str, list[str]]) -> dict[str, set[str]]:
 
 
 def _states(blocks: Mapping[str, list[str]]) -> dict[tuple[str, str], str]:
-    """{(block, entry): the State it sets, "" for none} over a nodes file's entries."""
+    """{(block, entry): the State it sets, "" for none} over a nodes file's entries: the last
+    one, in any case, as Slurm reads a key set twice."""
     return {
-        (block, tokens[0]): next((t[len("State=") :] for t in tokens if t.startswith("State=")), "")
+        (block, tokens[0]): next(
+            (t[len("State=") :] for t in reversed(tokens) if t.lower().startswith("state=")), ""
+        )
         for block, lines in blocks.items()
         for tokens in map(_entry, lines)
         if tokens and "=" in tokens[0]
@@ -290,7 +282,8 @@ def _line_refused(  # noqa: PLR0913  # one line judged against its file's two ta
     Luna renders, the block (Defaults or TrinityX), the line, the names Luna renders per scope and
     the tokens each entry carried. A note or a blank line passes; an uncommented line that is no
     entry, an uncommented Defaults entry, a commented entry or one Luna does not render in Luna's
-    block, and a name Luna does not render are refused; then each token by _token_refused."""
+    block, a name Luna does not render and a key set twice are refused; then each token by
+    _token_refused."""
     tokens = _entry(line)
     if tokens is None:
         return ["%r: a line the editor cannot read to its end (an unclosed quote)" % line]
@@ -313,6 +306,10 @@ def _line_refused(  # noqa: PLR0913  # one line judged against its file's two ta
     allowed = {"preset": bool(NAME.fullmatch(name)), "hostlist": bool(VALUE.fullmatch(name))}
     if not allowed.get(names, name in scope.get(names, set())):
         return ["%s is not a %s Luna renders" % (tokens[0], names)]
+    keys = [t.partition("=")[0].lower() for t in tokens]
+    twice = sorted({t.partition("=")[0] for i, t in enumerate(tokens) if keys[i] in keys[:i]})
+    if twice:
+        return ["%s: %s is set twice: Slurm keeps only the last" % (tokens[0], k) for k in twice]
     why = (_token_refused(t, own, carried.get(tokens[0], set())) for t in tokens[1:])
     return ["%s: %s" % (tokens[0], w) for w in why if w]
 
@@ -334,7 +331,7 @@ def _dropped(
 ) -> set[str]:
     """The entries of Luna's block a save drops that are not the save's to drop: any of one line
     per name; of several lines per name (a node's gres), one a Defaults entry still names, since
-    the generator would render it again (PLAN-r140a 2g). Only a NodeGres= entry names a node:
+    the generator would render it again. Only a NodeGres= entry names a node:
     a preset of the same name does not."""
     named = {
         tokens[0].partition("=")[2]

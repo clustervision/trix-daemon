@@ -39,6 +39,8 @@ class TrixdError(Exception):
     """
 
     status_code: int = 500
+    # Headers the response carries, as WWW-Authenticate on a 401 naming what to sign in to.
+    headers: dict = None
 
     def __init__(self, message: str = "") -> None:
         """
@@ -128,4 +130,5 @@ def register(app: FastAPI) -> None:
         """
         Turn one typed error into its response.
         """
-        return JSONResponse(status_code=exc.status_code, content={"message": exc.message})
+        return JSONResponse(status_code=exc.status_code, content={"message": exc.message},
+                            headers=exc.headers)

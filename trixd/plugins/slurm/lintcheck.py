@@ -16,9 +16,8 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-"""slurmlint over the texts a save writes, for the plugin's routes and the Slurm gate (PLAN-r25
-C2.3: the gate repeats the console's checks). Nothing of the console's: the gate runs a copy of
-this module on TrinityX's Python with `-I`, where the editor's own wheels are."""
+"""slurmlint over the texts a save writes, for the plugin's helper. Nothing of the console's:
+the helper runs this module on TrinityX's Python with `-I`, where the editor's own wheels are."""
 
 from __future__ import annotations
 

@@ -50,8 +50,9 @@ IMPORTED_AS = {"pyjwt": "jwt", "pyyaml": "yaml", "python-pam": "pam"}
 # Imported inside a try because a controller may not have them: the installer puts them
 # there per cluster, and trixd runs without them. Declaring them would make them
 # required, which is the opposite of what they are.
-# hostlist and slurmlint come with trinityx_config_slurm where slurm runs; the slurm plugin's helper
-# imports them inside a try and answers 503 without them.
+# On a controller python-hostlist comes with luna2-daemon's pin and slurmlint with the trixd
+# role's slurm helper tasks (and the OOD Slurm app); CI installs both itself. The slurm
+# plugin's helper imports them inside a try and answers 503 without them.
 OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders", "hostlist", "slurmlint"}
 
 

@@ -260,7 +260,8 @@ another called first:
 - `persons.call(person, method, path, body=b"", headers=None)`: one request to Luna as
   the person, answered with Luna's response.
 - `persons.may(person, table, names, bit)`: which of the named objects the person may
-  not read, change or operate (`r`, `w`, `x`), as `{name: refusal}` in Luna's words.
+  not read, change or operate (`r`, `w`, `x`), or change the hardware of (`h`, on a node
+  or group), as `{name: refusal}` in Luna's words.
 - `persons.get_token(person)`: the person's own Luna token, for a plugin that does
   something with Luna other than these calls, such as handing it to a client of its own.
 
@@ -285,11 +286,19 @@ The token is the one in `~/.luna/token`, else one signed in for with the person'
 `~/.luna/luna.ini`, else one the `[DELEGATE:LUNA]` account obtains on their behalf, and
 requests go where a person's calls go. `call` alone drops a kept token Luna refuses and
 sends the request once more; a second refusal is a 401 asking the person to sign in at
-Luna, and Luna not answering is a 503. `get_token` hands over what it found and drops
-nothing. `may` asks Luna once what the person holds and is empty when every name is
-held; when Luna will not say, it raises Luna's own status and message. The cluster is
-one row: ask for it as `persons.may(person, "cluster", ["cluster"], "w")`. All three
-block, so an `async` handler runs them in the worker pool.
+Luna, and Luna not answering is a 503. That 401, and every other one asking for the
+person's own Luna sign-in, carries `WWW-Authenticate: Bearer realm="luna"`, which no
+401 of trixd's own does: a client reads it as "send this person to sign in at Luna"
+(`POST /api/v1/luna/token`), not "sign in to trixd again". `get_token` hands over
+what it found and drops nothing. `may` asks Luna once what the person holds and is
+empty when every name is held; when Luna will not say, it raises Luna's own status and
+message. The cluster is one row: ask for it as
+`persons.may(person, "cluster", ["cluster"], "w")`. `h` is Luna's hardware right, as
+its gate decides a write to a hardware field: `w` on the object, then rootus, admin or
+a usergroup with the hardware flag. A luna2-daemon too old to answer that right
+(no `hardware_access` in `_access`) fails closed: `may` raises a 502 asking for
+luna2-daemon to be updated, and never falls back to another bit. All three block, so an
+`async` handler runs them in the worker pool.
 
 ## Shelling out
 
@@ -360,6 +369,14 @@ at a time. A render that fails keeps its previous output and records the error,
 which `/api/v1/system/health` reports, and is produced again on the next pass of
 the Luna hash fallback, so a producer that failed while its source was away does
 not stay failed.
+
+A producer must never wait for something slow, since every render waits behind it.
+One that cannot run now, such as one finding a lock held, asks for one more run
+instead, `renders().again("<plugin>/<path>", seconds)`, and raises `NotNow`, both
+from `trixd.core.render.engine` (`current as renders`). Asked again before then, it
+is still one run. A render put off this way is not failed: it keeps its output and
+its error as they were and is logged at INFO, and once it has been put off for a
+minute without rendering, that is said once as a warning.
 
 Writing files is the producer's own job. Write through `trixd.utils.files.write` or
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a

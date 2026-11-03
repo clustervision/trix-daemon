@@ -23,8 +23,8 @@ name: slurm
 version: "1.0"
 description: >
   The managed blocks of the slurm files, rendered from Luna, and the person's own changes to them
-  (drain, resume, save, restore, apply), asked by the trixd gate and run by helper.py as the
-  account trinityx-slurm.
+  (drain, resume, save, restore, apply), made by a person with their own trixd token, decided by
+  Luna as that person, and run by helper.py as the account trinityx-slurm.
 
 depends:
   daemon: trixd with the luna plugin enabled (the person's rights are Luna's)
@@ -63,6 +63,7 @@ steps:
        --home-dir, /nonexistent, --shell, /sbin/nologin, trinityx-slurm]
     - [/usr/bin/sacctmgr, -i, add, user, trinityx-slurm, account=root, adminlevel=Administrator]
     - [/usr/bin/install, -d, -o, trinityx-slurm, -g, trinityx-slurm, -m, "0700", /var/lib/trixd/slurm]
+    - [/usr/bin/install, -d, -o, trinityx-slurm, -g, trinityx-slurm, -m, "0700", /etc/slurm/.trinityx-slurm]
   start:
     - [/usr/bin/systemctl, try-restart, trixd.service]
   stop: []
@@ -70,11 +71,11 @@ steps:
     - [/usr/bin/rm, -rf, /var/lib/trixd/slurm]
 
 checklist:
-  - text: only the trixd gate's account or rootus asks for a change
-    test: tests/unit/test_slurm_changes.py::test_only_the_gates_account_or_rootus_asks_for_a_change
-  - text: the person is judged from their own Luna token before the helper runs
-    test: tests/unit/test_slurm_changes.py::test_the_plugin_judges_the_person_from_their_luna_token
+  - text: only a person or rootus asks for a change; a service and a Luna-minted token are refused
+    test: tests/unit/test_slurm_changes.py::test_only_a_person_asks_for_a_change
+  - text: Luna decides, asked as the person, before the helper runs
+    test: tests/unit/test_slurm_changes.py::test_luna_decides_as_the_person_before_the_helper_runs
   - text: the helper runs stepped down, with the request on stdin
     test: tests/unit/test_slurm_changes.py::test_the_helper_runs_stepped_down_with_the_request_on_stdin
-  - text: the render and a save take one lock
-    test: tests/unit/test_slurm_changes.py::test_the_render_waits_for_a_save_then_fails_loud
+  - text: the render and a save take one lock; the render never waits for it
+    test: tests/unit/test_slurm_changes.py::test_a_held_lock_turns_the_render_away_and_it_runs_again

@@ -93,6 +93,11 @@ def test_a_role_route_admits_exactly_the_roles_at_or_above_its_minimum(
     if who == "anonymous":
         assert answer.status_code == 401, answer.text
     elif RANK[who] >= RANK[minimum]:
+        # A route acting as the person asks Luna for them, and the luna plugin answers a 401
+        # marked as Luna's past the gate when no Luna sign-in can be had for them.
+        if (answer.status_code == 401
+                and answer.headers.get("www-authenticate") == 'Bearer realm="luna"'):
+            return
         assert answer.status_code not in (401, 403, 500), (who, answer.status_code, answer.text)
         # A 502 or 503 is the service behind the route - obol, Luna, Prometheus - not
         # answering. It already says the gate let this caller reach the route, which is
