@@ -20,7 +20,8 @@
 """
 A stand-in for Luna and for Prometheus on one port, so the end-to-end suite runs where
 there is no controller. It checks tokens as Luna does: id 0 is its administrator, id -1
-is nobody, and a provision token is confined to its own node.
+is nobody, and a provision token is confined to its own node. A person in `people` signs in
+at POST /token and is known by her token at /whoami, and nowhere else.
 """
 
 __author__      = "Sumit Sharma"
@@ -34,6 +35,7 @@ __status__      = "Production"
 import json
 import re
 import threading
+from datetime import datetime, timedelta, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import parse_qs, urlparse
 
@@ -61,6 +63,7 @@ class FakeLuna:
                                 "provision_interface": "BOOTIF",
                                 "interfaces": [{"interface": "BOOTIF",
                                                 "ipaddress": f"10.141.0.{number}"}]}
+        self.people = {}
         self.calls = []
         self.server = None
 
@@ -110,7 +113,7 @@ class FakeLuna:
                 length = int(self.headers.get("Content-Length") or 0)
                 body = self.rfile.read(length) if length else b""
                 with fake.lock:
-                    fake.calls.append((method, path))
+                    fake.calls.append((method, path, self.headers.get("x-access-tokens")))
                 if path == "api/v1/query":
                     query = parse_qs(parsed.query).get("query", [""])[0]
                     found = HOST_IN_QUERY.search(query)
@@ -120,6 +123,9 @@ class FakeLuna:
                                           "product": "P", "vendor": "V", "serial": "S1"}}]
                     self._answer(200, {"status": "success",
                                        "data": {"resultType": "vector", "result": result}})
+                    return
+                if method == "POST" and path == "token":
+                    self._sign_in(body)
                     return
                 claims = self._who()
                 if claims is None:
@@ -131,9 +137,41 @@ class FakeLuna:
                         self._answer(401, {"message": "a provision token is for its node"})
                         return
                 elif claims.get("id", 0) != 0:
-                    self._answer(401, {"message": f"user {claims.get('id')} no longer exists"})
+                    self._person(method, path, claims["id"])
                     return
                 self._luna(method, path, body)
+
+            def _sign_in(self, body: bytes) -> None:
+                """
+                POST /token: a token for a person whose password matches, Luna's 401 otherwise.
+                """
+                try:
+                    asked = json.loads(body or b"{}")
+                except ValueError:
+                    asked = {}
+                with fake.lock:
+                    person = fake.people.get(asked.get("username"))
+                if person is None or person["password"] != asked.get("password"):
+                    self._answer(401, {"message": "Invalid username or password"})
+                    return
+                expiry = datetime.now(timezone.utc) + timedelta(minutes=5)
+                token = jwt.encode({"id": person["id"], "exp": expiry}, fake.secret,
+                                   algorithm="HS256")
+                self._answer(201, {"token": token})
+
+            def _person(self, method: str, path: str, user_id: int) -> None:
+                """
+                A person may ask who she is; the rest is the administrator's.
+                """
+                with fake.lock:
+                    name = next((name for name, person in fake.people.items()
+                                 if person["id"] == user_id), None)
+                if name is None:
+                    self._answer(401, {"message": f"user {user_id} no longer exists"})
+                elif method == "GET" and path == "whoami":
+                    self._answer(200, {"user": name, "id": user_id, "admin": False})
+                else:
+                    self._answer(403, {"message": f"{name} may not {method} {path}"})
 
             def _luna(self, method: str, path: str, body: bytes) -> None:
                 """

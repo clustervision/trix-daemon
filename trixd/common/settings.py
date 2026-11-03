@@ -35,7 +35,7 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM,
+from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM, ROLES,
                                    TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
@@ -44,6 +44,8 @@ DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
 # Sections trixd.ini may still name that this daemon does not read. Named at startup as
 # ignored rather than complained about as unknown, and the one place they are listed.
 IGNORED_SECTIONS: tuple = ("LUNA", "TRIGGERS")
+# One section per component this daemon holds a delegate account at, named after it.
+DELEGATE_PREFIX: str = "DELEGATE:"
 
 _DURATION = re.compile(r"^\s*(\d+)\s*([smhd]?)\s*$", re.IGNORECASE)
 # K, M and G with the suffix an operator writes them with: 8M, 64MB and 16MiB alike.
@@ -124,6 +126,8 @@ class AuthSettings(BaseModel):
     """
     chain: list = Field(default_factory=lambda: ["local", "pam"])
     cache: int = 60
+    socket: str = "/run/trixd/peercred.sock"
+    group_roles: dict = Field(default_factory=dict)
     pam_service: str = "login"
     ldap_uri: str = ""
     ldap_base: str = ""
@@ -177,6 +181,10 @@ class Settings(BaseModel):
     tokens: TokenSettings = Field(default_factory=TokenSettings)
     database: DatabaseSettings = Field(default_factory=DatabaseSettings)
     auth: AuthSettings = Field(default_factory=AuthSettings)
+    # [DELEGATE:<component>]: the account this daemon holds at another component, which
+    # signs a person in there on their behalf, and the host:port a person's calls go to
+    # when not the component's own. Component name to (username, password, endpoint).
+    delegates: dict = Field(default_factory=dict)
     services: ServicesSettings = Field(default_factory=ServicesSettings)
     replication: ReplicationSettings = Field(default_factory=ReplicationSettings)
     audit: AuditSettings = Field(default_factory=AuditSettings)
@@ -223,6 +231,20 @@ def _algorithm(value: str) -> str:
             return known
     raise ValueError(f"[TOKENS] ALGORITHM is {wanted}, which is not one of "
                      f"{', '.join(TOKEN_ALGORITHMS)}")
+
+
+def _group_roles(value: str) -> dict:
+    """
+    GROUP_ROLES as group to role, refusing a role that is not on the ladder.
+    """
+    mapped = {}
+    for item in _csv(value):
+        group, _, role = (part.strip() for part in item.partition(":"))
+        if not group or role not in ROLES:
+            raise ValueError(f"[AUTH] GROUP_ROLES names {item}, which is not group:role "
+                             f"with a role of {', '.join(ROLES)}")
+        mapped[group] = role
+    return mapped
 
 
 def _bool(value: str, fallback: bool = False) -> bool:
@@ -398,12 +420,18 @@ def load(path: str = "", found: list = None) -> Settings:
     data.auth = AuthSettings(
         chain=_csv(get("AUTH", "CHAIN", "local, pam")),
         cache=duration("AUTH", "CACHE", "60s"),
+        socket=get("AUTH", "SOCKET", data.auth.socket),
+        group_roles=_group_roles(get("AUTH", "GROUP_ROLES", "")),
         pam_service=get("AUTH_PAM", "SERVICE", "login"),
         ldap_uri=get("AUTH_LDAP", "URI", ""),
         ldap_base=get("AUTH_LDAP", "BASE", ""),
         ldap_bind_dn=get("AUTH_LDAP", "BIND_DN", ""),
         ldap_bind_password=get("AUTH_LDAP", "BIND_PASSWORD", ""),
         ldap_user_attribute=get("AUTH_LDAP", "USER_ATTRIBUTE", "uid"))
+    data.delegates = {section[len(DELEGATE_PREFIX):]: (get(section, "USERNAME", ""),
+                                                       get(section, "PASSWORD", ""),
+                                                       get(section, "ENDPOINT", ""))
+                      for section in parser.sections() if section.startswith(DELEGATE_PREFIX)}
     data.services = ServicesSettings(
         command=get("SERVICES", "COMMAND", data.services.command))
     data.replication = ReplicationSettings(

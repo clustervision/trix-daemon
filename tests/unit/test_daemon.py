@@ -429,15 +429,15 @@ def test_a_right_password_is_accepted(rig, client):
     assert answer.json()["token"]
 
 
-def test_the_sources_are_the_four_on_the_board(rig):
+def test_the_sources_are_the_five_on_the_board(rig):
     """
-    local, pam, ldap and oidc, as the whiteboard drew them; nothing else answers.
+    local, pam, ldap, peercred and oidc; nothing else answers.
     """
     import pathlib
 
     root = pathlib.Path(trixd.__file__).parent / "core" / "security" / "sources"
     found = {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
-    assert found == {"local", "pam", "ldap", "oidc"}, found
+    assert found == {"local", "pam", "ldap", "peercred", "oidc"}, found
 
 
 def _probe_local(handle, patch) -> dict:
@@ -479,13 +479,22 @@ def _probe_oidc(handle, patch) -> dict:
     return {"source": oidc_source.Source(handle), "declines": True}
 
 
+def _probe_peercred(handle, patch) -> dict:
+    """
+    peercred signs in on its socket, never with a password, so it answers for nobody here.
+    """
+    from trixd.core.security.sources import peercred as peercred_source
+
+    return {"source": peercred_source.Source(handle), "declines": True}
+
+
 # One probe per source the chain can import, keyed by the module name it imports. A
 # source with no provider or server to talk to yet is marked declines, and is held to
 # answering for nobody; every other probe hands over a working credential and a wrong
 # one. A source that needs something a unit test cannot stand in for belongs here too,
 # named, with what it needs - not left out, which reads as covered.
-SOURCE_PROBES = {"local": _probe_local, "pam": _probe_pam,
-                 "ldap": _probe_ldap, "oidc": _probe_oidc}
+SOURCE_PROBES = {"local": _probe_local, "pam": _probe_pam, "ldap": _probe_ldap,
+                 "peercred": _probe_peercred, "oidc": _probe_oidc}
 
 
 def test_no_source_authenticates_without_checking_the_password(rig, monkeypatch):

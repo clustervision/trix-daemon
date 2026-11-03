@@ -29,9 +29,22 @@ endpoints:
     summary: Forward to Luna, unchanged
     description: |
       Anything under `/api/v1/luna/` goes to Luna, luna2-daemon, as it was sent, less the
-      `/api/v1/luna` prefix and the connection headers, at the address Luna's own
-      `luna.ini` names; Luna's answer comes back unchanged. Luna decides who may: send a
-      token Luna accepts, which the ini account's is. What Luna offers is Luna's own API.
+      `/api/v1/luna` prefix and the connection headers and, for a person, with their own
+      Luna token in place of their trixd one, at the address Luna's own `luna.ini` names,
+      or for a person at the one `[DELEGATE:LUNA] ENDPOINT` in `trixd.ini` names when it is
+      set, as the floating name of an HA pair; Luna's answer comes back unchanged. Luna
+      decides who may. What Luna offers is Luna's own API.
+
+      A person signed in to trixd through pam or ldap sends their trixd token, and Luna is
+      handed that person's own Luna token instead: the one in `~/.luna/token`, or one trixd
+      signs in for, with the person's own `~/.luna/luna.ini` or through the delegate account
+      `[DELEGATE:LUNA]` in `trixd.ini` names, and keeps in `~/.luna/token` as the Luna
+      command line does. No password is written. A kept token Luna refuses, such as one
+      the other controller's Luna signed, is replaced by signing in again, and the request
+      is sent once more. When Luna refuses that too, or none of those is there, the answer
+      is 401: sign in at Luna through `POST /api/v1/luna/token` with your
+      own username and password, which answers 201 and keeps the token rather than
+      returning it. A token Luna minted, a node's and the ini account's go to Luna as sent.
 
       A node renamed, moved to another group or deleted through this route also updates
       what trixd keeps for it, such as the node's hardware rule file.

@@ -63,10 +63,12 @@ TRUST = /trinity/local/etc/ssl/trust.d
 ; ALGORITHM = EdDSA uses PRIVATE_KEY, KEY_ID and TRUST instead, so a daemon that
 ; verifies cannot mint. It needs Luna to speak EdDSA too, and today Luna does not.
 
-; There is no [LUNA] section, and no [TRIGGERS] one. Where Luna answers, its protocol and
-; its certificate check are read from Luna's own luna.ini,
+; There is no [LUNA] section, and no [TRIGGERS] one; [DELEGATE:LUNA] below is trixd's own
+; account at Luna. Where Luna answers, its protocol and its certificate check are read
+; from Luna's own luna.ini,
 ; /trinity/local/luna/daemon/config/luna.ini, by the luna plugin, so they are changed in
-; one place. A plugin's own settings are its own: they are set through its config
+; one place. The one exception is [DELEGATE:LUNA] ENDPOINT, where a person's calls go.
+; A plugin's own settings are its own: they are set through its config
 ; endpoint and kept with the plugin, not here.
 
 [DATABASE]
@@ -75,8 +77,16 @@ URL = sqlite:////trinity/local/trixd/daemon/var/trixd.db
 [AUTH]
 CHAIN = local, pam
 CACHE = 60s
+SOCKET = /run/trixd/peercred.sock
+GROUP_ROLES =
 ; First answer wins and a failing source is skipped. local is the principal table;
 ; pam is the controller OS, which reaches 389ds through sssd on a TrinityX box.
+; Naming peercred in CHAIN opens SOCKET, where a process on this controller gets a token
+; for the account it runs as, with no password.
+; GROUP_ROLES = admins:manager, ops:operator gives a member of an operating-system group
+; that role here when it is higher than their own. It is worked out again on each lookup,
+; so leaving the group takes the role away within CACHE. A role off the ladder stops the
+; daemon at start-up.
 
 [AUTH_PAM]
 SERVICE = login
@@ -88,6 +98,22 @@ BIND_DN =
 BIND_PASSWORD =
 USER_ATTRIBUTE = uid
 ; Only read when ldap is in CHAIN. USER_ATTRIBUTE is sAMAccountName on Active Directory.
+
+[DELEGATE:LUNA]
+USERNAME = trixd-delegate
+PASSWORD =
+ENDPOINT =
+; One [DELEGATE:<component>] section per component trixd signs a person in at on their
+; behalf, holding trixd's own account there. At Luna it is a Luna user carrying Luna's
+; delegate flag, never the account luna.ini names, which Luna refuses as a delegate. A
+; person who signed in here through pam or ldap and calls /api/v1/luna with no Luna token
+; of their own is signed in at Luna by this account, as themselves. With no PASSWORD such a
+; person signs in at Luna through POST /api/v1/luna/token. The installer generates the
+; password; keep this file readable by root alone.
+; ENDPOINT, as host:port, is where a person's calls and sign-ins go when not where luna.ini
+; says Luna answers: on an HA pair, the floating name, so a person's token always comes
+; from the active Luna. The protocol and the certificate check are still luna.ini's, and
+; trixd's own calls still go where luna.ini says. Empty, a person's calls go there too.
 
 [REPLICATION]
 PEERS =

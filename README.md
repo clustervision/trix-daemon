@@ -356,6 +356,19 @@ refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone 
 signs in through PAM or LDAP gets a row on first sign-in, with role none, and can
 read nothing until rootus gives them a role.
 
+`peercred` signs a person in with no password. Named in `[AUTH] CHAIN`, it opens
+`[AUTH] SOCKET` (`/run/trixd/peercred.sock`), where a process on this controller asks
+`GET` or `POST /api/v1/auth/token` and gets a token for the account it runs as, which
+the kernel reports; nothing else of the API is served there. uid 0, a uid whose name
+does not lead back to it, the ini account, a system account, a disabled user and an
+account PAM's account check refuses (expired or locked) are refused, in the log and the
+audit trail.
+
+`[AUTH] GROUP_ROLES = admins:manager` gives a member of an operating-system group that
+role when it is higher than the role they hold, for any user whose name is an
+operating-system account. It is worked out on each lookup and never stored, so leaving
+the group takes it away within `[AUTH] CACHE`.
+
 ## Tokens
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with
@@ -398,7 +411,9 @@ changed for it, and neither imports the other.
 `/api/v1/luna/<path>` is the pass-through: it hands the request to Luna unchanged, up
 to `[API] MAX_BODY`, and Luna decides who may. After Luna has answered, the plugin
 publishes what changed as events, `luna.node.update` and `luna.node.delete` among them,
-for any plugin that declared a hook on them.
+for any plugin that declared a hook on them. Any plugin can call Luna as the person
+too, with `persons.call` and `persons.may`; see
+[Calling Luna as a person](docs/writing-a-plugin.md#calling-luna-as-a-person).
 
 ### A call to Luna, for example renaming a node
 
@@ -419,10 +434,16 @@ for any plugin that declared a hook on them.
 
 ### Where Luna's settings come from
 
-**Nothing about Luna is in `trixd.ini`.** Where Luna answers, its protocol, whether
+**Nothing about how Luna signs is in `trixd.ini`.** Its one Luna entry is
+trixd's own account there, `[DELEGATE:LUNA]`, which signs a person in at Luna on their
+behalf; core reads every `[DELEGATE:<component>]` section alike and knows none by name. Where Luna answers, its protocol, whether
 its certificate is checked, and the token secret both daemons share are read from
 Luna's own `luna.ini` (`/trinity/local/luna/daemon/config/luna.ini`), and read again
-when it changes. An engineer changes Luna in one place and trixd follows. A `trixd.ini`
+when it changes. The one exception is `[DELEGATE:LUNA] ENDPOINT`: when it is set, a
+person's calls and sign-ins go to that host:port instead, with `luna.ini`'s protocol and
+certificate check. On an HA pair it names the floating name, so a person's Luna token
+always comes from the active Luna. trixd's own calls still go where `luna.ini` says.
+An engineer changes Luna in one place and trixd follows. A `trixd.ini`
 that still has a `[LUNA]` section or a `[TOKENS] SECRET_KEY` starts as before, with a
 warning that names them as ignored.
 

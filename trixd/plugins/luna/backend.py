@@ -34,13 +34,14 @@ __status__      = "Production"
 import requests
 import urllib3
 from fastapi import Request, Response
+from fastapi.responses import JSONResponse
 from starlette.background import BackgroundTask
 from starlette.concurrency import run_in_threadpool
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import ServiceUnavailable
 from trixd.plugins.luna import config as luna_config
-from trixd.plugins.luna import hooks
+from trixd.plugins.luna import hooks, persons
 
 LOGGER = trixlog.get("plugin.luna")
 
@@ -70,16 +71,29 @@ class Backend:
     async def forward(self, rest: str, request: Request) -> Response:
         """
         Method, query, headers and body as sent, less the connection headers, to the Luna
-        luna.ini names. The hooks run once the answer has left.
+        luna.ini names, or for a person to where their calls go. The hooks run once the
+        answer has left.
         """
-        url = f"{luna_config.current().base}/{rest}"
-        if request.url.query:
-            # As sent: a parsed copy would keep only the last of a repeated key.
-            url = f"{url}?{request.url.query}"
         headers = {key: value for key, value in request.headers.items()
                    if key.lower() not in HOP_BY_HOP}
         body = await request.body()
-        answer = await run_in_threadpool(_forward, request.method, url, headers, body)
+        person = await run_in_threadpool(persons.caller, headers)
+        path = rest
+        if request.url.query:
+            # As sent: a parsed copy would keep only the last of a repeated key.
+            path = f"{path}?{request.url.query}"
+        if person is None:
+            answer = await run_in_threadpool(_forward, request.method,
+                                             f"{luna_config.current().base}/{path}", headers,
+                                             body)
+        elif request.method == "POST" and rest == persons.SIGN_IN:
+            # A person signed in here reaches Luna with their own Luna token, never with
+            # the trixd one, and signing in at Luna keeps that token here.
+            return JSONResponse(await run_in_threadpool(persons.sign_in, person, body),
+                                status_code=201)
+        else:
+            answer = await run_in_threadpool(persons.call, person, request.method, path, body,
+                                             headers)
         passed = {key: value for key, value in answer.headers.items()
                   if key.lower() not in HOP_BY_HOP}
         return Response(content=answer.content, status_code=answer.status_code,

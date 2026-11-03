@@ -81,6 +81,33 @@ class Source:
             return False, f"{name} is a system account"
         return True, self._identity(entry)
 
+    def account(self, name: str = "") -> tuple:
+        """
+        PAM's account check alone, for a caller something else vouched for: no password is
+        asked, and an account that is expired, locked or refused by the directory is not.
+        """
+        from ctypes import byref
+
+        from pam.__internals import PAM_SUCCESS, PamConv, PamHandle, conv_func, my_conv
+
+        library = self.pam.pam()
+
+        @conv_func
+        def converse(count, messages, response, data):
+            """
+            Answer whatever the stack says or asks with nothing: there is nobody to ask.
+            """
+            return my_conv(count, messages, response, library.libc, [], b"", "utf-8")
+
+        handle = PamHandle()
+        code = library.pam_start(self.service.encode(), name.encode(),
+                                 byref(PamConv(converse, None)), byref(handle))
+        if code == PAM_SUCCESS:
+            code = library.pam_acct_mgmt(handle, 0)
+        reason = library.pam_strerror(handle, code).decode()
+        library.pam_end(handle, code)
+        return code == PAM_SUCCESS, reason
+
     def _can_log_in(self, entry) -> bool:
         """
         A login shell, and a uid at or above the system's first ordinary uid.

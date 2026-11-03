@@ -40,7 +40,7 @@ from trixd.core.plugins import loader
 from trixd.core.render.engine import current as renders
 from trixd.core.render import triggers
 from trixd.core.replication.sweep import current as sweep
-from trixd.core.security import audit, keys
+from trixd.core.security import audit, keys, peercred
 from trixd.db import engine as database
 
 LOGGER = trixlog.get("lifespan")
@@ -93,7 +93,9 @@ async def lifespan(app: FastAPI):
     Run the startup sequence, serve, then shut down.
     """
     start(app)
+    listener = await peercred.start()
     try:
         yield
     finally:
+        peercred.stop(listener)
         stop(app)

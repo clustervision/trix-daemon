@@ -195,7 +195,7 @@ def resolve(handle: Session, name: str) -> Resolved:
         LOGGER.warning("%s is disabled here, so the token is refused", name)
         return None
     found = Resolved(identity.get("name") or name, source,
-                     row.role if row is not None else ROLE_NONE)
+                     _role(name, row.role if row is not None else ROLE_NONE))
     CACHE.put(f"user:{name}", found)
     return found
 
@@ -230,6 +230,50 @@ def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
         LOGGER.warning("%s is disabled here, whatever %s says", name, source)
         return None
 
-    found = Resolved(name, source, row.role)
+    found = Resolved(name, source, _role(name, row.role))
     CACHE.put(f"user:{name}", found)
     return found
+
+
+def vouched(handle: Session, name: str, source: str) -> tuple:
+    """
+    A name something other than a password vouched for, as a principal, or None and why:
+    never the ini account, only an account that could log in, and only once PAM agrees.
+    """
+    from trixd.core.security.sources import pam
+
+    if access.is_rootus(name):
+        return None, f"{name} is the ini account, which signs in with its password only"
+    system = pam.Source(handle)
+    known, said = system.resolve(name)
+    if not known:
+        return None, said
+    allowed, said = system.account(name)
+    if not allowed:
+        return None, f"PAM refused the account {name}: {said}"
+    found = _adopt(handle, {"name": name}, source)
+    return (found, "") if found else (None, f"{name} is disabled")
+
+
+def _role(name: str, held: str) -> str:
+    """
+    The higher of the role held here and the one [AUTH] GROUP_ROLES gives the person's
+    operating-system groups, worked out on each resolve and never stored.
+    """
+    mapped = settings().auth.group_roles
+    if not mapped:
+        return held
+    import grp
+    import pwd
+
+    try:
+        member = set(os.getgrouplist(name, pwd.getpwnam(name).pw_gid))
+    except KeyError:
+        return held
+    for group, role in mapped.items():
+        try:
+            if grp.getgrnam(group).gr_gid in member and access.rank(role) > access.rank(held):
+                held = role
+        except KeyError:
+            LOGGER.warning("[AUTH] GROUP_ROLES names %s, which is not a group here", group)
+    return held
