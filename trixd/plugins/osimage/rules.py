@@ -19,9 +19,8 @@
 
 """
 What may be built from a set of sources, as data and one verdict: the create body and the
-mirrors map a build's sources come from, the families and arches the books build, the
-Python 3.6 rule, what the books build with no source at all, and the refusals, each one
-sentence naming what was refused. A refusal is a BadRequest: a caller answers it as it
+mirrors map a build's sources come from, the families and arches the books build, what
+the books build with no source at all, and the refusals, each one sentence naming what was refused. A refusal is a BadRequest: a caller answers it as it
 stands, and the runner writes it as the reason the build failed.
 """
 
@@ -78,16 +77,7 @@ ARCHES = {
                 "variables": {}, "family_variables": {}, "skip_tags": []},
 }
 
-# Releases whose own Python is 3.6, which ansible-core cannot drive: the image gets the
-# newer interpreter named here from its own sources, and the build is refused when no
-# source carries it. Keyed by family and major release.
-PYTHON36 = {
-    ("redhat", "8"): {"package": "python3.12", "where": "add the DVD ISO or the AppStream URL"},
-    ("suse", "15"): {"package": "python312", "where": "add the OSS repository URL"},
-}
 INTERPRETER: str = "/usr/bin/python3"
-INTERPRETER_PYTHON36: str = "/usr/bin/python3.12"
-PACKAGES: tuple = tuple(sorted({rule["package"] for rule in PYTHON36.values()}))
 
 # What a source that identifies a distribution but cannot seed a build is told.
 SEED_ONLY: tuple = ("rootfs-tarball", "oci-archive", "rootfs-directory")
@@ -227,18 +217,13 @@ def placement(distribution: str, osrelease: str, arch: str, controller: dict) ->
     else:
         variables["opensuse_release"] = f"leap/{dotrelease or release}"
         where = BOOK_MIRROR
-    rule = PYTHON36.get((family, release))
-    if rule:
-        variables["image_bootstrap_extra"] = [rule["package"]]
     return {"detected": f"{distribution} {osrelease} {arch} from no source, {where}",
             "family": family, "distribution": distribution, "distro": distribution,
             "release": release, "dotrelease": dotrelease, "arch": arch,
-            "python36": bool(rule),
-            "interpreter": INTERPRETER_PYTHON36 if rule else INTERPRETER,
+            "interpreter": INTERPRETER,
             "playbook": FAMILIES[family]["playbook"],
             "base": None, "base_variable": FAMILIES[family]["base"],
             "variables": variables, "skip_tags": list(offered["skip_tags"]),
-            "notes": _check_python([], rule) if rule else [],
             "sources": []}
 
 
@@ -259,15 +244,10 @@ def verdict(findings: list, arch: str = None, suite: str = None) -> dict:
     release, dotrelease = identifying[0]["release"], _point_release(identifying)
     arch = _arch_of(identifying, detect.norm_arch(arch) if arch else None)
     base = _base_of(findings, identifying, family)
-    rule = PYTHON36.get((family, release))
-    notes = _check_python(findings, rule) if rule else []
 
     variables = dict(ARCHES[arch]["variables"])
     variables.update(ARCHES[arch]["family_variables"].get(family, {}))
     variables.update(_family_variables(family, findings[base], release, dotrelease, suite))
-    if rule:
-        # The books hold the hook and an empty default, not which release needs a newer Python.
-        variables["image_bootstrap_extra"] = [rule["package"]]
     for key, value in variables.items():
         if value in (None, ""):
             raise BadRequest(f"the books need {key} and neither the request nor the sources give it")
@@ -275,12 +255,10 @@ def verdict(findings: list, arch: str = None, suite: str = None) -> dict:
     return {"detected": f"{distro} {dotrelease or release} {arch} from {count}",
             "family": family, "distribution": FAMILIES[family]["distribution"], "distro": distro,
             "release": release, "dotrelease": dotrelease, "arch": arch,
-            "python36": bool(rule),
-            "interpreter": INTERPRETER_PYTHON36 if rule else INTERPRETER,
+            "interpreter": INTERPRETER,
             "playbook": FAMILIES[family]["playbook"],
             "base": base, "base_variable": FAMILIES[family]["base"],
             "variables": variables, "skip_tags": list(ARCHES[arch]["skip_tags"]),
-            "notes": notes,
             "sources": [{"source": f["source"], "kind": f.get("kind"),
                          "role": "base" if number == base else "checked"}
                         for number, f in enumerate(findings)]}
@@ -365,20 +343,6 @@ def _base_of(findings: list, identifying: list, family: str) -> int:
             raise BadRequest(f"{REFUSALS['suse_local']}: {local[0]['source']}")
     chosen = (discs or mirrors)[0] if family == "redhat" else mirrors[0]
     return findings.index(chosen)
-
-
-def _check_python(findings: list, rule: dict) -> list:
-    """
-    A Python 3.6 image needs the newer interpreter in a source. Refused on evidence
-    only: a source whose package directories could not be listed is a note, not a
-    refusal, and the build itself then says.
-    """
-    checked = [f["packages"].get(rule["package"]) for f in findings if "packages" in f]
-    if any(checked):
-        return []
-    if checked:
-        raise BadRequest(f"a Python 3.6 image needs {rule['package']} in a source: {rule['where']}")
-    return [f"{rule['package']} could not be checked: no source lists its packages"]
 
 
 def _family_variables(family: str, base: dict, release: str, dotrelease: str, suite: str) -> dict:

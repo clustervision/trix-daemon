@@ -52,7 +52,6 @@ DEFAULT_SETTINGS: dict = {
     "state_root": "/trinity/local/trixd/var/osimage",
     "python": "/trinity/local/python",
     "collections": "/trinity/local/trixd/collections",
-    "library": "",
     "mirrors": {},
     "concurrency": 2,
     "limit_seconds": 21600,
@@ -65,7 +64,7 @@ PATH_SETTINGS: tuple = ("repo", "answers", "images_root", "state_root", "python"
 COUNT_SETTINGS: tuple = ("concurrency", "limit_seconds", "keep_days", "stub_gap_seconds")
 # What the runner is handed in request.json: it reads nothing of the daemon's.
 RUNNER_SETTINGS: tuple = ("repo", "repo_url", "answers", "images_root", "python", "collections",
-                          "library", "builder", "stub_gap_seconds")
+                          "builder", "stub_gap_seconds")
 
 # The count of running builds and the start of one are a single step, so two starts
 # arriving together cannot both pass the cap.
@@ -138,8 +137,6 @@ class Backend:
             for key in PATH_SETTINGS:
                 if body.get(key) is not None and not body[key].startswith("/"):
                     raise BadRequest(f"{key} must be an absolute path")
-            if body.get("library") and not body["library"].startswith("/"):
-                raise BadRequest("library must be an absolute path, or empty")
             if body.get("repo_url") and not body["repo_url"].startswith(checkout.SCHEME):
                 raise BadRequest("repo_url must be an https address, or empty")
             if body.get("builder") is not None and body["builder"] not in runner.BUILDERS:
@@ -225,9 +222,6 @@ class Backend:
         """
         jobdir = _jobdir(name)
         answer = jobs.show(jobdir, since or 0)
-        notes = jobs.read_json(jobdir, jobs.VERDICT).get("notes")
-        if notes:
-            answer["notes"] = notes
         return answer
 
     def cancel(self, name: str, caller=None) -> dict:

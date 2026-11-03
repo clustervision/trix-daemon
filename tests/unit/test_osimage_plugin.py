@@ -241,7 +241,7 @@ def test_a_create_from_luna_is_taken_at_once_with_nothing_detected_or_asked(plug
         "settings": {"repo": str(tmp_path / "repo"), "repo_url": "",
                      "answers": backend.DEFAULT_SETTINGS["answers"],
                      "images_root": str(tmp_path / "images"), "python": python,
-                     "collections": str(tmp_path / "collections"), "library": "",
+                     "collections": str(tmp_path / "collections"),
                      "builder": "books", "stub_gap_seconds": 3}}
     assert jobs.read_json(jobdir, jobs.VERDICT) == {"arch": "x86_64"}
     listed = client.get(f"{API_PREFIX}/osimage", headers=headers).json()
@@ -570,8 +570,8 @@ def test_a_create_whose_job_cannot_be_recorded_running_stops_the_build_it_starte
 
 def test_a_read_from_a_sequence_number_serves_the_lines_from_there(plugin, tmp_path, children):
     """
-    `since` serves the lines from there with the next number to ask for; the detector's
-    notes and, once the runner recorded it, the kernel version ride along.
+    `since` serves the lines from there with the next number to ask for; once the runner
+    recorded it, the kernel version rides along.
     """
     client, headers, commands = plugin
     assert _create(client, headers, tmp_path).status_code == 200
@@ -580,9 +580,6 @@ def test_a_read_from_a_sequence_number_serves_the_lines_from_there(plugin, tmp_p
         for seq, message in enumerate(["PLAY [localhost]", "TASK [one]", "TASK [two]"]):
             handle.write(json.dumps({"seq": seq, "message": message, "status": 200}) + "\n")
     jobs.write_phase(jobdir, "localhost")
-    verdict = jobs.read_json(jobdir, jobs.VERDICT)
-    verdict["notes"] = ["python3.12 could not be checked: no source lists its packages"]
-    jobs.files.write(os.path.join(jobdir, jobs.VERDICT), json.dumps(verdict))
 
     shown = client.get(f"{API_PREFIX}/osimage/rocky9", params={"since": 1}, headers=headers)
     assert shown.status_code == 200, shown.text
@@ -590,7 +587,7 @@ def test_a_read_from_a_sequence_number_serves_the_lines_from_there(plugin, tmp_p
     assert (body["name"], body["state"], body["phase"], body["pid"]) == (
         "rocky9", "running", "localhost", children.made[0].pid)
     assert [line["message"] for line in body["lines"]] == ["TASK [one]", "TASK [two]"]
-    assert body["next"] == 3 and body["notes"] == verdict["notes"]
+    assert body["next"] == 3 and "notes" not in body
     assert "kernelversion" not in body
     assert client.get(f"{API_PREFIX}/osimage/rocky9", params={"since": "soon"},
                       headers=headers).status_code == 422
@@ -733,9 +730,9 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
     assert held["repo"] == str(tmp_path / "repo") and held["concurrency"] == 2
     assert set(held) == set(backend.DEFAULT_SETTINGS) and held.get("mirrors") == {}
     changed = client.patch(f"{API_PREFIX}/osimage/settings",
-                           json={"limit_seconds": 1800, "library": "/lib/modules"}, headers=headers)
+                           json={"limit_seconds": 1800, "keep_days": 3}, headers=headers)
     assert changed.status_code == 200 and changed.json()["limit_seconds"] == 1800
-    assert changed.json()["library"] == "/lib/modules" and changed.json()["concurrency"] == 2
+    assert changed.json()["keep_days"] == 3 and changed.json()["concurrency"] == 2
     stubbed = client.patch(f"{API_PREFIX}/osimage/settings",
                            json={"builder": "stub-fail", "stub_gap_seconds": 1}, headers=headers)
     assert stubbed.status_code == 200 and stubbed.json().get("builder") == "stub-fail"
@@ -747,7 +744,6 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
     assert mirrored.json()["mirrors"] == {"redhat/9.6/arm64": ["/isos/Rocky-9.6-aarch64-dvd.iso"]}
     for body, said in (({"concurrency": 0}, "concurrency must be at least 1"),
                        ({"state_root": "var/osimage"}, "state_root must be an absolute path"),
-                       ({"library": "modules"}, "library must be an absolute path, or empty"),
                        ({"builder": "hand"}, "builder must be one of books, stub, stub-fail"),
                        ({"stub_gap_seconds": 0}, "stub_gap_seconds must be at least 1"),
                        ({"mirrors": {"Rocky 9": ["/isos/x.iso"]}},

@@ -90,16 +90,13 @@ def put(root, rel: str, data) -> None:
         f.write(data if isinstance(data, bytes) else data.encode())
 
 
-def rocky_root(root, release: str = "9.8", arch: str = "x86_64", packages: tuple = ()) -> str:
+def rocky_root(root, release: str = "9.8", arch: str = "x86_64") -> str:
     """
-    A mirror root in the layout the books expect: BaseOS/<arch>/os and AppStream/<arch>/os,
-    with the named packages under AppStream's per-letter directory.
+    A mirror root in the layout the books expect: BaseOS/<arch>/os and AppStream/<arch>/os.
     """
     treeinfo = ROCKY_BASEOS_TREEINFO.replace("9.8", release).replace("x86_64", arch)
     put(root, f"BaseOS/{arch}/os/.treeinfo", treeinfo)
-    os.makedirs(os.path.join(str(root), f"AppStream/{arch}/os/Packages/p"))
-    for name in packages:
-        put(root, f"AppStream/{arch}/os/Packages/{name[0]}/{name}-3.12.1-4.el8.{arch}.rpm", "rpm")
+    os.makedirs(os.path.join(str(root), f"AppStream/{arch}/os"))
     return str(root)
 
 
@@ -213,8 +210,7 @@ def test_without_a_source_the_books_place_what_they_hold():
     """
     A RedHat record of this controller's own release builds from its repositories with
     no variable naming a mirror or a release; Ubuntu and Leap records hand the playbook
-    the release it takes as input and build from the mirror the books name, Leap 15 as
-    a Python 3.6 image whose newer interpreter nobody could check; a distribution the
+    the release it takes as input and build from the mirror the books name; a distribution the
     books have no compute book for, a release that is not a number, and a RedHat release
     other than the controller's are refused naming what to name.
     """
@@ -223,8 +219,7 @@ def test_without_a_source_the_books_place_what_they_hold():
     assert (own["playbook"], own["variables"], own["base"], own["sources"]) == (
         "compute-redhat.yml", {}, None, [])
     assert own["detected"] == "redhat 9.6 x86_64 from no source, this controller's own repositories"
-    assert (own["distribution"], own["release"], own["dotrelease"], own["python36"]) == (
-        "redhat", "9", "9.6", False)
+    assert (own["distribution"], own["release"], own["dotrelease"]) == ("redhat", "9", "9.6")
     arm = rules.placement("redhat", "9", "aarch64", controller)
     assert arm["variables"] == {"package_arch": "aa64", "image_arch": "aarch64"}
     ubuntu = rules.placement("ubuntu", "24.04", "x86_64", controller)
@@ -232,9 +227,7 @@ def test_without_a_source_the_books_place_what_they_hold():
     assert ubuntu["detected"] == "ubuntu 24.04 x86_64 from no source, the mirror the books name"
     leap = rules.placement("opensuse", "15.6", "x86_64", controller)
     assert leap["playbook"] == "compute-opensuse.yml"
-    assert leap["variables"] == {"opensuse_release": "leap/15.6", "image_bootstrap_extra": ["python312"]}
-    assert leap["python36"] is True and leap["interpreter"] == "/usr/bin/python3.12"
-    assert leap["notes"] == ["python312 could not be checked: no source lists its packages"]
+    assert leap["variables"] == {"opensuse_release": "leap/15.6"}
     name = "name a source in the create, or a mirrors entry for it in the settings"
     with pytest.raises(BadRequest, match=f"the books build no alma image without a source, only "
                                          f"opensuse, redhat, ubuntu: {name}"):
@@ -395,22 +388,6 @@ def test_a_repository_without_an_identity_is_an_extra(tmp_path):
     assert (f["kind"], f.get("distro"), f["arch"]) == ("repo-extra", None, "x86_64")
 
 
-def test_a_package_is_found_in_the_per_letter_directory_of_a_repository(tmp_path):
-    """
-    python3.12 under AppStream/<arch>/os/Packages/p is present; a source whose package
-    directories are not there is not checked rather than reported as lacking it.
-    """
-    f, rc = detect.identify(rocky_root(tmp_path / "with", "8.10", packages=("python3.12",)),
-                            packages=("python3.12",))
-    assert f["packages"] == {"python3.12": True}
-    f, rc = detect.identify(rocky_root(tmp_path / "without", "8.10", packages=("python3.12-devel",)),
-                            packages=("python3.12",))
-    assert f["packages"] == {"python3.12": False}
-    put(tmp_path / "bare", ".treeinfo", ROCKY_BASEOS_TREEINFO)
-    f, rc = detect.identify(str(tmp_path / "bare"), packages=("python3.12",))
-    assert "packages" not in f
-
-
 def test_detection_stops_at_the_deadline(monkeypatch):
     """
     No request starts once the total has passed, and the finding says so rather than
@@ -435,7 +412,7 @@ def test_detection_stops_at_the_deadline(monkeypatch):
 @pytest.fixture
 def served(tmp_path):
     """
-    A Rocky 9.8 mirror root with python3.12 in AppStream, served over http on a port
+    A Rocky 9.8 mirror root, served over http on a port
     of this host's own by the standard library's file server, which lists directories
     as a mirror does. Answers the URL and the list of paths asked for.
     """
@@ -453,7 +430,7 @@ def served(tmp_path):
             asked.append(self.path)
             super().do_GET()
 
-    root = rocky_root(tmp_path / "mirror", "9.8", packages=("python3.12",))
+    root = rocky_root(tmp_path / "mirror", "9.8")
     server = http.server.ThreadingHTTPServer(("127.0.0.1", 0),
                                              functools.partial(Counting, directory=root))
     thread = threading.Thread(target=server.serve_forever, daemon=True)
@@ -468,21 +445,20 @@ def test_a_mirror_root_over_http_costs_a_handful_of_requests(served):
     """
     A release root is asked after the root's own .treeinfo and before any apt probing,
     so a Rocky mirror root, with the arch or without, is identified in at most eight
-    requests with the packages still looked for, and in a fraction of the budget. A
+    requests, and in a fraction of the budget. A
     real mirror cost two dozen requests and most of the budget before.
     """
     url, asked = served
     started = time.monotonic()
-    found = detect.identify_all([url], packages=rules.PACKAGES)[0]
+    found = detect.identify_all([url])[0]
     assert len(asked) <= 8, asked
     assert time.monotonic() - started < detect.TOTAL_TIMEOUT / 5
     assert (found.get("distro"), found.get("dotrelease"), found.get("arch")) == ("rocky", "9.8", "x86_64"), found
     assert found["repo_urls"]["BaseOS"] == url + "BaseOS/x86_64/os/"
-    assert found["packages"] == {"python3.12": True, "python312": False}
     assert found["ambiguous"] == ["arch: an EL release root; took x86_64, pass arch to choose"]
 
     del asked[:]
-    found = detect.identify_all([url], want_arch="x86_64", packages=rules.PACKAGES)
+    found = detect.identify_all([url], want_arch="x86_64")
     assert len(asked) <= 8, asked
     answer = rules.verdict(found, arch="x86_64")
     assert answer["detected"] == "rocky 9.8 x86_64 from 1 source"
@@ -528,17 +504,15 @@ def test_a_rocky_mirror_root_gives_the_books_their_variables(tmp_path):
     URL the books append BaseOS/<arch>/os to.
     """
     root = rocky_root(tmp_path, "9.8")
-    found = detect.identify_all([root], want_arch="x86_64", packages=rules.PACKAGES)
+    found = detect.identify_all([root], want_arch="x86_64")
     answer = rules.verdict(found, arch="x86_64")
     assert answer["detected"] == "rocky 9.8 x86_64 from 1 source"
     assert (answer["playbook"], answer["distribution"], answer["release"], answer["arch"]) == (
         "compute-redhat.yml", "redhat", "9", "x86_64")
-    assert answer["python36"] is False
     assert answer["interpreter"] == "/usr/bin/python3"
     assert answer["base"] == 0 and answer["base_variable"] == "image_el_baseurl"
     assert answer["variables"]["image_el_baseurl"] == f"file://{root}/"
     assert answer["variables"]["image_el_releasever"] == "9"
-    assert "image_bootstrap_extra" not in answer["variables"]
 
 
 def test_a_baseos_repository_given_directly_is_turned_into_its_root(tmp_path):
@@ -574,33 +548,6 @@ def test_no_identifying_source_is_refused_and_so_is_an_extra_beside_one(tmp_path
     root = rocky_root(tmp_path, "9.8")
     with pytest.raises(BadRequest, match=f"an extra repository is not supported yet.*{tmp_path / 'epel'}"):
         rules.verdict(detect.identify_all([root, str(tmp_path / "epel")], want_arch="x86_64"))
-
-
-def test_a_python36_image_needs_the_newer_interpreter_in_a_source(tmp_path):
-    """
-    Rocky 8 without python3.12 in any listed source is refused with where to find it;
-    with it, the books are told to bootstrap it and the image runs on it.
-    """
-    bare = rocky_root(tmp_path / "bare", "8.10")
-    with pytest.raises(BadRequest, match="needs python3.12 in a source: add the DVD ISO or the AppStream URL"):
-        rules.verdict(detect.identify_all([bare], want_arch="x86_64", packages=rules.PACKAGES))
-    full = rocky_root(tmp_path / "full", "8.10", packages=("python3.12",))
-    answer = rules.verdict(detect.identify_all([bare, full], want_arch="x86_64", packages=rules.PACKAGES))
-    assert answer["python36"] is True
-    assert answer["interpreter"] == "/usr/bin/python3.12"
-    assert answer["variables"]["image_bootstrap_extra"] == ["python3.12"]
-    assert answer["notes"] == []
-
-
-def test_a_python36_image_whose_sources_cannot_be_listed_is_noted_not_refused(tmp_path):
-    """
-    A refusal needs evidence: a source that lists no package directory leaves a note and
-    the build itself says.
-    """
-    put(tmp_path, "BaseOS/x86_64/os/.treeinfo", ROCKY_BASEOS_TREEINFO.replace("9.8", "8.10"))
-    answer = rules.verdict(detect.identify_all([str(tmp_path)], want_arch="x86_64", packages=rules.PACKAGES))
-    assert answer["python36"] is True
-    assert answer["notes"] == ["python3.12 could not be checked: no source lists its packages"]
 
 
 def test_an_ubuntu_archive_on_aarch64_gets_the_foreign_debootstrap_variables(tmp_path):
@@ -659,7 +606,7 @@ def test_a_leap_build_takes_an_http_mirror_and_refuses_a_disc_or_a_local_tree(tm
         put(tmp_path / name, "media.1/products", "/ openSUSE-Leap 15.6-1\n")
         os.makedirs(tmp_path / name / "x86_64")
     disc, tree = str(tmp_path / "dvd"), str(tmp_path / "oss")
-    found = detect.identify_all([disc, tree], packages=rules.PACKAGES)
+    found = detect.identify_all([disc, tree])
     found[0]["kind"] = "iso"
     refusal = ("a Leap build from a disc or a file:// tree is not proven yet, only an http "
                "mirror was: name the OSS repository URL")
@@ -669,14 +616,13 @@ def test_a_leap_build_takes_an_http_mirror_and_refuses_a_disc_or_a_local_tree(tm
         rules.verdict(found[1:])
     mirror = detect.Finding(source="https://download.opensuse.org/distribution/leap/15.6/repo/oss/",
                             kind="repository", family="suse", distro="opensuse-leap", release="15",
-                            dotrelease="15.6", arch="x86_64", packages={"python312": True})
+                            dotrelease="15.6", arch="x86_64")
     with pytest.raises(BadRequest, match=f"{re.escape(refusal)}: {re.escape(disc)}"):
         rules.verdict([mirror, found[0]])
     answer = rules.verdict([mirror])
     assert answer["base"] == 0
     assert answer["variables"]["opensuse_repo_baseurl"] == mirror["source"]
     assert answer["variables"]["opensuse_release"] == "leap/15.6"
-    assert answer["variables"]["image_bootstrap_extra"] == ["python312"]
 
 
 def test_each_refused_kind_is_refused_in_one_sentence(tmp_path):

@@ -91,15 +91,6 @@ DISTROS = [
 # The arches an EL release root may carry under BaseOS, in the order one is taken.
 EL_ARCHES: tuple = ("x86_64", "aarch64", "riscv64", "ppc64le", "s390x")
 
-# Where a repository keeps its packages, per family and relative to each repository: the
-# per-letter layout of EL 8 and later, then a flat Packages directory; an openSUSE
-# repository is flat per arch. Debian is not here: no rule asks after a deb package.
-PACKAGE_DIRS = {
-    "redhat": ("Packages/{letter}", "Packages"),
-    "suse": ("{arch}", "noarch"),
-}
-
-
 class Expired(Exception):
     """
     The detection deadline passed with reads still to do.
@@ -629,35 +620,6 @@ def from_extra_repo(r, f, want_arch, suite):
     return False
 
 
-def find_packages(r, f, names):
-    """
-    Whether each wanted package is in a package directory of this source, by name. Recorded
-    only where a directory could be listed, so a source with no entry could not be checked,
-    which is not the same as the package being absent.
-    """
-    shapes = PACKAGE_DIRS.get(f.get("family"))
-    if not shapes or not names:
-        return
-    found, listings = {}, {}                              # two names in one directory cost one listing
-    for repo in (f.get("repos") or {"main": "."}).values():
-        for name in names:
-            for shape in shapes:
-                rel = shape.format(letter=name[0], arch=f.get("arch") or "")
-                if not rel:
-                    continue
-                where = posixpath.normpath(posixpath.join(repo, rel))
-                if where not in listings:
-                    listings[where] = r.listdir(where)
-                listed = listings[where]
-                if listed is None:
-                    continue
-                present = any(re.match(re.escape(name) + r"-\d", entry) for entry in listed)
-                found[name] = found.get(name, False) or present
-    if found:
-        f["packages"] = found
-        f.note("package directories", ", ".join("%s=%s" % (n, "present" if p else "absent") for n, p in sorted(found.items())))
-
-
 def from_el_root(r, f, want_arch, arches):
     """A Rocky or Alma release root, the directory holding BaseOS and AppStream, for the first arch that answers."""
     for a in arches:
@@ -721,7 +683,7 @@ def arch_in_path(source):
     return None
 
 
-def identify(source, want_arch=None, suite=None, deadline=None, packages=()):
+def identify(source, want_arch=None, suite=None, deadline=None):
     """
     One finding for one source, and 0 when it identified cleanly, 2 when it did with
     something to ask the operator about, 1 when it did not.
@@ -736,8 +698,6 @@ def identify(source, want_arch=None, suite=None, deadline=None, packages=()):
             iso = Iso(RangeFile(source, deadline) if is_url else LocalFile(source))
             f["volume_id"] = iso.volume_id
             ok = probe_tree(iso, f, want_arch, suite)
-            if ok:
-                find_packages(iso, f, packages)
         elif re.search(r"\.(tar|tar\.gz|tgz|tar\.xz|txz|tar\.bz2)$", low):
             if is_url:
                 raise ValueError("a rootfs tarball URL: download it first (detection streams a local file)")
@@ -756,8 +716,6 @@ def identify(source, want_arch=None, suite=None, deadline=None, packages=()):
             f["kind"] = "repository"
             h = Http(source, deadline)
             ok = probe_tree(h, f, want_arch, suite)
-            if ok:
-                find_packages(h, f, packages)
         elif os.path.isdir(source):
             f["kind"] = "directory"
             d = LocalDir(source)
@@ -770,8 +728,6 @@ def identify(source, want_arch=None, suite=None, deadline=None, packages=()):
                         f["arch"] = a
                         f.note(sh + " ELF header", "e_machine is %s" % a)
                         break
-            elif ok:
-                find_packages(d, f, packages)
         else:
             raise ValueError("not a URL, an .iso, a rootfs tarball or a directory")
     except (OSError, ValueError, tarfile.TarError, struct.error, Expired) as e:
@@ -794,7 +750,7 @@ def identify(source, want_arch=None, suite=None, deadline=None, packages=()):
     return f, (2 if f.get("ambiguous") or f.get("problems") else 0)
 
 
-def identify_all(sources: list, want_arch: str = None, suite: str = None, packages: tuple = (),
+def identify_all(sources: list, want_arch: str = None, suite: str = None,
                  deadline: Deadline = None) -> list:
     """
     One finding per source, read under one deadline for the lot (the caller's where it
@@ -802,5 +758,5 @@ def identify_all(sources: list, want_arch: str = None, suite: str = None, packag
     whatever the number of sources.
     """
     deadline = deadline or Deadline()
-    return [identify(source, want_arch, suite, deadline=deadline, packages=packages)[0]
+    return [identify(source, want_arch, suite, deadline=deadline)[0]
             for source in sources]

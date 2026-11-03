@@ -47,7 +47,7 @@ from tests.unit.test_osimage_detect import rocky_root
 
 SETTINGS = {"repo": "/trinity/trinityx-combined", "repo_url": "", "answers": "/trinity/local/backup/group_vars/all.yml",
             "images_root": "/trinity/images", "python": "/trinity/local/python",
-            "collections": "/trinity/local/trixd/collections", "library": "",
+            "collections": "/trinity/local/trixd/collections",
             "builder": "books", "stub_gap_seconds": 3}
 # What Luna's create writes down: its own stream, tree and record words, and the sources
 # the body or the mirrors map named, or none.
@@ -67,7 +67,7 @@ GALAXY_ROLE = "OndrejHome.pcs-modules-2"
 # The sources a job is given unless a test names its own: a Rocky 9.8 mirror root.
 MIRROR = "a Rocky 9.8 mirror root"
 VERDICT = {"family": "redhat", "playbook": "compute-redhat.yml", "arch": "x86_64",
-           "python36": False, "interpreter": "/usr/bin/python3", "base": 0,
+           "interpreter": "/usr/bin/python3", "base": 0,
            "base_variable": "image_el_baseurl", "skip_tags": [],
            "variables": {"image_el_releasever": "9",
                          "image_el_baseurl": "https://download.rockylinux.org/pub/rocky/9/"},
@@ -211,8 +211,7 @@ def test_the_playbook_is_invoked_as_the_proven_build_was():
     a one-key JSON document.
     """
     verdict = dict(VERDICT, skip_tags=["monitoring"],
-                   variables={"image_el_releasever": "9", "enable_slurm": True,
-                              "image_bootstrap_extra": ["python3.12"]})
+                   variables={"image_el_releasever": "9", "enable_slurm": True})
     assert runner.playbook_argv(REQUEST, verdict, BUILT) == [
         "/trinity/local/python/bin/ansible-playbook", "compute-redhat.yml",
         "-e", "image_name=rocky9", "-e", "trinityx_site=/trinity/trinityx-combined/site",
@@ -222,8 +221,7 @@ def test_the_playbook_is_invoked_as_the_proven_build_was():
         "-e", "image_proc_mount=false", "-e", "trix_images=/trinity/images",
         "-e", '{"image_chroot_cmd": "lchroot --path {{ image_path }} --force --"}',
         "-e", '{"image_el_releasever": "9"}',
-        "-e", '{"enable_slurm": true}',
-        "-e", '{"image_bootstrap_extra": ["python3.12"]}']
+        "-e", '{"enable_slurm": true}']
 
 
 def test_a_string_variable_with_a_space_reaches_ansible_in_one_piece():
@@ -245,10 +243,10 @@ def test_a_string_variable_with_a_space_reaches_ansible_in_one_piece():
 def test_the_environment_names_the_books_and_the_lchroot_connection():
     """
     The book finds its connection plugin, roles, collections and inventory where the
-    settings say, and the modules for a Python 3.6 image only when it is one.
+    settings say.
     """
     inventory = "hosts,/etc/ansible/hosts,dynamic_hosts,/var/job/inventory/hosts.yml"
-    env = runner.playbook_env(VERDICT, BUILT, inventory)
+    env = runner.playbook_env(BUILT, inventory)
     assert env == {"LUNA_IMAGE_CONNECTION": "lchroot",
                    "ANSIBLE_CONNECTION_PLUGINS": "/trinity/trinityx-combined/site/plugins/connection",
                    "ANSIBLE_ROLES_PATH": "/trinity/trinityx-combined/site/roles:~/.ansible/roles"
@@ -258,8 +256,6 @@ def test_the_environment_names_the_books_and_the_lchroot_connection():
                    "ANSIBLE_HOST_KEY_CHECKING": "False",
                    "ANSIBLE_INVENTORY": inventory,
                    "PYTHONUNBUFFERED": "1"}
-    older = runner.playbook_env(dict(VERDICT, python36=True), BUILT, inventory, "/lib/modules")
-    assert older["ANSIBLE_LIBRARY"] == "/lib/modules"
 
 
 def test_the_inventory_pins_the_interpreter_of_each_host_as_inventory_data(tmp_path):
@@ -268,7 +264,7 @@ def test_the_inventory_pins_the_interpreter_of_each_host_as_inventory_data(tmp_p
     controller's, as host data rather than an extra variable, which would also reach a
     task delegated to the other side.
     """
-    hosts = runner.write_inventory(str(tmp_path), "rocky8", "/usr/bin/python3.12")
+    hosts = runner.write_inventory(str(tmp_path), "rocky8", "/usr/bin/python3")
     assert hosts == str(tmp_path / "inventory" / "hosts.yml")
     assert (tmp_path / "inventory" / "hosts.yml").read_text() == "all: {}\n"
     assert (tmp_path / "inventory" / "host_vars" / "localhost.yml").read_text() == \
@@ -277,7 +273,7 @@ def test_the_inventory_pins_the_interpreter_of_each_host_as_inventory_data(tmp_p
         "ansible_python_interpreter: /usr/bin/python3\n"
     assert not (tmp_path / "inventory" / "group_vars" / "all" / "answers.yml").exists()
     assert (tmp_path / "inventory" / "host_vars" / "rocky8.osimages.luna.yml").read_text() == \
-        "ansible_python_interpreter: /usr/bin/python3.12\n"
+        "ansible_python_interpreter: /usr/bin/python3\n"
     books = tmp_path / "books"
     books.mkdir()
     (books / "ansible.cfg").write_text("[defaults]\ninventory = hosts,/etc/ansible/hosts,dynamic_hosts\n")
@@ -459,7 +455,6 @@ def test_a_build_that_ends_well_records_the_kernel_and_the_client(tmp_path, monk
     assert kwargs["cwd"] == str(tmp_path / "repo" / "site") and kwargs["start_new_session"] is True
     assert kwargs.get("errors") == "replace", "a byte that is not UTF-8 would end the read loop"
     assert kwargs["env"]["ANSIBLE_INVENTORY"] == f"hosts,dynamic_hosts,{jobdir}/inventory/hosts.yml"
-    assert "ANSIBLE_LIBRARY" not in kwargs["env"]
     assert EXCERPT in open(os.path.join(jobdir, "build.log"), encoding="utf-8").read()
     lines, following = jobs.lines_since(jobdir)
     assert [line["message"] for line in lines][:3] == [
@@ -540,33 +535,20 @@ def test_a_run_with_no_answers_anywhere_fails_before_the_book_starts(tmp_path, m
     assert started == []
 
 
-def test_a_python36_image_gets_the_newer_interpreter_and_the_modules(tmp_path, monkeypatch, sigterm_restored):
+def test_a_rocky_8_source_is_built_with_the_books_as_they_are(tmp_path, monkeypatch, sigterm_restored):
     """
-    A Rocky 8 source carrying the newer Python is a Python 3.6 image: the image host runs
-    on the interpreter the verdict chose and the book is told where the modules that can
-    drive it are; without them the build does not start.
+    A Rocky 8 mirror needs nothing the books do not hold: no extra package, no modules
+    directory, and the image host on the same interpreter as any other image.
     """
-    library = tmp_path / "library"
-    library.mkdir()
-    eight = rocky_root(str(tmp_path / "mirror8"), "8.10", packages=("python3.12",))
+    eight = rocky_root(str(tmp_path / "mirror8"), "8.10")
     jobdir, started, _ = _job(tmp_path, monkeypatch, media=[eight], osrelease="8.10",
                               kernels=("4.18.0-553.el8",))
-    request = jobs.read_json(jobdir, jobs.REQUEST)
-    request["settings"]["library"] = str(library)
-    jobs.files.write(os.path.join(jobdir, jobs.REQUEST), json.dumps(request))
-
-    assert runner.Build(jobdir).run() == 1
-    assert _result(jobdir)["reason"] == f"the modules a Python 3.6 image needs are not at {library}"
-    assert started == []
-    assert jobs.read_json(jobdir, jobs.VERDICT)["python36"] is True
-
-    (library / "dnf.py").write_text("")
     assert runner.Build(jobdir).run() == 0
     (argv, kwargs), = started
-    assert kwargs["env"]["ANSIBLE_LIBRARY"] == str(library)
-    assert '{"image_bootstrap_extra": ["python3.12"]}' in argv
+    assert "ANSIBLE_LIBRARY" not in kwargs["env"]
+    assert not [item for item in argv if "image_bootstrap_extra" in item]
     pinned = open(os.path.join(jobdir, "inventory", "host_vars", "rocky9.osimages.luna.yml")).read()
-    assert pinned == "ansible_python_interpreter: /usr/bin/python3.12\n"
+    assert pinned == "ansible_python_interpreter: /usr/bin/python3\n"
 
 
 @pytest.mark.parametrize("setup, reason", [
@@ -676,7 +658,7 @@ def test_the_sources_are_held_against_the_record_and_a_mismatch_ends_the_build(t
     the tree can never disagree; a point release apart from the record's, as the 9.8
     mirror of the other tests is from their 9.6, is not a mismatch.
     """
-    eight = rocky_root(str(tmp_path / "mirror8"), "8.10", packages=("python3.12",))
+    eight = rocky_root(str(tmp_path / "mirror8"), "8.10")
     jobdir, started, _ = _job(tmp_path, monkeypatch, media=[eight], osrelease="9.6")
     assert runner.Build(jobdir).run() == 1
     reason = _result(jobdir)["reason"]

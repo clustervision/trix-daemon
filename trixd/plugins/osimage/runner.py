@@ -182,12 +182,11 @@ def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
 GALAXY_ROLES: tuple = ("~/.ansible/roles", "/usr/share/ansible/roles", "/etc/ansible/roles")
 
 
-def playbook_env(verdict: dict, settings: dict, inventory: str, library: str = "") -> dict:
+def playbook_env(settings: dict, inventory: str) -> dict:
     """
     What the book's process is told beyond the environment the build started with: the lchroot connection
     and where its plugin is, the books' roles then the installer's Galaxy roles, the
-    collections of the books alone, the inventory, and for a Python 3.6 image the
-    modules that can drive it.
+    collections of the books alone and the inventory.
     """
     books = settings["books"]
     env = {"LUNA_IMAGE_CONNECTION": "lchroot",
@@ -198,8 +197,6 @@ def playbook_env(verdict: dict, settings: dict, inventory: str, library: str = "
            "ANSIBLE_HOST_KEY_CHECKING": "False",
            "ANSIBLE_INVENTORY": inventory,
            "PYTHONUNBUFFERED": "1"}
-    if verdict["python36"]:
-        env["ANSIBLE_LIBRARY"] = library
     return env
 
 
@@ -420,18 +417,12 @@ class Build:
             variables[verdict["base_variable"]] = self._mount_disc(base["source"], verdict)
         if verdict["arch"] != platform.machine():
             self._register_binfmt(settings["python"], verdict["arch"])
-        library = ""
-        if verdict["python36"]:
-            library = settings["library"] or _locate_library(settings["python"])
-            if not os.path.isfile(os.path.join(library, "dnf.py")):
-                raise Failed(f"the modules a Python 3.6 image needs are not at {library}")
         verdict = dict(verdict, variables=variables)
         hosts = write_inventory(self.jobdir, request["name"], verdict["interpreter"],
                                 self._answers(settings), controller_name(settings["books"]))
         argv = playbook_argv(request, verdict, settings)
         env = dict(os.environ)
-        env.update(playbook_env(verdict, settings, inventory_sources(settings["books"], hosts),
-                                library))
+        env.update(playbook_env(settings, inventory_sources(settings["books"], hosts)))
         if self.cancelled:
             # The stop arrived during the preparation: the book is not started.
             return
@@ -461,8 +452,7 @@ class Build:
         arch = request["architecture"]
         try:
             if request["media"]:
-                findings = detect.identify_all(request["media"], want_arch=arch,
-                                               packages=rules.PACKAGES)
+                findings = detect.identify_all(request["media"], want_arch=arch)
                 verdict = rules.verdict(findings, arch)
                 rules.check_record(verdict, request["distribution"], request["osrelease"])
             else:
@@ -472,8 +462,6 @@ class Build:
             raise Failed(error.message) from None
         files.write(os.path.join(self.jobdir, jobs.VERDICT), json.dumps(verdict, indent=1), 0o600)
         self.say(f"building {verdict['detected']}")
-        for note in verdict["notes"]:
-            self.say(note)
         return verdict
 
     def _stub(self, settings: dict, tree: str, result: dict) -> None:
@@ -609,18 +597,6 @@ def _terminate(child) -> None:
     SIGTERM to the book and everything it started, which share its session.
     """
     os.killpg(child.pid, signal.SIGTERM)
-
-
-def _locate_library(python: str) -> str:
-    """
-    Where luna2-utils keeps the modules a Python 3.6 image needs, asked of the
-    interpreter that holds it.
-    """
-    done = shell.run([os.path.join(python, "bin", "python3"), "-c",
-                      "import utils; print(utils.__file__)"], timeout=60)
-    if not done.ok:
-        raise Failed(f"luna2-utils is not installed in {python}: {done.err or done.out}")
-    return os.path.join(os.path.dirname(done.out), "ansible_library")
 
 
 def _append(where: str):

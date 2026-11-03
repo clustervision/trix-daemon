@@ -99,11 +99,6 @@ schemas:
       optional: true
       description: The ansible collections the books import
       example: /trinity/local/trixd/collections
-    library:
-      type: string
-      optional: true
-      description: The modules a Python 3.6 image is driven with; empty finds luna2-utils' own
-      example: ""
     mirrors:
       type: object
       optional: true
@@ -164,13 +159,13 @@ endpoints:
     description: |
       The checkout the books are taken from, the https address it is fetched from when it
       is not there, the cluster's answer file, where the tree and the job directories go, the Python
-      that holds ansible-playbook, the collections and the Python 3.6 modules, the
+      that holds ansible-playbook and the collections, the
       mirrors a create without sources builds from, the concurrency cap, the limit in
       seconds, how many days a finished build's directory is kept, and the builder: the
       books, or a stub for exercising the chain around a build.
     response:
       description: The settings as held
-      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: /trinity/local/trixd/collections, library: "", mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: /trinity/local/trixd/collections, mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
 
   - path: settings
     methods: [PATCH]
@@ -189,7 +184,7 @@ endpoints:
     request_example: {concurrency: 1, mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}}
     response:
       description: The settings as now held
-      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: /trinity/local/trixd/collections, library: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: /trinity/local/trixd/collections, mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
     errors:
       400: A path is not absolute, repo_url is not an https address, a count or a number of seconds is below one, the builder is not one offered, or a mirrors key or source is not of the shape above
 
@@ -241,7 +236,7 @@ endpoints:
       The build's state and phase, when it was written, started and finished, the pid of
       its process, the exit code and the reason once it ended, and the progress lines from `since`
       on with `next` as the number to ask for next. Once the build ended the answer
-      carries `kernelversion`, and `notes` carries what detection could not check.
+      carries `kernelversion`.
     params:
       name: {description: "The image name given at create", example: rocky9}
     query:
