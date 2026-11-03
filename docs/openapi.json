@@ -606,6 +606,317 @@
         "title": "NodeProof",
         "type": "object"
       },
+      "OsimageCreate": {
+        "properties": {
+          "architecture": {
+            "description": "The architecture of the osimage record, in Luna's words (x86, arm64, openpower) or the kernel's",
+            "examples": [
+              "x86"
+            ],
+            "pattern": "^[a-z0-9_]{2,16}$",
+            "title": "Architecture",
+            "type": "string"
+          },
+          "distribution": {
+            "description": "The distribution of the osimage record, lower-cased",
+            "examples": [
+              "redhat"
+            ],
+            "pattern": "^[a-z0-9._-]{1,32}$",
+            "title": "Distribution",
+            "type": "string"
+          },
+          "image": {
+            "description": "The image's name in Luna, which names the job, and is passed back as it came",
+            "examples": [
+              "rocky9"
+            ],
+            "title": "Image",
+            "type": "string"
+          },
+          "media": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sources, one to eight, from a caller that names them: http or https mirror URLs, file:// trees and local ISO files. One of them has to identify the distribution; the others are checked for agreement. Luna sends none, and the mirrors setting then names them.\n",
+            "examples": [
+              [
+                "https://download.rockylinux.org/pub/rocky/9/",
+                "/isos/Rocky-9.6-x86_64-dvd.iso"
+              ]
+            ],
+            "title": "Media"
+          },
+          "osrelease": {
+            "description": "The release of the osimage record",
+            "examples": [
+              "9.6"
+            ],
+            "pattern": "^[A-Za-z0-9._+-]{1,32}$",
+            "title": "Osrelease",
+            "type": "string"
+          },
+          "path": {
+            "description": "The image directory Luna resolved for the record, which has to be the directory the books build, images_root/<image>",
+            "examples": [
+              "/trinity/images/rocky9"
+            ],
+            "title": "Path",
+            "type": "string"
+          },
+          "request_id": {
+            "description": "Luna's own id of the create, whose status stream every line of the build goes to",
+            "examples": [
+              "1761818733.1234567891234"
+            ],
+            "pattern": "^[A-Za-z0-9._-]{1,128}$",
+            "title": "Request Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "image",
+          "request_id",
+          "path",
+          "distribution",
+          "osrelease",
+          "architecture"
+        ],
+        "title": "OsimageCreate",
+        "type": "object"
+      },
+      "OsimageSettings": {
+        "properties": {
+          "answers": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The cluster's answer file, used when the checkout has no site/group_vars/all.yml",
+            "examples": [
+              "/trinity/local/backup/group_vars/all.yml"
+            ],
+            "title": "Answers"
+          },
+          "builder": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "What builds the tree: books, or stub, which runs no book and only says lines, or stub-fail, which says them and fails, so the chain around a build can be exercised\n",
+            "examples": [
+              "books"
+            ],
+            "title": "Builder"
+          },
+          "collections": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The ansible collections the books import",
+            "examples": [
+              "/trinity/local/trixd/collections"
+            ],
+            "title": "Collections"
+          },
+          "concurrency": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How many builds may run at once",
+            "examples": [
+              2
+            ],
+            "title": "Concurrency"
+          },
+          "images_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the books build the tree, under the image name",
+            "examples": [
+              "/trinity/images"
+            ],
+            "title": "Images Root"
+          },
+          "keep_days": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long the directory of a build that ended is kept",
+            "examples": [
+              14
+            ],
+            "title": "Keep Days"
+          },
+          "library": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The modules a Python 3.6 image is driven with; empty finds luna2-utils' own",
+            "examples": [
+              ""
+            ],
+            "title": "Library"
+          },
+          "limit_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "A build running longer than this is stopped",
+            "examples": [
+              21600
+            ],
+            "title": "Limit Seconds"
+          },
+          "mirrors": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The sources of a create that names none, by the record: `<distribution>/<osrelease>` or `<distribution>/<osrelease>/<architecture>` to a list of sources as `media` takes them. The entry for the architecture is taken before the one without; a record with neither is built from what the books hold.\n",
+            "examples": [
+              {
+                "redhat/9.6": [
+                  "https://download.rockylinux.org/pub/rocky/9/"
+                ],
+                "redhat/9.6/arm64": [
+                  "https://download.rockylinux.org/pub/rocky/9/"
+                ]
+              }
+            ],
+            "title": "Mirrors"
+          },
+          "python": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The Python that holds ansible-playbook and luna2-utils",
+            "examples": [
+              "/trinity/local/python"
+            ],
+            "title": "Python"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The checkout of the TrinityX repository; its site directory holds the books the build runs",
+            "examples": [
+              "/trinity/trinityx-combined"
+            ],
+            "title": "Repo"
+          },
+          "repo_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The https archive, branch or tag included in its address, that the build fetches into repo when repo is not there; empty fetches nothing\n",
+            "examples": [
+              "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz"
+            ],
+            "title": "Repo Url"
+          },
+          "state_root": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where each build keeps its job directory",
+            "examples": [
+              "/trinity/local/trixd/var/osimage"
+            ],
+            "title": "State Root"
+          },
+          "stub_gap_seconds": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How far apart a stub builder says its lines",
+            "examples": [
+              3
+            ],
+            "title": "Stub Gap Seconds"
+          }
+        },
+        "title": "OsimageSettings",
+        "type": "object"
+      },
       "PrometheusConfig": {
         "properties": {
           "exporters_file": {
@@ -3172,6 +3483,627 @@
         ],
         "x-trixd-access": "forward",
         "x-trixd-minimum": ""
+      }
+    },
+    "/api/v1/osimage": {
+      "get": {
+        "description": "Each build held, with its state and when it started, and the count against the\nconcurrency limit: `running` is the number of builds running, which is what the\nlimit counts; a build that never started is listed as prepared and counts\nfor nothing. A daemon that has never built answers no jobs.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "osimage_listing_get_api_v1_osimage_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "jobs": [
+                    {
+                      "name": "rocky9",
+                      "started": "2026-10-29T10:12:03+00:00",
+                      "state": "running"
+                    }
+                  ],
+                  "limit": 2,
+                  "running": 1
+                },
+                "schema": {}
+              }
+            },
+            "description": "The builds held and the limit"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Every build this daemon holds, and how many may run",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/osimage/create": {
+      "post": {
+        "description": "What `luna osimage create` hands this daemon once the osimage record exists: the\nimage, Luna's own request id, the image directory and the record's distribution,\nrelease and architecture. The job is written and the build started as a child\nprocess of the daemon, and the answer comes at once, because Luna waits five\nseconds for it: nothing is detected or probed first. The sources are\n`media` when the body names them, else the `mirrors` setting's entry for the\nrecord, else none, and the books then build from what they hold: a RedHat image\nfrom this controller's own repositories, so only the controller's own release, an\nUbuntu or Leap image from the mirror the books name. The build fetches the books when\nthey are not there, checks what they need on the controller, reads the sources and\nholds the record's distribution and release against them, and builds with the\n`builder` of the settings; a refusal at any of these ends the stream with a line\nsaying the build failed and why. The daemon posts the build's lines to the status\nstream of `request_id`, and when the build is done it sets the kernel version on\nLuna's record and asks Luna to pack the image on that same stream, which Luna's pack\nchain then ends. A build that fails, or whose pack Luna refuses, is ended here with\na line saying so and EOF. `image` names the job, so it has to match\n`^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`\nhas to be `images_root/<image>`, the directory the books build, with no symlink\nleading out of `images_root`, because the build mounts, chroots and removes inside\nit and the result is read and packed from the path. `architecture` is taken in\nLuna's words or the kernel's; one no client is published for is refused. Luna calls\nunder the account trixd.ini names.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "osimage_create_post_api_v1_osimage_create_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "architecture": "x86",
+                    "distribution": "redhat",
+                    "image": "rocky9",
+                    "osrelease": "9.6",
+                    "path": "/trinity/images/rocky9",
+                    "request_id": "1761818733.1234567891234"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/OsimageCreate"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "name": "rocky9",
+                  "pid": 41872,
+                  "started": "2026-10-29T10:12:03+00:00",
+                  "state": "running"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The build, now running"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The image name, the architecture, the path or a source is refused; the message names what"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A build of that name is running, or it is still being told to Luna, or the concurrency limit is reached; the message says which"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The build process could not be started"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Build the content of an image for Luna",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
+      }
+    },
+    "/api/v1/osimage/settings": {
+      "get": {
+        "description": "The checkout the books are taken from, the https address it is fetched from when it\nis not there, the cluster's answer file, where the tree and the job directories go, the Python\nthat holds ansible-playbook, the collections and the Python 3.6 modules, the\nmirrors a create without sources builds from, the concurrency cap, the limit in\nseconds, how many days a finished build's directory is kept, and the builder: the\nbooks, or a stub for exercising the chain around a build.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "osimage_settings_get_api_v1_osimage_settings_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "answers": "/trinity/local/backup/group_vars/all.yml",
+                  "builder": "books",
+                  "collections": "/trinity/local/trixd/collections",
+                  "concurrency": 2,
+                  "images_root": "/trinity/images",
+                  "keep_days": 14,
+                  "library": "",
+                  "limit_seconds": 21600,
+                  "mirrors": {},
+                  "python": "/trinity/local/python",
+                  "repo": "/trinity/trinityx-combined",
+                  "repo_url": "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz",
+                  "state_root": "/trinity/local/trixd/var/osimage",
+                  "stub_gap_seconds": 3
+                },
+                "schema": {}
+              }
+            },
+            "description": "The settings as held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Where the builds run, and their limits",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "Send any of the settings; those left out keep their value, and the next create\nuses them. rootus only, because every path is read or written and every command\nrun as root. A path has to be absolute, a count or a number of seconds at\nleast one, the builder books, stub or stub-fail, and every mirrors key\n`<distribution>/<osrelease>` or `<distribution>/<osrelease>/<architecture>` with a\nlist of sources as its value; the map sent replaces the one held.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "operationId": "osimage_settings_patch_api_v1_osimage_settings_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "concurrency": 1,
+                    "mirrors": {
+                      "redhat/9.6": [
+                        "https://download.rockylinux.org/pub/rocky/9/"
+                      ]
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/OsimageSettings"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "answers": "/trinity/local/backup/group_vars/all.yml",
+                  "builder": "books",
+                  "collections": "/trinity/local/trixd/collections",
+                  "concurrency": 1,
+                  "images_root": "/trinity/images",
+                  "keep_days": 14,
+                  "library": "",
+                  "limit_seconds": 21600,
+                  "mirrors": {
+                    "redhat/9.6": [
+                      "https://download.rockylinux.org/pub/rocky/9/"
+                    ]
+                  },
+                  "python": "/trinity/local/python",
+                  "repo": "/trinity/trinityx-combined",
+                  "repo_url": "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz",
+                  "state_root": "/trinity/local/trixd/var/osimage",
+                  "stub_gap_seconds": 3
+                },
+                "schema": {}
+              }
+            },
+            "description": "The settings as now held"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A path is not absolute, repo_url is not an https address, a count or a number of seconds is below one, the builder is not one offered, or a mirrors key or source is not of the shape above"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Change where the builds run, or their limits",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/osimage/{name}": {
+      "get": {
+        "description": "The build's state and phase, when it was written, started and finished, the pid of\nits process, the exit code and the reason once it ended, and the progress lines from `since`\non with `next` as the number to ask for next. Once the build ended the answer\ncarries `kernelversion`, and `notes` carries what detection could not check.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "osimage_show_get_api_v1_osimage__name__get",
+        "parameters": [
+          {
+            "description": "The image name given at create",
+            "examples": {
+              "example": {
+                "value": "rocky9"
+              }
+            },
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The image name given at create",
+              "title": "Name",
+              "type": "string"
+            }
+          },
+          {
+            "description": "The first sequence number wanted; the `next` of the previous answer",
+            "examples": {
+              "example": {
+                "value": 12
+              }
+            },
+            "in": "query",
+            "name": "since",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "integer"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "The first sequence number wanted; the `next` of the previous answer",
+              "title": "Since"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "lines": [
+                    {
+                      "message": "TASK [trinity/image-create : Bootstrap]",
+                      "seq": 12,
+                      "status": 200
+                    }
+                  ],
+                  "name": "rocky9",
+                  "next": 13,
+                  "phase": "rocky9.osimages.luna",
+                  "pid": 41872,
+                  "prepared": "2026-10-29T10:11:40+00:00",
+                  "reason": "",
+                  "started": "2026-10-29T10:12:03+00:00",
+                  "state": "running"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The build, and its lines from the sequence number on"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No build of that name is held"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Where one build is, and its progress lines from a sequence number on",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/osimage/{name}/actions/cancel": {
+      "post": {
+        "description": "Stops the build process, which gives the runner SIGTERM: it stops the book, unmounts\nwhat it mounted and records the result. A runner still alive after 90 seconds is\nkilled. The tree built so far is kept for Luna to remove. A build that never started\nis cancelled without a process to stop.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "osimage_cancel_post_api_v1_osimage__name__actions_cancel_post",
+        "parameters": [
+          {
+            "description": "The image name given at create",
+            "examples": {
+              "example": {
+                "value": "rocky9"
+              }
+            },
+            "in": "path",
+            "name": "name",
+            "required": true,
+            "schema": {
+              "description": "The image name given at create",
+              "title": "Name",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "name": "rocky9",
+                  "state": "cancelled"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The build, now cancelled"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No build of that name is held"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The build has already ended; the message says how"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Stop a build",
+        "tags": [
+          "osimage"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
       }
     },
     "/api/v1/prometheus/config": {

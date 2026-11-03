@@ -88,6 +88,7 @@ lowest role it admits.
 | services | starting, stopping and querying a catalogue of services |
 | slurm | slurm's node and partition configuration, computed from the node list |
 | genders | the genders file, computed from the node list |
+| osimage | building an OS image tree for `luna osimage create`, as a child process of the daemon, with the progress told to Luna's status stream and the pack then asked of Luna |
 
 **A booting node never depends on trixd.** Nothing this daemon serves sits on the boot
 path: outputs are redone when something changes, never when a node boots.
@@ -149,7 +150,7 @@ render once, start the background timers, and only then open the listeners.
 | `trixd/db/` | Engine, models and the Alembic migrations. |
 | `trixd/api/v1/` | The daemon's own routes: auth, identity, system, and `docs.py`, the docs page and the document it shows. |
 | `trixd/static/` | What the docs page loads: the TrinityX look, logo and icon, and Swagger UI 5.32.15, so it works without internet. |
-| `trixd/plugins/` | The plugins that ship: luna (the route to Luna), directory, prometheus, services, slurm, genders. |
+| `trixd/plugins/` | The plugins that ship: luna (the route to Luna), directory, prometheus, services, slurm, genders, osimage. |
 | `trixd/utils/` | Helpers with no daemon state: the shell runner, file writes, declarations. |
 | `tests/` | `unit/` for pytest, `e2e/` against a running daemon, `perf/` for timing at scale. |
 | `docs/writing-a-plugin.md` | How to write a plugin. |
