@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import logging
 import os
+import threading
 from types import SimpleNamespace
 
 import pytest
@@ -1594,30 +1595,139 @@ def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
         loader.load(rig, "twofold")
 
 
+# Accepts only when nothing has yet, so the same backend serves whether the daemon or the
+# handler accepts the socket.
+ACCEPT_ONCE = (
+    '        if websocket.application_state == WebSocketState.CONNECTING:\n'
+    '            await websocket.accept()\n')
+
 TALKER = (
+    'from starlette.websockets import WebSocketState\n\n\n'
     'class Backend:\n    """Echoes one frame, reversed."""\n\n'
     '    async def talk(self, websocket):\n        """Hold the socket for one frame."""\n'
-    '        await websocket.accept()\n'
+    + ACCEPT_ONCE +
     '        await websocket.send_bytes((await websocket.receive_bytes())[::-1])\n'
     '        await websocket.close()\n')
 
+SAYS_WHO = (
+    'from starlette.websockets import WebSocketDisconnect, WebSocketState\n\n\n'
+    'class Backend:\n    """Answers every frame with who is on the socket."""\n\n'
+    '    async def talk(self, websocket, caller=None):\n        """Until the client leaves."""\n'
+    + ACCEPT_ONCE +
+    '        try:\n'
+    '            while True:\n'
+    '                await websocket.receive_text()\n'
+    '                await websocket.send_text(getattr(caller, "name", "nobody"))\n'
+    '        except WebSocketDisconnect:\n'
+    '            return\n')
 
-def _talker(tmp_path, backend: str = TALKER) -> None:
+CLOSER = (
+    'import asyncio\n\n'
+    'from starlette.websockets import WebSocketDisconnect, WebSocketState\n\n\n'
+    'class Backend:\n    """Holds its sockets and closes them when it is let go of."""\n\n'
+    '    def __init__(self):\n        """Nothing open yet."""\n        self.open = []\n\n'
+    '    async def talk(self, websocket):\n        """Hold the socket until it is closed."""\n'
+    + ACCEPT_ONCE +
+    '        self.open.append((asyncio.get_running_loop(), websocket))\n'
+    '        await websocket.send_text("held")\n'
+    '        try:\n'
+    '            while True:\n'
+    '                await websocket.receive_text()\n'
+    '                await websocket.send_text("still here")\n'
+    '        except (WebSocketDisconnect, RuntimeError):\n'
+    '            return\n\n'
+    '    def close(self):\n'
+    '        """From the loader\'s thread, onto the loop each socket is on."""\n'
+    '        for loop, websocket in self.open:\n'
+    '            asyncio.run_coroutine_threadsafe(websocket.close(1012), loop).result(5)\n')
+
+
+def _talker(tmp_path, backend: str = TALKER, declared: str = "    public: true\n") -> str:
     """
-    A plugin with one public WebSocket endpoint, where the rig looks for plugins.
+    A plugin with one WebSocket endpoint, where the rig looks for plugins.
     """
     plugin = tmp_path / "plugins" / "talker"
     plugin.mkdir()
     (plugin / "manifest.yaml").write_text(
         "plugin: talker\nbackend: backend\nendpoints:\n"
-        "  - path: ws\n    websocket: true\n    public: true\n    handler: talk\n",
+        "  - path: ws\n    websocket: true\n    handler: talk\n" + declared,
         encoding="utf-8")
     (plugin / "backend.py").write_text(backend, encoding="utf-8")
+    return str(plugin)
+
+
+def _refusal(attempt) -> str:
+    """
+    What a load or a parse was refused with, or None when it went through.
+    """
+    from trixd.common.errors import PluginRefused
+
+    try:
+        attempt()
+    except PluginRefused as error:
+        return error.message
+    return None
+
+
+def _ended(socket, *frames: str, wait: float = 5.0):
+    """
+    Send the frames, then the close code and reason the daemon ended the socket with, or
+    the answer it gave instead. A socket left open fails the test rather than hanging it.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    said = []
+
+    def converse() -> None:
+        """
+        One exchange, on a thread the test does not wait on for ever.
+        """
+        try:
+            for frame in frames:
+                socket.send_text(frame)
+            said.append(socket.receive_text())
+        except WebSocketDisconnect as closed:
+            said.append((closed.code, closed.reason))
+
+    thread = threading.Thread(target=converse, daemon=True)
+    thread.start()
+    thread.join(wait)
+    assert said, f"nothing came back within {wait}s: the socket was left open"
+    return said[0]
+
+
+def _reader_token(client, headers) -> str:
+    """
+    A token for a login that holds reader and nothing more.
+    """
+    answer = client.put(f"{API_PREFIX}/identity/users/rita",
+                        json={"password": "pw", "role": "reader"}, headers=headers)
+    assert answer.status_code == 200, answer.text
+    answer = client.post(f"{API_PREFIX}/auth/token", json={"username": "rita", "password": "pw"})
+    assert answer.status_code == 201, answer.text
+    return answer.json()["token"]
+
+
+def _audited(outcome: str) -> list:
+    """
+    The (principal, detail) of every WebSocket row in the audit trail with this outcome.
+    """
+    from trixd.core.security import audit
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    audit.flush()
+    handle = database.session()
+    try:
+        return [(row.principal, row.detail) for row in handle.query(models.Audit).filter(
+            models.Audit.outcome == outcome, models.Audit.action == "WEBSOCKET").all()]
+    finally:
+        handle.close()
 
 
 def test_a_websocket_endpoint_is_served_by_the_backends_coroutine(rig, client, tmp_path):
     """
-    The socket opens with no token and the handler holds it.
+    A public socket opens with no token and the handler holds it.
     """
     from trixd.core.plugins import loader
 
@@ -1628,24 +1738,140 @@ def test_a_websocket_endpoint_is_served_by_the_backends_coroutine(rig, client, t
         assert socket.receive_bytes() == b"cba"
 
 
+def test_a_public_websocket_hands_its_handler_no_caller(rig, client, tmp_path):
+    """
+    public is the opt-out: no first message is read as a token, and nobody is the caller.
+    """
+    from trixd.core.plugins import loader
+
+    _talker(tmp_path, SAYS_WHO)
+    loader.load(rig, "talker")
+    with client.websocket_connect(f"{API_PREFIX}/talker/ws") as socket:
+        assert _ended(socket, "not a token") == "nobody"
+
+
+def test_a_guarded_websocket_admits_the_token_its_first_message_carries(rig, client, token,
+                                                                       tmp_path):
+    """
+    The first message is the token, judged as a route's is; the handler gets the caller,
+    and the grant is in the audit trail.
+    """
+    from trixd.core.plugins import loader
+
+    _talker(tmp_path, SAYS_WHO, "    minimum: manager\n")
+    refusal = _refusal(lambda: loader.load(rig, "talker"))
+    assert refusal is None, f"a guarded websocket was refused: {refusal}"
+    with client.websocket_connect(f"{API_PREFIX}/talker/ws") as socket:
+        assert _ended(socket, token, "who") == "tester"
+    assert any(who == "tester" for who, _ in _audited("granted")), "the grant was not audited"
+
+
+@pytest.mark.parametrize("sends, said", [
+    ("garbage", "invalid"),
+    ("reader", "needs manager"),
+    ("node", "node token"),
+    (None, "no token in time"),
+])
+def test_a_guarded_websocket_is_closed_with_1008_on_a_refusal(rig, client, headers, tmp_path,
+                                                              monkeypatch, sends, said):
+    """
+    A bad token, a role under the minimum, a node token and silence past the deadline each
+    close the socket as policy, and the handler never runs.
+    """
+    from trixd.core.plugins import binder, loader
+    from trixd.core.security import tokens
+
+    monkeypatch.setattr(binder, "FIRST_MESSAGE_WAIT", 0.2, raising=False)
+    _talker(tmp_path, SAYS_WHO, "    minimum: manager\n")
+    refusal = _refusal(lambda: loader.load(rig, "talker"))
+    assert refusal is None, f"a guarded websocket was refused: {refusal}"
+    frames = {"garbage": ["garbage"], "reader": [_reader_token(client, headers)],
+              "node": [tokens.mint("node001", kind="node", node="node001")], None: []}[sends]
+    with client.websocket_connect(f"{API_PREFIX}/talker/ws") as socket:
+        ended = _ended(socket, *frames)
+    assert ended[0] == 1008, f"not closed as policy: {ended}"
+    assert said in ended[1], ended
+    if sends == "reader":
+        assert ("rita", "needs manager, holds reader") in _audited("refused")
+
+
+def test_a_plugin_holds_no_more_sockets_than_its_ceiling(rig, client, tmp_path, monkeypatch):
+    """
+    Past the ceiling a connect is closed with 1013, and a socket that ends gives its place
+    back.
+    """
+    from trixd.core.plugins import binder, loader
+
+    monkeypatch.setattr(binder, "SOCKETS_PER_PLUGIN", 1, raising=False)
+    _talker(tmp_path, SAYS_WHO)
+    loader.load(rig, "talker")
+    url = f"{API_PREFIX}/talker/ws"
+    with client.websocket_connect(url) as first:
+        assert _ended(first, "hello") == "nobody"
+        with client.websocket_connect(url) as second:
+            ended = _ended(second, "hello")
+        assert isinstance(ended, tuple) and ended[0] == 1013, f"a second socket was held: {ended}"
+    with client.websocket_connect(url) as again:
+        assert _ended(again, "hello") == "nobody", "the place was not given back"
+
+
+def test_an_unload_ends_an_open_socket_and_a_new_connect_fails(rig, client, tmp_path):
+    """
+    The routes going does not end a socket; the backend's close() does, and nothing
+    answers the path afterwards.
+    """
+    from starlette.websockets import WebSocketDisconnect
+
+    from trixd.core.plugins import loader
+
+    _talker(tmp_path, CLOSER)
+    loader.load(rig, "talker")
+    url = f"{API_PREFIX}/talker/ws"
+    with client.websocket_connect(url) as socket:
+        assert socket.receive_text() == "held"
+        loader.unload(rig, "talker")
+        ended = _ended(socket, "anyone?")
+    assert isinstance(ended, tuple) and ended[0] == 1012, f"the open socket outlived it: {ended}"
+    with pytest.raises(WebSocketDisconnect):
+        with client.websocket_connect(url) as late:
+            late.receive_text()
+
+
 @pytest.mark.parametrize("declared, refusal", [
-    ({}, "must say public"),
+    ({}, "minimum role"),
     ({"public": True, "methods": ["POST"]}, "GET only"),
     ({"public": True, "render": {"inputs": ["luna.node"]}}, "a render"),
     ({"public": True, "forward": True}, "forwarded"),
     ({"public": True, "replicate": True}, "replicated"),
     ({"public": True, "schema": "config"}, "body schema"),
+    ({"public": True, "request_example": {"a": 1}}, "request example"),
+    ({"public": True, "response": {"description": "bytes"}}, "response"),
+    ({"public": True, "errors": {404: "gone"}}, "errors"),
+    ({"public": True, "path": "ws/<websocket>"}, "that name"),
+    ({"public": True, "query": {"websocket": {"type": "string"}}}, "that name"),
 ])
 def test_a_websocket_asking_for_what_only_a_request_has_is_refused(declared, refusal):
     """
-    A socket carries no token and no body, and is neither forwarded nor replicated.
+    A socket carries no body, is neither forwarded nor replicated, is not in the published
+    document, and is handed over under its own name; guarded, it needs a minimum.
     """
-    from trixd.common.errors import PluginRefused
     from trixd.core.plugins import manifest as manifests
 
-    with pytest.raises(PluginRefused, match=refusal):
-        manifests.parse({"plugin": "talker", "endpoints": [
-            {"path": "ws", "handler": "talk", "websocket": True, **declared}]})
+    said = _refusal(lambda: manifests.parse({"plugin": "talker", "endpoints": [
+        {"path": "ws", "handler": "talk", "websocket": True, **declared}]}))
+    assert said is not None, f"{declared} was taken"
+    assert refusal in said, said
+
+
+def test_a_guarded_websocket_with_a_minimum_parses():
+    """
+    public is an opt-in: a socket may be guarded as any route is.
+    """
+    from trixd.core.plugins import manifest as manifests
+
+    said = _refusal(lambda: manifests.parse({"plugin": "talker", "endpoints": [
+        {"path": "ws", "handler": "talk", "websocket": True, "minimum": "operator"}]}))
+    assert said is None, said
 
 
 @pytest.mark.parametrize("handler, refusal", [
@@ -1666,9 +1892,24 @@ def test_a_websocket_handler_the_route_could_not_call_is_refused(rig, tmp_path, 
         loader.load(rig, "talker")
 
 
+def test_a_backend_whose_close_is_async_is_refused_by_the_load_and_the_check(rig, tmp_path):
+    """
+    close() is called from a worker thread, so a coroutine would never run: refused
+    where the author meets it, not found out on the first unload.
+    """
+    from trixd.core.plugins import loader
+    from trixd.core.plugins.check import check
+
+    path = _talker(tmp_path, TALKER + '\n    async def close(self):\n        """Never run."""\n')
+    said = _refusal(lambda: loader.load(rig, "talker"))
+    assert said is not None, "a coroutine close() was loaded"
+    assert "async" in said, said
+    assert any("async" in problem for problem in check(path)), "the check passed it"
+
+
 def test_a_swap_and_an_unload_each_tell_the_dropped_backend_once(rig, tmp_path):
     """
-    A socket the old backend accepted is not a route, so taking the routes away does not
+    A socket the old backend was handed is not a route, so taking the routes away does not
     end it: the backend is told with close(), and a failing close changes nothing.
     """
     from trixd.core.plugins import loader

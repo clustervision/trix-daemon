@@ -73,8 +73,19 @@ def test_https_serves_tls_on_bind_and_plain_on_every_address(tmp_path):
     assert served.insecure_bind == ["0.0.0.0:7071"]
     assert (served.certfile, served.keyfile) == (cert, key)
     assert served.workers == 1, "one process: the plugin registry is in memory"
-    assert served.websocket_max_message_size == 256 * 1024 + 9, \
-        "a WebSocket message is buffered whole before any plugin sees it"
+
+
+def test_the_websocket_message_ceiling_is_the_ini_setting_and_sockets_are_pinged(tmp_path):
+    """
+    A message is buffered whole before any plugin sees it, so the site sets how large one
+    may be; an idle socket is pinged so nothing in between drops it.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[API]\nPROTOCOL = http\nBIND = 127.0.0.1:7070\nINSECURE_BIND =\n"
+                   "MAX_MESSAGE = 64K\n", encoding="utf-8")
+    served = server.build_config(configuration.load(str(ini)))
+    assert served.websocket_ping_interval == 30, "an idle socket is never pinged"
+    assert served.websocket_max_message_size == 64 * 1024, "[API] MAX_MESSAGE was not used"
 
 
 def test_http_serves_plain_on_both_with_no_certificate():

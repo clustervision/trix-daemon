@@ -276,10 +276,10 @@ defaults rather than on what that file says. A section or a key trixd does not r
 misspelled `[DATABASE] URL` among them, is named one by one, because the alternative is
 a fresh default database and nothing said; the keys trixd reads are the ones it actually
 asks the file for, so a setting added to the code is covered without a second list to
-remember. `[API] MAX_BODY` takes `K`, `M` and `G` as powers of 1024, with or without a
-`B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
-`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Either one
-unreadable is named along with the value used instead: the default for `MAX_BODY`, and
+remember. `[API] MAX_BODY` and `MAX_MESSAGE`, the largest WebSocket message, take `K`,
+`M` and `G` as powers of 1024, with or without a `B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
+`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Any of them
+unreadable is named along with the value used instead: the default for a ceiling, and
 on for `ENABLED`, since reading it as off would quietly stop an HA pair reconciling. An
 empty `[API] USERNAME` or `PASSWORD` is named too, because that account is the one
 principal that holds `rootus`: without it the directory, slurm and replication routes

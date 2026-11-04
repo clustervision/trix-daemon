@@ -180,7 +180,7 @@
           },
           "websocket": {
             "default": false,
-            "description": "a WebSocket handed to an async handler; public and GET only",
+            "description": "a WebSocket handed to an async handler, GET only; its first message is the token unless it is public",
             "type": "boolean"
           }
         },

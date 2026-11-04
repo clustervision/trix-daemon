@@ -211,7 +211,7 @@ def _from_script(name: str, path: str):
         "endpoints": endpoints,
         "hooks": getattr(plugin_class, "hooks", {}) or {},
     }
-    return manifests.parse(document), plugin_class()
+    return manifests.parse(document), _closable(plugin_class())
 
 
 def _from_directory(name: str, path: str):
@@ -228,7 +228,17 @@ def _from_directory(name: str, path: str):
     backend_class = getattr(module, "Backend", None)
     if backend_class is None:
         raise PluginRefused(f"{manifest.backend} has no Backend class")
-    return manifest, backend_class()
+    return manifest, _closable(backend_class())
+
+
+def _closable(backend):
+    """
+    The backend, unless its close() is a coroutine: that is called from a worker thread
+    and would never be awaited, so the plugin would never be told.
+    """
+    if inspect.iscoroutinefunction(getattr(backend, "close", None)):
+        raise PluginRefused("the backend's close() is async; it is called, never awaited")
+    return backend
 
 
 def _render_producer(endpoint, backend):
@@ -427,7 +437,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
 
 def _close_backend(name: str, backend) -> None:
     """
-    Tell a backend that is let go of, where it has a close(): a WebSocket it accepted is
+    Tell a backend that is let go of, where it has a close(): a WebSocket it was handed is
     not a route, so taking its routes away does not end it. A failing close changes nothing.
     """
     close = getattr(backend, "close", None)

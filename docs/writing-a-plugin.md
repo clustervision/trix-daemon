@@ -98,7 +98,7 @@ Each endpoint:
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
 | `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
-| `websocket` | a WebSocket: the async handler takes `websocket`, accepts, reads and closes it; `public` and `GET` only | no |
+| `websocket` | a WebSocket, opened by a `GET`; see "A WebSocket endpoint" | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
 | `params` | each path variable: `description` and `example` | no |
@@ -150,6 +150,28 @@ becomes a 500, with the detail in the log.
 dictionary at definition time and shares it across every call for the life of the
 process. Write `data: dict = None`.
 
+### A WebSocket endpoint
+
+`websocket: true` serves a socket rather than a request. A browser cannot put a token
+on the upgrade, so the daemon accepts the socket and reads the **first message, as
+text, as the token**. It is judged as a route's token is - the same `minimum`, `token`
+and audit trail - and a refusal, or no first message within five seconds, closes the
+socket with 1008 and the reason. `public: true` skips that, and has to be argued for
+as on any route.
+
+The handler is a coroutine taking `websocket`, the **accepted** socket, and `caller`;
+it reads, writes and closes it, and never accepts it again. It also takes the path
+variables and declared query parameters, and nothing else. A plugin holds at most 64
+open sockets, judged or not, and one more is closed with 1013. A message is at most
+`[API] MAX_MESSAGE` (1 MiB by default); a larger one closes the socket with 1009.
+
+**A socket outlives its route.** On an unload or a reload the routes go, but an open
+socket stays with the backend that was let go of. The loader calls that backend's
+`close()` if it has one, once, from a worker thread and not on the event loop: close
+the sockets from there by handing the close to the loop, for instance
+`asyncio.run_coroutine_threadsafe(websocket.close(1012), loop)`. A `close()` that
+fails is logged and changes nothing else.
+
 ## What gets you refused
 
 The loader refuses a plugin as a whole rather than serving half of it. On a
@@ -174,6 +196,11 @@ reload endpoint answers 409 with the reason.
 | a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |
+| the backend's `close()` is `async def` | refused; it is called from a thread and would never be awaited |
+| a `websocket` endpoint with a verb other than `GET`, or also a `render`, `forward`, `replicate` or `schema` | refused; a socket is none of those |
+| a `websocket` endpoint with a `request_example`, `response` or `errors` | refused; a socket is not in the published document |
+| a `websocket` endpoint with a path variable or query parameter named `websocket` | refused; that is how the handler is given the socket |
+| a `websocket` handler that is not `async def`, or does not take `websocket` | refused; a plain function would hold the event loop for as long as the socket is open |
 
 ## Permissions
 

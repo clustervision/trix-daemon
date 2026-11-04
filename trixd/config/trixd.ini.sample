@@ -32,6 +32,7 @@ EXPIRY = 1h
 USERNAME = trixd
 PASSWORD = trixd
 MAX_BODY = 8M
+MAX_MESSAGE = 1M
 ; PROTOCOL is the scheme trixd serves and a peer is reached on, https or http. A site
 ; serving plain HTTP sets it to http here; it was followed from luna.ini before.
 ; BIND carries TLS on CERTFILE and KEYFILE: the cluster pair Luna also serves.
@@ -42,6 +43,9 @@ MAX_BODY = 8M
 ; says the limit. It bounds the pass-through to Luna as well, so it bounds every Luna call
 ; made through this daemon. A value trixd cannot read is named in the log and the 8M
 ; default is used, so the ceiling is never quietly wider than this file says.
+; MAX_MESSAGE is the largest WebSocket message a plugin endpoint is sent, in the same units;
+; each message is held whole before the plugin sees it. A larger one closes the socket with
+; 1009. 0 lifts nothing here: it refuses every message.
 ; USERNAME and PASSWORD are the ini account, the one principal that holds rootus. Leaving
 ; either empty leaves nobody able to call the directory, slurm or replication routes, and
 ; is said at startup.

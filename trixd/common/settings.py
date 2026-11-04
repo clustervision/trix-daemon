@@ -35,8 +35,9 @@ from configparser import RawConfigParser
 
 from pydantic import BaseModel, Field
 
-from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_TOKEN_ALGORITHM, ROLES,
-                                   TOKEN_ALGORITHM_SHARED, TOKEN_ALGORITHMS)
+from trixd.common.constants import (DEFAULT_MAX_BODY, DEFAULT_MAX_MESSAGE,
+                                   DEFAULT_TOKEN_ALGORITHM, ROLES, TOKEN_ALGORITHM_SHARED,
+                                   TOKEN_ALGORITHMS)
 
 # Inside the package, as luna.ini is; the wheel ships only trixd.ini.sample beside it.
 DEFAULT_CONFIG: str = "/trinity/local/trixd/daemon/config/trixd.ini"
@@ -91,6 +92,7 @@ class ApiSettings(BaseModel):
     username: str = ""
     password: str = ""
     max_body: int = DEFAULT_MAX_BODY
+    max_message: int = DEFAULT_MAX_MESSAGE
 
 
 class TokenSettings(BaseModel):
@@ -396,7 +398,8 @@ def load(path: str = "", found: list = None) -> Settings:
         expiry=duration("API", "EXPIRY", "1h", bare=3600),
         username=get("API", "USERNAME", ""),
         password=get("API", "PASSWORD", ""),
-        max_body=capacity("API", "MAX_BODY", DEFAULT_MAX_BODY))
+        max_body=capacity("API", "MAX_BODY", DEFAULT_MAX_BODY),
+        max_message=capacity("API", "MAX_MESSAGE", DEFAULT_MAX_MESSAGE))
     if not data.api.username or not data.api.password:
         # The same check the luna plugin makes on luna.ini. With no account nobody can
         # hold rootus, and the sweep signs in to its peer as nobody at all.
