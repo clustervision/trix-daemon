@@ -90,6 +90,54 @@ def _target(request: Request) -> str:
     return str(getattr(request, "url", "") and request.url.path or "")
 
 
+def admit(token: str, minimum: str, token_kind: str, method: str, target: str,
+          path_params: dict) -> Caller:
+    """
+    Verify, resolve, permits and audit for one token: what a guarded route runs, and what
+    a WebSocket's first message is judged by.
+    """
+    claims = tokens.verify(token)
+
+    if token_kind == TOKEN_KIND_NODE:
+        if claims.kind != TOKEN_KIND_NODE:
+            raise Forbidden("this endpoint accepts a node token only")
+        node = ""
+        for key in NODE_PATH_PARAMS:
+            if key in path_params:
+                node = str(path_params[key])
+                break
+        if node and claims.node.split(".")[0] != node.split(".")[0]:
+            LOGGER.warning("node token for %s used on %s", claims.node, node)
+            audit.refused(claims.subject, method, node, f"node token for {claims.node}")
+            raise Forbidden("token is not valid for this node")
+        # A refusal above is recorded and a grant was not, so the trail showed only the
+        # node calls that failed. These writes matter: a node's own token sets its
+        # hardware rules, and the trail is where that is answerable for.
+        audit.granted(claims.subject, method, node or target, "on a node token")
+        return Caller(claims, None, ROLE_NONE)
+
+    if claims.kind == TOKEN_KIND_NODE:
+        audit.refused(claims.subject, method, target, "a node token on a user endpoint")
+        raise Forbidden("a node token is not permitted on this endpoint")
+
+    handle = engine.session()
+    try:
+        who = principals.resolve(handle, claims.subject)
+        if who is None:
+            audit.refused(claims.subject, method, target,
+                          "the subject cannot be resolved here")
+            raise Unauthenticated(f"{claims.subject} cannot be resolved here")
+    finally:
+        handle.close()
+
+    allowed, held = access.permits(who, minimum)
+    if not allowed:
+        audit.refused(claims.subject, method, target, f"needs {minimum}, holds {held}")
+        raise Forbidden(f"this needs {minimum}; you hold {held}")
+    audit.granted(claims.subject, method, target)
+    return Caller(claims, who, held)
+
+
 def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callable:
     """
     Build the dependency for one endpoint: the token it takes and the role it needs.
@@ -101,50 +149,8 @@ def guard(minimum: str = ROLE_NONE, token_kind: str = TOKEN_KIND_USER) -> callab
         """
         The check FastAPI runs before the handler.
         """
-        claims = tokens.verify(_present(x_access_tokens, bearer))
-
-        if token_kind == TOKEN_KIND_NODE:
-            if claims.kind != TOKEN_KIND_NODE:
-                raise Forbidden("this endpoint accepts a node token only")
-            target = ""
-            for key in NODE_PATH_PARAMS:
-                if key in request.path_params:
-                    target = str(request.path_params[key])
-                    break
-            if target and claims.node.split(".")[0] != target.split(".")[0]:
-                LOGGER.warning("node token for %s used on %s", claims.node, target)
-                audit.refused(claims.subject, request.method, target,
-                              f"node token for {claims.node}")
-                raise Forbidden("token is not valid for this node")
-            # A refusal above is recorded and a grant was not, so the trail showed only the
-            # node calls that failed. These writes matter: a node's own token sets its
-            # hardware rules, and the trail is where that is answerable for.
-            audit.granted(claims.subject, request.method, target or _target(request),
-                          "on a node token")
-            return Caller(claims, None, ROLE_NONE)
-
-        if claims.kind == TOKEN_KIND_NODE:
-            audit.refused(claims.subject, request.method, _target(request),
-                          "a node token on a user endpoint")
-            raise Forbidden("a node token is not permitted on this endpoint")
-
-        handle = engine.session()
-        try:
-            who = principals.resolve(handle, claims.subject)
-            if who is None:
-                audit.refused(claims.subject, request.method, _target(request),
-                              "the subject cannot be resolved here")
-                raise Unauthenticated(f"{claims.subject} cannot be resolved here")
-        finally:
-            handle.close()
-
-        allowed, held = access.permits(who, minimum)
-        if not allowed:
-            audit.refused(claims.subject, request.method, _target(request),
-                          f"needs {minimum}, holds {held}")
-            raise Forbidden(f"this needs {minimum}; you hold {held}")
-        audit.granted(claims.subject, request.method, _target(request))
-        return Caller(claims, who, held)
+        return admit(_present(x_access_tokens, bearer), minimum, token_kind,
+                     request.method, _target(request), request.path_params)
 
     # What the published document says about a route this guards.
     dependency.minimum = minimum

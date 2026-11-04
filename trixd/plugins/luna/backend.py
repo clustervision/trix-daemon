@@ -78,30 +78,22 @@ class Backend:
                    if key.lower() not in HOP_BY_HOP}
         body = await request.body()
         person = await run_in_threadpool(persons.caller, headers)
-        base = luna_config.current().base if person is None else persons.base()
-        url = f"{base}/{rest}"
+        path = rest
         if request.url.query:
             # As sent: a parsed copy would keep only the last of a repeated key.
-            url = f"{url}?{request.url.query}"
-        kept = False
-        if person is not None:
+            path = f"{path}?{request.url.query}"
+        if person is None:
+            answer = await run_in_threadpool(_forward, request.method,
+                                             f"{luna_config.current().base}/{path}", headers,
+                                             body)
+        elif request.method == "POST" and rest == persons.SIGN_IN:
             # A person signed in here reaches Luna with their own Luna token, never with
             # the trixd one, and signing in at Luna keeps that token here.
-            if request.method == "POST" and rest == persons.SIGN_IN:
-                return JSONResponse(await run_in_threadpool(persons.sign_in, person, body),
-                                    status_code=201)
-            token, kept = await run_in_threadpool(persons.token_for, person)
-            headers = persons.as_person(headers, token)
-        answer = await run_in_threadpool(_forward, request.method, url, headers, body)
-        if kept and answer.status_code == 401:
-            # A kept token another Luna signed, as on the other controller of a pair whose
-            # homes are shared: signed in again, and the same request sent once more.
-            await run_in_threadpool(persons.drop, person, token)
-            token, _ = await run_in_threadpool(persons.token_for, person)
-            answer = await run_in_threadpool(_forward, request.method, url,
-                                             persons.as_person(headers, token), body)
-            if answer.status_code == 401:
-                raise persons.ask(person, "Luna refused a fresh Luna token for")
+            return JSONResponse(await run_in_threadpool(persons.sign_in, person, body),
+                                status_code=201)
+        else:
+            answer = await run_in_threadpool(persons.call, person, request.method, path, body,
+                                             headers)
         passed = {key: value for key, value in answer.headers.items()
                   if key.lower() not in HOP_BY_HOP}
         return Response(content=answer.content, status_code=answer.status_code,

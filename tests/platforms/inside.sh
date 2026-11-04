@@ -36,7 +36,7 @@ dnf -y -q install luna2-python 2>/dev/null \
     || dnf -y -q --disablerepo='*' --enablerepo=luna2 install luna2-python
 PY=/trinity/local/python/bin/python3
 "$PY" -m pip -q install --disable-pip-version-check -r "$SRC/requirements.txt" \
-    pytest httpx setuptools wheel
+    pytest httpx setuptools wheel python-hostlist==1.23.0 slurmlint
 
 WORK=$(mktemp -d)
 cp -a "$SRC/." "$WORK/"

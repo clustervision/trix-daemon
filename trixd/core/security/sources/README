@@ -40,5 +40,11 @@ pam         the controller's operating system, through python-pam. On a TrinityX
             with no directory settings here and no shell-out. A system account, with
             no login shell or a uid below UID_MIN, is refused
 ldap        a directory bind through ldap3, settings in [AUTH_LDAP]
+peercred    the caller's own account, as the kernel reports the uid of a process that
+            connects to [AUTH] SOCKET; core/security/peercred.py answers there with a
+            token and nothing else. It takes no password, so authenticate is not-known.
+            Refused: uid 0, a uid whose name does not lead back to it, the ini account,
+            a system account, a disabled principal, and an account PAM's account check
+            refuses. It resolves by pam's rule, and needs python-pam as pam does
 oidc        OpenID Connect, named in the design and not built: it answers not-known
             and the chain continues, so an ini may name it before a provider exists

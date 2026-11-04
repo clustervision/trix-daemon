@@ -77,6 +77,9 @@ def build_config(config):
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 
     served.workers = 1
+    served.websocket_max_message_size = config.api.max_message
+    # A proxy or a firewall drops a socket it sees nothing on, and a terminal is often idle.
+    served.websocket_ping_interval = 30
     served.accesslog = "-"
     served.errorlog = "-"
     # Chosen rather than inherited. Start-up runs the migrations, loads every plugin, takes

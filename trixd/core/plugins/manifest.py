@@ -126,6 +126,10 @@ class Endpoint(BaseModel):
     # in a replicated table and no render brings it back. Off by default, including for a
     # plugin's own bulk route: a call that need not cross should not.
     replicate: bool = False
+    # A WebSocket rather than a request. A browser cannot put a token on the upgrade, so
+    # the first message carries it and is judged as a route's token is; the coroutine
+    # handler is then handed the accepted socket and the caller.
+    websocket: bool = False
     # What /api/v1/docs shows beyond the summary: what the route does, what to send, what
     # comes back, and the refusals its own work can answer.
     description: str = ""
@@ -204,6 +208,23 @@ def parse(document: dict) -> Manifest:
             raise PluginRefused(f'{endpoint.path or "/"} declares an unknown token kind')
         if endpoint.render is None and not endpoint.handler:
             raise PluginRefused(f'{endpoint.path or "/"} names no handler')
+        if endpoint.websocket:
+            for refusal, blocked in (
+                    ("is opened by a GET only",
+                     [verb.upper() for verb in endpoint.methods] != ["GET"]),
+                    ("cannot also be a render", endpoint.render is not None),
+                    ("cannot also be forwarded", endpoint.forward),
+                    ("cannot also be replicated", endpoint.replicate),
+                    ("cannot also take a body schema", bool(endpoint.body_schema)),
+                    # Never published: a socket is not in the API document.
+                    ("documents no request example", endpoint.request_example is not None),
+                    ("documents no response", endpoint.response is not None),
+                    ("documents no errors", bool(endpoint.errors)),
+                    ("is handed the socket as websocket, so cannot take that name",
+                     "websocket" in (*endpoint.variables, *endpoint.query))):
+                if blocked:
+                    raise PluginRefused(
+                        f"{endpoint.path or '/'} is a websocket, which {refusal}")
         if (not endpoint.public and not endpoint.forward and endpoint.token == TOKEN_KIND_USER
                 and endpoint.minimum not in MINIMUMS):
             raise PluginRefused(

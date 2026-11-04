@@ -98,6 +98,7 @@ Each endpoint:
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
 | `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
+| `websocket` | a WebSocket, opened by a `GET`; see "A WebSocket endpoint" | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
 | `params` | each path variable: `description` and `example` | no |
@@ -149,6 +150,28 @@ becomes a 500, with the detail in the log.
 dictionary at definition time and shares it across every call for the life of the
 process. Write `data: dict = None`.
 
+### A WebSocket endpoint
+
+`websocket: true` serves a socket rather than a request. A browser cannot put a token
+on the upgrade, so the daemon accepts the socket and reads the **first message, as
+text, as the token**. It is judged as a route's token is - the same `minimum`, `token`
+and audit trail - and a refusal, or no first message within five seconds, closes the
+socket with 1008 and the reason. `public: true` skips that, and has to be argued for
+as on any route.
+
+The handler is a coroutine taking `websocket`, the **accepted** socket, and `caller`;
+it reads, writes and closes it, and never accepts it again. It also takes the path
+variables and declared query parameters, and nothing else. A plugin holds at most 64
+open sockets, judged or not, and one more is closed with 1013. A message is at most
+`[API] MAX_MESSAGE` (1 MiB by default); a larger one closes the socket with 1009.
+
+**A socket outlives its route.** On an unload or a reload the routes go, but an open
+socket stays with the backend that was let go of. The loader calls that backend's
+`close()` if it has one, once, from a worker thread and not on the event loop: close
+the sockets from there by handing the close to the loop, for instance
+`asyncio.run_coroutine_threadsafe(websocket.close(1012), loop)`. A `close()` that
+fails is logged and changes nothing else.
+
 ## What gets you refused
 
 The loader refuses a plugin as a whole rather than serving half of it. On a
@@ -173,6 +196,11 @@ reload endpoint answers 409 with the reason.
 | a hook handler takes a positional-only argument the payload could not fill | refused |
 | a path is already served by another plugin | refused, naming the other |
 | a script's `Plugin` class declares no endpoints | refused; it serves nothing |
+| the backend's `close()` is `async def` | refused; it is called from a thread and would never be awaited |
+| a `websocket` endpoint with a verb other than `GET`, or also a `render`, `forward`, `replicate` or `schema` | refused; a socket is none of those |
+| a `websocket` endpoint with a `request_example`, `response` or `errors` | refused; a socket is not in the published document |
+| a `websocket` endpoint with a path variable or query parameter named `websocket` | refused; that is how the handler is given the socket |
+| a `websocket` handler that is not `async def`, or does not take `websocket` | refused; a plain function would hold the event loop for as long as the socket is open |
 
 ## Permissions
 
@@ -235,6 +263,70 @@ Only calls made through the pass-through are seen this way. A change made at Lun
 directly reaches a plugin through its renders, when Luna's table hashes show it:
 on an HA master within the hour the poller compares them on, and on a single
 controller only when trixd next starts.
+
+## Calling Luna
+
+A plugin reaches Luna either as trixd itself or as the person behind the request, and
+the two never mix. Whose work it is decides which:
+
+| Whose work | From `trixd.plugins.luna` | Luna sees |
+|---|---|---|
+| trixd's own: a render, a hook handler, a task nobody asked for as themselves | `client()`, `get_token()`, `get_credentials()` | its administrator, the account `luna.ini` names: rootus there |
+| a person's: a route handler acting for whoever called it | `persons.caller`, `persons.call`, `persons.may`, `persons.get_token` | that person, with their own Luna token, so Luna's rights for them decide |
+
+A route acting for a person never uses the client or `get_token()`: that would hand the
+person rootus at Luna, whatever Luna allows them. `get_token()` and
+`persons.get_token(person)` share a name, not an owner: the first is trixd's token, the
+second the person's. `get_token_for(username, password)` signs in as an account the
+plugin holds the password for, and is never a way to act as the person behind a request.
+
+### Calling Luna as a person
+
+`trixd.plugins.luna.persons` offers three methods, each usable on its own, none needing
+another called first:
+
+- `persons.call(person, method, path, body=b"", headers=None)`: one request to Luna as
+  the person, answered with Luna's response.
+- `persons.may(person, table, names, bit)`: which of the named objects the person may
+  not read, change or operate (`r`, `w`, `x`), or change the hardware of (`h`, on a node
+  or group), as `{name: refusal}` in Luna's words.
+- `persons.get_token(person)`: the person's own Luna token, for a plugin that does
+  something with Luna other than these calls, such as handing it to a client of its own.
+
+```python
+from trixd.common.errors import Forbidden
+from trixd.plugins.luna import persons
+
+def drain(self, body, request):
+    person = persons.caller(request.headers)
+    if person is None:
+        raise Forbidden("draining is done as a person, with their own trixd token")
+    refused = persons.may(person, "node", body["nodes"], "x")
+    if refused:
+        raise Forbidden("; ".join(refused.values()))
+    for name in body["nodes"]:
+        answer = persons.call(person, "GET", f"config/node/{name}")
+```
+
+`persons.caller` is the person behind a user's trixd token, and `None` for no token,
+rootus, a node, a service or a token Luna minted: the plugin decides what those get.
+The token is the one in `~/.luna/token`, else one signed in for with the person's own
+`~/.luna/luna.ini`, else one the `[DELEGATE:LUNA]` account obtains on their behalf, and
+requests go where a person's calls go. `call` alone drops a kept token Luna refuses and
+sends the request once more; a second refusal is a 401 asking the person to sign in at
+Luna, and Luna not answering is a 503. That 401, and every other one asking for the
+person's own Luna sign-in, carries `WWW-Authenticate: Bearer realm="luna"`, which no
+401 of trixd's own does: a client reads it as "send this person to sign in at Luna"
+(`POST /api/v1/luna/token`), not "sign in to trixd again". `get_token` hands over
+what it found and drops nothing. `may` asks Luna once what the person holds and is
+empty when every name is held; when Luna will not say, it raises Luna's own status and
+message. The cluster is one row: ask for it as
+`persons.may(person, "cluster", ["cluster"], "w")`. `h` is Luna's hardware right, as
+its gate decides a write to a hardware field: `w` on the object, then rootus, admin or
+a usergroup with the hardware flag. A luna2-daemon too old to answer that right
+(no `hardware_access` in `_access`) fails closed: `may` raises a 502 asking for
+luna2-daemon to be updated, and never falls back to another bit. All three block, so an
+`async` handler runs them in the worker pool.
 
 ## Shelling out
 
@@ -305,6 +397,14 @@ at a time. A render that fails keeps its previous output and records the error,
 which `/api/v1/system/health` reports, and is produced again on the next pass of
 the Luna hash fallback, so a producer that failed while its source was away does
 not stay failed.
+
+A producer must never wait for something slow, since every render waits behind it.
+One that cannot run now, such as one finding a lock held, asks for one more run
+instead, `renders().again("<plugin>/<path>", seconds)`, and raises `NotNow`, both
+from `trixd.core.render.engine` (`current as renders`). Asked again before then, it
+is still one run. A render put off this way is not failed: it keeps its output and
+its error as they were and is logged at INFO, and once it has been put off for a
+minute without rendering, that is said once as a warning.
 
 Writing files is the producer's own job. Write through `trixd.utils.files.write` or
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a

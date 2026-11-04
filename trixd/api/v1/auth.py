@@ -189,9 +189,9 @@ def _node_token(node: str) -> Token:
             description=(
                 "Who the token names and how trixd sees them: `kind` is `user`, `node` or "
                 "`service`; `source` is where the name was checked, `ini`, `local`, `pam`, "
-                "`ldap`, or `luna` for a token Luna issued; `role` is the role held here; "
-                "`rootus` is true for the ini account, which passes every check whatever "
-                "its role. Any signed-in user may ask, role `none` included."),
+                "`ldap`, `peercred`, or `luna` for a token Luna issued; `role` is the role "
+                "held here; `rootus` is true for the ini account, which passes every check "
+                "whatever its role. Any signed-in user may ask, role `none` included."),
             responses=docs.answers({"principal": "alice", "kind": "user", "source": "local",
                                     "role": "reader", "rootus": False, "issuer": "trixd"},
                                    "Who the token names"))

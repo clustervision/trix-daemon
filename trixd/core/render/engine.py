@@ -35,12 +35,21 @@ import time
 from sqlalchemy import select
 
 from trixd.common import logging as trixlog
-from trixd.common.errors import NotFound
+from trixd.common.errors import BackendFailure, NotFound
 from trixd.common.settings import seconds
 from trixd.db import engine as database
 from trixd.db import models
 
 LOGGER = trixlog.get("render")
+PUT_OFF_WARNING = 60.0  # seconds a render may be put off before that is said as a warning
+
+
+class NotNow(BackendFailure):
+    """
+    Raised by a producer that cannot run now and has asked for one more run: to the engine not
+    a failure, so the render keeps its output and its error as they were; to anything else that
+    calls the producer, a BackendFailure.
+    """
 
 
 class Render:
@@ -61,6 +70,8 @@ class Render:
         self.document = None
         self.rendered_at: float = 0.0
         self.last_error: str = ""
+        self.put_off: float = 0.0  # when the run of NotNow this is in began
+        self.put_off_said: bool = False
 
     def wants(self, changed: str) -> bool:
         """
@@ -203,6 +214,17 @@ class Engine:
         with self.lock:
             try:
                 produced = item.producer()
+            except NotNow as error:
+                now = time.monotonic()
+                item.put_off = item.put_off or now
+                if now - item.put_off < PUT_OFF_WARNING or item.put_off_said:
+                    LOGGER.info("render %s put off, keeping the previous output: %s",
+                                item.key, error)
+                else:
+                    item.put_off_said = True
+                    LOGGER.warning("render %s has been put off for %.0f s: %s",
+                                   item.key, now - item.put_off, error)
+                return False
             except Exception as error:
                 item.last_error = str(error)
                 LOGGER.error("render %s failed, keeping the previous output: %s",
@@ -212,6 +234,7 @@ class Engine:
             item.document = produced
             item.rendered_at = time.time()
             item.last_error = ""
+            item.put_off, item.put_off_said = 0.0, False
             LOGGER.info("rendered %s", item.key)
             self._record(item)
             return True
@@ -302,6 +325,13 @@ class Engine:
             timer.daemon = True
             self.trailing[key] = timer
             timer.start()
+
+    def again(self, key: str, delay: float) -> None:
+        """
+        Produce a render once more after `delay` seconds, for a producer that could not run
+        now; asked again before then, it is still one run.
+        """
+        self._trail(key, delay)
 
     def _fire(self, key: str) -> None:
         """

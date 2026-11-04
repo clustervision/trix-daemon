@@ -29,31 +29,43 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import asyncio
 import inspect
 from typing import Optional
 
-from fastapi import APIRouter, Body, Depends, Path, Query, Request
+from fastapi import APIRouter, Body, Depends, Path, Query, Request, WebSocket
 from pydantic import BaseModel
+from starlette.status import WS_1008_POLICY_VIOLATION, WS_1013_TRY_AGAIN_LATER
+from starlette.concurrency import run_in_threadpool
 
 from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
-from trixd.common.errors import PluginRefused
+from trixd.common.errors import Forbidden, PluginRefused, Unauthenticated
 from trixd.core import tasks
 from trixd.core.plugins.manifest import BODY_VERBS, QUERY_TYPES, Endpoint, Manifest
 from trixd.core.replication import outbox
-from trixd.core.security.gate import Caller, guard, stamp
+from trixd.core.security.gate import Caller, admit, guard, stamp
 
 LOGGER = trixlog.get("binder")
 
 # What the binder hands a handler besides the path variables.
 SUPPLIED: tuple = ("body", "caller", "request")
+# And what it hands a WebSocket handler, which has no request and no body.
+SOCKET_SUPPLIED: tuple = ("websocket", "caller")
+# A guarded socket that has sent no token by then is closed, so it cannot be held unjudged.
+FIRST_MESSAGE_WAIT: float = 5.0
+# Open sockets one plugin may hold, judged or not; past it a connect is closed with 1013.
+SOCKETS_PER_PLUGIN: int = 64
+# A close reason is at most this many bytes.
+CLOSE_REASON_BYTES: int = 123
 
 
-def signature_problems(handler, endpoint: Endpoint) -> list:
+def signature_problems(handler, endpoint: Endpoint, supplied: tuple = SUPPLIED) -> list:
     """
     What the binder could not give this handler: a path variable it does not take, an
     argument it will only take positionally, or an argument with no default that nothing
-    supplies. Each would be a 500 at the first call.
+    supplies. Each would be a 500 at the first call. `supplied` is what the binder hands
+    over besides the path variables and the query.
     """
     try:
         accepted = inspect.signature(handler).parameters
@@ -63,7 +75,7 @@ def signature_problems(handler, endpoint: Endpoint) -> list:
         return []
     problems = [f"{endpoint.handler} does not take the path variable {name}"
                 for name in endpoint.variables if name not in accepted]
-    known = set(endpoint.variables) | set(SUPPLIED) | set(endpoint.query)
+    known = set(endpoint.variables) | set(supplied) | set(endpoint.query)
     for name, item in accepted.items():
         if item.kind == inspect.Parameter.VAR_POSITIONAL:
             continue
@@ -95,6 +107,14 @@ def endpoint_problems(manifest: Manifest, backend, endpoint: Endpoint) -> list:
     if handler is None or not callable(handler):
         return [f"{where} names handler {endpoint.handler}, "
                 f"which {manifest.backend} does not have"]
+    if endpoint.websocket:
+        if not inspect.iscoroutinefunction(handler):
+            # A plain function would block the one event loop for as long as the socket is open.
+            return [f"{where}: {endpoint.handler} serves a websocket, so it must be async"]
+        if "websocket" not in inspect.signature(handler).parameters:
+            return [f"{where}: {endpoint.handler} does not take the websocket"]
+        return [f"{where}: {problem}"
+                for problem in signature_problems(handler, endpoint, supplied=SOCKET_SUPPLIED)]
     return [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
 
 
@@ -238,11 +258,71 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
     return operation
 
 
+async def _refuse(websocket: WebSocket, code: int, reason: str) -> None:
+    """
+    Close the socket with a code and a reason short enough to be sent.
+    """
+    await websocket.close(code, reason.encode()[:CLOSE_REASON_BYTES].decode(errors="ignore"))
+
+
+async def _admitted(websocket: WebSocket, endpoint: Endpoint) -> Optional[Caller]:
+    """
+    The caller whose token is the socket's first message, judged as a route judges one;
+    None once the socket is closed instead.
+    """
+    try:
+        first = await asyncio.wait_for(websocket.receive(), FIRST_MESSAGE_WAIT)
+    except asyncio.TimeoutError:
+        await _refuse(websocket, WS_1008_POLICY_VIOLATION, "no token in time")
+        return None
+    if first["type"] == "websocket.disconnect":
+        return None
+    try:
+        # Off the loop, as FastAPI runs a route's guard: resolving reads the database.
+        return await run_in_threadpool(
+            admit, first.get("text") or "", endpoint.minimum, endpoint.token, "WEBSOCKET",
+            websocket.url.path, websocket.path_params)
+    except (Unauthenticated, Forbidden) as refusal:
+        await _refuse(websocket, WS_1008_POLICY_VIOLATION, refusal.message)
+        return None
+
+
+def _socket_function(handler, endpoint: Endpoint, held: set):
+    """
+    Build a WebSocket operation: the socket is accepted and its caller judged here, and
+    the handler is handed both.
+    """
+
+    async def operation(websocket: WebSocket, **kwargs):
+        """
+        The WebSocket operation FastAPI awaits.
+        """
+        await websocket.accept()
+        if len(held) >= SOCKETS_PER_PLUGIN:
+            await _refuse(websocket, WS_1013_TRY_AGAIN_LATER, "too many open sockets")
+            return
+        held.add(websocket)
+        try:
+            caller = None if endpoint.public else await _admitted(websocket, endpoint)
+            if endpoint.public or caller is not None:
+                await _call(handler, {**kwargs, "websocket": websocket, "caller": caller})
+        finally:
+            held.discard(websocket)
+
+    operation.__signature__ = inspect.Signature(
+        [inspect.Parameter("websocket", inspect.Parameter.KEYWORD_ONLY, annotation=WebSocket)]
+        + _documented(endpoint))
+    operation.__name__ = endpoint.handler.replace("-", "_")
+    operation.__doc__ = endpoint.summary or None
+    return operation
+
+
 def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter:
     """
     One router for the whole plugin. Refuses rather than serving half of it.
     """
     router = APIRouter(prefix=f"{API_PREFIX}/{manifest.plugin}", tags=[manifest.plugin])
+    sockets: set = set()
 
     for endpoint in manifest.endpoints:
         if endpoint.render is not None:
@@ -258,12 +338,19 @@ def build(manifest: Manifest, backend, models: dict, renderer=None) -> APIRouter
                 raise PluginRefused(problems[0])
             handler = getattr(backend, endpoint.handler)
 
+        path = "/" + endpoint.route_path if endpoint.route_path else ""
+        if endpoint.websocket:
+            router.add_api_websocket_route(
+                path, _socket_function(handler, endpoint, sockets),
+                name=f"{manifest.plugin}.{endpoint.handler}.websocket")
+            LOGGER.debug("bound websocket %s%s", router.prefix, path)
+            continue
         body_model = models.get(endpoint.body_schema) if endpoint.body_schema else None
         for verb in endpoint.methods:
             verb = verb.upper()
             wants_body = body_model if verb in BODY_VERBS else None
             router.add_api_route(
-                "/" + endpoint.route_path if endpoint.route_path else "",
+                path,
                 _endpoint_function(handler, endpoint, wants_body, manifest.plugin, verb),
                 methods=[verb],
                 name=f"{manifest.plugin}.{endpoint.handler or endpoint.path}.{verb.lower()}",

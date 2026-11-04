@@ -277,10 +277,10 @@ defaults rather than on what that file says. A section or a key trixd does not r
 misspelled `[DATABASE] URL` among them, is named one by one, because the alternative is
 a fresh default database and nothing said; the keys trixd reads are the ones it actually
 asks the file for, so a setting added to the code is covered without a second list to
-remember. `[API] MAX_BODY` takes `K`, `M` and `G` as powers of 1024, with or without a
-`B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
-`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Either one
-unreadable is named along with the value used instead: the default for `MAX_BODY`, and
+remember. `[API] MAX_BODY` and `MAX_MESSAGE`, the largest WebSocket message, take `K`,
+`M` and `G` as powers of 1024, with or without a `B` or `iB` after them, so `8M`, `8MB` and `8MiB` are one ceiling, and
+`[REPLICATION] ENABLED` takes yes or no, on or off, true or false, 1 or 0. Any of them
+unreadable is named along with the value used instead: the default for a ceiling, and
 on for `ENABLED`, since reading it as off would quietly stop an HA pair reconciling. An
 empty `[API] USERNAME` or `PASSWORD` is named too, because that account is the one
 principal that holds `rootus`: without it the directory, slurm and replication routes
@@ -357,6 +357,19 @@ refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone 
 signs in through PAM or LDAP gets a row on first sign-in, with role none, and can
 read nothing until rootus gives them a role.
 
+`peercred` signs a person in with no password. Named in `[AUTH] CHAIN`, it opens
+`[AUTH] SOCKET` (`/run/trixd/peercred.sock`), where a process on this controller asks
+`GET` or `POST /api/v1/auth/token` and gets a token for the account it runs as, which
+the kernel reports; nothing else of the API is served there. uid 0, a uid whose name
+does not lead back to it, the ini account, a system account, a disabled user and an
+account PAM's account check refuses (expired or locked) are refused, in the log and the
+audit trail.
+
+`[AUTH] GROUP_ROLES = admins:manager` gives a member of an operating-system group that
+role when it is higher than the role they hold, for any user whose name is an
+operating-system account. It is worked out on each lookup and never stored, so leaving
+the group takes it away within `[AUTH] CACHE`.
+
 ## Tokens
 
 `POST /api/v1/auth/token` with a JSON username and password answers 201 with
@@ -399,7 +412,9 @@ changed for it, and neither imports the other.
 `/api/v1/luna/<path>` is the pass-through: it hands the request to Luna unchanged, up
 to `[API] MAX_BODY`, and Luna decides who may. After Luna has answered, the plugin
 publishes what changed as events, `luna.node.update` and `luna.node.delete` among them,
-for any plugin that declared a hook on them.
+for any plugin that declared a hook on them. Any plugin can call Luna as the person
+too, with `persons.call` and `persons.may`; see
+[Calling Luna as a person](docs/writing-a-plugin.md#calling-luna-as-a-person).
 
 ### A call to Luna, for example renaming a node
 

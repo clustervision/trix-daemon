@@ -62,6 +62,8 @@ DEFAULT_TOKEN_ALGORITHM: str = TOKEN_ALGORITHM_SHARED
 # largest body the API itself asks for (a rule document, or one bulk set per node) and
 # small against what a caller can otherwise send.
 DEFAULT_MAX_BODY: int = 8 * 1024 * 1024
+# The largest WebSocket message, which is buffered whole before a plugin sees any of it.
+DEFAULT_MAX_MESSAGE: int = 1024 * 1024
 MINIMUM_SECRET_LENGTH: int = 32
 
 # Luna reads back id, scope and node; id 0 is the administrator its ini names.

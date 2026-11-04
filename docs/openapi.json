@@ -1228,9 +1228,26 @@
       },
       "SlurmConfig": {
         "properties": {
+          "admin_group": {
+            "anyOf": [
+              {
+                "pattern": "^[a-z_][a-z0-9_-]*$",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The group the Slurm files belong to with group write (config-slurm's admin group); a save and a restore run with it",
+            "examples": [
+              "admins"
+            ],
+            "title": "Admin Group"
+          },
           "gres_file": {
             "anyOf": [
               {
+                "pattern": "^/",
                 "type": "string"
               },
               {
@@ -1261,6 +1278,7 @@
           "nodes_file": {
             "anyOf": [
               {
+                "pattern": "^/",
                 "type": "string"
               },
               {
@@ -1276,6 +1294,7 @@
           "partitions_file": {
             "anyOf": [
               {
+                "pattern": "^/",
                 "type": "string"
               },
               {
@@ -1291,6 +1310,7 @@
           "reconfigure": {
             "anyOf": [
               {
+                "pattern": "^/\\S+",
                 "type": "string"
               },
               {
@@ -1305,6 +1325,215 @@
           }
         },
         "title": "SlurmConfig",
+        "type": "object"
+      },
+      "SlurmDrain": {
+        "properties": {
+          "names": {
+            "description": "The nodes to change, each a name Luna renders into the node file",
+            "examples": [
+              [
+                "node001",
+                "node002"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          },
+          "reason": {
+            "description": "Why, one line of at most 200 characters, never the drainer's mark",
+            "examples": [
+              "bad DIMM"
+            ],
+            "title": "Reason",
+            "type": "string"
+          }
+        },
+        "required": [
+          "names",
+          "reason"
+        ],
+        "title": "SlurmDrain",
+        "type": "object"
+      },
+      "SlurmPreview": {
+        "properties": {
+          "mode": {
+            "description": "save (the texts sent) or restore (the backups' texts)",
+            "examples": [
+              "save"
+            ],
+            "pattern": "^(save|restore)$",
+            "title": "Mode",
+            "type": "string"
+          },
+          "stamp": {
+            "additionalProperties": true,
+            "description": "The sha256 of each file as the page loaded it (GET files' stamp)",
+            "examples": [
+              {
+                "gres": "fd61a03...",
+                "nodes": "9f86d08...",
+                "partitions": "60303ae..."
+              }
+            ],
+            "title": "Stamp",
+            "type": "object"
+          },
+          "texts": {
+            "anyOf": [
+              {
+                "additionalProperties": true,
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The new text of nodes, partitions and gres",
+            "examples": [
+              {
+                "gres": "...",
+                "nodes": "...",
+                "partitions": "..."
+              }
+            ],
+            "title": "Texts"
+          }
+        },
+        "required": [
+          "mode",
+          "stamp"
+        ],
+        "title": "SlurmPreview",
+        "type": "object"
+      },
+      "SlurmRestore": {
+        "properties": {
+          "judged": {
+            "description": "The nodes whose State the texts change (preview's states); the person needs Luna's hardware right on each",
+            "examples": [
+              []
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Judged",
+            "type": "array"
+          },
+          "rules": {
+            "description": "The sha256 of the console's save rules; refused when it is not this plugin's",
+            "examples": [
+              "66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b"
+            ],
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Rules",
+            "type": "string"
+          },
+          "stamp": {
+            "additionalProperties": true,
+            "description": "The sha256 of each file as the page loaded it (GET files' stamp)",
+            "examples": [
+              {
+                "gres": "fd61a03...",
+                "nodes": "9f86d08...",
+                "partitions": "60303ae..."
+              }
+            ],
+            "title": "Stamp",
+            "type": "object"
+          }
+        },
+        "required": [
+          "stamp",
+          "judged",
+          "rules"
+        ],
+        "title": "SlurmRestore",
+        "type": "object"
+      },
+      "SlurmResume": {
+        "properties": {
+          "names": {
+            "description": "The nodes to change, each a name Luna renders into the node file",
+            "examples": [
+              [
+                "node001",
+                "node002"
+              ]
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Names",
+            "type": "array"
+          }
+        },
+        "required": [
+          "names"
+        ],
+        "title": "SlurmResume",
+        "type": "object"
+      },
+      "SlurmSave": {
+        "properties": {
+          "judged": {
+            "description": "The nodes whose State the texts change (preview's states); the person needs Luna's hardware right on each",
+            "examples": [
+              []
+            ],
+            "items": {
+              "type": "string"
+            },
+            "title": "Judged",
+            "type": "array"
+          },
+          "rules": {
+            "description": "The sha256 of the console's save rules; refused when it is not this plugin's",
+            "examples": [
+              "66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b"
+            ],
+            "pattern": "^[0-9a-f]{64}$",
+            "title": "Rules",
+            "type": "string"
+          },
+          "stamp": {
+            "additionalProperties": true,
+            "description": "The sha256 of each file as the page loaded it (GET files' stamp)",
+            "examples": [
+              {
+                "gres": "fd61a03...",
+                "nodes": "9f86d08...",
+                "partitions": "60303ae..."
+              }
+            ],
+            "title": "Stamp",
+            "type": "object"
+          },
+          "texts": {
+            "additionalProperties": true,
+            "description": "The new text of nodes, partitions and gres",
+            "examples": [
+              {
+                "gres": "...",
+                "nodes": "...",
+                "partitions": "..."
+              }
+            ],
+            "title": "Texts",
+            "type": "object"
+          }
+        },
+        "required": [
+          "texts",
+          "stamp",
+          "judged",
+          "rules"
+        ],
+        "title": "SlurmSave",
         "type": "object"
       },
       "Token": {
@@ -1577,7 +1806,7 @@
     },
     "/api/v1/auth/whoami": {
       "get": {
-        "description": "Who the token names and how trixd sees them: `kind` is `user`, `node` or `service`; `source` is where the name was checked, `ini`, `local`, `pam`, `ldap`, or `luna` for a token Luna issued; `role` is the role held here; `rootus` is true for the ini account, which passes every check whatever its role. Any signed-in user may ask, role `none` included.\n\n**Access:** any signed-in user",
+        "description": "Who the token names and how trixd sees them: `kind` is `user`, `node` or `service`; `source` is where the name was checked, `ini`, `local`, `pam`, `ldap`, `peercred`, or `luna` for a token Luna issued; `role` is the role held here; `rootus` is true for the ini account, which passes every check whatever its role. Any signed-in user may ask, role `none` included.\n\n**Access:** any signed-in user",
         "operationId": "whoami_api_v1_auth_whoami_get",
         "responses": {
           "200": {
@@ -6721,6 +6950,806 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/slurm/files": {
+      "get": {
+        "description": "Every gap that stops a save, a restore, a drain or a resume, as a sentence (`why`):\na file or its `.bkp` missing or not writable by the helper's account, slurm not\ngranting the account AdminLevel Administrator (`granted`, asked once a minute). The\nsha256 of each file (`stamp`, sent back with a save), the sha256 of the save rules\n(`rules`) and the account the helper runs as.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "slurm_files_get_api_v1_slurm_files_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "account": "trinityx-slurm",
+                  "granted": "",
+                  "rules": "66e57fbc...",
+                  "stamp": {
+                    "gres": "fd61a03...",
+                    "nodes": "9f86d08...",
+                    "partitions": "60303ae..."
+                  },
+                  "why": []
+                },
+                "schema": {}
+              }
+            },
+            "description": "The gaps, the stamp and the rules' digest"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The helper did not answer"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The helper's account, setpriv or prlimit is missing, or the files are not configured"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Whether the person's Slurm changes can be written, and the files as they are",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/slurm/files/actions/apply": {
+      "post": {
+        "description": "`scontrol reconfigure`, run by the helper under the lock, for a person holding Luna's\nw on the cluster; slurmctld refuses what it cannot load and keeps serving.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_apply_post_api_v1_slurm_files_actions_apply_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {},
+                "schema": {}
+              }
+            },
+            "description": "Done"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Another change is under way, or a cut save is not put back yet"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "scontrol refused or did not answer, or the helper did not answer"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A tool is missing, or the files are not configured; or Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Make slurm read its files again",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/slurm/files/actions/preview": {
+      "post": {
+        "description": "Judged as the write would be (the stamp, the TrinityX block, the lines the editor may\nchange, slurmlint), writing nothing; a refusal the write would meet comes back in\n`refused`, so the console can say it before the person saves.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_preview_post_api_v1_slurm_files_actions_preview_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "mode": "save",
+                    "stamp": {
+                      "gres": "fd61a03...",
+                      "nodes": "9f86d08...",
+                      "partitions": "60303ae..."
+                    },
+                    "texts": {
+                      "gres": "...",
+                      "nodes": "...",
+                      "partitions": "..."
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmPreview"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "refused": "",
+                  "states": [
+                    "node004"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The State changes, or why the write would be refused"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The helper did not answer"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A file or backup is missing or not writable, or a tool is missing"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The nodes whose State a save or a restore would change",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/slurm/files/actions/restore": {
+      "post": {
+        "description": "As a save of the `.bkp` texts, the backups kept. There is one `.bkp` per file, which\nevery save rewrites, and the OOD Slurm configurator writes the same names: Restore puts\nback the set before the latest save by either, not necessarily before the person's own.\n`judged` is held to 4096 nodes as a save's is.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_restore_post_api_v1_slurm_files_actions_restore_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "judged": [],
+                    "rules": "66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b",
+                    "stamp": {
+                      "gres": "fd61a03...",
+                      "nodes": "9f86d08...",
+                      "partitions": "60303ae..."
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmRestore"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "stamp": {
+                    "gres": "fd61a03...",
+                    "nodes": "9f86d08...",
+                    "partitions": "60303ae..."
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The files' new stamp"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`judged` (at most 4096 nodes), or slurmlint's lines"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A backup cannot be read, or as a save; or Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Write the backups' texts back to the three files",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/slurm/files/actions/save": {
+      "post": {
+        "description": "The backups first, then the three files, whole or not at all: one save, restore, apply\nor render at a time on either controller (a lock beside the files), a mark before the\nfirst byte so a cut write is put back. Refused when the files changed since the page\nloaded them (`stamp`), when a changed line is not one the editor makes, when slurmlint\nrefuses, when `judged` is not the State changes the texts make, and when `rules` is not\nthis plugin's. Luna's w on the cluster, and the hardware right on each node in\n`judged`, asked as the person. Slurm's commands read the files as soon as they are\nwritten; slurmctld reads them on apply. `judged` holds at most 4096 nodes, and a State\nchange on a preset counts every node, so on a cluster of more nodes such a save answers\n400.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_save_post_api_v1_slurm_files_actions_save_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "judged": [],
+                    "rules": "66e57fbc1672d13853b9b6e35d4ff1aee09bdd5a2f2cfb0ce79a0265ef853d2b",
+                    "stamp": {
+                      "gres": "fd61a03...",
+                      "nodes": "9f86d08...",
+                      "partitions": "60303ae..."
+                    },
+                    "texts": {
+                      "gres": "...",
+                      "nodes": "...",
+                      "partitions": "..."
+                    }
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmSave"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "stamp": {
+                    "gres": "fd61a03...",
+                    "nodes": "9f86d08...",
+                    "partitions": "60303ae..."
+                  }
+                },
+                "schema": {}
+              }
+            },
+            "description": "The files' new stamp"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A text, `judged` (at most 4096 nodes), or slurmlint's lines"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid; or, marked `WWW-Authenticate: Bearer realm=\"luna\"`, Luna needs the person's own sign-in: `POST /api/v1/luna/token`"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Stale, not Luna's files, a line the editor cannot make, the State changes or the rules differ, another change under way, a cut save put back, or a file rewritten while the helper wrote it"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A write failed and what the helper wrote is put back, or the helper did not answer; or Luna does not say who holds the hardware right"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A file or backup is missing or not writable, slurmlint is absent, a cut save's mark cannot be read, or a tool is missing; or Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Write the person's texts of the node, partition and gres files",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/slurm/nodes/actions/drain": {
+      "post": {
+        "description": "`scontrol update NodeName=<names> State=DRAIN Reason=\"[person] reason\"`, run by the\nhelper as its account, for the person whose trixd token made the request (or rootus).\nLuna's x on every node named, asked as that person; refused whole when a node lacks it,\nor when a name is not a node Luna renders into the node file.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "slurm_drain_post_api_v1_slurm_nodes_actions_drain_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "names": [
+                      "node001"
+                    ],
+                    "reason": "bad DIMM"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmDrain"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "did": "drain node001",
+                  "names": [
+                    "node001"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The nodes changed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A name or the reason is refused; the message says which"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid; or, marked `WWW-Authenticate: Bearer realm=\"luna\"`, Luna needs the person's own sign-in: `POST /api/v1/luna/token`"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Another change is under way"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "scontrol refused or did not answer, or the helper did not answer; the outcome of a silent one is unknown"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "slurm has not made the account an Administrator, or a tool is missing; or Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Drain nodes, the person written in front of the reason",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
+      }
+    },
+    "/api/v1/slurm/nodes/actions/resume": {
+      "post": {
+        "description": "`scontrol update NodeName=<names> State=RESUME`, as drain is asked and refused.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "slurm_resume_post_api_v1_slurm_nodes_actions_resume_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "names": [
+                      "node001"
+                    ]
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmResume"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "did": "resume node001",
+                  "names": [
+                    "node001"
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The nodes changed"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A name is refused"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid; or, marked `WWW-Authenticate: Bearer realm=\"luna\"`, Luna needs the person's own sign-in: `POST /api/v1/luna/token`"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Another change is under way"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "scontrol refused or did not answer, or the helper did not answer; the outcome of a silent one is unknown"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "slurm has not made the account an Administrator, or a tool is missing; or Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Resume nodes",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
       }
     },
     "/api/v1/slurm/renders/config": {

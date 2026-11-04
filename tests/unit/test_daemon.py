@@ -429,15 +429,15 @@ def test_a_right_password_is_accepted(rig, client):
     assert answer.json()["token"]
 
 
-def test_the_sources_are_the_four_on_the_board(rig):
+def test_the_sources_are_the_five_on_the_board(rig):
     """
-    local, pam, ldap and oidc, as the whiteboard drew them; nothing else answers.
+    local, pam, ldap, peercred and oidc; nothing else answers.
     """
     import pathlib
 
     root = pathlib.Path(trixd.__file__).parent / "core" / "security" / "sources"
     found = {path.stem for path in root.glob("*.py") if path.stem != "__init__"}
-    assert found == {"local", "pam", "ldap", "oidc"}, found
+    assert found == {"local", "pam", "ldap", "peercred", "oidc"}, found
 
 
 def _probe_local(handle, patch) -> dict:
@@ -479,13 +479,22 @@ def _probe_oidc(handle, patch) -> dict:
     return {"source": oidc_source.Source(handle), "declines": True}
 
 
+def _probe_peercred(handle, patch) -> dict:
+    """
+    peercred signs in on its socket, never with a password, so it answers for nobody here.
+    """
+    from trixd.core.security.sources import peercred as peercred_source
+
+    return {"source": peercred_source.Source(handle), "declines": True}
+
+
 # One probe per source the chain can import, keyed by the module name it imports. A
 # source with no provider or server to talk to yet is marked declines, and is held to
 # answering for nobody; every other probe hands over a working credential and a wrong
 # one. A source that needs something a unit test cannot stand in for belongs here too,
 # named, with what it needs - not left out, which reads as covered.
-SOURCE_PROBES = {"local": _probe_local, "pam": _probe_pam,
-                 "ldap": _probe_ldap, "oidc": _probe_oidc}
+SOURCE_PROBES = {"local": _probe_local, "pam": _probe_pam, "ldap": _probe_ldap,
+                 "peercred": _probe_peercred, "oidc": _probe_oidc}
 
 
 def test_no_source_authenticates_without_checking_the_password(rig, monkeypatch):
@@ -1627,6 +1636,29 @@ def test_the_last_change_of_a_burst_is_rendered(rig):
     renders().notify("luna.burst")
     clock.sleep(1.6)
     assert seen == [1, 2], seen
+
+
+def test_a_render_asked_again_runs_once_more_after_the_delay(rig):
+    """
+    A producer that could not run now asks for one more run later: it comes after the delay,
+    once however often it was asked, and not before.
+    """
+    import time as clock
+
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    runs = []
+    engine = renders()
+    engine.register("later", "renders/later", Render(inputs=["luna.later"]),
+                    lambda: runs.append(1) or {})
+    runs.clear()
+    again = getattr(engine, "again", lambda key, delay: None)
+    again("later/renders/later", 0.3)
+    again("later/renders/later", 0.3)
+    assert runs == [], "it ran before the delay"
+    clock.sleep(0.8)
+    assert runs == [1], runs
 
 
 def test_a_burst_during_a_slow_render_coalesces_into_one_more_pass(rig):

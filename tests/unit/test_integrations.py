@@ -993,6 +993,200 @@ def test_pam_resolves_a_person_and_not_a_service_account(rig, monkeypatch):
     assert source.resolve("backup")[0] is False
 
 
+# The uid the kernel reports for the peer: an ordinary account's, never the runner's own,
+# which is 0 under CI and would be refused before the case under test is reached.
+PEER_UID = 1500
+
+
+def _peercred(monkeypatch, tmp_path, name: str = "carol", shell: str = "/bin/bash",
+              account: tuple = (True, "Success"), back: int = None, uid: int = PEER_UID,
+              request: bytes = b"POST /api/v1/auth/token HTTP/1.1\r\n\r\n") -> tuple:
+    """
+    Open the peercred socket, send one request and read the answer, with the kernel saying
+    the peer is `uid`, that uid named `name` and PAM's account check answering `account`.
+    Gives (status, body), or (None, {}) on a build with no socket to ask.
+    """
+    import asyncio
+
+    listener = _new("trixd.core.security.peercred")
+    if listener is None:
+        return None, {}
+    from trixd.core.security.sources import pam as pam_source
+
+    entry = SimpleNamespace(pw_name=name, pw_uid=uid if back is None else back, pw_gid=uid)
+    monkeypatch.setattr(listener, "pwd", SimpleNamespace(getpwuid=lambda wanted: entry,
+                                                         getpwnam=lambda wanted: entry))
+    monkeypatch.setattr(listener, "_peer", lambda writer: (1, uid))
+    _pam(monkeypatch, {name: (max(uid, 1000), shell)})
+    monkeypatch.setattr(pam_source.Source, "account", lambda self, who: account,
+                        raising=False)
+    # Relative, because a socket path is limited to about a hundred bytes.
+    monkeypatch.chdir(tmp_path)
+    path = "peercred.sock"
+    monkeypatch.setitem(configuration.current().auth.__dict__, "socket", path)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["local", "peercred"])
+
+    async def exchange() -> tuple:
+        """
+        One connection to the socket, read to its close.
+        """
+        server = await listener.start()
+        if server is None:
+            return None, {}
+        try:
+            reader, writer = await asyncio.open_unix_connection(path)
+            writer.write(request)
+            await writer.drain()
+            answer = await reader.read()
+            writer.close()
+        finally:
+            listener.stop(server)
+        head, _, body = answer.partition(b"\r\n\r\n")
+        return int(head.split()[1]), json.loads(body or b"{}")
+
+    return asyncio.run(exchange())
+
+
+def _refusals(name: str) -> list:
+    """
+    The audit trail's refused sign-ins for a name.
+    """
+    from trixd.core.security import audit
+
+    return [row["detail"] for row in audit.read(principal=name, outcome="refused")
+            if row["action"] == "auth.token"]
+
+
+def test_peercred_signs_the_caller_in_as_their_own_account(rig, client, tmp_path,
+                                                            monkeypatch):
+    """
+    The kernel's uid is the identity: the token names that account, came through peercred,
+    and the gate takes it.
+    """
+    from trixd.core.security import tokens
+
+    status, body = _peercred(monkeypatch, tmp_path)
+    assert status == 201, body
+    claims = tokens.verify(body["token"])
+    assert (claims.subject, claims.source) == ("carol", "peercred")
+    shown = client.get("/api/v1/auth/whoami", headers={"x-access-tokens": body["token"]})
+    assert shown.status_code == 200, shown.text
+    assert (shown.json()["principal"], shown.json()["source"]) == ("carol", "peercred")
+
+
+@pytest.mark.parametrize("case, why", [
+    ({"uid": 0, "name": "root"}, "uid 0"),
+    ({"shell": "/sbin/nologin"}, "system account"),
+    ({"name": "tester"}, "ini account"),
+    ({"back": 4242}, "leads back"),
+    ({"account": (False, "Authentication token is no longer valid")}, "PAM refused"),
+])
+def test_peercred_refuses_and_says_why_in_the_trail(rig, tmp_path, monkeypatch, case, why):
+    """
+    uid 0, a system account, the ini account, a name that leads to another uid and an
+    account PAM refuses get no token, and the trail says which.
+    """
+    status, body = _peercred(monkeypatch, tmp_path, **case)
+    assert status == 401 and "token" not in body, (status, body)
+    principal = "uid 0" if case.get("uid") == 0 else (
+        f"uid {PEER_UID}" if "back" in case else case.get("name", "carol"))
+    assert any(why in detail for detail in _refusals(principal)), _refusals(principal)
+
+
+def test_peercred_refuses_a_disabled_user(rig, tmp_path, monkeypatch):
+    """
+    Disabling somebody cuts them here too, whatever the kernel says.
+    """
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="carol", enabled=False))
+        handle.commit()
+    finally:
+        handle.close()
+    status, body = _peercred(monkeypatch, tmp_path)
+    assert status == 401 and "token" not in body, (status, body)
+    assert any("disabled" in detail for detail in _refusals("carol")), _refusals("carol")
+
+
+def test_peercred_serves_the_token_path_alone(rig, tmp_path, monkeypatch):
+    """
+    Nothing else of the API is reachable on the socket.
+    """
+    status, _ = _peercred(monkeypatch, tmp_path,
+                          request=b"GET /api/v1/identity/users HTTP/1.1\r\n\r\n")
+    assert status == 404
+
+
+def test_a_peercred_socket_that_cannot_open_is_said(rig, tmp_path, monkeypatch):
+    """
+    A socket in a directory that does not exist is an error in the log, not a silence.
+    """
+    import asyncio
+
+    listener = _new("trixd.core.security.peercred")
+    said = []
+    if listener is not None:
+        monkeypatch.setattr(listener.LOGGER, "error",
+                            lambda text, *args: said.append(text % args))
+        monkeypatch.setitem(configuration.current().auth.__dict__, "socket",
+                            str(tmp_path / "missing" / "peercred.sock"))
+        monkeypatch.setattr(configuration.current().auth, "chain", ["peercred"])
+        assert asyncio.run(listener.start()) is None
+    assert any("cannot be opened" in line for line in said), said
+
+
+def test_group_roles_give_the_higher_role_and_never_store_it(rig, monkeypatch):
+    """
+    The role is the higher of the person's own and their groups', worked out on each
+    resolve: leaving a group takes its role away, and the row keeps its own.
+    """
+    from trixd.core.security import principals
+
+    gids = {"admins": 500, "ops": 501}
+    groups = {"admins", "ops"}
+    handle = database.session()
+    try:
+        handle.add(models.Principal(name="carol", role="reader"))
+        handle.commit()
+    finally:
+        handle.close()
+    monkeypatch.setitem(configuration.current().auth.__dict__, "group_roles",
+                        {"admins": "manager", "ops": "operator"})
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(
+        getpwnam=lambda name: SimpleNamespace(pw_name=name, pw_uid=1500, pw_gid=100)))
+    monkeypatch.setitem(sys.modules, "grp", SimpleNamespace(
+        getgrnam=lambda group: SimpleNamespace(gr_gid=gids[group])))
+    monkeypatch.setattr(os, "getgrouplist",
+                        lambda name, gid: [gid] + [gids[group] for group in groups])
+    handle = database.session()
+    try:
+        assert principals.resolve(handle, "carol").role == "manager"
+        groups.discard("admins")
+        assert principals.resolve(handle, "carol").role == "operator"
+        groups.clear()
+        assert principals.resolve(handle, "carol").role == "reader"
+        groups.add("ops")
+        principals.row_for(handle, "carol").role = "manager"
+        handle.commit()
+        assert principals.resolve(handle, "carol").role == "manager"
+    finally:
+        handle.close()
+
+
+def test_group_roles_are_read_and_a_role_off_the_ladder_stops_the_daemon(tmp_path):
+    """
+    GROUP_ROLES maps a group to a rung; rootus is not a rung and no typo is a guess.
+    """
+    ini = tmp_path / "trixd.ini"
+    ini.write_text("[AUTH]\nGROUP_ROLES = admins:manager, ops : operator\n", encoding="utf-8")
+    loaded = configuration.load(str(ini))
+    assert getattr(loaded.auth, "group_roles", None) == {"admins": "manager", "ops": "operator"}
+    for wrong in ("admins:rootus", "admins:boss", "admins", ":manager"):
+        ini.write_text(f"[AUTH]\nGROUP_ROLES = {wrong}\n", encoding="utf-8")
+        with pytest.raises(ValueError):
+            configuration.load(str(ini))
+
+
 def _ldap(monkeypatch):
     """
     The LDAP source against ldap3's own offline directory, with one person and a reader.
@@ -2030,6 +2224,7 @@ def test_only_pam_and_ldap_people_with_an_ordinary_account_spelt_exactly_have_a_
 
     assert persons._home("harry", "pam").pw_dir == "/home/harry"
     assert persons._home("harry", "ldap").pw_dir == "/home/harry"
+    assert getattr(persons._home("harry", "peercred"), "pw_dir", None) == "/home/harry"
     for name, source in (("harry", "local"), ("harry", "oidc"), ("harry", "ini"),
                          ("root", "pam"), ("svc", "pam"), ("Harry", "ldap")):
         assert persons._home(name, source) is None, (name, source)
@@ -2143,6 +2338,26 @@ def test_with_no_delegate_configured_the_client_is_asked_and_it_is_said_once(
     assert luna.signed == [] and luna.seen == []
     said = [record for record in records if "DELEGATE:LUNA" in record.getMessage()]
     assert len(said) == 1, _said(records)
+
+
+def test_a_401_asking_for_luna_sign_in_is_marked_and_trixd_s_own_are_not(
+        client, headers, tmp_path, monkeypatch):
+    """
+    The 401 asking for the person's own Luna sign-in carries WWW-Authenticate naming Luna,
+    which is how a client tells it from trixd's own 401s (no token, a bad one): those carry
+    none.
+    """
+    nobody = _person(client, headers, tmp_path, monkeypatch, source="local")
+    _Luna(monkeypatch, {PERSON: PERSON_PASSWORD})
+    _delegate(monkeypatch, "", "")
+
+    asked = client.get("/api/v1/luna/whoami", headers=nobody.headers)
+    assert asked.status_code == 401, asked.text
+    assert asked.headers.get("www-authenticate") == 'Bearer realm="luna"', asked.headers
+    for own in ({}, {"x-access-tokens": "not.a.token"}):
+        refused = client.get("/api/v1/auth/whoami", headers=own)
+        assert refused.status_code == 401, refused.text
+        assert "www-authenticate" not in refused.headers, refused.headers
 
 
 @posix_only
@@ -2558,6 +2773,323 @@ def test_a_token_held_for_a_person_is_not_presented_at_another_endpoint(
     assert luna.seen[-1] == luna.issued[-1], luna.seen
     assert luna.posted_to[-1] == "https://luna-other.test:7050/token", luna.posted_to
     assert answer.status_code == 200, answer.text
+
+
+def _person_calls(client, headers, tmp_path, monkeypatch, hardware_access=None, **access):
+    """
+    harry as a plugin holds him, Luna faked, and what his GET .../_access answers: no
+    hardware_access field unless one is given, as an older luna2-daemon answers.
+    """
+    harry = _person(client, headers, tmp_path, monkeypatch)
+    luna = _Luna(monkeypatch, {PERSON: PERSON_PASSWORD, DELEGATE: DELEGATE_PASSWORD})
+    _delegate(monkeypatch, endpoint=FLOATING)
+    answering = luna.request
+
+    def holding(method, url, headers=None, **kwargs):
+        """
+        Luna's answer, with what harry holds at his own _access.
+        """
+        if url.endswith(f"/config/user/{PERSON}/_access"):
+            luna.sent_to.append(url)
+            luna.seen.append((headers or {}).get("x-access-tokens"))
+            held = {"access": access}
+            if hardware_access is not None:
+                held["hardware_access"] = hardware_access
+            body = {"config": {"user": {PERSON: held}}}
+            return SimpleNamespace(content=json.dumps(body).encode(), status_code=200,
+                                   headers={"content-type": "application/json"})
+        return answering(method, url, headers=headers, **kwargs)
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", holding)
+    persons = _new("trixd.plugins.luna.persons")
+    return harry, luna, persons, persons.caller(harry.headers)
+
+
+def _raised(work, *args, **kwargs):
+    """
+    What the work raised, or None.
+    """
+    try:
+        work(*args, **kwargs)
+    except Exception as error:                      # pylint: disable=broad-except
+        return error
+    return None
+
+
+@posix_only
+def test_a_plugin_calls_luna_as_the_person_where_their_calls_go(
+        client, headers, tmp_path, monkeypatch):
+    """
+    persons.call: harry's own kept Luna token, at the delegate endpoint, method and body as
+    given, and Luna's answer back.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    kept = _luna_minted(PERSON)
+    _luna_folder(harry.home, token=kept)
+    call = getattr(persons, "call", lambda *args, **kwargs: None)
+
+    answer = call(person, "GET", "config/node/node001")
+    assert luna.sent_to == [f"{FLOATING_BASE}/config/node/node001"], luna.sent_to
+    assert luna.seen == [kept], "Luna was not handed harry's own Luna token"
+    assert luna.signed == [], luna.signed
+    assert answer.status_code == 200
+
+
+@posix_only
+def test_a_plugin_s_call_with_a_refused_kept_token_is_sent_once_more(
+        client, headers, tmp_path, monkeypatch):
+    """
+    A kept token Luna refuses: dropped, the delegate signs harry in, the call goes again
+    with the new token, and that token is kept.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    stale = _luna_minted(PERSON, seconds=200)
+    luna.refused.add(stale)
+    _luna_folder(harry.home, token=stale)
+    call = getattr(persons, "call", lambda *args, **kwargs: None)
+
+    answer = call(person, "POST", "config/node/node001", b'{"config": {}}')
+    assert len(luna.seen) == 2, "the call was not sent again, once"
+    assert luna.seen == [stale, luna.issued[-1]], luna.seen
+    assert [asked["username"] for asked in luna.signed] == [DELEGATE], luna.signed
+    assert (harry.home / ".luna" / "token").read_text(encoding="utf-8") == luna.issued[-1]
+    assert answer.status_code == 200
+
+
+@posix_only
+def test_a_plugin_s_call_refused_twice_asks_the_person_to_sign_in(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Luna refusing the fresh token as well: two sends, then 401 naming the sign-in route.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    stale = _luna_minted(PERSON, seconds=200)
+    luna.refused.update({stale, _luna_minted(PERSON)})
+    _luna_folder(harry.home, token=stale)
+    call = getattr(persons, "call", lambda *args, **kwargs: None)
+
+    raised = _raised(call, person, "GET", "whoami")
+    assert len(luna.seen) == 2, luna.seen
+    assert isinstance(raised, Unauthenticated), raised
+    assert "sign in at Luna with POST /api/v1/luna/token" in raised.message
+
+
+@posix_only
+def test_a_plugin_s_call_with_a_token_just_signed_in_for_is_not_sent_again(
+        client, headers, tmp_path, monkeypatch):
+    """
+    No kept token: the delegate signs harry in, and Luna refusing that token is Luna's
+    answer, sent once and returned as it is.
+    """
+    _, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    luna.refused.add(_luna_minted(PERSON))
+    call = getattr(persons, "call", lambda *args, **kwargs: None)
+
+    answer = call(person, "GET", "whoami")
+    assert len(luna.seen) == 1 and len(luna.signed) == 1, (luna.seen, luna.signed)
+    assert answer.status_code == 401
+
+
+@posix_only
+def test_a_plugin_s_call_to_a_luna_that_does_not_answer_is_a_503(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Luna unreachable: ServiceUnavailable, as the route to Luna answers it.
+    """
+    harry, _, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    tried = []
+
+    def down(method, url, **kwargs):
+        """
+        Nobody answering.
+        """
+        tried.append(url)
+        raise requests.ConnectionError("connection refused")
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", down)
+    call = getattr(persons, "call", lambda *args, **kwargs: None)
+
+    raised = _raised(call, person, "GET", "whoami")
+    assert tried == [f"{FLOATING_BASE}/whoami"], tried
+    assert isinstance(raised, ServiceUnavailable), raised
+    assert "Luna is not answering" in raised.message
+
+
+@posix_only
+def test_may_answers_per_name_in_luna_s_own_words(client, headers, tmp_path, monkeypatch):
+    """
+    persons.may: one GET of harry's own _access, and per name what Luna would say: a node
+    he cannot read is not available, one he reads without x is not permitted.
+    """
+    harry, luna, persons, person = _person_calls(
+        client, headers, tmp_path, monkeypatch,
+        node={"node001": "rwx", "node002": "r--", "node003": "rw-", "node005": "--x"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    refused = may(person, "node", ["node001", "node002", "node003", "node004", "node005"], "x")
+    assert luna.sent_to == [f"{FLOATING_BASE}/config/user/{PERSON}/_access"], luna.sent_to
+    assert refused == {
+        "node002": "operating node node002 is not permitted: you may read it",
+        "node003": "operating node node003 is not permitted: you may read and change it",
+        "node004": "node node004 is not available",
+        "node005": "node node005 is not available",
+    }, refused
+
+
+@posix_only
+def test_may_is_empty_when_every_name_is_held(client, headers, tmp_path, monkeypatch):
+    """
+    Every bit held: nothing refused.
+    """
+    harry, luna, persons, person = _person_calls(
+        client, headers, tmp_path, monkeypatch, node={"node001": "rwx", "node002": "r-x"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    refused = may(person, "node", ["node001", "node002"], "x")
+    assert len(luna.sent_to) == 1, luna.sent_to
+    assert refused == {}, refused
+
+
+@posix_only
+def test_may_reads_the_cluster_row_whatever_the_cluster_is_called(
+        client, headers, tmp_path, monkeypatch):
+    """
+    Luna holds the cluster under its own name, mycluster here; it is asked for as
+    "cluster", as Luna's gate names it in a refusal.
+    """
+    harry, luna, persons, person = _person_calls(
+        client, headers, tmp_path, monkeypatch, cluster={"mycluster": "r--"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    refused = may(person, "cluster", ["cluster"], "w")
+    assert len(luna.sent_to) == 1, luna.sent_to
+    assert refused == {"cluster": "changing or removing cluster cluster is not permitted: "
+                                  "you may read it"}, refused
+    assert may(person, "cluster", ["cluster"], "r") == {}
+
+
+@posix_only
+@pytest.mark.parametrize("status, message", [
+    (403, "using the token of harry is not permitted: it is a delegate"),
+    (404, "User harry is not available"),
+])
+def test_may_passes_luna_s_refusal_of_access_through(
+        client, headers, tmp_path, monkeypatch, status, message):
+    """
+    Luna refusing GET .../_access: its status and its message, not a trixd failure.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+
+    def refusing(method, url, headers=None, **kwargs):
+        """
+        Luna saying no to _access.
+        """
+        luna.sent_to.append(url)
+        return SimpleNamespace(content=json.dumps({"message": message}).encode(),
+                               status_code=status, headers={"content-type": "application/json"})
+
+    monkeypatch.setattr("trixd_plugin_luna.backend.requests.request", refusing)
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    raised = _raised(may, person, "node", ["node001"], "x")
+    assert luna.sent_to == [f"{FLOATING_BASE}/config/user/{PERSON}/_access"], luna.sent_to
+    assert getattr(raised, "status_code", None) == status, raised
+    assert raised.message == message
+
+
+def _answer(work, *args):
+    """
+    What the work returned, or what it raised.
+    """
+    try:
+        return work(*args)
+    except Exception as error:                      # pylint: disable=broad-except
+        return error
+
+
+HARDWARE_REFUSAL = ("is not permitted: that is hardware, for rootus, admin or a usergroup "
+                    "with the hardware flag")
+
+
+@posix_only
+def test_may_h_is_luna_s_hardware_right_in_its_own_words(client, headers, tmp_path, monkeypatch):
+    """
+    persons.may with 'h': granted only where hardware_access names the node or group; w held
+    without it, or a table hardware_access leaves out, is Luna's hardware refusal, and a node
+    without w is refused w first, as Luna's gate refuses it.
+    """
+    harry, luna, persons, person = _person_calls(
+        client, headers, tmp_path, monkeypatch, hardware_access={"node": ["node001"]},
+        node={"node001": "rwx", "node002": "rwx", "node003": "r-x"}, group={"compute": "rwx"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    assert _answer(may, person, "node", ["node001"], "h") == {}
+    refused = _answer(may, person, "node", ["node001", "node002", "node003", "node004"], "h")
+    assert refused == {
+        "node002": f"changing the hardware of node node002 {HARDWARE_REFUSAL}",
+        "node003": "changing or removing node node003 is not permitted: you may read and "
+                   "operate it",
+        "node004": "node node004 is not available",
+    }, refused
+    refused = _answer(may, person, "group", ["compute"], "h")
+    assert refused == {"compute": f"changing the hardware of group compute {HARDWARE_REFUSAL}"}, \
+        refused
+    assert len(luna.sent_to) == 3, luna.sent_to
+
+
+@posix_only
+def test_may_h_fails_closed_against_a_luna_without_hardware_access(
+        client, headers, tmp_path, monkeypatch):
+    """
+    An older luna2-daemon, whose _access has no hardware_access: 'h' is refused as a
+    BackendFailure asking for luna2-daemon to be updated, never answered from x or w, while
+    the other bits are answered as before.
+    """
+    harry, _, persons, person = _person_calls(client, headers, tmp_path, monkeypatch,
+                                              node={"node001": "rwx"})
+    _luna_folder(harry.home, token=_luna_minted(PERSON))
+    may = getattr(persons, "may", lambda *args, **kwargs: None)
+
+    raised = _answer(may, person, "node", ["node001"], "h")
+    assert isinstance(raised, BackendFailure), raised
+    assert raised.status_code == 502 and "update luna2-daemon" in raised.message, raised.message
+    assert may(person, "node", ["node001"], "x") == {}
+
+
+@posix_only
+def test_get_token_is_the_person_s_kept_luna_token(client, headers, tmp_path, monkeypatch):
+    """
+    persons.get_token: ~/.luna/token as it is, nothing signed in for and nothing sent.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    kept = _luna_minted(PERSON)
+    _luna_folder(harry.home, token=kept)
+    token = getattr(persons, "get_token", lambda *args, **kwargs: None)
+
+    assert token(person) == kept
+    assert luna.signed == [] and luna.seen == [], (luna.signed, luna.seen)
+
+
+@posix_only
+def test_get_token_is_signed_in_for_by_the_delegate_and_kept(
+        client, headers, tmp_path, monkeypatch):
+    """
+    persons.get_token with nothing kept: the delegate signs harry in, that token is
+    answered and kept where the command line keeps it.
+    """
+    harry, luna, persons, person = _person_calls(client, headers, tmp_path, monkeypatch)
+    token = getattr(persons, "get_token", lambda *args, **kwargs: None)
+
+    answered = token(person)
+    assert [asked.get("on_behalf_of") for asked in luna.signed] == [PERSON], luna.signed
+    assert answered == luna.issued[-1]
+    assert (harry.home / ".luna" / "token").read_text(encoding="utf-8") == answered
 
 
 @posix_only
