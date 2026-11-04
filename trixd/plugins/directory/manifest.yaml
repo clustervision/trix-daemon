@@ -57,13 +57,13 @@ schemas:
 endpoints:
   - path: users
     methods: [GET]
-    minimum: rootus
+    minimum: manager
     handler: list_users
     summary: Every user in the cluster directory
     description: |
       Every user obol finds in the cluster directory, as obol shows them: the LDAP
-      attributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. rootus only, as
-      the directory is the cluster's user store.
+      attributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as
+      trixd's own users are.
     response:
       description: Every user
       example:
@@ -71,7 +71,7 @@ endpoints:
 
   - path: users/<name>
     methods: [GET]
-    minimum: rootus
+    minimum: manager
     handler: get_user
     summary: One user in the cluster directory
     description: |
@@ -87,7 +87,7 @@ endpoints:
 
   - path: users
     methods: [POST]
-    minimum: rootus
+    minimum: manager
     handler: create_user
     schema: user
     summary: Create a user in the cluster directory
@@ -105,7 +105,7 @@ endpoints:
 
   - path: users/<name>
     methods: [PATCH]
-    minimum: rootus
+    minimum: manager
     handler: update_user
     schema: user_change
     summary: Change a user in the cluster directory
@@ -126,7 +126,7 @@ endpoints:
 
   - path: users/<name>
     methods: [DELETE]
-    minimum: rootus
+    minimum: manager
     handler: delete_user
     summary: Delete a user from the cluster directory
     description: |
@@ -142,7 +142,7 @@ endpoints:
 
   - path: groups
     methods: [GET]
-    minimum: rootus
+    minimum: manager
     handler: list_groups
     summary: Every group in the cluster directory
     description: |
@@ -156,7 +156,7 @@ endpoints:
 
   - path: groups/<name>
     methods: [GET]
-    minimum: rootus
+    minimum: manager
     handler: get_group
     summary: One group in the cluster directory
     description: |
@@ -171,7 +171,7 @@ endpoints:
 
   - path: groups
     methods: [POST]
-    minimum: rootus
+    minimum: manager
     handler: create_group
     schema: group
     summary: Create a group in the cluster directory
@@ -188,7 +188,7 @@ endpoints:
 
   - path: groups/<name>
     methods: [PATCH]
-    minimum: rootus
+    minimum: manager
     handler: update_group
     schema: group_change
     summary: Change a group in the cluster directory
@@ -207,7 +207,7 @@ endpoints:
 
   - path: groups/<name>
     methods: [DELETE]
-    minimum: rootus
+    minimum: manager
     handler: delete_group
     summary: Delete a group from the cluster directory
     description: |

@@ -207,6 +207,22 @@ def test_every_route_says_who_may_call_it_in_words():
             assert {"401", "403"} <= set(operation["responses"]), name
 
 
+def test_only_replication_plugin_control_and_the_root_run_settings_are_kept_for_rootus():
+    """
+    Users and the cluster directory are a manager's: a new route declaring rootus has to
+    be one of these, by decision.
+    """
+    kept = {name for name, operation in _operations(_published()).items()
+            if operation.get("x-trixd-minimum") == "rootus"}
+    replication = {name for name in kept
+                   if name.split(" ", 1)[1].startswith("/api/v1/system/replication/")}
+    assert replication, kept
+    assert kept - replication == {"POST /api/v1/system/plugins/{name}/reload",
+                                  "POST /api/v1/system/plugins/{name}/disable",
+                                  "PATCH /api/v1/slurm/config",
+                                  "PATCH /api/v1/prometheus/config"}, sorted(kept)
+
+
 @pytest.mark.parametrize("name", sorted(_operations(_published())))
 def test_every_route_says_what_to_send_and_what_comes_back(name):
     """

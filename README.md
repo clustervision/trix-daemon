@@ -282,8 +282,8 @@ remember. `[API] MAX_BODY` and `MAX_MESSAGE`, the largest WebSocket message, tak
 unreadable is named along with the value used instead: the default for a ceiling, and
 on for `ENABLED`, since reading it as off would quietly stop an HA pair reconciling. An
 empty `[API] USERNAME` or `PASSWORD` is named too, because that account is the one
-principal that holds `rootus`: without it the directory, slurm and replication routes
-answer 403 to every caller.
+principal that holds `rootus`: without it the slurm and replication routes answer 403
+to every caller.
 
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
 package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
@@ -306,13 +306,13 @@ plus rootus, which is the ini account and never a role a user can be given.
 | Role | May |
 |---|---|
 | none | sign in and ask who it is (`GET /api/v1/auth/whoami`), nothing else |
-| reader | read everything apart from the routes kept for rootus: the read-only user, for an auditor or anyone who only needs to see |
+| reader | read everything apart from users, the cluster directory and the routes kept for rootus: the read-only user, for an auditor or anyone who only needs to see |
 | operator | that, and act: start, stop, restart, reload or query a catalogued service, and tell trixd of a change (`system/notify`, `system/bulk`) |
-| manager | that, and change configuration: rules, settings, a node's hardware rules, the service catalogue |
-| rootus | everything, and alone: users and roles, the cluster directory, plugin control, replication, and plugin settings that name a command or a path run as root |
+| manager | that, and change configuration: rules, settings, a node's hardware rules, the service catalogue, users and roles up to manager, the cluster directory |
+| rootus | everything, and alone: plugin control, replication, and plugin settings that name a command or a path run as root |
 
-rootus is the administrator. There is no separate admin role: whoever administers
-trixd does it as the ini account.
+There is no separate admin role: a manager administers trixd's users and the cluster
+directory. What stays with the ini account runs as root or crosses to the other controller.
 
 Every user route names its minimum, and the gate compares it with the caller's role
 before the handler runs. A refusal is a 403 that says both, as in
@@ -341,7 +341,7 @@ def permits(who, minimum: str) -> tuple:
 The gate, `trixd/core/security/gate.py`, calls `permits` once per request, after the
 token is verified and the caller is resolved. An unknown role ranks as none.
 
-Users are managed by rootus with `GET /api/v1/identity/users`,
+Users are managed by a manager or rootus with `GET /api/v1/identity/users`,
 `PUT /api/v1/identity/users/<name>` (create, or change the role, password or whether
 the user is enabled) and `DELETE`. A change applies to tokens already handed out:
 the role is looked up on each request, through a cache of `[AUTH] CACHE` seconds
@@ -354,7 +354,7 @@ that knows the name decides: `local` (a stored password), `pam` (the controller'
 own accounts, which through sssd include the cluster directory; system accounts are
 refused), `ldap` (a directory bind) and `oidc`, which is a placeholder. Someone who
 signs in through PAM or LDAP gets a row on first sign-in, with role none, and can
-read nothing until rootus gives them a role.
+read nothing until a manager or rootus gives them a role.
 
 `peercred` signs a person in with no password. Named in `[AUTH] CHAIN`, it opens
 `[AUTH] SOCKET` (`/run/trixd/peercred.sock`), where a process on this controller asks

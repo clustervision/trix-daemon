@@ -918,7 +918,9 @@ def test_every_read_route_admits_a_reader_and_refuses_none(rig):
                 continue
             assert endpoint.minimum != "none", f"{path}: {endpoint.path} admits no role"
             if endpoint.methods == ["GET"]:
-                assert endpoint.minimum in ("reader", "rootus"), f"{path}: {endpoint.path}"
+                # The cluster directory is a manager's, as trixd's own users are.
+                allowed = ("reader", "manager") if "directory" in path else ("reader",)
+                assert endpoint.minimum in allowed + ("rootus",), f"{path}: {endpoint.path}"
 
 
 def test_an_operator_may_operate_and_not_configure(rig, client, headers):
@@ -1049,10 +1051,61 @@ def test_a_rootus_minimum_admits_the_ini_account_only(rig, client, headers):
     The top of the ladder is not a role: a manager is refused where Luna wants rootus.
     """
     mo = _principal(client, headers, "mo", "manager")
-    refused = client.get(f"{API_PREFIX}/identity/users", headers=mo)
+    refused = client.get(f"{API_PREFIX}/system/replication/hashes", headers=mo)
     assert refused.status_code == 403 and "rootus" in refused.text, refused.text
-    assert client.get(f"{API_PREFIX}/system/replication/hashes", headers=mo).status_code == 403
-    assert client.get(f"{API_PREFIX}/identity/users", headers=headers).status_code == 200
+    assert client.get(f"{API_PREFIX}/system/replication/hashes",
+                      headers=headers).status_code == 200
+
+
+def test_a_manager_administers_users_and_the_directory(rig, client, headers):
+    """
+    A manager lists, gives and removes roles up to its own, and reaches the directory;
+    rootus stays the ini account's, so a manager cannot give it.
+    """
+    mo = _principal(client, headers, "mo", "manager")
+    listed = client.get(f"{API_PREFIX}/identity/users", headers=mo)
+    assert listed.status_code == 200, listed.text
+    given = client.put(f"{API_PREFIX}/identity/users/max", json={"role": "manager"},
+                       headers=mo)
+    assert given.status_code == 200 and given.json()["role"] == "manager", given.text
+    raised = client.put(f"{API_PREFIX}/identity/users/max", json={"role": "rootus"},
+                        headers=mo)
+    assert raised.status_code == 400, raised.text
+    removed = client.delete(f"{API_PREFIX}/identity/users/max", headers=mo)
+    assert removed.status_code == 200, removed.text
+    reached = client.get(f"{API_PREFIX}/directory/users", headers=mo)
+    assert reached.status_code != 403, reached.text
+
+
+@pytest.mark.parametrize("role", ["reader", "operator"])
+def test_below_manager_users_and_the_directory_are_refused(rig, client, headers, role):
+    """
+    The refusal names manager, the minimum now, and the caller's own role.
+    """
+    who = _principal(client, headers, "rita", role)
+    for verb, path in (("GET", "identity/users"), ("PUT", "identity/users/max"),
+                       ("DELETE", "identity/users/max"), ("GET", "directory/users")):
+        answer = client.request(verb, f"{API_PREFIX}/{path}", headers=who,
+                                json={} if verb == "PUT" else None)
+        assert answer.status_code == 403, (verb, path, answer.text)
+        assert "manager" in answer.text and role in answer.text, (verb, path, answer.text)
+
+
+def test_a_manager_is_still_refused_what_runs_as_root(rig, client, headers):
+    """
+    Plugin control, replication and the settings naming a command trixd runs as root
+    stay with the ini account.
+    """
+    mo = _principal(client, headers, "mo", "manager")
+    for plugin in ("slurm", "prometheus"):
+        assert loader.load(rig, plugin).state == "loaded"
+    for verb, path in (("POST", "system/plugins/directory/reload"),
+                       ("POST", "system/plugins/directory/disable"),
+                       ("GET", "system/replication/hashes"),
+                       ("PATCH", "slurm/config"), ("PATCH", "prometheus/config")):
+        answer = client.request(verb, f"{API_PREFIX}/{path}", headers=mo,
+                                json={} if verb == "PATCH" else None)
+        assert answer.status_code == 403 and "rootus" in answer.text, (verb, path, answer.text)
 
 
 def test_rootus_cannot_be_given_as_a_role(rig, client, headers):
@@ -2007,8 +2060,8 @@ def test_a_ceiling_an_operator_would_write_is_the_ceiling_they_get(tmp_path, wri
 
 def test_an_ini_with_no_account_says_nobody_can_hold_rootus(tmp_path):
     """
-    Empty means no principal holds rootus, so the directory, slurm and replication routes
-    answer 403 to everyone and the sweep signs in to its peer as nobody. The daemon still
+    Empty means no principal holds rootus, so the slurm and replication routes answer 403
+    to everyone and the sweep signs in to its peer as nobody. The daemon still
     comes up, as the luna plugin does with a luna.ini that has no account.
     """
     loaded, said = _loaded(tmp_path, "[API]\nUSERNAME =\nPASSWORD =\n")

@@ -1578,7 +1578,7 @@
     },
     "/api/v1/directory/groups": {
       "get": {
-        "description": "Every group obol finds in the cluster directory. `member` lists the members by user\nname, whichever attribute the directory keeps them in, so the users application reads\none shape.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Every group obol finds in the cluster directory. `member` lists the members by user\nname, whichever attribute the directory keeps them in, so the users application reads\none shape.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_list_groups_get_api_v1_directory_groups_get",
         "responses": {
           "200": {
@@ -1639,10 +1639,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "post": {
-        "description": "Creates the group with obol and answers the group as it now stands. Only `groupname`\nis required; `members` lists the users in it.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the group with obol and answers the group as it now stands. Only `groupname`\nis required; `members` lists the users in it.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_create_group_post_api_v1_directory_groups_post",
         "requestBody": {
           "content": {
@@ -1750,12 +1750,12 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/directory/groups/{name}": {
       "delete": {
-        "description": "Removes the group from the directory with obol. Its members stay as users.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Removes the group from the directory with obol. Its members stay as users.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_delete_group_delete_api_v1_directory_groups__name__delete",
         "parameters": [
           {
@@ -1857,10 +1857,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "get": {
-        "description": "One group: its number and its members by user name.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One group: its number and its members by user name.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_get_group_get_api_v1_directory_groups__name__get",
         "parameters": [
           {
@@ -1957,10 +1957,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "patch": {
-        "description": "Changes only the fields sent: `gid`, or `members`, which replaces the member list.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Changes only the fields sent: `gid`, or `members`, which replaces the member list.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_update_group_patch_api_v1_directory_groups__name__patch",
         "parameters": [
           {
@@ -2097,12 +2097,12 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/directory/users": {
       "get": {
-        "description": "Every user obol finds in the cluster directory, as obol shows them: the LDAP\nattributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. rootus only, as\nthe directory is the cluster's user store.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Every user obol finds in the cluster directory, as obol shows them: the LDAP\nattributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as\ntrixd's own users are.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_list_users_get_api_v1_directory_users_get",
         "responses": {
           "200": {
@@ -2174,10 +2174,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "post": {
-        "description": "Creates the user with obol and answers the user as it now stands. Only `username` is\nrequired; anything left out takes obol's defaults. `expiry` is in days, and `groups`\nlists the groups the user joins.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the user with obol and answers the user as it now stands. Only `username` is\nrequired; anything left out takes obol's defaults. `expiry` is in days, and `groups`\nlists the groups the user joins.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_create_user_post_api_v1_directory_users_post",
         "requestBody": {
           "content": {
@@ -2299,12 +2299,12 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/directory/users/{name}": {
       "delete": {
-        "description": "Removes the user from the directory with obol.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Removes the user from the directory with obol.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_delete_user_delete_api_v1_directory_users__name__delete",
         "parameters": [
           {
@@ -2406,10 +2406,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "get": {
-        "description": "One user, as obol shows them: the LDAP attributes, with `memberOf` listing their\ngroups.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "One user, as obol shows them: the LDAP attributes, with `memberOf` listing their\ngroups.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_get_user_get_api_v1_directory_users__name__get",
         "parameters": [
           {
@@ -2517,10 +2517,10 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "patch": {
-        "description": "Changes only the fields sent; the name is the one in the path and cannot change.\n`password` sets a new password, `groups` replaces the user's group list, and\n`expiry` is in days.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Changes only the fields sent; the name is the one in the path and cannot change.\n`password` sets a new password, `groups` replaces the user's group list, and\n`expiry` is in days.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_update_user_patch_api_v1_directory_users__name__patch",
         "parameters": [
           {
@@ -2669,7 +2669,7 @@
           "directory"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/genders/config": {
@@ -2804,7 +2804,7 @@
     },
     "/api/v1/identity/users": {
       "get": {
-        "description": "The ini account first, shown as rootus, then every stored user. `local` says whether trixd holds a password for the user; one who signs in through PAM or LDAP has none here. Anyone without a row holds role `none`.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The ini account first, shown as rootus, then every stored user. `local` says whether trixd holds a password for the user; one who signs in through PAM or LDAP has none here. Anyone without a row holds role `none`.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "list_users_api_v1_identity_users_get",
         "responses": {
           "200": {
@@ -2875,12 +2875,12 @@
           "identity"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/identity/users/{name}": {
       "delete": {
-        "description": "The user's role and any password here go at once. A local user can no longer sign in; a PAM or LDAP user still can, and holds role `none`. The deletion reaches the other controller of a pair.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "The user's role and any password here go at once. A local user can no longer sign in; a PAM or LDAP user still can, and holds role `none`. The deletion reaches the other controller of a pair.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "delete_user_api_v1_identity_users__name__delete",
         "parameters": [
           {
@@ -2986,10 +2986,10 @@
           "identity"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       },
       "put": {
-        "description": "Creates the user when the name is new, and changes only what the body names when it is not: `role`, one of none, reader, operator and manager; `password`, kept here for the `local` source; `enabled`, false cutting the user's tokens at once. The change reaches tokens already issued, because the role is looked up on every request, and reaches the other controller of a pair. The ini account is set in `trixd.ini`, not here.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Creates the user when the name is new, and changes only what the body names when it is not: `role`, one of none, reader, operator and manager; `password`, kept here for the `local` source; `enabled`, false cutting the user's tokens at once. The change reaches tokens already issued, because the role is looked up on every request, and reaches the other controller of a pair. The ini account is set in `trixd.ini`, not here.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "put_user_api_v1_identity_users__name__put",
         "parameters": [
           {
@@ -3106,7 +3106,7 @@
           "identity"
         ],
         "x-trixd-access": "role",
-        "x-trixd-minimum": "rootus"
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/luna/{rest}": {

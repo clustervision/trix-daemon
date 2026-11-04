@@ -39,7 +39,7 @@ from sqlalchemy.orm import Session
 
 from trixd.api.v1 import docs
 from trixd.common import logging as trixlog
-from trixd.common.constants import API_PREFIX, ROLE_ROOTUS, ROLES
+from trixd.common.constants import API_PREFIX, ROLE_MANAGER, ROLE_ROOTUS, ROLES
 from trixd.common.errors import BadRequest, NotFound
 from trixd.common.settings import current as settings
 from trixd.core.security import access, audit, principals
@@ -108,7 +108,7 @@ def _shown(row: models.Principal) -> dict:
                                                "enabled": True, "local": False},
                                               USER_EXAMPLE]}, "Every user"))
 def list_users(handle: Session = Depends(scoped),
-               caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+               caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     The ini account first, then every live row; anyone without a row is none.
     """
@@ -137,7 +137,7 @@ def put_user(name: str = Path(description="The login name",
              body: UserIn = Body(openapi_examples=docs.example(
                  {"role": "reader", "password": "a long passphrase"})),
              handle: Session = Depends(scoped),
-             caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+             caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     Creates the user when it is new, and changes only what the body names when it is not.
     """
@@ -170,7 +170,7 @@ def put_user(name: str = Path(description="The login name",
 def delete_user(name: str = Path(description="The login name",
                                  openapi_examples=docs.example("alice")),
                 handle: Session = Depends(scoped),
-                caller: Caller = Depends(guard(ROLE_ROOTUS))) -> dict:
+                caller: Caller = Depends(guard(ROLE_MANAGER))) -> dict:
     """
     The role and any password here go at once. A local user can no longer sign in; a
     PAM or LDAP user still can, and holds role none.
