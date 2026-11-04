@@ -6839,7 +6839,7 @@
     },
     "/api/v1/slurm/renders/config": {
       "get": {
-        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\nA node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_render_config_get_api_v1_slurm_renders_config_get",
         "responses": {
           "200": {

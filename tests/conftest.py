@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import os
 import shutil
+import sys
 
 import pytest
 from fastapi.testclient import TestClient
@@ -39,6 +40,7 @@ from trixd.app import create_app
 from trixd.common import settings as configuration
 from trixd.core import tasks
 from trixd.core.lifespan import start
+from trixd.core.plugins.loader import MODULE_PREFIX
 from trixd.core.plugins.registry import current as registry
 from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
@@ -49,6 +51,7 @@ from trixd.core.security import keys
 from trixd.db import engine as database
 from trixd.plugins.luna import hashes, persons
 from trixd.plugins.luna.config import LUNA_INI_ENV
+from trixd.plugins.slurm import backend as slurm_backend
 
 PLUGIN_SOURCE = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                              "trixd", "plugins")
@@ -138,9 +141,10 @@ def _own_process_state():
     reviewer who found it three probes that stopped reproducing their own defects.
 
     The rest - the render engine, the applied record, the stall counts, the breaker, the
-    sweep's last pass and its peer tokens, and what is held, refused and already said for
-    a person reaching Luna - are cleared because they are process state that no rig owns,
-    not because a test fails without them today.
+    sweep's last pass and its peer tokens, what is held, refused and already said for a
+    person reaching Luna, and when the slurm render began waiting on DNS - are cleared
+    because they are process state that no rig owns, not because a test fails without them
+    today.
     """
     standing = set(registry().plugins)
     yield
@@ -160,6 +164,9 @@ def _own_process_state():
     persons._refused.clear()
     persons._warned.clear()
     persons._said_no_delegate.clear()
+    for loaded in (slurm_backend, sys.modules.get(f"{MODULE_PREFIX}slurm.backend")):
+        if loaded is not None:  # the copy a rig loads is a module of its own
+            loaded._deferred_since = 0.0
 
 
 @pytest.fixture()

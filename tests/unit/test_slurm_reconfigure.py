@@ -34,12 +34,17 @@ __maintainer__  = "Antoine Schonewille"
 __email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
+import socket
 import sys
+import threading
+import time
 from types import ModuleType, SimpleNamespace
 
 import pytest
 
 from tests.unit.test_plugins import Ran
+from tests.unit.test_slurm_changes import _Said
+from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
 
 BLOCKS: tuple = ("slurm-nodes.conf", "slurm-partitions.conf", "slurm-gres.conf")
@@ -53,19 +58,21 @@ REFUSAL: str = (
 
 
 def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
-           content: str = "one") -> dict:
+           content: str = "one", dark: set = frozenset()) -> dict:
     """
-    The slurm plugin on a stand-in generator package, Luna and scontrol.
+    The slurm plugin on a stand-in generator package, Luna, DNS and scontrol.
 
     `codes` is what each successive reconfigure answers, the last one standing for the rest,
     so a test can let the written blocks be refused and still say what the restored ones
     meet. The stand-in writes the files it is handed, as the real generator does: one that
     wrote nothing would leave them unchanged for ever and pin the opposite of a controller.
+    `content` None writes the generator's `NodeName=` lines. Every name resolves but those
+    in `dark`, which the test may change between passes.
     """
     from trixd.plugins.slurm import backend as slurm
     from trixd.utils import declarations
 
-    seen = {"ran": []}
+    seen = {"ran": [], "looked": [], "dark_at_reconfigure": []}
     declarations.write("slurm", "config", "", {
         **slurm.DEFAULT_CONFIG,
         "nodes_file": str(tmp_path / BLOCKS[0]),
@@ -82,16 +89,28 @@ def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
             Remember the call and write what it was asked to, as the real one does.
             """
             seen.update(nodes=nodes, configs=configs, manager=manager)
+            text = content if content is not None else "".join(
+                f"NodeName={one['name']} # GroupName={one['group']}\n" for one in nodes)
             for path in configs.values():
                 with open(path, "w", encoding="utf-8") as handle:
-                    handle.write(content)
+                    handle.write(text)
             return True
+
+    def resolve(host, *args, **kwargs):
+        """
+        The resolver, refusing the names in `dark` as getaddrinfo does.
+        """
+        seen["looked"].append(host)
+        if host in dark:
+            raise socket.gaierror(socket.EAI_NONAME, "Name or service not known")
+        return [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.141.0.1", 0))]
 
     def reconfigure(argv, **kwargs):
         """
         scontrol, answering this pass's code and slurm's own words with it.
         """
         seen["ran"].append(argv)
+        seen["dark_at_reconfigure"].append(sorted(dark))
         code = codes[min(len(seen["ran"]), len(codes)) - 1]
         return Ran("", code, REFUSAL if code else "")
 
@@ -100,6 +119,7 @@ def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
     monkeypatch.setitem(sys.modules, "trinityx_config_slurm", package)
     monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: nodes))
     monkeypatch.setattr(slurm.shell, "run", reconfigure)
+    monkeypatch.setattr(socket, "getaddrinfo", resolve)
     return seen
 
 
@@ -247,3 +267,175 @@ def test_an_entry_slurm_cannot_load_is_left_out(rig, monkeypatch, tmp_path):
         answer["skipped"]
     assert answer["nodes"] == 2 and answer["reconfigured"] is True, answer
     assert _held(tmp_path) == {name: b"one" for name in BLOCKS}
+
+
+def _render() -> str:
+    """
+    One render pass; a put-off or a failure is a BackendFailure, kept as its message.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    try:
+        Backend().render_config()
+    except BackendFailure as error:
+        return str(error)
+    return ""
+
+
+def _file_names(tmp_path) -> str:
+    """
+    The node block as it stands, for a test to read the names in it.
+    """
+    path = tmp_path / BLOCKS[0]
+    return path.read_text(encoding="utf-8") if path.exists() else ""
+
+
+def test_a_rename_to_a_name_that_does_not_resolve_does_not_reconfigure(rig, monkeypatch,
+                                                                        tmp_path):
+    """
+    slurmctld drops a node whose name it cannot resolve, and Luna puts a new name into DNS
+    after trixd has already rendered: the files keep the old name until the new one resolves.
+    """
+    nodes, dark = {"node001": {"group": "compute"}}, set()
+    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    _render()
+    seen["ran"].clear()
+
+    nodes.clear()
+    nodes["node002"] = {"group": "compute"}
+    dark.add("node002")
+    said = _render()
+
+    assert seen["ran"] == [], f"slurm was reconfigured before node002 resolved: {said!r}"
+    assert "NodeName=node001 " in _file_names(tmp_path), _file_names(tmp_path)
+    assert "node002" in said and "resolve" in said, said
+
+
+def test_every_reconfigure_runs_while_every_name_resolves(rig, monkeypatch, tmp_path):
+    """
+    The ticket's order: the rename renders before DNS has the name, and the pass after the
+    reload finds the files unchanged, so the one reconfigure has to be the late one.
+    """
+    nodes, dark = {"node001": {"group": "compute"}}, set()
+    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    _render()
+
+    nodes.clear()
+    nodes["node002"] = {"group": "compute"}
+    dark.add("node002")
+    _render()
+    dark.clear()
+    _render()
+    _render()
+
+    assert all("node002" not in held for held in seen["dark_at_reconfigure"]), \
+        f"slurm was reconfigured while node002 did not resolve: {seen['dark_at_reconfigure']}"
+    assert len(seen["ran"]) == 2, f"not one reconfigure for the rename: {seen['ran']}"
+    assert "NodeName=node002 " in _file_names(tmp_path), _file_names(tmp_path)
+
+
+def test_a_name_that_never_resolves_is_written_after_the_wait(rig, monkeypatch, tmp_path):
+    """
+    The wait is bounded: a node that never gets a DNS record holds slurm off for the wait
+    and no longer, and the operator is told which one and what to run.
+    """
+    from trixd.plugins.slurm import backend as slurm
+
+    clock = [1000.0]
+    monkeypatch.setattr(time, "monotonic", lambda: clock[0])
+    said = _Said()
+    trixlog.get("slurm").addHandler(said)
+    try:
+        seen = _slurm(monkeypatch, {"node009": {"group": "compute"}}, tmp_path,
+                      content=None, dark={"node009"})
+        _render()
+        assert seen["ran"] == [], "slurm was reconfigured before the name had a chance"
+        clock[0] += getattr(slurm, "RESOLVE_WAIT", 60.0) + 1
+        _render()
+    finally:
+        trixlog.get("slurm").removeHandler(said)
+
+    assert len(seen["ran"]) == 1, f"the wait held slurm off for ever: {seen['ran']}"
+    warned = [text for level, text in said.said if level == "WARNING"]
+    assert any("node009" in text and "scontrol reconfigure" in text for text in warned), \
+        said.said
+
+
+def test_many_new_names_wait_for_one_and_reconfigure_once(rig, monkeypatch, tmp_path):
+    """
+    A burst of creates coalesces into the wait: one name in the dark stops the lookups and
+    the render, and once all resolve slurm is reconfigured once for the lot.
+    """
+    names = [f"node{number:03d}" for number in range(100)]
+    nodes, dark = {name: {"group": "compute"} for name in names}, {names[0]}
+    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    real = socket.getaddrinfo
+
+    def slow(host, *args, **kwargs):
+        """
+        A resolver that answers the dark name at once and the rest a little later.
+        """
+        if host not in dark:
+            time.sleep(0.05)
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    _render()
+    assert seen["ran"] == [], "slurm was reconfigured while node000 did not resolve"
+    assert len(seen["looked"]) < len(names), "the lookups went on past the first refusal"
+
+    dark.clear()
+    _render()
+    _render()
+    assert len(seen["ran"]) == 1, f"not one reconfigure for the burst: {seen['ran']}"
+
+
+def test_a_lookup_that_hangs_puts_the_render_off_within_the_budget(rig, monkeypatch,
+                                                                    tmp_path):
+    """
+    The lookups run under the lock every render shares, so a resolver that does not answer
+    costs a pass the budget and no more, and counts as a name that does not resolve yet.
+    """
+    from trixd.plugins.slurm import backend as slurm
+
+    seen = _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path, content=None)
+    answered = threading.Event()
+
+    def hangs(host, *args, **kwargs):
+        """
+        A resolver whose server is dark, held until the test lets it go.
+        """
+        seen["looked"].append(host)
+        answered.wait(30)
+        raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+
+    monkeypatch.setattr(socket, "getaddrinfo", hangs)
+    budget = getattr(slurm, "RESOLVE_BUDGET", 2.0)
+    started = time.monotonic()
+    try:
+        _render()
+        took = time.monotonic() - started
+    finally:
+        answered.set()
+
+    assert seen["ran"] == [], "slurm was reconfigured while the lookup had not answered"
+    assert took < budget + 1.0, f"the pass took {took:.1f} s against a {budget} s budget"
+
+
+def test_a_change_with_no_new_name_reconfigures_at_once(rig, monkeypatch, tmp_path):
+    """
+    A pin rather than a fix test, passing on both builds: a group move or a boot storm names
+    nobody new, so it costs no lookup and is not held off.
+    """
+    nodes, dark = {"node001": {"group": "compute"}}, set()
+    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    _render()
+    seen["ran"].clear()
+    seen["looked"].clear()
+
+    nodes["node001"] = {"group": "gpu"}
+    dark.add("node001")
+    _render()
+
+    assert len(seen["ran"]) == 1, f"a group move was held off: {seen['ran']}"
+    assert seen["looked"] == [], f"a name already in the file was looked up: {seen['looked']}"

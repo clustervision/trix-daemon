@@ -29,6 +29,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import concurrent.futures
 import contextlib
 import errno
 import fcntl
@@ -37,7 +38,10 @@ import hashlib
 import json
 import os
 import pwd
+import re
+import socket
 import sys
+import time
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import (BackendFailure, BadRequest, Conflict, Forbidden,
@@ -83,6 +87,13 @@ RENDER = f"{PLUGIN}/renders/config"
 RETRY = 5.0          # seconds before a render a held lock turned away runs again
 NAMES_MAX = 4096     # the helper's own bound (helper.NAMES_MAX), checked before Luna is asked
 NAMED = 20           # refusals a sentence names; the rest are counted
+# slurmctld drops a node whose name it cannot resolve, and Luna puts a new name into DNS on its
+# own queue's next drain, 0 to about 20 s after the change: a render waits that long for it.
+RESOLVE_WAIT = 60.0    # seconds from the first wait before the files are written regardless
+RESOLVE_BUDGET = 2.0   # seconds one pass's lookups take together, all under the engine lock
+RESOLVERS = 16         # lookups at once
+NODE_NAME = re.compile(r"^NodeName=(\S+)", re.MULTILINE)
+_deferred_since: float = 0.0  # when the render began waiting on names; 0.0 when it is not
 
 # Seconds each verb's helper may run, each longer than the Slurm call or the lock it waits on
 # inside: sacctmgr 3, the lock 5, scontrol update 6, a save 40, the lock and reconfigure 5 + 48.
@@ -354,6 +365,45 @@ def _usable(entry: dict) -> bool:
     return all(value.split() == [value] for value in (entry["name"], entry["group"]))
 
 
+def _unresolved(names: list) -> list:
+    """
+    The names that do not resolve, asked as slurmctld asks: the first refusal ends the pass,
+    and a lookup still out at the budget counts as not resolving yet.
+    """
+    if not names:
+        return []
+    pool = concurrent.futures.ThreadPoolExecutor(max_workers=RESOLVERS)
+    asked = {pool.submit(socket.getaddrinfo, name, None): name for name in names}
+    done, pending = concurrent.futures.wait(asked, timeout=RESOLVE_BUDGET,
+                                            return_when=concurrent.futures.FIRST_EXCEPTION)
+    pool.shutdown(wait=False, cancel_futures=True)
+    failed = sorted(asked[future] for future in done if future.exception() is not None)
+    return failed or sorted(asked[future] for future in pending)
+
+
+def _resolvable(fullset: list, held) -> None:
+    """
+    Put the render off while a name new to the node file does not resolve, so slurm is
+    reconfigured once, after DNS has it; past RESOLVE_WAIT it goes ahead, as before, loudly.
+    """
+    global _deferred_since
+    known = set(NODE_NAME.findall(held.decode("utf-8", "replace"))) if held else set()
+    unresolved = _unresolved([one["name"] for one in fullset if one["name"] not in known])
+    now = time.monotonic()
+    if unresolved and now - (_deferred_since or now) < RESOLVE_WAIT:
+        _deferred_since = _deferred_since or now
+        renders().again(RENDER, RETRY)
+        raise NotNow(f"{', '.join(unresolved[:NAMED])} does not resolve yet, and slurmctld "
+                     f"drops a node it cannot resolve, so the render wrote nothing; it runs "
+                     f"again in {RETRY:.0f} s")
+    if unresolved:
+        LOGGER.warning("%s still does not resolve after %.0f s, so the slurm blocks are "
+                       "written and slurm reconfigured anyway, and slurmctld may drop it: run "
+                       "`scontrol reconfigure` once it resolves", ", ".join(unresolved[:NAMED]),
+                       RESOLVE_WAIT)
+    _deferred_since = 0.0
+
+
 def node_set() -> list:
     """
     The node and group pairs the generator expects, read from Luna by name.
@@ -487,8 +537,10 @@ class Backend:
             "gres": settings["gres_file"],
         }
         before = _contents(files.values())
-        written = _generator().all_configs(nodes=fullset, configs=files,
-                                           manager=settings["manager"])
+        generate = _generator()
+        _resolvable(fullset, before[files["nodes"]])
+        written = generate.all_configs(nodes=fullset, configs=files,
+                                       manager=settings["manager"])
         if not written:
             raise BackendFailure("the slurm generator reported a failure")
 
