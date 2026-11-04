@@ -112,9 +112,10 @@ class Progress:
     """
     The lines worth relaying, each with a status. A fatal or ERROR! line is held until the run
     shows whether it mattered: ansible prints ...ignoring under one it was told to
-    ignore and goes on to the next task after one a rescue caught, but ends the run
-    after any other, so only what follows can tell them apart. The exit code decides
-    the build either way; the status only decides what the reader prints beside it.
+    ignore, which is not relayed (the job's log keeps it), and goes on to the next task
+    after one a rescue caught, but ends the run after any other, so only what follows
+    can tell them apart. The exit code decides the build either way; the status only
+    decides what the reader prints beside it.
     """
 
     def __init__(self) -> None:
@@ -131,7 +132,9 @@ class Progress:
         text = PADDING.sub("", line.rstrip())
         entries = []
         if self.pending is not None:
-            if text == IGNORING or text.startswith(CONTINUES):
+            if text == IGNORING:
+                self.pending = None
+            elif text.startswith(CONTINUES):
                 entries.append((self.pending, 200))
                 self.pending = None
             elif text.startswith(ENDS):
@@ -141,9 +144,7 @@ class Progress:
                 entries.append((self.pending, 500))
                 self.pending = None
         if text.startswith(FATAL):
-            if text.endswith(IGNORING):
-                entries.append((text, 200))
-            else:
+            if not text.endswith(IGNORING):
                 self.pending = text
         elif text.startswith(RELAYED):
             entries.append((text, 200))

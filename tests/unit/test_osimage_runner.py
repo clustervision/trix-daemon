@@ -306,8 +306,9 @@ def test_a_mounted_disc_is_laid_out_as_the_mirror_the_books_expect(tmp_path):
 
 def test_progress_relays_plays_tasks_and_fatals_with_the_run_deciding_their_status():
     """
-    One entry per play and task, the padding gone; a fatal that was ignored or rescued
-    is a 200 because the run went on, and only the one the run ended on is a 500.
+    One entry per play and task, the padding gone. A fatal that ansible says it ignored is
+    not relayed at all, a rescued one is a 200 because the run went on, and only the one
+    the run ended on is a 500.
     """
     parser = runner.Progress()
     entries = []
@@ -320,7 +321,6 @@ def test_progress_relays_plays_tasks_and_fatals_with_the_run_deciding_their_stat
         ("PLAY [controllers]", 200),
         ("TASK [trinity/image-create : Bootstrap]", 200),
         ("TASK [luna/osimage-create : Verify if image already exists in luna]", 200),
-        ('fatal: [localhost]: FAILED! => {"changed": true, "cmd": "luna osimage show img", "rc": 1}', 200),
         ("TASK [trinity/image-create : Try the fast path]", 200),
         ('fatal: [localhost]: FAILED! => {"msg": "no fast path"}', 200),
         ("TASK [trinity/image-create : Rescue]", 200),
@@ -329,6 +329,13 @@ def test_progress_relays_plays_tasks_and_fatals_with_the_run_deciding_their_stat
         ('fatal: [rocky9.osimages.luna]: FAILED! => {"msg": "No package slurm available"}', 500),
         ("PLAY RECAP", 200)]
     assert parser.fatal == 'fatal: [rocky9.osimages.luna]: FAILED! => {"msg": "No package slurm available"}'
+
+    # The same ignored fatal with the marker on its own line or at the end of it.
+    for ignored_line in ('fatal: [localhost]: FAILED! => {"rc": 1}\n...ignoring\n',
+                         'fatal: [localhost]: FAILED! => {"rc": 1}...ignoring\n'):
+        quiet = runner.Progress()
+        assert [entry for line in ignored_line.splitlines(keepends=True) for entry in quiet.feed(line)] == []
+        assert quiet.flush() == []
 
     # Output that stops on a fatal, with nothing after it, ended on it.
     cut = runner.Progress()
