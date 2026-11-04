@@ -34,6 +34,7 @@ __maintainer__  = "Antoine Schonewille"
 __email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
+import re
 import socket
 import sys
 import threading
@@ -439,3 +440,123 @@ def test_a_change_with_no_new_name_reconfigures_at_once(rig, monkeypatch, tmp_pa
 
     assert len(seen["ran"]) == 1, f"a group move was held off: {seen['ran']}"
     assert seen["looked"] == [], f"a name already in the file was looked up: {seen['looked']}"
+
+
+def test_names_that_resolve_slowly_are_written_within_a_few_passes(rig, monkeypatch,
+                                                                     tmp_path):
+    """
+    A pass that runs out of its budget keeps what it confirmed, so thousands of new names
+    that all resolve, too slowly for one pass, are written within a few passes and not only
+    when the wait runs out.
+    """
+    from trixd.plugins.slurm import backend as slurm
+
+    names = [f"node{number:04d}" for number in range(4000)]
+    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path,
+                  content=None)
+    real, clock = socket.getaddrinfo, time.monotonic
+    skew = [0.0]
+
+    def slow(host, *args, **kwargs):
+        """
+        A resolver that answers every name, 4000 of them in more than one budget.
+        """
+        time.sleep(0.02)
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    monkeypatch.setattr(time, "monotonic", lambda: clock() + skew[0])
+    started, passes = time.monotonic(), 0
+    while not seen["ran"] and passes < 6:
+        _render()
+        passes += 1
+        skew[0] += getattr(slurm, "RETRY", 5.0)
+
+    assert seen["ran"], f"4000 resolving names were not written within {passes} passes"
+    assert time.monotonic() - started < getattr(slurm, "RESOLVE_WAIT", 60.0), \
+        "the names were written only when the wait ran out"
+    assert all(f"NodeName={name} " in _file_names(tmp_path) for name in names)
+
+
+def test_a_dark_resolver_never_holds_more_than_the_resolvers(rig, monkeypatch, tmp_path):
+    """
+    A lookup that hangs keeps its thread, so pass after pass in a dark resolver has to reuse
+    the same few threads rather than leave a new set of them behind every time.
+    """
+    from trixd.plugins.slurm import backend as slurm
+
+    seen = _slurm(monkeypatch, {f"node{number:03d}": {"group": "compute"}
+                                for number in range(100)}, tmp_path, content=None)
+    answered, counting = threading.Event(), threading.Lock()
+    hung, peak = [0], [0]
+
+    def hangs(host, *args, **kwargs):
+        """
+        A resolver whose server is dark, held until the test lets it go.
+        """
+        with counting:
+            hung[0] += 1
+            peak[0] = max(peak[0], hung[0])
+        try:
+            answered.wait(30)
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        finally:
+            with counting:
+                hung[0] -= 1
+
+    monkeypatch.setattr(socket, "getaddrinfo", hangs)
+    standing, grown = threading.active_count(), 0
+    try:
+        for _ in range(3):
+            _render()
+            grown = max(grown, threading.active_count() - standing)
+    finally:
+        answered.set()
+
+    resolvers = getattr(slurm, "RESOLVERS", 16)
+    assert seen["ran"] == [], "slurm was reconfigured while no lookup had answered"
+    assert peak[0] <= resolvers, f"{peak[0]} lookups hung at once, past {resolvers}"
+    assert grown <= resolvers, f"{grown} threads were left behind, past {resolvers}"
+
+
+def test_the_forced_write_names_only_what_did_not_resolve(rig, monkeypatch, tmp_path):
+    """
+    When the wait runs out, the warning is the operator's list of what to look at: a name
+    that resolved in an earlier pass, only slowly, is not on it.
+    """
+    from trixd.plugins.slurm import backend as slurm
+
+    names = [f"node{number:03d}" for number in range(121)]
+    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path,
+                  content=None)
+    real, clock = socket.getaddrinfo, time.monotonic
+    answered, skew = threading.Event(), [0.0]
+
+    def slow(host, *args, **kwargs):
+        """
+        node000 never answers; the rest do, too slowly for one budget.
+        """
+        if host == "node000":
+            answered.wait(30)
+            raise socket.gaierror(socket.EAI_AGAIN, "Temporary failure in name resolution")
+        time.sleep(0.3)
+        return real(host, *args, **kwargs)
+
+    monkeypatch.setattr(socket, "getaddrinfo", slow)
+    monkeypatch.setattr(time, "monotonic", lambda: clock() + skew[0])
+    said = _Said()
+    trixlog.get("slurm").addHandler(said)
+    try:
+        for _ in range(3):
+            _render()
+        skew[0] += getattr(slurm, "RESOLVE_WAIT", 60.0) + 1
+        _render()
+    finally:
+        answered.set()
+        trixlog.get("slurm").removeHandler(said)
+
+    warned = " ".join(text for level, text in said.said if level == "WARNING")
+    assert len(seen["ran"]) == 1, f"the wait did not end in one reconfigure: {seen['ran']}"
+    assert "node000" in warned, said.said
+    named = sorted(set(re.findall(r"node\d{3}", warned)) - {"node000"})
+    assert named == [], f"the warning names {len(named)} name(s) that resolved: {named[:5]}"

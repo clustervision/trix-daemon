@@ -142,9 +142,9 @@ def _own_process_state():
 
     The rest - the render engine, the applied record, the stall counts, the breaker, the
     sweep's last pass and its peer tokens, what is held, refused and already said for a
-    person reaching Luna, and when the slurm render began waiting on DNS - are cleared
-    because they are process state that no rig owns, not because a test fails without them
-    today.
+    person reaching Luna, and when the slurm render began waiting on DNS and the names that
+    resolved since - are cleared because they are process state that no rig owns, not
+    because a test fails without them today.
     """
     standing = set(registry().plugins)
     yield
@@ -167,6 +167,7 @@ def _own_process_state():
     for loaded in (slurm_backend, sys.modules.get(f"{MODULE_PREFIX}slurm.backend")):
         if loaded is not None:  # the copy a rig loads is a module of its own
             loaded._deferred_since = 0.0
+            loaded._resolved.clear()
 
 
 @pytest.fixture()

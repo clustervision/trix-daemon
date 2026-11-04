@@ -41,6 +41,7 @@ import pwd
 import re
 import socket
 import sys
+import threading
 import time
 
 from trixd.common import logging as trixlog
@@ -94,6 +95,12 @@ RESOLVE_BUDGET = 2.0   # seconds one pass's lookups take together, all under the
 RESOLVERS = 16         # lookups at once
 NODE_NAME = re.compile(r"^NodeName=(\S+)", re.MULTILINE)
 _deferred_since: float = 0.0  # when the render began waiting on names; 0.0 when it is not
+_resolved: set = set()         # names that resolved since the wait began, not asked again in it
+# One pool for every pass: a lookup that hangs keeps its thread, so the threads stay RESOLVERS
+# however many passes meet a dark resolver, and a pass starts no more lookups than are free.
+_lookups = concurrent.futures.ThreadPoolExecutor(max_workers=RESOLVERS,
+                                                 thread_name_prefix="slurm-resolve")
+_free = threading.BoundedSemaphore(RESOLVERS)
 
 # Seconds each verb's helper may run, each longer than the Slurm call or the lock it waits on
 # inside: sacctmgr 3, the lock 5, scontrol update 6, a save 40, the lock and reconfigure 5 + 48.
@@ -365,20 +372,34 @@ def _usable(entry: dict) -> bool:
     return all(value.split() == [value] for value in (entry["name"], entry["group"]))
 
 
-def _unresolved(names: list) -> list:
+def _unresolved(names: list) -> tuple:
     """
-    The names that do not resolve, asked as slurmctld asks: the first refusal ends the pass,
-    and a lookup still out at the budget counts as not resolving yet.
+    The names refused and the names left unanswered, asked as slurmctld asks: the first refusal
+    ends the pass, and a lookup still out at the budget, or not started in it because every
+    resolver was busy, counts as not resolving yet. A name that resolves is kept in _resolved.
     """
     if not names:
-        return []
-    pool = concurrent.futures.ThreadPoolExecutor(max_workers=RESOLVERS)
-    asked = {pool.submit(socket.getaddrinfo, name, None): name for name in names}
-    done, pending = concurrent.futures.wait(asked, timeout=RESOLVE_BUDGET,
-                                            return_when=concurrent.futures.FIRST_EXCEPTION)
-    pool.shutdown(wait=False, cancel_futures=True)
-    failed = sorted(asked[future] for future in done if future.exception() is not None)
-    return failed or sorted(asked[future] for future in pending)
+        return [], []
+    deadline = time.monotonic() + RESOLVE_BUDGET
+    refusal = threading.Event()
+
+    def answered(future):
+        if not future.cancelled() and future.exception() is not None:
+            refusal.set()
+        _free.release()
+
+    asked = {}
+    for name in names:
+        if refusal.is_set() or not _free.acquire(timeout=max(0.0, deadline - time.monotonic())):
+            break
+        future = _lookups.submit(socket.getaddrinfo, name, None)
+        future.add_done_callback(answered)
+        asked[future] = name
+    done, _ = concurrent.futures.wait(asked, timeout=max(0.0, deadline - time.monotonic()),
+                                      return_when=concurrent.futures.FIRST_EXCEPTION)
+    refused = sorted(asked[future] for future in done if future.exception() is not None)
+    _resolved.update(asked[future] for future in done if future.exception() is None)
+    return refused, sorted(set(names) - _resolved - set(refused))
 
 
 def _resolvable(fullset: list, held) -> None:
@@ -388,7 +409,10 @@ def _resolvable(fullset: list, held) -> None:
     """
     global _deferred_since
     known = set(NODE_NAME.findall(held.decode("utf-8", "replace"))) if held else set()
-    unresolved = _unresolved([one["name"] for one in fullset if one["name"] not in known])
+    settled = known | _resolved
+    refused, unanswered = _unresolved([one["name"] for one in fullset
+                                       if one["name"] not in settled])
+    unresolved = refused or unanswered
     now = time.monotonic()
     if unresolved and now - (_deferred_since or now) < RESOLVE_WAIT:
         _deferred_since = _deferred_since or now
@@ -397,11 +421,13 @@ def _resolvable(fullset: list, held) -> None:
                      f"drops a node it cannot resolve, so the render wrote nothing; it runs "
                      f"again in {RETRY:.0f} s")
     if unresolved:
-        LOGGER.warning("%s still does not resolve after %.0f s, so the slurm blocks are "
-                       "written and slurm reconfigured anyway, and slurmctld may drop it: run "
-                       "`scontrol reconfigure` once it resolves", ", ".join(unresolved[:NAMED]),
+        LOGGER.warning("%s %s after %.0f s, so the slurm blocks are written and slurm "
+                       "reconfigured anyway, and slurmctld may drop it: run `scontrol "
+                       "reconfigure` once it resolves", ", ".join(unresolved[:NAMED]),
+                       "still does not resolve" if refused else "still has no answer from DNS",
                        RESOLVE_WAIT)
     _deferred_since = 0.0
+    _resolved.clear()
 
 
 def node_set() -> list:
