@@ -52,6 +52,9 @@ STATUS_ROUTE: str = "monitor/status"
 RECORD_ROUTE: str = "config/osimage/{name}"
 PACK_ROUTE: str = "config/osimage/{name}/_pack"
 END: str = "EOF"
+# The status of the line that says a build or its pack did not end well, as Luna words its own
+# failed or cancelled creates; every other line is stored as Luna stores a line with none.
+FAILURE: int = 501
 # How many lines one POST carries, and how long a pack Luna does not answer is asked for.
 BATCH_MOST: int = 100
 PACK_PATIENCE: int = 120
@@ -154,7 +157,7 @@ class Pusher:
         else:
             reason = held.get("reason") or "no reason recorded"
             said = f"the build of {name} failed: {reason}"
-        self._send(held["request_id"], [said, END])
+        self._send(held["request_id"], [said, END], FAILURE)
         jobs.update(jobdir, closing=CLOSED)
         self.packing.pop(name, None)
 
@@ -208,13 +211,15 @@ class Pusher:
         """
         return luna().get(RECORD_ROUTE.format(name=quoted)) or {}
 
-    def _send(self, request_id: str, messages: list) -> None:
+    def _send(self, request_id: str, messages: list, status: int = None) -> None:
         """
-        Lines into the status stream of a request. An entry carries the message and nothing
-        else: Luna reads one with the remote fields set as another host's stream.
+        Lines into the status stream of a request. An entry carries the message, and the
+        status when one is given, but not on EOF; the remote fields never: Luna reads an
+        entry with them set as another host's stream.
         """
         body = {"monitor": {"status": {"request_id": request_id, "messages": [
-            {"message": text[:MESSAGE_MOST]} for text in messages]}}}
+            {"message": text[:MESSAGE_MOST], **({"status": status} if status and text != END else {})}
+            for text in messages]}}}
         try:
             answer = luna().post(STATUS_ROUTE, body)
         except ServiceUnavailable as error:

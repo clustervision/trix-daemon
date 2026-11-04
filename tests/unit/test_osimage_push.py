@@ -309,9 +309,10 @@ def test_a_build_that_failed_or_was_stopped_ends_with_a_failure_line_and_no_pack
 
 def test_every_entry_carries_the_message_alone(luna, state_root):
     """
-    An entry with the remote fields set is read by Luna as another host's stream, and a
-    status on an entry is not read at all: the lines, the failure line and EOF each go as
-    a message and nothing else.
+    An entry with the remote fields set is read by Luna as another host's stream, so none
+    carries them. A line of the build and EOF go as a message and nothing else; the line
+    that says the build failed carries the status Luna words a failed create with, so the
+    command that follows the stream does not end well.
     """
     jobdir = _job(state_root, lines=2)
     _say(jobdir, FATAL, status=500)
@@ -322,7 +323,8 @@ def test_every_entry_carries_the_message_alone(luna, state_root):
     for entry in luna.entries:
         assert "remote_request_id" not in entry
         assert "remote_host" not in entry
-        assert set(entry) == {"message"}
+    assert [set(entry) for entry in luna.entries] == [{"message"}] * 3 + [{"message", "status"}, {"message"}]
+    assert luna.entries[3]["status"] == 501 and luna.entries[4]["message"] == "EOF"
 
 
 def test_a_silent_build_is_told_still_building_after_the_heartbeat_and_not_inside_it(
