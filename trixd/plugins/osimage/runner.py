@@ -66,8 +66,8 @@ EXIT_CANCELLED: int = jobs.EXIT_CANCELLED
 # on the controller takes this lock around its own.
 QEMU_LOCK: str = "/run/lock/trixd-osimage-qemu.lock"
 REMOTE_TMP: str = "/tmp/.ansible-lpart"
-# The plays of the compute books left to Luna: its own pack, and the record and group
-# creation, which the daemon that asked for the build does itself.
+# The plays of the compute books left to Luna: its own pack, and the record creation, which
+# the daemon that asked for the build does itself. The group is made by the books.
 SKIP_TAGS: tuple = ("pack-images", "image-create-luna-tasks")
 CHROOT_COMMAND: str = "lchroot --path {{ image_path }} --force --"
 CONTROLLER_INTERPRETER: str = "/usr/bin/python3"
