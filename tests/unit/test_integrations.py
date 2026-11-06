@@ -33,6 +33,7 @@ __status__      = "Production"
 
 import json
 import os
+import socket
 import stat
 import sys
 from types import ModuleType, SimpleNamespace
@@ -1386,7 +1387,8 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
 def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,
            content: str = "one") -> dict:
     """
-    The slurm plugin on a stand-in generator package, Luna and scontrol.
+    The slurm plugin on a stand-in generator package, Luna, scontrol and a resolver that
+    knows every name.
 
     The stand-in writes the files it is handed, as the real generator does. It did not, and
     that mattered once the reconfigure became conditional on their content: a generator that
@@ -1425,6 +1427,8 @@ def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured:
     monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: nodes))
     monkeypatch.setattr(slurm.shell, "run", lambda argv, **kwargs: (
         seen.setdefault("ran", argv), Ran("", reconfigured, "boom"))[1])
+    monkeypatch.setattr(socket, "getaddrinfo", lambda host, *args, **kwargs: [
+        (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.141.0.1", 0))])
     return seen
 
 

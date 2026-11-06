@@ -227,7 +227,7 @@ root. The ini account is rootus, and a route with `minimum: rootus` admits it
 alone, apart from the other controller's service token, which passes every check.
 Everyone else holds what the `principal` table says, and a user with no row is
 `none`, which may sign in and read nothing. A unit test refuses a shipped plugin
-whose read admits `none`. rootus gives a user a role:
+whose read admits `none`. A manager or rootus gives a user a role:
 
 ```
 curl -X PUT http://127.0.0.1:7071/api/v1/identity/users/harry \

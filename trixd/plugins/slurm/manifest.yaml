@@ -152,6 +152,7 @@ endpoints:
       The last render of slurm's managed blocks: how many nodes it wrote, the files, and
       whether `reconfigure` ran without error. It renders when a node or group changes
       through the luna plugin, at most every two seconds in a burst, and on a notify.
+      A node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.
     response:
       description: What the last render wrote
       example: {nodes: 10, files: [/etc/slurm/gres.conf, /etc/slurm/slurm-nodes.conf, /etc/slurm/slurm-partitions.conf], reconfigured: true}

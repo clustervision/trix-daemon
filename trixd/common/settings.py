@@ -404,8 +404,8 @@ def load(path: str = "", found: list = None) -> Settings:
         # The same check the luna plugin makes on luna.ini. With no account nobody can
         # hold rootus, and the sweep signs in to its peer as nobody at all.
         found.append("%s has no [API] USERNAME and PASSWORD, so nobody can hold "
-                     "rootus: the directory, slurm and replication routes answer 403 "
-                     "to every caller and a peer refuses the sweep" % (path,))
+                     "rootus: the slurm and replication routes answer 403 to every "
+                     "caller and a peer refuses the sweep" % (path,))
     secret_file = get("TOKENS", "SECRET_FILE", data.tokens.secret_file)
     data.tokens = TokenSettings(
         algorithm=_algorithm(get("TOKENS", "ALGORITHM", DEFAULT_TOKEN_ALGORITHM)),
