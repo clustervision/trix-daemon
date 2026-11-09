@@ -177,12 +177,14 @@ class Backend:
         settings = held_settings()
         tree = tree_under(body["path"], settings["images_root"], name)
         media = body.get("media")
-        if media is None:
-            media = rules.sources_for(settings["mirrors"], body["distribution"], body["osrelease"],
-                                      arch)
+        if media is not None:
+            mirrors_from = rules.GIVEN
+        else:
+            mirrors_from, media = rules.entry_for(settings["mirrors"], body["distribution"],
+                                                  body["osrelease"], arch)
         request = {"name": name, "request_id": body["request_id"], "path": tree,
                    "distribution": body["distribution"], "osrelease": body["osrelease"],
-                   "architecture": arch, "media": media,
+                   "architecture": arch, "media": media, "mirrors_from": mirrors_from,
                    "settings": {key: settings[key] for key in RUNNER_SETTINGS}}
         with START_LOCK:
             self._below_cap(settings)

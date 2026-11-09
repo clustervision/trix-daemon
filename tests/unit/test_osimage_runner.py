@@ -40,8 +40,8 @@ import time
 
 import pytest
 
-from trixd.common.errors import BackendFailure, Conflict
-from trixd.plugins.osimage import jobs, mounts, runner
+from trixd.common.errors import BackendFailure, BadRequest, Conflict
+from trixd.plugins.osimage import detect, jobs, mounts, rules, runner
 
 from tests.unit.test_osimage_detect import rocky_root
 
@@ -53,7 +53,7 @@ SETTINGS = {"repo": "/trinity/trinityx-combined", "repo_url": "", "answers": "/t
 # the body or the mirrors map named, or none.
 REQUEST = {"name": "rocky9", "request_id": "1761818733.1234567891234", "path": "/trinity/images/rocky9",
            "distribution": "redhat", "osrelease": "9.6", "architecture": "x86_64", "media": None,
-           "settings": SETTINGS}
+           "mirrors_from": None, "settings": SETTINGS}
 # The settings the runner works with: the request's, and the books of the checkout.
 BUILT = dict(SETTINGS, books="/trinity/trinityx-combined/site")
 # What the controller the unit runs on says of itself, where a test needs one.
@@ -387,13 +387,14 @@ ERROR! A worker was found in a dead state
 
 def _job(tmp_path, monkeypatch, media=MIRROR, osrelease: str = "9.6", kernels: tuple = (),
          client: str = "2.2-4", tools: bool = True, output: str = EXCERPT, code: int = 0,
-         hook=None, commands: Commands = None) -> tuple:
+         hook=None, commands: Commands = None, mirrors_from: str = None, **record) -> tuple:
     """
     A job as the create writes it, in a temporary state root: the books, the collections
     and the Galaxy role laid out, the tree under the images root, the sources a Rocky 9.8
     mirror root of the scratch tree unless the test names its own, and the tools, the
     probes, the controller's release, the book itself and the mount table all stubbed.
     Answers the job directory, what the fake book was started with, and what was unmounted.
+    The record's own words, and where the sources came from, are the request's unless given.
     """
     repo = tmp_path / "repo"
     books = repo / "site"
@@ -416,7 +417,8 @@ def _job(tmp_path, monkeypatch, media=MIRROR, osrelease: str = "9.6", kernels: t
                     collections=str(tmp_path / "collections"),
                     answers=str(tmp_path / "backup" / "all.yml"))
     request = dict(REQUEST, path=str(images / "rocky9"), osrelease=osrelease, media=media,
-                   settings=settings)
+                   mirrors_from=mirrors_from or ("create" if media else None), settings=settings,
+                   **record)
     state_root = str(tmp_path / "state")
     jobs.create(state_root, "rocky9", request, {"arch": "x86_64"})
     jobdir = jobs.path(state_root, "rocky9")
@@ -473,8 +475,9 @@ def test_a_build_that_ends_well_records_the_kernel_and_the_client(tmp_path, monk
     assert kwargs["env"]["ANSIBLE_INVENTORY"] == f"hosts,dynamic_hosts,{jobdir}/inventory/hosts.yml"
     assert EXCERPT in open(os.path.join(jobdir, "build.log"), encoding="utf-8").read()
     lines, following = jobs.lines_since(jobdir)
-    assert [line["message"] for line in lines][:3] == [
-        "building rocky 9.8 x86_64 from 1 source", "PLAY [localhost]", "TASK [Set image name]"]
+    assert [line["message"] for line in lines][:4] == [
+        "mirrors: 1 given on the create", "building rocky 9.8 x86_64 from 1 source", "PLAY [localhost]",
+        "TASK [Set image name]"]
     assert lines[-1]["message"] == "done" and following == len(lines)
     assert jobs.read_phase(jobdir) == "contract"
     assert oct(os.stat(os.path.join(jobdir, "build.log")).st_mode & 0o777) == "0o600"
@@ -823,7 +826,8 @@ def test_a_job_without_sources_runs_the_book_with_no_source_override(tmp_path, m
     assert verdict["variables"] == {} and verdict["base"] is None
     assert kwargs["cwd"] == str(tmp_path / "repo" / "site")
     lines = [line["message"] for line in jobs.lines_since(jobdir)[0]]
-    assert lines[0] == "building redhat 9.6 x86_64 from no source, this controller's own repositories"
+    assert lines[:2] == ["no mirrors: this controller's own repositories",
+                         "building redhat 9.6 x86_64 from no source, this controller's own repositories"]
 
 
 def test_a_record_the_books_cannot_place_without_a_source_ends_the_build_naming_it(tmp_path, monkeypatch,
@@ -840,6 +844,129 @@ def test_a_record_the_books_cannot_place_without_a_source_ends_the_build_naming_
         "repositories, which are rocky 9, and the record says osrelease 8.10: name a source in "
         "the create, or a mirrors entry for it in the settings")
     assert started == []
+
+
+def _said(jobdir: str) -> list:
+    """
+    The lines the build relayed, in order.
+    """
+    return [line["message"] for line in jobs.lines_since(jobdir)[0]]
+
+
+def _books_file(tmp_path, relative: str, text: str) -> str:
+    """
+    A file of the fake checkout's image-create role, as the books lay it out. Answers the
+    books directory.
+    """
+    books = tmp_path / "repo" / "site"
+    path = books / "roles" / "trinity" / "image-create" / relative
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text)
+    return str(books)
+
+
+@pytest.mark.parametrize("given, from_where, said", [
+    (["a mirror"], "create", "mirrors: 1 given on the create"),
+    (["a mirror"], "redhat/9.6", "mirrors: from the builder's settings for redhat/9.6"),
+    (None, None, "no mirrors: this controller's own repositories"),
+])
+def test_the_first_line_of_a_build_says_where_its_sources_came_from(tmp_path, monkeypatch,
+                                                                    sigterm_restored, given, from_where, said):
+    """
+    The sources of a create are the body's, else the mirrors map's entry for the record,
+    else the books' own; the operator is told which, before what was built from them.
+    """
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=MIRROR if given else None,
+                              mirrors_from=from_where, kernels=("5.14.0-503.el9",))
+    assert runner.Build(jobdir).run() == 0
+    lines = _said(jobdir)
+    assert lines[0] == said
+    assert lines[1].startswith("building ")
+
+
+def test_a_redhat_image_for_another_arch_than_the_controllers_needs_a_source(tmp_path, monkeypatch,
+                                                                             sigterm_restored):
+    """
+    The books seed a foreign arch only from a mirror: with none, the build is refused
+    before the book runs, naming what to name, instead of failing late inside it.
+    """
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=None, osrelease="9", architecture="aarch64")
+    assert runner.Build(jobdir).run() == 1
+    assert _result(jobdir)["reason"] == (
+        "without a source the books build no aarch64 redhat image on this x86_64 controller: name a "
+        "source in the create, or a mirrors entry for it in the settings")
+    assert started == []
+
+
+LEAP_MIRROR = "https://mirror.invalid/opensuse/distribution/leap/15.6/repo/oss/"
+
+
+def _leap_job(tmp_path, monkeypatch, template: str, kernels: tuple = ()) -> tuple:
+    """
+    A Leap record with a mirror named, the mirror read as detection reads a Leap tree, and
+    the books' repository template as given. Answers the job directory, the book's starts
+    and the books directory.
+    """
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=[LEAP_MIRROR], osrelease="15.6",
+                              distribution="opensuse", kernels=kernels)
+    mirror = detect.Finding(source=LEAP_MIRROR, kind="repository", family="suse", distro="opensuse-leap",
+                            release="15", dotrelease="15.6", arch="x86_64")
+    monkeypatch.setattr(detect, "identify_all", lambda media, want_arch=None: [mirror])
+    return jobdir, started, _books_file(tmp_path, "templates/opensuse-repo.j2", template)
+
+
+def test_a_leap_mirror_is_refused_by_books_that_would_ignore_it(tmp_path, monkeypatch, sigterm_restored):
+    """
+    The repository template of older books names download.opensuse.org whatever the
+    mirror says: the build is refused naming the books, not run to build the wrong tree.
+    """
+    jobdir, started, books = _leap_job(tmp_path, monkeypatch,
+                                       "baseurl=https://download.opensuse.org/distribution/leap/15.6/\n")
+    assert runner.Build(jobdir).run() == 1
+    assert _result(jobdir)["reason"] == (f"the books at {books} do not read opensuse_repo_baseurl yet: a "
+                                         f"Leap mirror would be ignored; build without mirrors or update the books")
+    assert started == []
+
+
+def test_a_leap_mirror_is_built_by_books_that_read_it(tmp_path, monkeypatch, sigterm_restored):
+    """
+    Books whose template reads opensuse_repo_baseurl are given the mirror.
+    """
+    jobdir, started, books = _leap_job(tmp_path, monkeypatch, "baseurl={{ opensuse_repo_baseurl }}\n",
+                                       kernels=("5.14.21-150600",))
+    assert runner.Build(jobdir).run() == 0
+    assert jobs.read_json(jobdir, jobs.VERDICT)["variables"]["opensuse_repo_baseurl"] == LEAP_MIRROR
+    assert len(started) == 1
+
+
+UBUNTU_RELEASES = 'ubuntu_releases:\n  "22": jammy\n  "24": noble\n'
+
+
+def test_an_ubuntu_release_the_books_do_not_list_is_refused_without_a_source(tmp_path, monkeypatch,
+                                                                             sigterm_restored):
+    """
+    With no source the books map the release to a codename and fall back to noble for one
+    they do not list: a record for release 20 is refused naming the releases they do
+    list, not built as a noble image labelled 20.
+    """
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=None, osrelease="20.04", distribution="ubuntu")
+    _books_file(tmp_path, "defaults/main.yml", UBUNTU_RELEASES)
+    assert runner.Build(jobdir).run() == 1
+    assert _result(jobdir)["reason"] == (
+        "without a source the books build ubuntu 22, 24 only, and the record says osrelease 20.04: name a "
+        "source in the create, or a mirrors entry for it in the settings")
+    assert started == []
+
+
+def test_an_ubuntu_release_the_books_list_is_built_without_a_source(tmp_path, monkeypatch, sigterm_restored):
+    """
+    A listed release is placed as it was.
+    """
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=None, osrelease="24.04", distribution="ubuntu",
+                              kernels=("6.8.0-31-generic",))
+    _books_file(tmp_path, "defaults/main.yml", UBUNTU_RELEASES)
+    assert runner.Build(jobdir).run() == 0
+    assert jobs.read_json(jobdir, jobs.VERDICT)["variables"]["ubuntu_version"] == "24"
 
 
 def _create_job(tmp_path, monkeypatch, builder: str, kernels: tuple = ()) -> tuple:
@@ -1298,3 +1425,253 @@ def _ago(seconds: int) -> str:
     """
     then = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds)
     return then.isoformat(timespec="seconds")
+
+
+def _repository(root, name: str, repodata: bool = True) -> str:
+    """
+    A directory of the scratch tree that is a dnf repository, as reposync lays one out.
+    """
+    path = root / name
+    (path / "Packages").mkdir(parents=True)
+    if repodata:
+        (path / "repodata").mkdir()
+        (path / "repodata" / "repomd.xml").write_text("<repomd/>")
+    return str(path)
+
+
+BASEOS = "rhel-9-for-x86_64-baseos-rpms"
+APPSTREAM = "rhel-9-for-x86_64-appstream-rpms"
+
+
+def _build_of_a_list(tmp_path, monkeypatch, media: list, osrelease: str = "9", books: bool = True,
+                     commands: Commands = None, **kwargs) -> tuple:
+    """
+    One build of a job whose sources are these, with the books that take a repository list
+    unless told otherwise: the exit code, the result, the relayed lines, what the fake book
+    was started with, the stubbed commands and the job directory.
+    """
+    commands = commands or Commands()
+    jobdir, started, _ = _job(tmp_path, monkeypatch, media=media, osrelease=osrelease,
+                              kernels=("5.14.0-503.el9",), commands=commands, **kwargs)
+    seed = tmp_path / "repo" / "site" / "roles" / "trinity" / "image-create" / "tasks" / "redhat"
+    seed.mkdir(parents=True)
+    (seed / "base.yml").write_text("- when: image_el_repos is defined\n" if books else "- when: no\n")
+    code = runner.Build(jobdir).run()
+    lines, _ = jobs.lines_since(jobdir)
+    return code, _result(jobdir), [line["message"] for line in lines], started, commands, jobdir
+
+
+def _variables(started: list) -> dict:
+    """
+    The variables the book was started with, each one a JSON document of its own.
+    """
+    (argv, _), = started
+    found = {}
+    for flag, value in zip(argv, argv[1:]):
+        if flag == "-e" and value.startswith("{"):
+            found.update(json.loads(value))
+    return found
+
+
+def test_a_repository_list_build_binds_the_directories_in_the_image_and_lets_go_of_them(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    The books are handed the list and the release, the directories of this controller are
+    bound read-only under the image where its package manager reads them, each target is
+    written to the job before it is mounted, and when the build is over they are unmounted
+    and the directories made for them are gone; the image's own /mnt stays.
+    """
+    media = [_repository(tmp_path, BASEOS), _repository(tmp_path, APPSTREAM)]
+    code, result, messages, started, commands, jobdir = _build_of_a_list(tmp_path, monkeypatch, media)
+    tree = os.path.realpath(tmp_path / "images" / "rocky9")
+    place = f"{tree}/mnt/osimage-repos"
+
+    assert code == 0, result["reason"]
+    assert [argv[2:] for argv in commands.of("mount")] == [
+        ["-o", "ro", "--", media[0], f"{place}/{BASEOS}"], ["-o", "ro", "--", media[1], f"{place}/{APPSTREAM}"]]
+    assert open(os.path.join(jobdir, "tree-mounts")).read().split() == [f"{place}/{BASEOS}", f"{place}/{APPSTREAM}"]
+    assert [argv[-1] for argv in commands.of("umount")] == [f"{place}/{APPSTREAM}", f"{place}/{BASEOS}"]
+    assert result["mounts_left"] == []
+    assert not os.path.exists(place) and os.path.isdir(f"{tree}/mnt")
+    variables = _variables(started)
+    assert variables["image_el_releasever"] == "9"
+    assert variables["image_el_release_packages"] == ["system-release", "python3"]
+    assert variables["image_el_repos"] == [
+        {"id": BASEOS, "baseurl": f"file://{media[0]}", "image_baseurl": f"file:///mnt/osimage-repos/{BASEOS}"},
+        {"id": APPSTREAM, "baseurl": f"file://{media[1]}",
+         "image_baseurl": f"file:///mnt/osimage-repos/{APPSTREAM}"}]
+    assert "image_el_baseurl" not in variables
+    assert messages[0] == f"mirrors: 2 repositories given on the create: {BASEOS}, {APPSTREAM}"
+    assert messages[1] == "building redhat 9 x86_64 from 2 repositories"
+    assert f"bound {media[0]} read-only in the image at /mnt/osimage-repos/{BASEOS}" in messages
+
+
+def test_a_repository_list_from_the_settings_is_named_as_such_on_the_rung_line(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    The line that opens a build names where the list came from and what is in it.
+    """
+    media = [_repository(tmp_path, BASEOS)]
+    code, result, messages, _, _, _ = _build_of_a_list(tmp_path, monkeypatch, media, mirrors_from="redhat/9")
+    assert code == 0, result["reason"]
+    assert messages[0] == f"mirrors: from the builder's settings for redhat/9: 1 repositories: {BASEOS}"
+
+
+def test_a_repository_id_is_its_last_path_segment_made_safe_short_and_unique(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    The id dnf knows a repository by and the name of its file in the image: letters, digits,
+    dot, dash and underscore, at most 64 characters, and never one already taken.
+    """
+    media = [_repository(tmp_path / "a", "crb"), _repository(tmp_path / "b", "crb"),
+             _repository(tmp_path, "my repo (new)"), _repository(tmp_path, "x" * 70),
+             _repository(tmp_path / "c", "x" * 64)]
+    code, result, _, started, _, _ = _build_of_a_list(tmp_path, monkeypatch, media)
+    assert code == 0, result["reason"]
+    assert [repository["id"] for repository in _variables(started)["image_el_repos"]] == [
+        "crb", "crb-2", "my-repo-new", "x" * 64, "x" * 62 + "-2"]
+
+
+@pytest.mark.parametrize("build, said", [
+    (lambda root: [_repository(root, BASEOS), _repository(root, APPSTREAM, repodata=False)],
+     lambda root: f"media item 2 is not a package repository, there is no repodata/repomd.xml there: "
+                  f"{root / APPSTREAM}"),
+    (lambda root: [_repository(root, BASEOS), str(root / "gone")],
+     lambda root: None),
+    (lambda root: [_repository(root, "rhel-10-for-x86_64-baseos-rpms")],
+     lambda root: "media item 1 is rhel-10-for-x86_64-baseos-rpms, a release 10 repository, and the "
+                  "record says release 9"),
+    (lambda root: [_repository(root, "rhel-9-for-aarch64-baseos-rpms")],
+     lambda root: "media item 1 is rhel-9-for-aarch64-baseos-rpms, an aarch64 repository, and the "
+                  "record says x86_64"),
+    (lambda root: [(lambda path: [path, path + "/"])(_repository(root, BASEOS))][0],
+     lambda root: f"media item 2 repeats item 1: {root / BASEOS}/"),
+])
+def test_a_list_that_is_not_what_it_says_is_refused_by_the_position_of_the_item(
+        tmp_path, monkeypatch, sigterm_restored, build, said):
+    """
+    The record is trusted and the list is held to what is there: an item with no repodata or
+    no directory, a name that says another release or arch than the record, and the same
+    repository twice are each one sentence naming the position, and nothing is mounted.
+    """
+    media = build(tmp_path)
+    expected = said(tmp_path)
+    code, result, _, started, commands, _ = _build_of_a_list(tmp_path, monkeypatch, media)
+    assert code == 1
+    if expected is None:
+        assert result["reason"].startswith("media item 2 is not a package repository, ")
+        assert result["reason"].endswith(str(tmp_path / "gone"))
+    else:
+        assert result["reason"] == expected
+    assert started == [] and commands.of("mount") == []
+
+
+def test_a_repository_beside_a_mirror_root_is_still_the_extra_one_the_books_refuse(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    Mixing the kinds is the old refusal: the root is the one base the books take, and a
+    repository beside it is an extra one.
+    """
+    media = [rocky_root(str(tmp_path / "mirror"), "9.8"), _repository(tmp_path, BASEOS)]
+    code, result, _, started, commands, _ = _build_of_a_list(tmp_path, monkeypatch, media)
+    assert code == 1 and result["reason"].startswith(rules.REFUSALS["extra"])
+    assert started == [] and commands.of("mount") == []
+
+
+def test_another_family_has_no_use_for_a_repository_list(tmp_path, monkeypatch, sigterm_restored):
+    """
+    A list is for the Red Hat family: an Ubuntu record naming dnf repositories finds no
+    identifying source, as it always did.
+    """
+    media = [_repository(tmp_path, BASEOS)]
+    code, result, _, started, commands, _ = _build_of_a_list(tmp_path, monkeypatch, media,
+                                                             distribution="ubuntu", osrelease="24.04")
+    assert code == 1 and result["reason"] == rules.REFUSALS["no_identity"]
+    assert started == [] and commands.of("mount") == []
+
+
+def test_books_that_do_not_take_a_repository_list_are_refused_before_anything_is_mounted(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    A checkout whose seed has no image_el_repos would build the image as if no list had been
+    given, so the build stops naming the books.
+    """
+    media = [_repository(tmp_path, BASEOS)]
+    code, result, _, started, commands, _ = _build_of_a_list(tmp_path, monkeypatch, media, books=False)
+    assert code == 1
+    assert result["reason"] == (f"the books at {tmp_path / 'repo' / 'site'} do not take a repository list "
+                                f"yet: update the books or name a mirror root")
+    assert started == [] and commands.of("mount") == []
+
+
+def test_a_failed_repository_list_build_still_unmounts_and_says_what_the_table_still_shows(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    A book that fails ends the build as any does, with the directories unmounted; a mount the
+    table still shows after the unmount is in the result and the log, and its directory stays.
+    """
+    media = [_repository(tmp_path, BASEOS)]
+    commands = Commands()
+    tree = os.path.realpath(tmp_path / "images" / "rocky9")
+    target = f"{tree}/mnt/osimage-repos/{BASEOS}"
+    # Nothing is mounted when the build starts; the target still is when it has been read back.
+    tables = [Ran(""), Ran(target)]
+    commands.answers["findmnt"] = lambda: tables.pop(0) if len(tables) > 1 else tables[0]
+    code, result, _, _, commands, jobdir = _build_of_a_list(tmp_path, monkeypatch, media, code=2,
+                                                            commands=commands)
+    assert code == 1
+    assert [argv[-1] for argv in commands.of("umount")] == [target]
+    assert result["mounts_left"] == [target]
+    assert os.path.isdir(target), "a directory that still holds a mount is not removed"
+    assert f"still mounted: {target}" in open(os.path.join(jobdir, "build.log")).read()
+
+
+def test_a_repository_inside_the_image_tree_is_refused_before_anything_is_mounted(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    A directory that holds the tree, or is held by it, would be bound into itself.
+    """
+    inside = _repository(tmp_path / "images" / "rocky9", "srv/" + BASEOS)
+    code, result, _, started, commands, _ = _build_of_a_list(tmp_path, monkeypatch, [inside])
+    tree = os.path.realpath(tmp_path / "images" / "rocky9")
+    assert code == 1
+    assert result["reason"] == f"{os.path.realpath(inside)} and the image tree {tree} contain each other"
+    assert started == [] and commands.of("mount") == []
+
+
+def test_a_bind_that_fails_ends_the_build_and_leaves_no_directory_in_the_image(
+        tmp_path, monkeypatch, sigterm_restored):
+    """
+    The directories made for a mount that did not happen are not left in the image, and the
+    reason is the mount's own.
+    """
+    commands = Commands()
+    commands.answers["mount"] = BackendFailure("mount: permission denied")
+    code, result, _, started, _, _ = _build_of_a_list(tmp_path, monkeypatch,
+                                                      [_repository(tmp_path, BASEOS)], commands=commands)
+    assert code == 1 and "permission denied" in result["reason"]
+    assert started == []
+    assert not os.path.exists(tmp_path / "images" / "rocky9" / "mnt" / "osimage-repos")
+
+
+def test_what_a_runner_recorded_below_the_tree_is_lazily_unmounted_when_the_job_is_finished(
+        tmp_path, monkeypatch):
+    """
+    A runner that died leaves the daemon the list of what it bound under the image: the ones the
+    table shows are released lazily, and the ones already gone are left alone.
+    """
+    root = os.path.realpath(tmp_path)
+    mounted, gone = f"{root}/images/x/mnt/osimage-repos/a", f"{root}/images/x/mnt/osimage-repos/b"
+    calls, tables = [], ["", mounted, ""]
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        return Ran(tables.pop(0)) if argv[0] == "findmnt" else Ran()
+    monkeypatch.setattr(mounts.shell, "run", run)
+    jobs.create(str(tmp_path / "state"), "img", REQUEST, VERDICT)
+    jobdir = jobs.path(str(tmp_path / "state"), "img")
+    jobs.move(jobdir, "running", unit="trixd-osimage-img")
+    jobs.files.write(os.path.join(jobdir, jobs.RESULT), json.dumps({"ok": False, "exit": 143, "reason": "x"}))
+    (tmp_path / "state" / "img" / "tree-mounts").write_text(f"{mounted}\n{gone}\n")
+    jobs.finish(jobdir, "failed")
+    assert [argv for argv in calls if argv[0] == "umount"] == [["umount", "-l", "--", mounted]]

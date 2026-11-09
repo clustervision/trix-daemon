@@ -238,6 +238,7 @@ def test_a_create_from_luna_is_taken_at_once_with_nothing_detected_or_asked(plug
     assert jobs.read_json(jobdir, jobs.REQUEST) == {
         "name": "rocky9", "request_id": REQUEST_ID, "path": str(tmp_path / "images" / "rocky9"),
         "distribution": "redhat", "osrelease": "9.6", "architecture": "x86_64", "media": None,
+        "mirrors_from": None,
         "settings": {"repo": str(tmp_path / "repo"), "repo_url": "",
                      "answers": backend.DEFAULT_SETTINGS["answers"],
                      "images_root": str(tmp_path / "images"), "python": python,
@@ -318,13 +319,98 @@ def test_the_sources_of_a_create_without_media_come_from_the_mirrors_map_by_reco
              ("c-plain", {"architecture": "arm64"}, ["https://mirror.invalid/rocky/9/"]),
              ("d-ubuntu", {"distribution": "ubuntu", "osrelease": "24.04"}, ["https://mirror.invalid/ubuntu/"]),
              ("e-none", {"osrelease": "9.5"}, None)]
+    rungs = {"a-body": "create", "b-arch": "redhat/9.6/x86", "c-plain": "redhat/9.6",
+             "d-ubuntu": "ubuntu/24.04", "e-none": None}
     for name, body, media in cases:
         answer = _create(client, headers, tmp_path, name, **body)
         assert answer.status_code == 200, (name, answer.text)
         request = jobs.read_json(jobs.path(str(tmp_path / "state"), name), jobs.REQUEST)
         assert request["media"] == media, name
+        assert request.get("mirrors_from", "not recorded") == rungs[name], name
     assert "mirrors" not in jobs.read_json(jobs.path(str(tmp_path / "state"), "e-none"),
                                            jobs.REQUEST)["settings"]
+
+
+@pytest.mark.parametrize("source", [
+    "https://admin:secret@mirror.invalid/rocky/9/",
+    "http://admin@mirror.invalid/rocky/9/",
+    "file://admin:secret@/srv/mirror/",
+])
+def test_a_source_carrying_a_user_name_or_password_is_refused_and_not_repeated(plugin, tmp_path, source):
+    """
+    A credential in a URL would be kept in the job files and the logs, shown in the
+    process listing and written into the image's repository files, so the URL is refused
+    and its text is not echoed back.
+    """
+    client, headers, commands = plugin
+    answer = _create(client, headers, tmp_path, media=["/mirror", source])
+    assert answer.status_code == 400, answer.text
+    assert "media item 2 must not carry a user name or password" in answer.text
+    assert "secret" not in answer.text and "admin" not in answer.text
+    assert jobs.names(str(tmp_path / "state")) == []
+
+
+def test_an_at_sign_outside_the_authority_of_a_url_is_not_a_credential(plugin, tmp_path):
+    """
+    Only what stands before the host is a user name; an at sign in the path or the query
+    is part of the address.
+    """
+    client, headers, commands = plugin
+    assert client.patch(f"{API_PREFIX}/osimage/settings", json={"concurrency": 9}, headers=headers).status_code == 200
+    for name, source in (("a-path", "https://mirror.invalid/users/a@b/"),
+                         ("b-query", "https://mirror.invalid/rocky/9/?token=a@b"),
+                         ("c-query", "https://mirror.invalid/rocky/9/?x=y")):
+        answer = _create(client, headers, tmp_path, name, media=[source])
+        assert answer.status_code == 200, (name, answer.text)
+
+
+def test_a_source_over_2048_characters_is_refused_and_eight_of_2048_are_taken(plugin, tmp_path):
+    """
+    An item is held to a length a repository URL or a path never needs, and the count of
+    eight is unchanged.
+    """
+    client, headers, commands = plugin
+    eight = ["/" + str(number) + "a" * (2047 - len(str(number))) for number in range(8)]
+    assert all(len(item) == 2048 for item in eight)
+    assert _create(client, headers, tmp_path, "a-eight", media=eight).status_code == 200
+    refused = _create(client, headers, tmp_path, "b-long", media=["/mirror", "/" + "a" * 2048])
+    assert refused.status_code == 400, refused.text
+    assert "media item 2 is longer than 2048 characters" in refused.text
+    assert jobs.names(str(tmp_path / "state")) == ["a-eight"]
+
+
+@pytest.mark.parametrize("source, name", [
+    ("epel=https://mirror.invalid/epel/", "epel"),
+    ("BaseOS=/srv/mirror/BaseOS", "BaseOS"),
+])
+def test_a_named_repository_is_refused_in_one_sentence_until_a_family_maps_it(plugin, tmp_path, source,
+                                                                              name):
+    """
+    The name=URL form is reserved: it is refused with a sentence that says what to pass
+    instead, and the URL after the name is not repeated.
+    """
+    client, headers, commands = plugin
+    answer = _create(client, headers, tmp_path, media=[source])
+    assert answer.status_code == 400, answer.text
+    assert f"media item 1: named repositories ({name}=URL) are not supported yet, pass the mirror root" \
+        in answer.text
+    assert "mirror.invalid" not in answer.text and "/srv/mirror" not in answer.text
+    assert jobs.names(str(tmp_path / "state")) == []
+
+
+def test_the_mirrors_setting_is_held_to_the_same_rules_as_the_media_of_a_create(plugin):
+    """
+    The map is checked with the same function as a create's sources, so a credential or a
+    named repository cannot be kept as the cluster's default either.
+    """
+    client, headers, commands = plugin
+    for source, said in (("https://admin:secret@mirror.invalid/rocky/9/",
+                          "mirrors entry redhat/9: media item 1 must not carry a user name or password"),
+                         ("epel=https://mirror.invalid/epel/",
+                          "mirrors entry redhat/9: media item 1: named repositories (epel=URL)")):
+        answer = client.patch(f"{API_PREFIX}/osimage/settings", json={"mirrors": {"redhat/9": [source]}},
+                              headers=headers)
+        assert answer.status_code == 400 and said in answer.text, (source, answer.text)
 
 
 def test_the_collections_setting_may_be_emptied_and_the_paths_may_not(plugin):

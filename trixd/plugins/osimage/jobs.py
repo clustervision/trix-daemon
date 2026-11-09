@@ -55,6 +55,8 @@ RESULT: str = "result.json"
 PHASE: str = "phase"
 MOUNTS: str = "mnt"
 REPOS: str = "repo"
+# The targets a runner bound under the image tree, one a line, written before each mount.
+TREE_MOUNTS: str = "tree-mounts"
 INVENTORY: str = "inventory"
 
 TERMINAL: tuple = ("done", "failed", "cancelled")
@@ -359,7 +361,8 @@ def finish(jobdir: str, state: str, reason: str = "") -> dict:
     """
     result = read_json(jobdir, RESULT)
     try:
-        left = mounts.release(os.path.join(jobdir, MOUNTS))
+        left = (mounts.release(os.path.join(jobdir, MOUNTS))
+                + mounts.release_listed(os.path.join(jobdir, TREE_MOUNTS)))
     except BackendFailure as error:
         left = []
         LOGGER.error("the mount table below %s could not be read: %s", jobdir, error)

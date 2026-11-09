@@ -19,7 +19,8 @@
 
 """
 What is mounted below a path, read-only loop mounts of a disc, the mirror layout the
-books expect on top of one, and unmounting with the mount table read back afterwards.
+books expect on top of one, read-only binds of a repository under an image, and unmounting
+with the mount table read back afterwards.
 """
 
 __author__      = "Sumit Sharma"
@@ -33,6 +34,7 @@ __status__      = "Production"
 import os
 
 from trixd.common import logging as trixlog
+from trixd.common.errors import BackendFailure
 from trixd.utils import shell
 
 LOGGER = trixlog.get("osimage.mounts")
@@ -67,6 +69,37 @@ def loop_mount_ro(iso: str, target: str) -> str:
     return target
 
 
+def bind_ro(source: str, target: str) -> list:
+    """
+    Bind a directory read-only at a target, made if need be, and answer the directories
+    made for it, deepest first, so the caller can take them away again.
+    """
+    made, missing = [], target
+    while not os.path.isdir(missing):
+        made.append(missing)
+        missing = os.path.dirname(missing)
+    os.makedirs(target, exist_ok=True)
+    try:
+        shell.run(["mount", "--bind", "-o", "ro", "--", source, target], check=True)
+    except BackendFailure:
+        remove_made(made)
+        raise
+    LOGGER.info("bound %s read-only at %s", source, target)
+    return made
+
+
+def remove_made(made: list) -> None:
+    """
+    Take away directories made for a mount, which are empty once it is gone; one that is
+    not empty, or is still a mount, is left and said.
+    """
+    for directory in sorted(made, key=lambda one: one.count("/"), reverse=True):
+        try:
+            os.rmdir(directory)
+        except OSError as error:
+            LOGGER.warning("left %s: %s", directory, error)
+
+
 def mirror_layout(mount: str, repo: str, arch: str) -> str:
     """
     The URL the books take as a base for what a mounted disc holds. A RedHat disc keeps
@@ -96,6 +129,49 @@ def unmount_all(path: str) -> list:
         else:
             LOGGER.error("could not unmount %s: %s", target, done.err or done.out)
     return targets_below(path)
+
+
+def still_mounted(targets: list) -> list:
+    """
+    Which of these mount targets the table shows now.
+    """
+    listed = set(shell.run(["findmnt", "-rn", "-o", "TARGET"], check=True).out.split("\n"))
+    return [target for target in targets if target in listed]
+
+
+def unmount_listed(targets: list) -> list:
+    """
+    Unmount these targets, deepest first, and answer which the table still shows afterwards.
+    """
+    if not targets:
+        return []
+    for target in sorted(targets, key=lambda one: (one.count("/"), len(one)), reverse=True):
+        done = shell.run(["umount", "--", target])
+        if done.ok:
+            LOGGER.info("unmounted %s", target)
+        else:
+            LOGGER.error("could not unmount %s: %s", target, done.err or done.out)
+    return still_mounted(targets)
+
+
+def release_listed(listing: str) -> list:
+    """
+    Lazily unmount what a runner recorded in a file, one target a line, and left mounted,
+    and answer which the table still shows afterwards.
+    """
+    try:
+        with open(listing, encoding="utf-8") as held:
+            targets = [line.strip() for line in held if line.strip()]
+    except OSError:
+        return []
+    left = still_mounted(targets)
+    for target in left:
+        done = shell.run(["umount", "-l", "--", target])
+        if done.ok:
+            LOGGER.warning("lazily unmounted %s, which the runner left behind", target)
+        else:
+            LOGGER.error("could not unmount %s lazily: %s", target, done.err or done.out)
+    return still_mounted(targets) if left else []
 
 
 def release(path: str) -> list:

@@ -58,8 +58,12 @@ schemas:
       description: >
         The sources, one to eight, from a caller that names them: http or https mirror
         URLs, file:// trees and local ISO files. One of them has to identify the
-        distribution; the others are checked for agreement. Luna sends none, and the
-        mirrors setting then names them.
+        distribution; the others are checked for agreement. For a Red Hat family record
+        the sources may instead all be dnf repositories, directories holding repodata, taken
+        as the list to build from; a repository on this controller's own disk is bound
+        read-only in the image for the build. The release and arch are the record's. A
+        source may not carry a user name or password. Luna sends none unless the operator
+        names them, and the mirrors setting then names them.
       example: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]
   settings:
     repo:

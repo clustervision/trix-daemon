@@ -397,6 +397,8 @@ class Build:
         self.child = None
         self.parser = Progress()
         self.cancelled: bool = False
+        self.bound: list = []
+        self.made: list = []
 
     def run(self) -> int:
         """
@@ -454,11 +456,12 @@ class Build:
             if left:
                 raise Failed(f"something is mounted below {tree}: {', '.join(left)}; "
                              f"unmount it first")
-        verdict = self._decide(request)
+        verdict = self._decide(request, settings["books"])
         variables = dict(verdict["variables"])
         if verdict["base"] is not None and verdict["sources"][verdict["base"]]["kind"] == "iso":
             base = verdict["sources"][verdict["base"]]
             variables[verdict["base_variable"]] = self._mount_disc(base["source"], verdict)
+        self._bind_repositories(verdict, tree)
         if verdict["arch"] != platform.machine():
             self._register_binfmt(settings["python"], verdict["arch"])
         verdict = dict(verdict, variables=variables)
@@ -486,25 +489,31 @@ class Build:
         self.say(f"kernel {result['kernelversion']}, luna2-client {result['client_version']}")
         result.update({"ok": True, "exit": EXIT_OK})
 
-    def _decide(self, request: dict) -> dict:
+    def _decide(self, request: dict, books: str) -> dict:
         """
         What the books are given: the sources read and the rules applied, with the record's
         distribution and release held against them, or what the books build with no
-        source. The verdict is written beside the request, and a refusal is the reason
-        the build failed.
+        source, and what the books at this path can do with it. The verdict is written
+        beside the request, and a refusal is the reason the build failed.
         """
         arch = request["architecture"]
         try:
             if request["media"]:
                 findings = detect.identify_all(request["media"], want_arch=arch)
-                verdict = rules.verdict(findings, arch)
-                rules.check_record(verdict, request["distribution"], request["osrelease"])
+                if rules.is_repository_list(findings, request["distribution"]):
+                    verdict = rules.repository_verdict(findings, request["distribution"],
+                                                       request["osrelease"], arch)
+                else:
+                    verdict = rules.verdict(findings, arch)
+                    rules.check_record(verdict, request["distribution"], request["osrelease"])
             else:
                 verdict = rules.placement(request["distribution"], request["osrelease"], arch,
-                                          controller_release())
+                                          controller_release(), platform.machine())
+            rules.check_books(verdict, books)
         except BadRequest as error:
             raise Failed(error.message) from None
         files.write(os.path.join(self.jobdir, jobs.VERDICT), json.dumps(verdict, indent=1), 0o600)
+        self.say(rules.rung(request, verdict))
         self.say(f"building {verdict['detected']}")
         return verdict
 
@@ -556,6 +565,32 @@ class Build:
         self.say(f"mounted {iso} read-only as {url}")
         return url
 
+    def _bind_repositories(self, verdict: dict, tree: str) -> None:
+        """
+        The repositories on this controller's own disk, bound read-only under the image where
+        its package manager reads them: the sandbox the books enter the image through shows
+        the tree and nothing of the controller beside it. Each target is written to the job
+        directory before it is mounted, so a runner that dies leaves the daemon the list to
+        release; a repository and the tree may not contain each other.
+        """
+        base = os.path.realpath(tree)
+        place = os.path.join(base, rules.IMAGE_REPOSITORIES.lstrip("/"))
+        for repository in verdict.get("repositories", ()):
+            if repository["path"] is None:
+                continue
+            source = os.path.realpath(repository["path"])
+            if not os.path.isdir(source):
+                raise Failed(f"{repository['path']} is not a directory on this controller")
+            if (source + "/").startswith(base + "/") or (base + "/").startswith(source + "/"):
+                raise Failed(f"{source} and the image tree {base} contain each other")
+            target = os.path.join(place, repository["id"])
+            with open(os.path.join(self.jobdir, jobs.TREE_MOUNTS), "a", encoding="utf-8") as listing:
+                listing.write(target + "\n")
+            self.made += [made for made in mounts.bind_ro(source, target) if made.startswith(place)]
+            self.bound.append(target)
+            self.say(f"bound {source} read-only in the image at "
+                     f"{os.path.join(rules.IMAGE_REPOSITORIES, repository['id'])}")
+
     def _register_binfmt(self, python: str, arch: str) -> None:
         """
         The qemu binfmt handler of a foreign arch, one registration at a time. lchroot
@@ -601,7 +636,12 @@ class Build:
         Unmount what was mounted and record what the table still shows.
         """
         try:
-            result["mounts_left"] = mounts.unmount_all(os.path.join(self.jobdir, jobs.MOUNTS))
+            bound_left = mounts.unmount_listed(self.bound)
+            result["mounts_left"] = mounts.unmount_all(os.path.join(self.jobdir, jobs.MOUNTS)) + bound_left
+            # A directory with a mount still in it is not removed, whatever rmdir would say.
+            mounts.remove_made([made for made in self.made
+                                if not any(left == made or left.startswith(made + "/")
+                                           for left in bound_left)])
         except BackendFailure as error:
             result["reason"] = f"{result['reason']}; the mount table could not be read back: {error}"
         if result["mounts_left"]:

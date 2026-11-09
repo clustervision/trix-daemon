@@ -215,33 +215,36 @@ def test_without_a_source_the_books_place_what_they_hold():
     other than the controller's are refused naming what to name.
     """
     controller = {"family": "redhat", "distro": "rocky", "release": "9", "dotrelease": "9.6"}
-    own = rules.placement("redhat", "9.6", "x86_64", controller)
+    own = rules.placement("redhat", "9.6", "x86_64", controller, "x86_64")
     assert (own["playbook"], own["variables"], own["base"], own["sources"]) == (
         "compute-redhat.yml", {}, None, [])
     assert own["detected"] == "redhat 9.6 x86_64 from no source, this controller's own repositories"
     assert (own["distribution"], own["release"], own["dotrelease"]) == ("redhat", "9", "9.6")
-    arm = rules.placement("redhat", "9", "aarch64", controller)
+    arm = rules.placement("redhat", "9", "aarch64", controller, "aarch64")
     assert arm["variables"] == {"package_arch": "aa64", "image_arch": "aarch64"}
-    ubuntu = rules.placement("ubuntu", "24.04", "x86_64", controller)
+    with pytest.raises(BadRequest, match="without a source the books build no aarch64 redhat image on "
+                                         "this x86_64 controller: name a source"):
+        rules.placement("redhat", "9", "aarch64", controller, "x86_64")
+    ubuntu = rules.placement("ubuntu", "24.04", "x86_64", controller, "x86_64")
     assert (ubuntu["playbook"], ubuntu["variables"]) == ("compute-ubuntu.yml", {"ubuntu_version": "24"})
     assert ubuntu["detected"] == "ubuntu 24.04 x86_64 from no source, the mirror the books name"
-    leap = rules.placement("opensuse", "15.6", "x86_64", controller)
+    leap = rules.placement("opensuse", "15.6", "x86_64", controller, "x86_64")
     assert leap["playbook"] == "compute-opensuse.yml"
     assert leap["variables"] == {"opensuse_release": "leap/15.6"}
     name = "name a source in the create, or a mirrors entry for it in the settings"
     with pytest.raises(BadRequest, match=f"the books build no alma image without a source, only "
                                          f"opensuse, redhat, ubuntu: {name}"):
-        rules.placement("alma", "9.6", "x86_64", controller)
+        rules.placement("alma", "9.6", "x86_64", controller, "x86_64")
     with pytest.raises(BadRequest, match=f"osrelease noble is not a release number the books take: {name}"):
-        rules.placement("ubuntu", "noble", "x86_64", controller)
+        rules.placement("ubuntu", "noble", "x86_64", controller, "x86_64")
     with pytest.raises(BadRequest, match="without a source the books build a redhat image from this "
                                          "controller's own repositories, which are rocky 9, and the "
                                          f"record says osrelease 8.10: {name}"):
-        rules.placement("redhat", "8.10", "x86_64", controller)
+        rules.placement("redhat", "8.10", "x86_64", controller, "x86_64")
     with pytest.raises(BadRequest, match="which are ubuntu 24.04, and the record says osrelease 9.6"):
-        rules.placement("redhat", "9.6", "x86_64", {"family": "debian", "distro": "ubuntu", "release": "24.04"})
+        rules.placement("redhat", "9.6", "x86_64", {"family": "debian", "distro": "ubuntu", "release": "24.04"}, "x86_64")
     with pytest.raises(BadRequest, match="which are unknown unknown"):
-        rules.placement("redhat", "9.6", "x86_64", {})
+        rules.placement("redhat", "9.6", "x86_64", {}, "x86_64")
 
 
 def test_an_el_tree_names_its_variants_relative_to_itself(tmp_path):

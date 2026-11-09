@@ -37,6 +37,8 @@ import posixpath
 import re
 import urllib.parse
 
+import yaml
+
 from trixd.common.errors import BadRequest
 from trixd.plugins.osimage import detect
 
@@ -46,6 +48,15 @@ NAME_RULE = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
 RESERVED_NAMES: tuple = ("settings", "create")
 MEDIA_RULE = re.compile(r"""^(https?|file)://[^\s'"]+$|^/[^\s'"]+$""")
 MEDIA_MOST: int = 8
+MEDIA_ITEM_MOST: int = 2048
+# Credentials in a URL are kept in job files, logs, process listings and the image's own
+# repository files, so a URL naming a user is refused. name=URL is held for a repository
+# named by the operator, which no family maps yet.
+MEDIA_USERINFO = re.compile(r"^[a-z]+://[^/?#]*@")
+MEDIA_NAMED = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*)=")
+# What a create's own sources are recorded as: the key of the mirrors entry takes the place
+# of this word when the settings gave them, and a key always holds a slash.
+GIVEN: str = "create"
 # A key of the mirrors map: the record's distribution and release as the create schema
 # takes them, and the architecture in any of its spellings when the entry is for one.
 MIRROR_KEY = re.compile(r"^([a-z0-9._-]{1,32})/([A-Za-z0-9._+-]{1,32})(?:/([a-z0-9_]{2,16}))?$")
@@ -98,6 +109,18 @@ REFUSALS = {
 # repositories, so only the controller's own release; Ubuntu and Leap from the mirror they name.
 OWN_REPOSITORIES: str = "this controller's own repositories"
 BOOK_MIRROR: str = "the mirror the books name"
+# A repository list is built from as it is. A repository on the controller's own disk is bound
+# read-only under the image for the build, one directory each, because the sandbox the books enter
+# the image through sees nothing of the controller outside the tree.
+IMAGE_REPOSITORIES: str = "/mnt/osimage-repos"
+REPOSITORY_ID_MOST: int = 64
+REPOSITORY_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
+# What a Red Hat repository's own name says of its release and arch, as rhel-9-for-x86_64-baseos-rpms does.
+REPOSITORY_RELEASE = re.compile(r"(?:^|[-_.])rhel-(\d+)(?:[-_.]|$)")
+REPOSITORY_ARCH = re.compile(r"(?:^|[-_.])(x86_64|aarch64|ppc64le|s390x)(?:[-_.]|$)")
+# The package that makes a tree of the controller's release a tree of the record's, and the
+# interpreter the books' in-image steps need.
+REPOSITORY_RELEASE_PACKAGES: tuple = ("system-release", "python3")
 
 
 def check_name(name: str, field: str = "name") -> None:
@@ -135,6 +158,16 @@ def check_media(media) -> None:
     if not isinstance(media, list) or not 1 <= len(media) <= MEDIA_MOST:
         raise BadRequest(f"media must be a list of 1 to {MEDIA_MOST} sources")
     for position, item in enumerate(media, 1):
+        if isinstance(item, str):
+            named = MEDIA_NAMED.match(item)
+            if named:
+                raise BadRequest(f"media item {position}: named repositories ({named.group(1)}=URL) "
+                                 f"are not supported yet, pass the mirror root")
+            if len(item) > MEDIA_ITEM_MOST:
+                raise BadRequest(f"media item {position} is longer than {MEDIA_ITEM_MOST} characters")
+            if MEDIA_USERINFO.match(item):
+                raise BadRequest(f"media item {position} must not carry a user name or password: use "
+                                 f"a mirror that needs none, a proxy, or a local mirror")
         if not isinstance(item, str) or not MEDIA_RULE.match(item):
             raise BadRequest(f"media item {position} is not a URL (http, https or file) "
                              f"or an absolute path: {item!r}")
@@ -159,16 +192,41 @@ def check_mirrors(mirrors) -> None:
             raise BadRequest(f"mirrors entry {key}: {error.message}") from None
 
 
-def sources_for(mirrors: dict, distribution: str, osrelease: str, arch: str):
+def entry_for(mirrors: dict, distribution: str, osrelease: str, arch: str) -> tuple:
     """
-    The sources the mirrors map names for a record: the entry for its architecture, else
-    the one for the distribution and release alone, else none.
+    The key and sources of the mirrors map's entry for a record: the entry for its
+    architecture, else the one for the distribution and release alone, else none and none.
     """
     keyed = {}
     for key, media in mirrors.items():
         found = MIRROR_KEY.match(key)
-        keyed[(found.group(1), found.group(2), detect.norm_arch(found.group(3)))] = media
-    return keyed.get((distribution, osrelease, arch)) or keyed.get((distribution, osrelease, None))
+        keyed[(found.group(1), found.group(2), detect.norm_arch(found.group(3)))] = (key, media)
+    return (keyed.get((distribution, osrelease, arch)) or keyed.get((distribution, osrelease, None))
+            or (None, None))
+
+
+def sources_for(mirrors: dict, distribution: str, osrelease: str, arch: str):
+    """
+    The sources the mirrors map names for a record, or none.
+    """
+    return entry_for(mirrors, distribution, osrelease, arch)[1]
+
+
+def rung(request: dict, verdict: dict) -> str:
+    """
+    The line that says where a build's sources came from: the create, the mirrors setting's
+    entry for the record, or neither, in which case the books' own.
+    """
+    came = request["mirrors_from"]
+    repositories = verdict.get("repositories") or []
+    ids = ", ".join(repository["id"] for repository in repositories)
+    if came == GIVEN:
+        count = f"{len(repositories)} repositories" if repositories else str(len(request["media"]))
+        return f"mirrors: {count} given on the create" + (f": {ids}" if ids else "")
+    if came:
+        return f"mirrors: from the builder's settings for {came}" + (
+            f": {len(repositories)} repositories: {ids}" if ids else "")
+    return f"no mirrors: {verdict['where']}"
 
 
 def check_record(found: dict, distribution: str, osrelease: str) -> None:
@@ -184,13 +242,13 @@ def check_record(found: dict, distribution: str, osrelease: str) -> None:
                          f"says distribution {distribution} osrelease {osrelease}")
 
 
-def placement(distribution: str, osrelease: str, arch: str, controller: dict) -> dict:
+def placement(distribution: str, osrelease: str, arch: str, controller: dict, machine: str) -> dict:
     """
     What the books build with no source, for a record's distribution and release, as a
     verdict in the shape detection gives: the playbook, the arch's variables, and the
     release where the playbook takes one as input. A RedHat image is the controller's
-    own release or nothing, and a distribution or release that cannot be placed is a
-    BadRequest naming what to name.
+    own release and arch or nothing, and a distribution or release that cannot be placed
+    is a BadRequest naming what to name.
     """
     families = {rule["distribution"]: family for family, rule in FAMILIES.items()}
     family = families.get(distribution)
@@ -210,6 +268,9 @@ def placement(distribution: str, osrelease: str, arch: str, controller: dict) ->
             raise BadRequest(f"without a source the books build a {distribution} image from "
                              f"{OWN_REPOSITORIES}, which are {own}, and the record says "
                              f"osrelease {osrelease}: {REFUSALS['no_source']}")
+        if arch != machine:
+            raise BadRequest(f"without a source the books build no {arch} {distribution} image on "
+                             f"this {machine} controller: {REFUSALS['no_source']}")
         where = OWN_REPOSITORIES
     elif family == "debian":
         variables["ubuntu_version"] = release.split(".")[0]
@@ -224,7 +285,140 @@ def placement(distribution: str, osrelease: str, arch: str, controller: dict) ->
             "playbook": FAMILIES[family]["playbook"],
             "base": None, "base_variable": FAMILIES[family]["base"],
             "variables": variables, "skip_tags": list(offered["skip_tags"]),
-            "sources": []}
+            "sources": [], "where": where}
+
+
+def check_books(verdict: dict, books: str) -> None:
+    """
+    Refuse what the books at this path would not do as the verdict says: a Leap mirror
+    their repository template ignores, and an Ubuntu release they do not list, which they
+    would build as the newest they know and label with the record's release.
+    """
+    if verdict["family"] == "suse" and verdict["sources"]:
+        if "opensuse_repo_baseurl" not in _role_file(books, "templates", "opensuse-repo.j2"):
+            raise BadRequest(f"the books at {books} do not read opensuse_repo_baseurl yet: a Leap "
+                             f"mirror would be ignored; build without mirrors or update the books")
+    if verdict.get("repositories"):
+        if "image_el_repos" not in _role_file(books, "tasks", "redhat", "base.yml"):
+            raise BadRequest(f"the books at {books} do not take a repository list yet: update the "
+                             f"books or name a mirror root")
+    if verdict["family"] == "debian" and not verdict["sources"]:
+        listed = yaml.safe_load(_role_file(books, "defaults", "main.yml"))["ubuntu_releases"]
+        if verdict["variables"]["ubuntu_version"] not in listed:
+            raise BadRequest(f"without a source the books build ubuntu {', '.join(listed)} only, and "
+                             f"the record says osrelease {verdict['release']}: {REFUSALS['no_source']}")
+
+
+def _role_file(books: str, *parts: str) -> str:
+    """
+    A file of the books' image-create role, or a BadRequest saying the books cannot be read.
+    """
+    path = os.path.join(books, "roles", "trinity", "image-create", *parts)
+    try:
+        with open(path, encoding="utf-8") as held:
+            return held.read()
+    except OSError as error:
+        raise BadRequest(f"the books at {books} cannot be read for this build: {error}") from None
+
+
+def is_repository_list(findings: list, distribution: str) -> bool:
+    """
+    Whether the sources are package repositories to build from as they are: a Red Hat family
+    record whose sources include a dnf repository with no identity of its own and none that
+    has one, which would be a mirror root or a disc and is read as such.
+    """
+    if distribution != FAMILIES["redhat"]["distribution"]:
+        return False
+    return (any(f.get("kind") == "repo-extra" and f.get("repos") for f in findings)
+            and not any(f.get("distro") for f in findings))
+
+
+def repository_verdict(findings: list, distribution: str, osrelease: str, arch: str) -> dict:
+    """
+    What a list of dnf repositories adds up to for a record: the record's own release and
+    arch are taken as they stand, the repositories as they are named, each with an id from its
+    last path segment and, when it is a directory of this controller, the place it is bound
+    in the image for the build. A source that is not a repository, or whose name says another
+    release or arch than the record, is refused naming its position.
+    """
+    release, dotrelease = detect.release_split(osrelease)
+    if not release:
+        raise BadRequest(f"osrelease {osrelease} is not a release number the books take")
+    offered = ARCHES[arch]
+    repositories, taken, urls = [], set(), {}
+    for position, found in enumerate(findings, 1):
+        _refuse_repository(position, found, release, arch)
+        baseurl = _location(found["source"]).rstrip("/")
+        if baseurl in urls:
+            raise BadRequest(f"media item {position} repeats item {urls[baseurl]}: {found['source']}")
+        urls[baseurl] = position
+        ident = repository_id(found["source"], taken)
+        taken.add(ident)
+        local = urllib.parse.urlsplit(baseurl).path if baseurl.startswith("file://") else None
+        repositories.append({"id": ident, "source": found["source"], "baseurl": baseurl,
+                             "image_baseurl": ("file://" + posixpath.join(IMAGE_REPOSITORIES, ident)
+                                               if local else baseurl),
+                             "path": local})
+    variables = dict(offered["variables"])
+    variables.update(offered["family_variables"].get("redhat", {}))
+    variables.update({"image_el_releasever": release,
+                      "image_el_release_packages": list(REPOSITORY_RELEASE_PACKAGES),
+                      "image_el_repos": [{"id": r["id"], "baseurl": r["baseurl"],
+                                          "image_baseurl": r["image_baseurl"]}
+                                         for r in repositories]})
+    count = f"{len(repositories)} repositor" + ("ies" if len(repositories) > 1 else "y")
+    return {"detected": f"{distribution} {osrelease} {arch} from {count}",
+            "family": "redhat", "distribution": distribution, "distro": distribution,
+            "release": release, "dotrelease": dotrelease, "arch": arch,
+            "interpreter": INTERPRETER,
+            "playbook": FAMILIES["redhat"]["playbook"],
+            "base": None, "base_variable": FAMILIES["redhat"]["base"],
+            "variables": variables, "skip_tags": list(offered["skip_tags"]),
+            "sources": [{"source": r["source"], "kind": "repository", "role": "base"}
+                        for r in repositories],
+            "repositories": repositories, "where": count}
+
+
+def _refuse_repository(position: int, found: dict, release: str, arch: str) -> None:
+    """
+    A source of a repository list that is not a dnf repository, that has something to say
+    against the request, or whose name says another release or arch than the record's.
+    """
+    source = found["source"]
+    if found.get("error") or found.get("kind") != "repo-extra" or not found.get("repos"):
+        said = found.get("error") or ""
+        if not said or said.startswith("no self"):
+            said = "there is no repodata/repomd.xml there"
+        elif said.startswith("not a URL"):
+            said = "there is no such directory"
+        raise BadRequest(f"media item {position} is not a package repository, {said}: {source}")
+    for sentence in found.get("problems", []) + found.get("ambiguous", []):
+        raise BadRequest(f"media item {position}: {sentence}: {source}")
+    named = posixpath.basename(urllib.parse.urlsplit(source).path.rstrip("/"))
+    says_release = REPOSITORY_RELEASE.search(named)
+    says_arch = REPOSITORY_ARCH.search(named)
+    if says_release and says_release.group(1) != release:
+        raise BadRequest(f"media item {position} is {named}, a release {says_release.group(1)} "
+                         f"repository, and the record says release {release}")
+    if says_arch and says_arch.group(1) != arch:
+        raise BadRequest(f"media item {position} is {named}, an {says_arch.group(1)} repository, "
+                         f"and the record says {arch}")
+
+
+def repository_id(source: str, taken: set) -> str:
+    """
+    The id a repository is known by to dnf: the last segment of its path, with anything dnf
+    does not take in an id made a dash, at most 64 characters, and not one already taken.
+    """
+    segments = [part for part in urllib.parse.urlsplit(source).path.split("/") if part]
+    ident = REPOSITORY_ID_UNSAFE.sub("-", segments[-1] if segments else "").strip("-.") or "repository"
+    ident = ident[:REPOSITORY_ID_MOST]
+    base, number = ident, 1
+    while ident in taken:
+        number += 1
+        suffix = f"-{number}"
+        ident = base[:REPOSITORY_ID_MOST - len(suffix)] + suffix
+    return ident
 
 
 def verdict(findings: list, arch: str = None, suite: str = None) -> dict:
