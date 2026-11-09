@@ -207,7 +207,7 @@ def sigterm_restored():
 def test_the_playbook_is_invoked_as_the_proven_build_was():
     """
     The argument list the prototype proved, every value one argument: the lchroot routing,
-    the pack and the Luna plays skipped, and the verdict's variables after them, each as
+    the pack skipped, and the verdict's variables after them, each as
     a one-key JSON document.
     """
     verdict = dict(VERDICT, skip_tags=["monitoring"],
@@ -216,7 +216,7 @@ def test_the_playbook_is_invoked_as_the_proven_build_was():
         "/trinity/local/python/bin/ansible-playbook", "compute-redhat.yml",
         "-e", "image_name=rocky9", "-e", "trinityx_site=/trinity/trinityx-combined/site",
         "-e", "ansible_remote_tmp=/tmp/.ansible-lpart",
-        "--skip-tags", "pack-images,image-create-luna-tasks,monitoring",
+        "--skip-tags", "pack-images,monitoring",
         "-e", "ansible_service_mgr=systemd", "-e", "ansible_become=false",
         "-e", "image_proc_mount=false", "-e", "trix_images=/trinity/images",
         "-e", '{"image_chroot_cmd": "lchroot --path {{ image_path }} --force --"}',

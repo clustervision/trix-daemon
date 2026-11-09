@@ -26,7 +26,7 @@ It fetches the books when the checkout is not there, checks what they need on th
 controller, reads the job's sources and decides what they build, or what the books build
 with no source, mounts a disc the verdict named, registers the binfmt handler of a
 foreign arch, writes the inventory, runs the compute book through the lchroot connection
-with the pack and the Luna plays left out, relays the book's lines into the job directory,
+with Luna's own pack left out, relays the book's lines into the job directory,
 checks what was built, unmounts, and records how it ended. Every refusal is a result
 naming it: the daemon answered Luna before any of this ran. It deletes nothing: a tree
 that failed is kept for Luna to remove. With the builder setting at a stub it runs no
@@ -66,9 +66,9 @@ EXIT_CANCELLED: int = jobs.EXIT_CANCELLED
 # on the controller takes this lock around its own.
 QEMU_LOCK: str = "/run/lock/trixd-osimage-qemu.lock"
 REMOTE_TMP: str = "/tmp/.ansible-lpart"
-# The plays of the compute books left to Luna: its own pack, and the record creation, which
-# the daemon that asked for the build does itself. The group is made by the books.
-SKIP_TAGS: tuple = ("pack-images", "image-create-luna-tasks")
+# The plays of the compute books left to Luna: its own pack. The record is made by the daemon
+# that asked for the build; the books' last play takes it as it is and makes the group.
+SKIP_TAGS: tuple = ("pack-images",)
 CHROOT_COMMAND: str = "lchroot --path {{ image_path }} --force --"
 CONTROLLER_INTERPRETER: str = "/usr/bin/python3"
 # How long a reason may be: the last fatal line can carry a package manager's whole output.
