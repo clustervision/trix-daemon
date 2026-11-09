@@ -118,8 +118,8 @@ REPOSITORY_ID_UNSAFE = re.compile(r"[^A-Za-z0-9_.-]+")
 # What a Red Hat repository's own name says of its release and arch, as rhel-9-for-x86_64-baseos-rpms does.
 REPOSITORY_RELEASE = re.compile(r"(?:^|[-_.])rhel-(\d+)(?:[-_.]|$)")
 REPOSITORY_ARCH = re.compile(r"(?:^|[-_.])(x86_64|aarch64|ppc64le|s390x)(?:[-_.]|$)")
-# The package that makes a tree of the controller's release a tree of the record's, and the
-# interpreter the books' in-image steps need.
+# The package that makes a tree of the controller's release a tree of the record's whichever
+# distribution the sources carry, and the interpreter the books' in-image steps need.
 REPOSITORY_RELEASE_PACKAGES: tuple = ("system-release", "python3")
 
 
@@ -547,6 +547,7 @@ def _family_variables(family: str, base: dict, release: str, dotrelease: str, su
     variables = {}
     if family == "redhat":
         variables["image_el_releasever"] = release
+        variables["image_el_release_packages"] = list(REPOSITORY_RELEASE_PACKAGES)
         if base.get("kind") != "iso":
             variables["image_el_baseurl"] = _mirror_root(base)
     elif family == "debian":

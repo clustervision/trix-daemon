@@ -468,6 +468,16 @@ def test_a_mirror_root_over_http_costs_a_handful_of_requests(served):
     assert answer["variables"]["image_el_baseurl"] == url
 
 
+def test_a_red_hat_mirror_names_its_release_by_what_every_distribution_provides(served):
+    """
+    The books default to Rocky's release packages, so a mirror of another distribution,
+    Alma's for one, is seeded by the name they all provide.
+    """
+    url, _ = served
+    answer = rules.verdict(detect.identify_all([url], want_arch="x86_64"), arch="x86_64")
+    assert answer["variables"].get("image_el_release_packages") == ["system-release", "python3"]
+
+
 def test_a_listing_that_fills_the_read_limit_is_no_listing(monkeypatch):
     """
     A truncated autoindex page would name some entries and not others, so it is
