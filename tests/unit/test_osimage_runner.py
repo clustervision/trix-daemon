@@ -194,6 +194,15 @@ class Child:
         return self.code
 
 
+@pytest.fixture(autouse=True)
+def no_system_commands(monkeypatch):
+    """
+    What the controller the unit runs on has in /usr/bin is no part of a test: the toolchain
+    is looked for under the settings' interpreter only, unless a test names directories.
+    """
+    monkeypatch.setattr(runner, "SYSTEM_PATH", (), raising=False)
+
+
 @pytest.fixture
 def sigterm_restored():
     """
@@ -625,6 +634,119 @@ def test_a_controller_short_of_what_the_build_needs_ends_the_build_naming_it(tmp
                                                     collections=tmp_path / "collections")
     assert started == []
     assert commands.of("python3") in ([], [["/usr/bin/python3", "-c", VERSION_ASK]])
+
+
+def _executable(directory, name: str) -> str:
+    """
+    An executable file of that name in the directory, which is made; its path.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    path = directory / name
+    path.write_text("#!/bin/sh\n")
+    path.chmod(0o755)
+    return str(path)
+
+
+def test_the_playbook_is_the_systems_when_the_interpreter_carries_none(tmp_path, monkeypatch):
+    """
+    ansible comes from the installer's prepare step, on the system: with none in the
+    interpreter's directory, the command line starts with the system's.
+    """
+    system = _executable(tmp_path / "usr" / "bin", "ansible-playbook")
+    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
+    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
+    assert argv[0] == system
+
+
+def test_an_ansible_the_interpreter_carries_is_still_the_one_used(tmp_path, monkeypatch):
+    """
+    A controller that already holds its own ansible in the interpreter's directory keeps
+    running the books with it.
+    """
+    own = _executable(tmp_path / "py" / "bin", "ansible-playbook")
+    _executable(tmp_path / "usr" / "bin", "ansible-playbook")
+    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
+    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
+    assert argv[0] == own
+
+
+def test_an_empty_collections_setting_leaves_the_path_to_ansible():
+    """
+    The books' collections are wherever ansible looks by itself: the environment names no
+    collections path, and the one that is set is still handed on.
+    """
+    inventory = "hosts,/var/job/inventory/hosts.yml"
+    assert "ANSIBLE_COLLECTIONS_PATH" not in runner.playbook_env(dict(BUILT, collections=""), inventory)
+    assert runner.playbook_env(dict(BUILT, collections="/srv/collections"), inventory)[
+        "ANSIBLE_COLLECTIONS_PATH"] == "/srv/collections"
+
+
+# What ansible-galaxy answers on the controller the installer's prepare step made: each
+# search path with the collections found in it.
+GALAXY_LISTED = {
+    "/root/.ansible/collections/ansible_collections": {
+        "ansible.mysql": {"version": "5.2.0"}, "community.crypto": {"version": "3.5.1"},
+        "community.mysql": {"version": "5.0.2"}},
+    "/usr/share/ansible/collections/ansible_collections": {
+        "ansible.posix": {"version": "2.2.1"}, "community.general": {"version": "10.7.3"}}}
+
+
+def _on_ansibles_path(jobdir: str) -> None:
+    """
+    Empty the collections setting of a job, as the default leaves it.
+    """
+    request = jobs.read_json(jobdir, jobs.REQUEST)
+    request["settings"]["collections"] = ""
+    jobs.files.write(os.path.join(jobdir, jobs.REQUEST), json.dumps(request))
+
+
+def test_the_collections_ansible_finds_by_itself_let_the_build_start(tmp_path, monkeypatch, sigterm_restored):
+    """
+    With the collections setting empty, ansible is asked what it finds on its search path,
+    and a controller that has all five the books import goes on to run the book.
+    """
+    commands = Commands()
+    commands.answers["ansible-galaxy"] = Ran(json.dumps(GALAXY_LISTED))
+    jobdir, started, _ = _job(tmp_path, monkeypatch, commands=commands, kernels=("5.14.0-503.el9",))
+    _on_ansibles_path(jobdir)
+    assert runner.Build(jobdir).run() == 0, _result(jobdir)["reason"]
+    assert commands.of("ansible-galaxy") == [[f"{SETTINGS['python']}/bin/ansible-galaxy", "collection",
+                                              "list", "--format", "json"]]
+    assert len(started) == 1
+
+
+def test_a_collection_ansible_does_not_find_ends_the_build_naming_it(tmp_path, monkeypatch, sigterm_restored):
+    """
+    The ones that are not in any of the paths ansible lists are named, in the order the
+    books import them, and no book runs.
+    """
+    commands = Commands()
+    found = {"/usr/share/ansible/collections/ansible_collections": {
+        "community.general": {"version": "10.7.3"}, "ansible.posix": {"version": "2.2.1"},
+        "community.mysql": {"version": "5.0.2"}}}
+    commands.answers["ansible-galaxy"] = Ran(json.dumps(found))
+    jobdir, started, _ = _job(tmp_path, monkeypatch, commands=commands)
+    _on_ansibles_path(jobdir)
+    assert runner.Build(jobdir).run() == 1
+    assert _result(jobdir)["reason"] == ("the collections are not on ansible's search path: "
+                                         "community.crypto, ansible.mysql missing")
+    assert started == []
+
+
+def test_an_ansible_that_cannot_list_its_collections_ends_the_build_saying_so(tmp_path, monkeypatch,
+                                                                              sigterm_restored):
+    """
+    No usable collections path at all is ansible-galaxy's error, and the build ends with
+    its words, not with every collection reported missing.
+    """
+    said = "ERROR! - None of the provided paths were usable. Please specify a valid path with --collections-path"
+    commands = Commands()
+    commands.answers["ansible-galaxy"] = Ran("", 1, said)
+    jobdir, started, _ = _job(tmp_path, monkeypatch, commands=commands)
+    _on_ansibles_path(jobdir)
+    assert runner.Build(jobdir).run() == 1
+    assert _result(jobdir)["reason"] == f"{SETTINGS['python']}/bin/ansible-galaxy did not list the collections: {said}"
+    assert started == []
 
 
 def test_a_tree_with_a_mount_below_it_is_not_built(tmp_path, monkeypatch, sigterm_restored):

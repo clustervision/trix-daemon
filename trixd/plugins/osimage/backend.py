@@ -51,7 +51,7 @@ DEFAULT_SETTINGS: dict = {
     "images_root": "/trinity/images",
     "state_root": "/trinity/local/trixd/var/osimage",
     "python": "/trinity/local/python",
-    "collections": "/trinity/local/trixd/collections",
+    "collections": "",
     "mirrors": {},
     "concurrency": 2,
     "limit_seconds": 21600,
@@ -61,6 +61,8 @@ DEFAULT_SETTINGS: dict = {
 }
 # The settings that must be absolute paths, and the ones that must be at least one.
 PATH_SETTINGS: tuple = ("repo", "answers", "images_root", "state_root", "python", "collections")
+# The path settings that may be empty: collections then are where ansible looks by itself.
+EMPTY_PATH_SETTINGS: tuple = ("collections",)
 COUNT_SETTINGS: tuple = ("concurrency", "limit_seconds", "keep_days", "stub_gap_seconds")
 # What the runner is handed in request.json: it reads nothing of the daemon's.
 RUNNER_SETTINGS: tuple = ("repo", "repo_url", "answers", "images_root", "python", "collections",
@@ -92,8 +94,7 @@ def runner_env(settings: dict) -> dict:
     What the build runs with: the daemon's environment over a home, a PATH that starts
     with that interpreter's directory, and a UTF-8 locale.
     """
-    path = ":".join([os.path.join(settings["python"], "bin"), "/usr/local/sbin", "/usr/local/bin",
-                     "/usr/sbin", "/usr/bin", "/sbin", "/bin"])
+    path = ":".join([os.path.join(settings["python"], "bin"), *runner.SYSTEM_PATH])
     return dict(os.environ, HOME="/root", PATH=path, LANG="C.UTF-8")
 
 
@@ -135,7 +136,9 @@ class Backend:
         """
         if body:
             for key in PATH_SETTINGS:
-                if body.get(key) is not None and not body[key].startswith("/"):
+                if body.get(key) is None or body[key].startswith("/"):
+                    continue
+                if body[key] or key not in EMPTY_PATH_SETTINGS:
                     raise BadRequest(f"{key} must be an absolute path")
             if body.get("repo_url") and not body["repo_url"].startswith(checkout.SCHEME):
                 raise BadRequest("repo_url must be an https address, or empty")

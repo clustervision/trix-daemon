@@ -89,6 +89,8 @@ COLLECTIONS: tuple = ("community.general", "ansible.posix", "community.crypto",
                       "community.mysql", "ansible.mysql")
 GALAXY_ROLE: str = "OndrejHome.pcs-modules-2"
 PROBE_TIMEOUT: int = 30
+# Where the runner looks for a command after its interpreter's own directory.
+SYSTEM_PATH: tuple = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
 # The oldest Python ansible-core drives on the controller side; EL8's is 3.6.
 INTERPRETER_LEAST: tuple = (3, 7)
 
@@ -161,6 +163,20 @@ class Progress:
         return [(held, 500)]
 
 
+def toolchain(settings: dict, name: str) -> str:
+    """
+    A command of the books' toolchain: the interpreter's own when its directory carries one,
+    else the system's, which the installer's prepare step puts there. When neither exists,
+    the interpreter's path, so a refusal names the first place looked.
+    """
+    own = os.path.join(settings["python"], "bin")
+    for directory in (own,) + SYSTEM_PATH:
+        found = os.path.join(directory, name)
+        if os.path.isfile(found) and os.access(found, os.X_OK):
+            return found
+    return os.path.join(own, name)
+
+
 def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
     """
     The ansible-playbook command line, every value its own argument. Each variable of
@@ -168,7 +184,7 @@ def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
     ansible, and JSON also keeps a list or a boolean its type on the other side.
     """
     skipped = ",".join(SKIP_TAGS + tuple(verdict.get("skip_tags") or ()))
-    argv = [os.path.join(settings["python"], "bin", "ansible-playbook"), verdict["playbook"],
+    argv = [toolchain(settings, "ansible-playbook"), verdict["playbook"],
             "-e", f"image_name={request['name']}", "-e", f"trinityx_site={settings['books']}",
             "-e", f"ansible_remote_tmp={REMOTE_TMP}", "--skip-tags", skipped,
             "-e", "ansible_service_mgr=systemd", "-e", "ansible_become=false",
@@ -187,17 +203,18 @@ def playbook_env(settings: dict, inventory: str) -> dict:
     """
     What the book's process is told beyond the environment the build started with: the lchroot connection
     and where its plugin is, the books' roles then the installer's Galaxy roles, the
-    collections of the books alone and the inventory.
+    collections where the settings say, else on ansible's own search path, and the inventory.
     """
     books = settings["books"]
     env = {"LUNA_IMAGE_CONNECTION": "lchroot",
            "ANSIBLE_CONNECTION_PLUGINS": os.path.join(books, "plugins", "connection"),
            "ANSIBLE_ROLES_PATH": ":".join([os.path.join(books, "roles"), *GALAXY_ROLES]),
-           "ANSIBLE_COLLECTIONS_PATH": settings["collections"],
            "ANSIBLE_COLLECTIONS_SCAN_SYS_PATH": "False",
            "ANSIBLE_HOST_KEY_CHECKING": "False",
            "ANSIBLE_INVENTORY": inventory,
            "PYTHONUNBUFFERED": "1"}
+    if settings["collections"]:
+        env["ANSIBLE_COLLECTIONS_PATH"] = settings["collections"]
     return env
 
 
@@ -249,6 +266,28 @@ def inventory_sources(books: str, hosts: str) -> str:
     raise Failed(f"no inventory line in {books}/ansible.cfg")
 
 
+def absent_collections(settings: dict) -> list:
+    """
+    The collections the books import that ansible does not find on its own search path,
+    as its ansible-galaxy lists them: a document of the paths, each naming its collections.
+    """
+    galaxy = toolchain(settings, "ansible-galaxy")
+    argv = [galaxy, "collection", "list", "--format", "json"]
+    try:
+        listed = shell.run(argv, timeout=PROBE_TIMEOUT)
+    except BackendFailure as error:
+        raise Failed(f"{galaxy} could not be run: {error}") from None
+    try:
+        paths = json.loads(listed.out) if listed.ok else None
+    except ValueError:
+        paths = None
+    if not isinstance(paths, dict):
+        raise Failed(f"{galaxy} did not list the collections: "
+                     f"{listed.err or listed.out or 'it said nothing'}")
+    present = {name for found in paths.values() for name in found}
+    return [name for name in COLLECTIONS if name not in present]
+
+
 def preconditions(settings: dict) -> None:
     """
     What the book will need, checked before any source is read, so a build does not
@@ -259,10 +298,14 @@ def preconditions(settings: dict) -> None:
     if absent:
         raise Failed(f"the books are not at {settings['books']}: {', '.join(absent)} missing")
     collections = settings["collections"]
-    missing = [name for name in COLLECTIONS if not os.path.isdir(
-        os.path.join(collections, "ansible_collections", *name.split(".")))]
+    if collections:
+        missing = [name for name in COLLECTIONS if not os.path.isdir(
+            os.path.join(collections, "ansible_collections", *name.split(".")))]
+    else:
+        missing = absent_collections(settings)
     if missing:
-        raise Failed(f"the collections are not at {collections}: {', '.join(missing)} missing")
+        where = f"at {collections}" if collections else "on ansible's search path"
+        raise Failed(f"the collections are not {where}: {', '.join(missing)} missing")
     if not any(os.path.isdir(os.path.join(os.path.expanduser(where), GALAXY_ROLE))
                for where in GALAXY_ROLES):
         raise Failed(f"the Galaxy role {GALAXY_ROLE} is not in {', '.join(GALAXY_ROLES)}")
@@ -273,7 +316,7 @@ def preconditions(settings: dict) -> None:
         raise Failed(f"{' and '.join(missing)} not on PATH, and without them the books "
                      f"would chroot by hand")
     controller_interpreter()
-    playbook = os.path.join(settings["python"], "bin", "ansible-playbook")
+    playbook = toolchain(settings, "ansible-playbook")
     try:
         version = shell.run([playbook, "--version"], timeout=PROBE_TIMEOUT)
     except BackendFailure as error:

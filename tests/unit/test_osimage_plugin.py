@@ -327,6 +327,23 @@ def test_the_sources_of_a_create_without_media_come_from_the_mirrors_map_by_reco
                                            jobs.REQUEST)["settings"]
 
 
+def test_the_collections_setting_may_be_emptied_and_the_paths_may_not(plugin):
+    """
+    Empty is ansible's own search path, which is what the setting holds unless it is set;
+    any other value of it is an absolute path, and the interpreter's setting is never empty.
+    """
+    client, headers, commands = plugin
+    assert backend.DEFAULT_SETTINGS["collections"] == ""
+    url = f"{API_PREFIX}/osimage/settings"
+    emptied = client.patch(url, json={"collections": ""}, headers=headers)
+    assert emptied.status_code == 200, emptied.text
+    assert emptied.json().get("collections") == "", emptied.text
+    for body, said in (({"collections": "collections"}, "collections must be an absolute path"),
+                       ({"python": ""}, "python must be an absolute path")):
+        refused = client.patch(url, json=body, headers=headers)
+        assert refused.status_code == 400 and said in refused.text, (body, refused.text)
+
+
 @pytest.mark.parametrize("name, body, status, said", [
     ("settings", {}, 400, "settings is reserved"),
     ("create", {}, 400, "create is reserved"),

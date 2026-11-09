@@ -734,7 +734,7 @@
                 "type": "null"
               }
             ],
-            "description": "The ansible collections the books import",
+            "description": "Where the ansible collections the books import are, or empty for ansible's own search path",
             "examples": [
               "/trinity/local/trixd/collections"
             ],
@@ -832,7 +832,7 @@
                 "type": "null"
               }
             ],
-            "description": "The Python that holds ansible-playbook and luna2-utils",
+            "description": "The Python the builds run under; its directory is searched first for ansible-playbook, then the system's",
             "examples": [
               "/trinity/local/python"
             ],
@@ -3892,7 +3892,7 @@
     },
     "/api/v1/osimage/settings": {
       "get": {
-        "description": "The checkout the books are taken from, the https address it is fetched from when it\nis not there, the cluster's answer file, where the tree and the job directories go, the Python\nthat holds ansible-playbook and the collections, the\nmirrors a create without sources builds from, the concurrency cap, the limit in\nseconds, how many days a finished build's directory is kept, and the builder: the\nbooks, or a stub for exercising the chain around a build.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The checkout the books are taken from, the https address it is fetched from when it\nis not there, the cluster's answer file, where the tree and the job directories go, the Python\nthe builds run under, where the collections are when ansible is not left to find them, the\nmirrors a create without sources builds from, the concurrency cap, the limit in\nseconds, how many days a finished build's directory is kept, and the builder: the\nbooks, or a stub for exercising the chain around a build.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "osimage_settings_get_api_v1_osimage_settings_get",
         "responses": {
           "200": {
@@ -3901,7 +3901,7 @@
                 "example": {
                   "answers": "/trinity/local/backup/group_vars/all.yml",
                   "builder": "books",
-                  "collections": "/trinity/local/trixd/collections",
+                  "collections": "",
                   "concurrency": 2,
                   "images_root": "/trinity/images",
                   "keep_days": 14,
@@ -3992,7 +3992,7 @@
                 "example": {
                   "answers": "/trinity/local/backup/group_vars/all.yml",
                   "builder": "books",
-                  "collections": "/trinity/local/trixd/collections",
+                  "collections": "",
                   "concurrency": 1,
                   "images_root": "/trinity/images",
                   "keep_days": 14,
