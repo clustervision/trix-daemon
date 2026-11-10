@@ -519,7 +519,8 @@ class Build:
         arch = request["architecture"]
         try:
             if request["media"]:
-                findings = detect.identify_all(request["media"], want_arch=arch)
+                findings = detect.identify_all(request["media"], want_arch=arch,
+                                               release=request["osrelease"])
                 if rules.is_repository_list(findings, request["distribution"]):
                     verdict = rules.repository_verdict(findings, request["distribution"],
                                                        request["osrelease"], arch)

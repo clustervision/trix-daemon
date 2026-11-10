@@ -486,13 +486,17 @@ def from_deb_release(r, prefix, suite, f, want_arch):
     return True
 
 
-def deb_suites(r, prefix):
-    """Release suites of an archive, best first: Debian's 'stable' alias, else the newest Ubuntu LTS, else newest."""
+def deb_suites(r, prefix, release=None):
+    """
+    Release suites of an archive, best first: Debian's 'stable' alias, else the suites whose
+    Version is the release asked for ('22.04' or '22'), else the newest Ubuntu LTS, else newest.
+    """
     names = [n for n in (r.listdir(prefix + "dists") or []) if re.match(r"^[a-z]+$", n)
              and n not in ("devel", "experimental", "sid", "unstable", "testing", "oldstable", "oldoldstable")]
     if "stable" in names:
         return ["stable"]
-    ranked = []
+    wanted = [int(part) for part in re.findall(r"\d+", release or "")][:2]
+    ranked, matching = [], []
     for n in names:
         kv = kv_file(r.read("%sdists/%s/Release" % (prefix, n), 2048))
         m = re.match(r"^(\d+)\.(\d+)", kv.get("Version", ""))
@@ -500,7 +504,9 @@ def deb_suites(r, prefix):
             yy, mm = int(m.group(1)), int(m.group(2))
             lts = kv.get("Origin") == "Ubuntu" and mm == 4 and yy % 2 == 0
             ranked.append(((lts, yy, mm), n))
-    return [n for _, n in sorted(ranked, reverse=True)]
+            if wanted and [yy, mm][:len(wanted)] == wanted:
+                matching.append(((lts, yy, mm), n))
+    return [n for _, n in sorted(matching or ranked, reverse=True)]
 
 
 def from_os_release(r, f, prefix=""):
@@ -631,7 +637,7 @@ def from_el_root(r, f, want_arch, arches):
     return False
 
 
-def probe_tree(r, f, want_arch, suite):
+def probe_tree(r, f, want_arch, suite, release=None):
     """A repository / directory / ISO: try the self-describing metadata in order of authority."""
     if from_treeinfo(r, "", f):
         if not f.get("repos") and r.listdir("repodata") is not None:
@@ -650,7 +656,7 @@ def probe_tree(r, f, want_arch, suite):
         return True
     if from_disk_info(r, f, want_arch, suite):
         return True
-    suites = [suite] if suite else deb_suites(r, "")
+    suites = [suite] if suite else deb_suites(r, "", release)
     for s in suites:
         if from_deb_release(r, "", s, f, want_arch):
             if not suite and len(suites) > 1:
@@ -683,7 +689,7 @@ def arch_in_path(source):
     return None
 
 
-def identify(source, want_arch=None, suite=None, deadline=None):
+def identify(source, want_arch=None, suite=None, deadline=None, release=None):
     """
     One finding for one source, and 0 when it identified cleanly, 2 when it did with
     something to ask the operator about, 1 when it did not.
@@ -697,7 +703,7 @@ def identify(source, want_arch=None, suite=None, deadline=None):
             f["kind"] = "iso"
             iso = Iso(RangeFile(source, deadline) if is_url else LocalFile(source))
             f["volume_id"] = iso.volume_id
-            ok = probe_tree(iso, f, want_arch, suite)
+            ok = probe_tree(iso, f, want_arch, suite, release)
         elif re.search(r"\.(tar|tar\.gz|tgz|tar\.xz|txz|tar\.bz2)$", low):
             if is_url:
                 raise ValueError("a rootfs tarball URL: download it first (detection streams a local file)")
@@ -715,11 +721,11 @@ def identify(source, want_arch=None, suite=None, deadline=None):
         elif is_url:
             f["kind"] = "repository"
             h = Http(source, deadline)
-            ok = probe_tree(h, f, want_arch, suite)
+            ok = probe_tree(h, f, want_arch, suite, release)
         elif os.path.isdir(source):
             f["kind"] = "directory"
             d = LocalDir(source)
-            ok = probe_tree(d, f, want_arch, suite)
+            ok = probe_tree(d, f, want_arch, suite, release)
             if ok and f.get("bootstrap") == "copy":
                 f["kind"] = "rootfs-directory"
                 for sh in ("usr/bin/bash", "bin/bash", "usr/bin/sh", "bin/sh"):
@@ -751,12 +757,12 @@ def identify(source, want_arch=None, suite=None, deadline=None):
 
 
 def identify_all(sources: list, want_arch: str = None, suite: str = None,
-                 deadline: Deadline = None) -> list:
+                 deadline: Deadline = None, release: str = None) -> list:
     """
     One finding per source, read under one deadline for the lot (the caller's where it
     started one earlier), so a slow mirror holds a request for TOTAL_TIMEOUT at most
-    whatever the number of sources.
+    whatever the number of sources. The release asked for chooses among an archive's suites.
     """
     deadline = deadline or Deadline()
-    return [identify(source, want_arch, suite, deadline=deadline)[0]
+    return [identify(source, want_arch, suite, deadline=deadline, release=release)[0]
             for source in sources]

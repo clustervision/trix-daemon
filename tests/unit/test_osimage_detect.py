@@ -292,6 +292,24 @@ def test_a_multi_arch_archive_asks_for_the_arch(tmp_path):
     assert (f["codename"], f["arch"], f["arch_family_name"]) == ("noble", "aarch64", "arm64")
 
 
+def test_the_release_asked_for_chooses_the_suite_of_an_archive(tmp_path):
+    """
+    An archive that carries two Ubuntu suites is read as the one whose Version is the
+    release asked for, in either spelling, with nothing to ask the operator; a release the
+    archive does not carry leaves the newest LTS and the question as they were.
+    """
+    put(tmp_path, "dists/noble/Release", NOBLE_RELEASE)
+    put(tmp_path, "dists/jammy/Release", NOBLE_RELEASE.replace("noble", "jammy").replace("24.04", "22.04"))
+    f, rc = detect.identify(str(tmp_path), want_arch="arm64")
+    assert (f["codename"], rc) == ("noble", 2)
+    assert f["ambiguous"] == ["suite: took noble (newest LTS) of noble jammy; pass suite"]
+    for asked in ("22.04", "22", "22.04.5"):
+        f, rc = detect.identify(str(tmp_path), want_arch="arm64", release=asked)
+        assert (f["codename"], rc) == ("jammy", 0), asked
+    f, rc = detect.identify(str(tmp_path), want_arch="arm64", release="20.04")
+    assert (f["codename"], rc) == ("noble", 2)
+
+
 def test_an_archive_without_the_asked_arch_says_so(tmp_path):
     """
     The arch asked for is checked against what the Release lists.

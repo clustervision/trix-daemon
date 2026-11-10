@@ -938,7 +938,7 @@ def _leap_job(tmp_path, monkeypatch, template: str, kernels: tuple = ()) -> tupl
                               distribution="opensuse", kernels=kernels)
     mirror = detect.Finding(source=LEAP_MIRROR, kind="repository", family="suse", distro="opensuse-leap",
                             release="15", dotrelease="15.6", arch="x86_64")
-    monkeypatch.setattr(detect, "identify_all", lambda media, want_arch=None: [mirror])
+    monkeypatch.setattr(detect, "identify_all", lambda media, want_arch=None, release=None: [mirror])
     monkeypatch.setattr(runner, "ansible_library", lambda settings: "/srv/library")
     return jobdir, started, _books_file(tmp_path, "templates/opensuse-repo.j2", template)
 
