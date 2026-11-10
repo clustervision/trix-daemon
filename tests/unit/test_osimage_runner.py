@@ -661,14 +661,23 @@ def test_the_playbook_is_the_systems_when_the_interpreter_carries_none(tmp_path,
     assert argv[0] == system
 
 
-def test_an_ansible_the_interpreter_carries_is_still_the_one_used(tmp_path, monkeypatch):
+def test_the_systems_ansible_comes_before_the_one_the_interpreter_carries(tmp_path, monkeypatch):
     """
-    A controller that already holds its own ansible in the interpreter's directory keeps
-    running the books with it.
+    A run of the books by hand takes the system's ansible, so the command does too: the
+    interpreter's newer ansible-core cannot drive an image whose Python is 3.6.
+    """
+    system = _executable(tmp_path / "usr" / "bin", "ansible-playbook")
+    _executable(tmp_path / "py" / "bin", "ansible-playbook")
+    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
+    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
+    assert argv[0] == system
+
+
+def test_the_interpreters_ansible_is_used_when_the_system_has_none(tmp_path):
+    """
+    A controller whose ansible lives only in the interpreter's directory still builds.
     """
     own = _executable(tmp_path / "py" / "bin", "ansible-playbook")
-    _executable(tmp_path / "usr" / "bin", "ansible-playbook")
-    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
     argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
     assert argv[0] == own
 

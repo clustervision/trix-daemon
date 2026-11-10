@@ -165,12 +165,14 @@ class Progress:
 
 def toolchain(settings: dict, name: str) -> str:
     """
-    A command of the books' toolchain: the interpreter's own when its directory carries one,
-    else the system's, which the installer's prepare step puts there. When neither exists,
-    the interpreter's path, so a refusal names the first place looked.
+    A command of the books' toolchain: the system's, which the installer's prepare step puts
+    there and which a run of the books by hand takes, else the interpreter's own. The system's
+    ansible-core is the one that drives the images of every Python the supported controllers
+    build, EL8's 3.6 included, which the newer one in the interpreter's directory does not.
+    When neither exists, the interpreter's path, so a refusal names the last place looked.
     """
     own = os.path.join(settings["python"], "bin")
-    for directory in (own,) + SYSTEM_PATH:
+    for directory in SYSTEM_PATH + (own,):
         found = os.path.join(directory, name)
         if os.path.isfile(found) and os.access(found, os.X_OK):
             return found
