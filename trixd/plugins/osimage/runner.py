@@ -43,6 +43,7 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import fcntl
+import glob
 import json
 import os
 import platform
@@ -165,14 +166,12 @@ class Progress:
 
 def toolchain(settings: dict, name: str) -> str:
     """
-    A command of the books' toolchain: the system's, which the installer's prepare step puts
-    there and which a run of the books by hand takes, else the interpreter's own. The system's
-    ansible-core is the one that drives the images of every Python the supported controllers
-    build, EL8's 3.6 included, which the newer one in the interpreter's directory does not.
-    When neither exists, the interpreter's path, so a refusal names the last place looked.
+    A command of the books' toolchain: the interpreter's own when its directory carries one,
+    else the system's, which the installer's prepare step puts there. When neither exists,
+    the interpreter's path, so a refusal names the first place looked.
     """
     own = os.path.join(settings["python"], "bin")
-    for directory in SYSTEM_PATH + (own,):
+    for directory in (own,) + SYSTEM_PATH:
         found = os.path.join(directory, name)
         if os.path.isfile(found) and os.access(found, os.X_OK):
             return found
@@ -201,11 +200,27 @@ def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
 GALAXY_ROLES: tuple = ("~/.ansible/roles", "/usr/share/ansible/roles", "/etc/ansible/roles")
 
 
-def playbook_env(settings: dict, inventory: str) -> dict:
+def ansible_library(settings: dict) -> str:
+    """
+    The directory of the modules luna2-utils ships for images whose Python is 3.6, which
+    run on the image's own Python: dnf and selinux. A Failed naming the directory when
+    the interpreter's luna2-utils carries none.
+    """
+    found = sorted(glob.glob(os.path.join(settings["python"], "lib", "python3*", "site-packages",
+                                          "utils", "ansible_library")))
+    if not found or not all(os.path.isfile(os.path.join(found[0], f"{module}.py"))
+                            for module in ("dnf", "selinux")):
+        raise Failed(f"luna2-utils under {settings['python']} ships no dnf and selinux modules "
+                     f"for an image whose Python is 3.6: update luna2-utils")
+    return found[0]
+
+
+def playbook_env(settings: dict, inventory: str, library: str = "") -> dict:
     """
     What the book's process is told beyond the environment the build started with: the lchroot connection
     and where its plugin is, the books' roles then the installer's Galaxy roles, the
-    collections where the settings say, else on ansible's own search path, and the inventory.
+    collections where the settings say, else on ansible's own search path, the inventory,
+    and the directory of modules for an image whose Python is 3.6 when it is given.
     """
     books = settings["books"]
     env = {"LUNA_IMAGE_CONNECTION": "lchroot",
@@ -217,6 +232,8 @@ def playbook_env(settings: dict, inventory: str) -> dict:
            "PYTHONUNBUFFERED": "1"}
     if settings["collections"]:
         env["ANSIBLE_COLLECTIONS_PATH"] = settings["collections"]
+    if library:
+        env["ANSIBLE_LIBRARY"] = library
     return env
 
 
@@ -471,7 +488,8 @@ class Build:
                                 self._answers(settings), controller_name(settings["books"]))
         argv = playbook_argv(request, verdict, settings)
         env = dict(os.environ)
-        env.update(playbook_env(settings, inventory_sources(settings["books"], hosts)))
+        env.update(playbook_env(settings, inventory_sources(settings["books"], hosts),
+                                ansible_library(settings) if verdict.get("library") else ""))
         if self.cancelled:
             # The stop arrived during the preparation: the book is not started.
             return

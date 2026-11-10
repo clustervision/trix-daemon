@@ -206,6 +206,27 @@ def test_the_record_is_held_against_what_the_sources_are():
         rules.check_record(found, "ubuntu", "9.6")
 
 
+def test_a_release_with_python_3_6_runs_its_image_steps_on_a_newer_python():
+    """
+    EL8 and Leap 15 images carry Python 3.6, which ansible-core cannot run its modules on:
+    their verdict names the newer Python for the books to install, the interpreter of the
+    image's steps and the library flag. No other release gets any of the three.
+    """
+    el8 = {"family": "redhat", "distro": "rocky", "release": "8", "dotrelease": "8.10"}
+    el9 = {"family": "redhat", "distro": "rocky", "release": "9", "dotrelease": "9.6"}
+    old = [rules.placement("redhat", "8.10", "x86_64", el8, "x86_64"),
+           rules.placement("opensuse", "15.6", "x86_64", el9, "x86_64")]
+    for verdict, package in zip(old, ("python3.12", "python312")):
+        assert verdict["interpreter"] == "/usr/bin/python3.12"
+        assert verdict["library"] is True
+        assert verdict["variables"]["image_bootstrap_extra"] == [package]
+    for verdict in (rules.placement("redhat", "9.6", "x86_64", el9, "x86_64"),
+                    rules.placement("ubuntu", "24.04", "x86_64", el9, "x86_64")):
+        assert verdict["interpreter"] == "/usr/bin/python3"
+        assert "library" not in verdict
+        assert "image_bootstrap_extra" not in verdict["variables"]
+
+
 def test_without_a_source_the_books_place_what_they_hold():
     """
     A RedHat record of this controller's own release builds from its repositories with
@@ -230,7 +251,7 @@ def test_without_a_source_the_books_place_what_they_hold():
     assert ubuntu["detected"] == "ubuntu 24.04 x86_64 from no source, the mirror the books name"
     leap = rules.placement("opensuse", "15.6", "x86_64", controller, "x86_64")
     assert leap["playbook"] == "compute-opensuse.yml"
-    assert leap["variables"] == {"opensuse_release": "leap/15.6"}
+    assert leap["variables"] == {"opensuse_release": "leap/15.6", "image_bootstrap_extra": ["python312"]}
     name = "name a source in the create, or a mirrors entry for it in the settings"
     with pytest.raises(BadRequest, match=f"the books build no alma image without a source, only "
                                          f"opensuse, redhat, ubuntu: {name}"):

@@ -554,20 +554,22 @@ def test_a_run_with_no_answers_anywhere_fails_before_the_book_starts(tmp_path, m
     assert started == []
 
 
-def test_a_rocky_8_source_is_built_with_the_books_as_they_are(tmp_path, monkeypatch, sigterm_restored):
+def test_a_rocky_8_source_is_built_on_a_newer_python(tmp_path, monkeypatch, sigterm_restored):
     """
-    A Rocky 8 mirror needs nothing the books do not hold: no extra package, no modules
-    directory, and the image host on the same interpreter as any other image.
+    The Python 3.6 of a Rocky 8 image cannot run ansible-core's modules: the books put
+    python3.12 in the image, the image host runs on it, and the modules that need the
+    image's own Python are on ansible's library path.
     """
+    monkeypatch.setattr(runner, "ansible_library", lambda settings: "/srv/library")
     eight = rocky_root(str(tmp_path / "mirror8"), "8.10")
     jobdir, started, _ = _job(tmp_path, monkeypatch, media=[eight], osrelease="8.10",
                               kernels=("4.18.0-553.el8",))
     assert runner.Build(jobdir).run() == 0
     (argv, kwargs), = started
-    assert "ANSIBLE_LIBRARY" not in kwargs["env"]
-    assert not [item for item in argv if "image_bootstrap_extra" in item]
+    assert kwargs["env"]["ANSIBLE_LIBRARY"] == "/srv/library"
+    assert json.dumps({"image_bootstrap_extra": ["python3.12"]}) in argv
     pinned = open(os.path.join(jobdir, "inventory", "host_vars", "rocky9.osimages.luna.yml")).read()
-    assert pinned == "ansible_python_interpreter: /usr/bin/python3\n"
+    assert pinned == "ansible_python_interpreter: /usr/bin/python3.12\n"
 
 
 @pytest.mark.parametrize("setup, reason", [
@@ -661,23 +663,14 @@ def test_the_playbook_is_the_systems_when_the_interpreter_carries_none(tmp_path,
     assert argv[0] == system
 
 
-def test_the_systems_ansible_comes_before_the_one_the_interpreter_carries(tmp_path, monkeypatch):
+def test_an_ansible_the_interpreter_carries_is_still_the_one_used(tmp_path, monkeypatch):
     """
-    A run of the books by hand takes the system's ansible, so the command does too: the
-    interpreter's newer ansible-core cannot drive an image whose Python is 3.6.
-    """
-    system = _executable(tmp_path / "usr" / "bin", "ansible-playbook")
-    _executable(tmp_path / "py" / "bin", "ansible-playbook")
-    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
-    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
-    assert argv[0] == system
-
-
-def test_the_interpreters_ansible_is_used_when_the_system_has_none(tmp_path):
-    """
-    A controller whose ansible lives only in the interpreter's directory still builds.
+    A controller that already holds its own ansible in the interpreter's directory keeps
+    running the books with it.
     """
     own = _executable(tmp_path / "py" / "bin", "ansible-playbook")
+    _executable(tmp_path / "usr" / "bin", "ansible-playbook")
+    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
     argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
     assert argv[0] == own
 
@@ -691,6 +684,31 @@ def test_an_empty_collections_setting_leaves_the_path_to_ansible():
     assert "ANSIBLE_COLLECTIONS_PATH" not in runner.playbook_env(dict(BUILT, collections=""), inventory)
     assert runner.playbook_env(dict(BUILT, collections="/srv/collections"), inventory)[
         "ANSIBLE_COLLECTIONS_PATH"] == "/srv/collections"
+
+
+def test_the_library_is_on_ansibles_path_only_for_an_image_that_needs_it():
+    """
+    An image whose Python is 3.6 gets its modules directory as ANSIBLE_LIBRARY; every other
+    build leaves the variable out, so the books' own modules run as they always did.
+    """
+    inventory = "hosts,/var/job/inventory/hosts.yml"
+    assert "ANSIBLE_LIBRARY" not in runner.playbook_env(BUILT, inventory)
+    assert runner.playbook_env(BUILT, inventory, "/srv/library")["ANSIBLE_LIBRARY"] == "/srv/library"
+
+
+def test_the_library_is_the_one_luna2_utils_ships_under_the_interpreter(tmp_path):
+    """
+    The directory is found under the interpreter's site-packages, and a luna2-utils without
+    the dnf and selinux modules is a refusal naming the interpreter.
+    """
+    settings = dict(BUILT, python=str(tmp_path / "py"))
+    library = tmp_path / "py" / "lib" / "python3.10" / "site-packages" / "utils" / "ansible_library"
+    library.mkdir(parents=True)
+    (library / "dnf.py").write_text("")
+    with pytest.raises(runner.Failed, match=f"luna2-utils under {tmp_path}/py ships no dnf and selinux"):
+        runner.ansible_library(settings)
+    (library / "selinux.py").write_text("")
+    assert runner.ansible_library(settings) == str(library)
 
 
 # What ansible-galaxy answers on the controller the installer's prepare step made: each
@@ -921,6 +939,7 @@ def _leap_job(tmp_path, monkeypatch, template: str, kernels: tuple = ()) -> tupl
     mirror = detect.Finding(source=LEAP_MIRROR, kind="repository", family="suse", distro="opensuse-leap",
                             release="15", dotrelease="15.6", arch="x86_64")
     monkeypatch.setattr(detect, "identify_all", lambda media, want_arch=None: [mirror])
+    monkeypatch.setattr(runner, "ansible_library", lambda settings: "/srv/library")
     return jobdir, started, _books_file(tmp_path, "templates/opensuse-repo.j2", template)
 
 
@@ -945,7 +964,9 @@ def test_a_leap_mirror_is_built_by_books_that_read_it(tmp_path, monkeypatch, sig
                                        kernels=("5.14.21-150600",))
     assert runner.Build(jobdir).run() == 0
     assert jobs.read_json(jobdir, jobs.VERDICT)["variables"]["opensuse_repo_baseurl"] == LEAP_MIRROR
-    assert len(started) == 1
+    (argv, kwargs), = started
+    assert kwargs["env"]["ANSIBLE_LIBRARY"] == "/srv/library"
+    assert json.dumps({"image_bootstrap_extra": ["python312"]}) in argv
 
 
 UBUNTU_RELEASES = 'ubuntu_releases:\n  "22": jammy\n  "24": noble\n'
