@@ -862,9 +862,9 @@
                 "type": "null"
               }
             ],
-            "description": "The https archive, branch or tag included in its address, that the build fetches into repo when repo is not there; empty fetches nothing\n",
+            "description": "The https archive of a TrinityX tag that the build fetches into repo when repo is not there; empty, the default, fetches nothing and a build without the checkout is refused. The books run as root, so name a tag, never a branch that moves\n",
             "examples": [
-              "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz"
+              "https://github.com/clustervision/trinityX/archive/refs/tags/r12.0u2.tar.gz"
             ],
             "title": "Repo Url"
           },
@@ -3909,7 +3909,7 @@
                   "mirrors": {},
                   "python": "/trinity/local/python",
                   "repo": "/trinity/trinityx-combined",
-                  "repo_url": "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz",
+                  "repo_url": "",
                   "state_root": "/trinity/local/trixd/var/osimage",
                   "stub_gap_seconds": 3
                 },
@@ -4004,7 +4004,7 @@
                   },
                   "python": "/trinity/local/python",
                   "repo": "/trinity/trinityx-combined",
-                  "repo_url": "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz",
+                  "repo_url": "",
                   "state_root": "/trinity/local/trixd/var/osimage",
                   "stub_gap_seconds": 3
                 },

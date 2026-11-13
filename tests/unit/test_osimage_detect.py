@@ -115,7 +115,9 @@ def tar_of(root, name: str, members: list) -> str:
 
 def test_a_release_splits_into_major_and_point_release():
     """
-    EL and Leap carry the point after the major; Ubuntu's YY.MM is the release itself.
+    EL and Leap carry the point after the major; Ubuntu's YY.MM is the release itself,
+    and Debian's point release past .9 is not taken for one: a caller that knows says
+    which, and without that only Ubuntu's release months count.
     """
     assert detect.release_split("9.8") == ("9", "9.8")
     assert detect.release_split("9") == ("9", None)
@@ -123,6 +125,10 @@ def test_a_release_splits_into_major_and_point_release():
     assert detect.release_split("24.04.3") == ("24.04", "24.04.3")
     assert detect.release_split("15.6") == ("15", "15.6")
     assert detect.release_split("13.7.0") == ("13", "13.7.0")
+    assert detect.release_split("12.13") == ("12", "12.13")
+    assert detect.release_split("12.10") == ("12.10", None)
+    assert detect.release_split("12.10", ubuntu=False) == ("12", "12.10")
+    assert detect.release_split("24.04", ubuntu=True) == ("24.04", None)
 
 
 def test_distribution_words_and_arch_spellings_are_data():
@@ -308,6 +314,35 @@ def test_the_release_asked_for_chooses_the_suite_of_an_archive(tmp_path):
         assert (f["codename"], rc) == ("jammy", 0), asked
     f, rc = detect.identify(str(tmp_path), want_arch="arm64", release="20.04")
     assert (f["codename"], rc) == ("noble", 2)
+
+
+DEBIAN_RELEASE = """Origin: Debian
+Label: Debian
+Suite: {suite}
+Version: {version}
+Codename: {codename}
+Architectures: all amd64 arm64 armel armhf i386 mips64el ppc64el riscv64 s390x
+Components: main contrib non-free-firmware non-free
+"""
+
+
+def test_the_release_asked_for_chooses_the_suite_of_a_debian_archive_before_its_stable_alias(tmp_path):
+    """
+    A Debian archive lists its releases by codename and the current one under stable
+    as well: the release asked for chooses among the codenames, so an older release is
+    buildable, the current one is one answer and not two, and with no release asked
+    stable still answers.
+    """
+    for suite, version, codename in (("bookworm", "12.13", "bookworm"), ("trixie", "13.2", "trixie"),
+                                     ("stable", "13.2", "trixie"), ("oldstable", "12.13", "bookworm")):
+        put(tmp_path, f"dists/{suite}/Release",
+            DEBIAN_RELEASE.format(suite=suite, version=version, codename=codename))
+    f, rc = detect.identify(str(tmp_path), want_arch="amd64", release="12")
+    assert (f["codename"], f["release"], rc) == ("bookworm", "12", 0)
+    f, rc = detect.identify(str(tmp_path), want_arch="amd64", release="13")
+    assert (f["codename"], f["release"], rc) == ("trixie", "13", 0)
+    f, rc = detect.identify(str(tmp_path), want_arch="amd64")
+    assert (f["codename"], f["suite"], rc) == ("trixie", "stable", 0)
 
 
 def test_an_archive_without_the_asked_arch_says_so(tmp_path):

@@ -93,8 +93,9 @@ def check_url(repo: str, url: str) -> None:
     Refuse an address the books cannot be fetched from: none, or not https.
     """
     if not url:
-        raise ServiceUnavailable(f"the books are not at {repo} and repo_url is empty, "
-                                 f"so there is nothing to fetch them from")
+        raise ServiceUnavailable(f"the books are not at {repo} and repo_url is empty: put the "
+                                 f"checkout there, or set repo_url in the osimage settings to "
+                                 f"the https archive of a TrinityX tag to fetch them from")
     if not url.startswith(SCHEME):
         raise ServiceUnavailable(f"repo_url must be an https address, not {url}")
 

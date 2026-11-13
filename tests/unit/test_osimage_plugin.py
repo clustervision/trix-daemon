@@ -39,6 +39,7 @@ import shutil
 import signal
 import socket
 import subprocess
+import sys
 import threading
 import time
 
@@ -769,6 +770,40 @@ def test_a_cancel_kills_a_build_that_does_not_end_within_the_grace(plugin, tmp_p
     assert jobs.read_state(jobs.path(str(tmp_path / "state"), "rocky9"))["state"] == "cancelled"
 
 
+def test_the_kill_after_the_grace_reaches_the_book_in_its_own_session(tmp_path, monkeypatch):
+    """
+    Real processes: a runner that does not end on SIGTERM, stuck behind a book that
+    ignores it, is killed together with the book. The book runs in a second session the
+    kill of the runner's group does not reach, so without this a stuck build goes on
+    writing into the tree while Luna removes it.
+    """
+    monkeypatch.setattr(jobs, "STOP_GRACE", 1)
+    # Each says ready once it ignores SIGTERM, so the stop is not sent before that.
+    stuck = [sys.executable, "-c", "import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); "
+                                   "print('ready', flush=True); time.sleep(60)"]
+    book = subprocess.Popen(stuck, start_new_session=True, stdout=subprocess.PIPE, text=True)
+    try:
+        assert book.stdout.readline().strip() == "ready"
+        process = jobs.start("rocky9", str(tmp_path), stuck, dict(os.environ))
+        for _ in range(100):
+            if "ready" in open(tmp_path / jobs.LOG, encoding="utf-8").read():
+                break
+            time.sleep(0.1)
+        else:
+            pytest.fail("the runner did not start")
+        jobs.write_book_group(str(tmp_path), book.pid)
+        jobs.stop("rocky9", str(tmp_path))
+        assert process.returncode == -signal.SIGKILL
+        try:
+            ended = book.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pytest.fail("the book outlived the kill of its runner")
+        assert ended == -signal.SIGKILL
+    finally:
+        book.kill()
+        book.wait()
+
+
 def test_a_build_process_that_was_reaped_is_not_signalled(children):
     """
     Once the child is reaped its pid is free and may be another process's, so a signal
@@ -867,6 +902,17 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
     assert held["mirrors"] == {"redhat/9.6/arm64": ["/isos/Rocky-9.6-aarch64-dvd.iso"]}
     cleared = client.patch(f"{API_PREFIX}/osimage/settings", json={"mirrors": {}}, headers=headers)
     assert cleared.status_code == 200 and cleared.json()["mirrors"] == {}
+
+
+def test_no_default_setting_names_an_address_to_fetch_code_from():
+    """
+    The books are fetched and run as root: where from is the installer's or the
+    operator's to name, pinned, so no default of the plugin is a URL, and a build
+    with no checkout and no address is refused saying how to configure one.
+    """
+    for key, value in backend.DEFAULT_SETTINGS.items():
+        assert not str(value).startswith(("http://", "https://")), key
+    assert backend.DEFAULT_SETTINGS["repo_url"] == ""
 
 
 def test_a_daemon_that_never_built_lists_no_jobs(plugin, tmp_path):

@@ -61,15 +61,24 @@ GIVEN: str = "create"
 # takes them, and the architecture in any of its spellings when the entry is for one.
 MIRROR_KEY = re.compile(r"^([a-z0-9._-]{1,32})/([A-Za-z0-9._+-]{1,32})(?:/([a-z0-9_]{2,16}))?$")
 
-# Per family: the playbook, the word Luna's record takes as its distribution, and the
-# variable the books read the base URL from. The playbook comes from the family; what
-# was proven from each is rocky, ubuntu and opensuse-leap.
+# Per family: the playbook, the word Luna's record takes as its distribution, the
+# variable the books read the base URL from, and what the playbook needs on the
+# controller beyond ansible: the collections whose modules its roles name, which have to
+# resolve for the play to load at all (the slurm role's mysql modules are the only use of
+# community.mysql, and the Leap book leaves slurm out), and the Galaxy roles its setup
+# play names. The playbook comes from the family; what was proven from each is rocky,
+# ubuntu and opensuse-leap.
 FAMILIES = {
-    "redhat": {"playbook": "compute-redhat.yml", "distribution": "redhat", "base": "image_el_baseurl"},
+    "redhat": {"playbook": "compute-redhat.yml", "distribution": "redhat", "base": "image_el_baseurl",
+               "collections": ("community.general", "ansible.posix", "community.mysql"),
+               "galaxy_roles": ("OndrejHome.pcs-modules-2",)},
     "debian": {"playbook": "compute-ubuntu.yml", "distribution": "ubuntu",
-               "base": "ubuntu_distribution_source"},
+               "base": "ubuntu_distribution_source",
+               "collections": ("community.general", "ansible.posix", "community.mysql"),
+               "galaxy_roles": ()},
     "suse": {"playbook": "compute-opensuse.yml", "distribution": "opensuse",
-             "base": "opensuse_repo_baseurl"},
+             "base": "opensuse_repo_baseurl",
+             "collections": ("community.general", "ansible.posix"), "galaxy_roles": ()},
 }
 
 # Per arch: whether a build is offered, and the book variables of a foreign arch, by family
@@ -139,6 +148,14 @@ REPOSITORY_ARCH = re.compile(r"(?:^|[-_.])(x86_64|aarch64|ppc64le|s390x)(?:[-_.]
 # The package that makes a tree of the controller's release a tree of the record's whichever
 # distribution the sources carry, and the interpreter the books' in-image steps need.
 REPOSITORY_RELEASE_PACKAGES: tuple = ("system-release", "python3")
+
+
+def family_of(distribution: str) -> str:
+    """
+    The family whose books build a record's distribution, or none for a word no family takes.
+    """
+    return next((family for family, rule in FAMILIES.items() if rule["distribution"] == distribution),
+                None)
 
 
 def check_name(name: str, field: str = "name") -> None:
@@ -268,11 +285,11 @@ def placement(distribution: str, osrelease: str, arch: str, controller: dict, ma
     own release and arch or nothing, and a distribution or release that cannot be placed
     is a BadRequest naming what to name.
     """
-    families = {rule["distribution"]: family for family, rule in FAMILIES.items()}
-    family = families.get(distribution)
+    family = family_of(distribution)
     if not family:
         raise BadRequest(f"the books build no {distribution} image without a source, only "
-                         f"{', '.join(sorted(families))}: {REFUSALS['no_source']}")
+                         f"{', '.join(sorted(rule['distribution'] for rule in FAMILIES.values()))}: "
+                         f"{REFUSALS['no_source']}")
     release, dotrelease = detect.release_split(osrelease)
     if not release:
         raise BadRequest(f"osrelease {osrelease} is not a release number the books take: "
@@ -574,9 +591,7 @@ def _family_variables(family: str, base: dict, release: str, dotrelease: str, su
         variables["ubuntu_distribution_source"] = _location(base["source"])
     elif family == "suse":
         variables["opensuse_release"] = f"leap/{dotrelease or release}"
-        variables["suse_version"] = dotrelease or release
         variables["opensuse_repo_baseurl"] = _location(base["source"])
-        variables["enable_slurm"] = True
     return variables
 
 

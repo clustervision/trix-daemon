@@ -47,6 +47,7 @@ import re
 import struct
 import tarfile
 import time
+import typing
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -69,7 +70,8 @@ ARCH_ALIASES = {
     "ppc64le": "ppc64le", "ppc64el": "ppc64le", "openpower": "ppc64le",
     "s390x": "s390x",
 }
-DEB_ARCH = {"x86_64": "amd64", "aarch64": "arm64", "riscv64": "riscv64", "ppc64le": "ppc64el", "s390x": "s390x"}
+DEB_ARCH = {"x86_64": "amd64", "aarch64": "arm64", "riscv64": "riscv64", "ppc64le": "ppc64el",
+            "s390x": "s390x"}
 ELF_MACHINE = {62: "x86_64", 183: "aarch64", 243: "riscv64", 21: "ppc64le", 22: "s390x"}
 
 # distro vocabulary: os-release ID or treeinfo family, to (distro, family, bootstrap method)
@@ -119,7 +121,10 @@ class Deadline:
         return min(REQUEST_TIMEOUT, left)
 
 
-def classify(text):
+def classify(text: str) -> tuple:
+    """
+    The (distro, family, bootstrap) a distribution word stands for, or three Nones.
+    """
     t = (text or "").strip().lower()
     for rx, distro, family, boot in DISTROS:
         if re.search(rx, t):
@@ -127,22 +132,26 @@ def classify(text):
     return None, None, None
 
 
-def norm_arch(a):
+def norm_arch(a: str) -> str:
+    """
+    The kernel's name of an arch in any spelling, or None.
+    """
     return ARCH_ALIASES.get((a or "").strip().lower())
 
 
-# readers: one interface (read(path) gives bytes or None, listdir(path) gives names or None) over every source kind
+# readers: one interface (read(path) gives bytes or None, listdir(path) gives names or None)
+# over every source kind
 class Http:
     """Random access and small-file reads over HTTP(S)/FTP/file URLs."""
 
-    def __init__(self, base, deadline=None):
+    def __init__(self, base: str, deadline: Deadline = None) -> None:
         self.base = base if base.endswith("/") else base + "/"
         self.deadline = deadline or Deadline()
 
-    def url(self, rel):
+    def url(self, rel: str) -> str:
         return urllib.parse.urljoin(self.base, rel)
 
-    def read(self, rel, limit=READ_LIMIT):
+    def read(self, rel: str, limit: int = READ_LIMIT) -> bytes:
         timeout = self.deadline.timeout()
         try:
             with urllib.request.urlopen(self.url(rel), timeout=timeout) as r:
@@ -150,23 +159,24 @@ class Http:
         except (urllib.error.URLError, OSError, ValueError):
             return None
 
-    def listdir(self, rel):
+    def listdir(self, rel: str) -> list:
         """Directory names from an autoindex page (Apache/nginx); None when the server lists nothing."""
         data = self.read(rel if rel.endswith("/") else rel + "/")
         if not data or len(data) >= READ_LIMIT:
             return None
         names = re.findall(r'href="([^"?/][^"?]*?)/?"', data.decode("utf-8", "replace"))
-        return sorted({urllib.parse.unquote(n).rstrip("/") for n in names if not n.startswith(("http", "/", "."))})
+        return sorted({urllib.parse.unquote(n).rstrip("/") for n in names
+                       if not n.startswith(("http", "/", "."))})
 
 
 class LocalDir:
-    """A tree on disk, read as a root: symlinks resolve inside it (an image's absolute link /etc/os-release to
-    /usr/lib/os-release must not read the controller's own file)."""
+    """A tree on disk, read as a root: symlinks resolve inside it (an image's absolute link
+    /etc/os-release to /usr/lib/os-release must not read the controller's own file)."""
 
-    def __init__(self, root):
+    def __init__(self, root: str) -> None:
         self.root = os.path.abspath(root)
 
-    def _resolve(self, rel, hops=40):
+    def _resolve(self, rel: str, hops: int = 40) -> str:
         parts, done = [p for p in rel.split("/") if p not in ("", ".")], []
         while parts:
             name = parts.pop(0)
@@ -186,7 +196,7 @@ class LocalDir:
             done.append(name)
         return os.path.join(self.root, *done)
 
-    def read(self, rel, limit=READ_LIMIT):
+    def read(self, rel: str, limit: int = READ_LIMIT) -> bytes:
         p = self._resolve(rel)
         if p is None:
             return None
@@ -196,7 +206,7 @@ class LocalDir:
         except OSError:
             return None
 
-    def listdir(self, rel):
+    def listdir(self, rel: str) -> list:
         p = self._resolve(rel)
         if p is None:
             return None
@@ -210,20 +220,22 @@ class RangeFile:
     """A read-only, seekable view of a remote file through HTTP range requests (block cache)."""
     BLOCK = 64 << 10
 
-    def __init__(self, url, deadline=None):
+    def __init__(self, url: str, deadline: Deadline = None) -> None:
         self.url, self.cache = url, {}
         self.deadline = deadline or Deadline()
 
-    def _block(self, n):
+    def _block(self, n: int) -> bytes:
         if n not in self.cache:
-            req = urllib.request.Request(self.url, headers={"Range": "bytes=%d-%d" % (n * self.BLOCK, (n + 1) * self.BLOCK - 1)})
+            span = "bytes=%d-%d" % (n * self.BLOCK, (n + 1) * self.BLOCK - 1)
+            req = urllib.request.Request(self.url, headers={"Range": span})
             with urllib.request.urlopen(req, timeout=self.deadline.timeout()) as r:
                 if r.status != 206:
-                    raise OSError("server ignores range requests (HTTP %s): cannot read the ISO in place" % r.status)
+                    raise OSError("server ignores range requests (HTTP %s): cannot read the ISO "
+                                  "in place" % r.status)
                 self.cache[n] = r.read()
         return self.cache[n]
 
-    def pread(self, off, size):
+    def pread(self, off: int, size: int) -> bytes:
         out = bytearray()
         while size > 0:
             b = self._block(off // self.BLOCK)
@@ -237,10 +249,12 @@ class RangeFile:
 
 
 class LocalFile:
-    def __init__(self, path):
+    """A file on disk, read like a remote one."""
+
+    def __init__(self, path: str) -> None:
         self.f = open(path, "rb")
 
-    def pread(self, off, size):
+    def pread(self, off: int, size: int) -> bytes:
         self.f.seek(off)
         return self.f.read(size)
 
@@ -249,7 +263,7 @@ class Iso:
     """Minimal ISO 9660 reader: Joliet names when present, else Rock Ridge NM, else plain 9660 (no ;1)."""
     SECTOR = 2048
 
-    def __init__(self, blob):
+    def __init__(self, blob) -> None:
         self.blob = blob
         self.root = None
         self.joliet = False
@@ -273,11 +287,11 @@ class Iso:
             self.root = self._dirrec(primary[156:190])
 
     @staticmethod
-    def _dirrec(rec):
+    def _dirrec(rec: bytes) -> dict:
         return {"extent": struct.unpack("<I", rec[2:6])[0], "size": struct.unpack("<I", rec[10:14])[0],
                 "dir": bool(rec[25] & 2)}
 
-    def _entries(self, d):
+    def _entries(self, d: dict) -> dict:
         data = self.blob.pread(d["extent"] * self.SECTOR, d["size"])
         off, out = 0, {}
         while off < len(data):
@@ -301,7 +315,7 @@ class Iso:
         return out
 
     @staticmethod
-    def _rr_name(rec, su):
+    def _rr_name(rec: bytes, su: int) -> str:
         parts, i = [], su
         while i + 4 <= len(rec):
             sig, ln = rec[i:i + 2], rec[i + 2]
@@ -312,7 +326,7 @@ class Iso:
             i += ln
         return "".join(parts) or None
 
-    def _lookup(self, rel):
+    def _lookup(self, rel: str) -> dict:
         node = self.root
         for part in [p for p in rel.split("/") if p]:
             if not node["dir"]:
@@ -326,37 +340,39 @@ class Iso:
             node = hit
         return node
 
-    def read(self, rel, limit=READ_LIMIT):
+    def read(self, rel: str, limit: int = READ_LIMIT) -> bytes:
         n = self._lookup(rel)
         if not n or n["dir"]:
             return None
         return self.blob.pread(n["extent"] * self.SECTOR, min(n["size"], limit))
 
-    def listdir(self, rel):
+    def listdir(self, rel: str) -> list:
         n = self._lookup(rel)
         return sorted(self._entries(n)) if n and n["dir"] else None
 
 
 class Tarball:
     """Read named members of a rootfs tarball (stream once, keep the few files detection needs)."""
-    WANT = ("etc/os-release", "usr/lib/os-release", "etc/debian_version", "etc/redhat-release", "etc/SuSE-release")
+    WANT = ("etc/os-release", "usr/lib/os-release", "etc/debian_version", "etc/redhat-release",
+            "etc/SuSE-release")
 
-    def __init__(self, path):
+    def __init__(self, path: str) -> None:
         self.files, self.elf, self.oci = {}, None, None
         small = {}
         with tarfile.open(path, "r:*") as t:
             self._scan(t, small)
-        if "oci-layout" in small and "index.json" in small:     # an OCI image layout archive (container base image)
+        if "oci-layout" in small and "index.json" in small:     # an OCI image layout archive
             self._oci(path, small)
 
-    def _scan(self, t, small):
+    def _scan(self, t: tarfile.TarFile, small: dict) -> None:
         for m in t:
             name = m.name.lstrip("./")
             if m.isfile() and name in self.WANT:
                 self.files[name] = t.extractfile(m).read(1 << 20)
-            elif m.isfile() and self.elf is None and re.match(r"^(usr/)?bin/(bash|sh|busybox|ls)$", name):
+            elif m.isfile() and self.elf is None and re.match(r"^(usr/)?bin/(bash|sh|busybox|ls)$",
+                                                             name):
                 head = t.extractfile(m).read(64)
-                if head[:4] == b"\x7fELF":                  # e.g. Rocky 8 ships usr/bin/ls as a 49-byte script
+                if head[:4] == b"\x7fELF":                  # Rocky 8 ships usr/bin/ls as a script
                     self.elf = head
             elif m.issym() and name in self.WANT and name not in self.files:
                 self.files.setdefault("@link:" + name, m.linkname.encode())
@@ -364,12 +380,14 @@ class Tarball:
                     name in ("oci-layout", "index.json") or name.startswith("blobs/")):
                 small[name] = t.extractfile(m).read()
 
-    def _oci(self, path, small):
-        """index, then manifest, then config (architecture) and layers; os-release is read from the layers, newest first."""
-        blob = lambda d: small.get("blobs/" + d.replace(":", "/"))
+    def _oci(self, path: str, small: dict) -> None:
+        """index, then manifest, then config (architecture) and layers; os-release is read from
+        the layers, newest first."""
+        def blob(digest: str) -> bytes:
+            return small.get("blobs/" + digest.replace(":", "/"))
         index = json.loads(small["index.json"])
         man = json.loads(blob(index["manifests"][0]["digest"]) or b"{}")
-        if "manifests" in man:                                 # an image index: take the first platform manifest
+        if "manifests" in man:                                 # an image index: the first platform
             man = json.loads(blob(man["manifests"][0]["digest"]) or b"{}")
         cfg = json.loads(blob(man.get("config", {}).get("digest", "")) or b"{}")
         self.oci = {"architecture": cfg.get("architecture"), "os": cfg.get("os"),
@@ -381,19 +399,23 @@ class Tarball:
                     with tarfile.open(fileobj=t.extractfile(m), mode="r|*") as layer:
                         self._scan(layer, None)
 
-    def read(self, rel, limit=READ_LIMIT):
+    def read(self, rel: str, limit: int = READ_LIMIT) -> bytes:
         data = self.files.get(rel)
-        if data is None and ("@link:" + rel) in self.files:       # etc/os-release linked to ../usr/lib/os-release
-            target = os.path.normpath(os.path.join(os.path.dirname(rel), self.files["@link:" + rel].decode()))
+        if data is None and ("@link:" + rel) in self.files:       # etc/os-release linked to usr/lib's
+            target = os.path.normpath(os.path.join(os.path.dirname(rel),
+                                                   self.files["@link:" + rel].decode()))
             data = self.files.get(target.lstrip("/"))
         return data
 
-    def listdir(self, rel):
+    def listdir(self, rel: str) -> list:
         return None
 
 
+Reader = typing.Union[Http, LocalDir, Iso, Tarball]
+
+
 # the readers' interpretation
-def kv_file(data):
+def kv_file(data: bytes) -> dict:
     """os-release / Release / .disk/info style: KEY=value or Key: value lines."""
     out = {}
     for line in (data or b"").decode("utf-8", "replace").splitlines():
@@ -403,31 +425,46 @@ def kv_file(data):
     return out
 
 
-def elf_arch(head):
+def elf_arch(head: bytes) -> str:
+    """
+    The arch an ELF header names, or None.
+    """
     if not head or head[:4] != b"\x7fELF":
         return None
     endian = "<" if head[5] == 1 else ">"
     return ELF_MACHINE.get(struct.unpack(endian + "H", head[18:20])[0])
 
 
-def release_split(version):
-    """'9.8' gives ('9', '9.8'); '24.04.3' gives ('24.04', '24.04.3'); '15.6' gives ('15', '15.6'); '13.7' gives ('13', '13.7')."""
+def release_split(version: str, ubuntu: bool = None) -> tuple:
+    """
+    '9.8' gives ('9', '9.8'); '24.04.3' gives ('24.04', '24.04.3'); '15.6' gives ('15', '15.6');
+    '13.7' gives ('13', '13.7'). Ubuntu's YY.MM is the release itself: a caller that knows
+    whether the version is Ubuntu's says so; else a two-digit pair ending in one of Ubuntu's
+    release months is taken for one, so Debian's 12.13 is still release 12.
+    """
     v = (version or "").strip()
     m = re.match(r"^(\d+)(?:\.(\d+))?(?:\.(\d+))?", v)
     if not m:
         return None, None
-    if len(m.group(1)) == 2 and m.group(2) and len(m.group(2)) == 2:          # Ubuntu YY.MM is the release itself
+    if ubuntu is None:
+        ubuntu = len(m.group(1)) == 2 and m.group(2) in ("04", "10")
+    if ubuntu and m.group(2):
         rel = "%s.%s" % (m.group(1), m.group(2))
         return rel, (v if m.group(3) else None)
     return m.group(1), (v if m.group(2) else None)
 
 
 class Finding(dict):
-    def note(self, src, what):
+    """
+    What one source was found to be, with the evidence each field rests on.
+    """
+
+    def note(self, src: str, what: str) -> None:
         self.setdefault("evidence", []).append("%s: %s" % (src, what))
 
 
-def from_treeinfo(r, prefix, f):
+def from_treeinfo(r: Reader, prefix: str, f: Finding) -> bool:
+    """An EL tree's .treeinfo: family, version, arch and the variants' repositories."""
     data = r.read(prefix + ".treeinfo") or r.read(prefix + "treeinfo")
     if not data:
         return False
@@ -436,7 +473,9 @@ def from_treeinfo(r, prefix, f):
         cp.read_string(data.decode("utf-8", "replace"))
     except configparser.Error:
         return False
-    g = lambda s, k: cp.get(s, k, fallback=None)
+
+    def g(section: str, key: str) -> str:
+        return cp.get(section, key, fallback=None)
     family_txt = g("release", "name") or g("general", "family") or g("general", "name")
     version = g("release", "version") or g("general", "version")
     if not version:
@@ -449,7 +488,8 @@ def from_treeinfo(r, prefix, f):
     f.update(family=family, distro=distro, release=rel, dotrelease=dot, bootstrap=boot,
              arch=norm_arch(g("tree", "arch") or g("general", "arch")))
     f.note(prefix + ".treeinfo", "family=%r version=%r arch=%r" % (family_txt, version, f["arch"]))
-    variants = [v.strip() for v in (g("tree", "variants") or g("general", "variants") or "").split(",") if v.strip()]
+    variants = [v.strip() for v in (g("tree", "variants") or g("general", "variants") or "").split(",")
+                if v.strip()]
     repos = {}
     for v in variants:
         path = g("variant-" + v, "repository") or g("variant-" + v, "packages")
@@ -461,24 +501,28 @@ def from_treeinfo(r, prefix, f):
     return True
 
 
-def from_deb_release(r, prefix, suite, f, want_arch):
-    data = r.read("%sdists/%s/Release" % (prefix, suite)) or r.read("%sdists/%s/InRelease" % (prefix, suite))
+def from_deb_release(r: Reader, prefix: str, suite: str, f: Finding, want_arch: str) -> bool:
+    """One suite's Release file of a Debian or Ubuntu archive: origin, version, codename, arches."""
+    data = (r.read("%sdists/%s/Release" % (prefix, suite))
+            or r.read("%sdists/%s/InRelease" % (prefix, suite)))
     if not data:
         return False
     kv = kv_file(data)
     distro, family, boot = classify(kv.get("Origin") or kv.get("Label"))
     if not distro:
         return False
-    rel, dot = release_split(kv.get("Version"))
+    rel, dot = release_split(kv.get("Version"), distro == "ubuntu")
     arches = sorted(filter(None, (norm_arch(a) for a in kv.get("Architectures", "").split())))
-    f.update(family=family, distro=distro, release=rel, dotrelease=dot, codename=kv.get("Codename") or suite,
-             suite=suite, bootstrap=boot, arches_available=arches)
-    f.note("%sdists/%s/Release" % (prefix, suite), "Origin=%s Version=%s Codename=%s Architectures=%s" % (
-        kv.get("Origin"), kv.get("Version"), kv.get("Codename"), kv.get("Architectures")))
+    f.update(family=family, distro=distro, release=rel, dotrelease=dot,
+             codename=kv.get("Codename") or suite, suite=suite, bootstrap=boot, arches_available=arches)
+    f.note("%sdists/%s/Release" % (prefix, suite),
+           "Origin=%s Version=%s Codename=%s Architectures=%s" % (
+               kv.get("Origin"), kv.get("Version"), kv.get("Codename"), kv.get("Architectures")))
     if want_arch:
         f["arch"] = want_arch if want_arch in arches else None
         if want_arch not in arches:
-            f.setdefault("problems", []).append("arch %s not in this archive (%s)" % (want_arch, " ".join(arches)))
+            f.setdefault("problems", []).append("arch %s not in this archive (%s)"
+                                                % (want_arch, " ".join(arches)))
     elif len(arches) == 1:
         f["arch"] = arches[0]
     else:
@@ -486,30 +530,37 @@ def from_deb_release(r, prefix, suite, f, want_arch):
     return True
 
 
-def deb_suites(r, prefix, release=None):
+def deb_suites(r: Reader, prefix: str, release: str = None) -> list:
     """
-    Release suites of an archive, best first: Debian's 'stable' alias, else the suites whose
-    Version is the release asked for ('22.04' or '22'), else the newest Ubuntu LTS, else newest.
+    Release suites of an archive, best first: the suites whose Version is the release asked
+    for ('22.04', '22' or '12'), else Debian's 'stable' alias, else the newest Ubuntu LTS,
+    else newest. With a release asked for, the alias is read like any suite but left out
+    beside the codename it stands for, so one release is not two answers.
     """
     names = [n for n in (r.listdir(prefix + "dists") or []) if re.match(r"^[a-z]+$", n)
-             and n not in ("devel", "experimental", "sid", "unstable", "testing", "oldstable", "oldoldstable")]
-    if "stable" in names:
-        return ["stable"]
+             and n not in ("devel", "experimental", "sid", "unstable", "testing", "oldstable",
+                           "oldoldstable")]
     wanted = [int(part) for part in re.findall(r"\d+", release or "")][:2]
+    if "stable" in names and not wanted:
+        return ["stable"]
     ranked, matching = [], []
     for n in names:
         kv = kv_file(r.read("%sdists/%s/Release" % (prefix, n), 2048))
-        m = re.match(r"^(\d+)\.(\d+)", kv.get("Version", ""))
+        m = re.match(r"^(\d+)(?:\.(\d+))?", kv.get("Version", ""))
         if m:
-            yy, mm = int(m.group(1)), int(m.group(2))
+            yy, mm = int(m.group(1)), int(m.group(2) or 0)
             lts = kv.get("Origin") == "Ubuntu" and mm == 4 and yy % 2 == 0
             ranked.append(((lts, yy, mm), n))
             if wanted and [yy, mm][:len(wanted)] == wanted:
                 matching.append(((lts, yy, mm), n))
-    return [n for _, n in sorted(matching or ranked, reverse=True)]
+    chosen = [n for _, n in sorted(matching or ranked, reverse=True)]
+    if not chosen:
+        return ["stable"] if "stable" in names else []
+    return [n for n in chosen if n != "stable" or len(chosen) == 1]
 
 
-def from_os_release(r, f, prefix=""):
+def from_os_release(r: Reader, f: Finding, prefix: str = "") -> bool:
+    """An installed root's os-release: distribution and release, with the point release where it is kept."""
     data = r.read(prefix + "etc/os-release") or r.read(prefix + "usr/lib/os-release")
     if not data:
         return False
@@ -519,33 +570,37 @@ def from_os_release(r, f, prefix=""):
         distro, family, boot = classify(kv.get("ID_LIKE", "").split(" ")[0])
     if not distro:
         return False
-    rel, dot = release_split(kv.get("VERSION_ID"))
-    if distro == "ubuntu":                                  # VERSION="24.04.3 LTS (Noble Numbat)" holds the point release
+    rel, dot = release_split(kv.get("VERSION_ID"), distro == "ubuntu")
+    if distro == "ubuntu":                                  # VERSION="24.04.3 LTS (...)" holds the point
         m = re.match(r"^(\d+\.\d+(?:\.\d+)?)", kv.get("VERSION", ""))
         dot = m.group(1) if m else dot
-    elif family == "debian" and not dot:                    # Debian's os-release says only "13"; the point is here
+    elif family == "debian" and not dot:                    # Debian's os-release says only "13"
         dv = (r.read(prefix + "etc/debian_version") or b"").decode("ascii", "replace").strip()
         if re.match(r"^\d+\.\d+", dv):
             dot = dv
             f.note(prefix + "etc/debian_version", dv)
     f.update(family=family, distro=distro, release=rel, dotrelease=dot,
              codename=kv.get("VERSION_CODENAME") or None, bootstrap="unpack")
-    f.note(prefix + "etc/os-release", "ID=%s VERSION_ID=%s VERSION=%r" % (kv.get("ID"), kv.get("VERSION_ID"), kv.get("VERSION")))
+    f.note(prefix + "etc/os-release", "ID=%s VERSION_ID=%s VERSION=%r"
+           % (kv.get("ID"), kv.get("VERSION_ID"), kv.get("VERSION")))
     return True
 
 
-def from_disk_info(r, f, want_arch, suite):
-    """Debian/Ubuntu installer ISOs: .disk/info names product, point release and arch; dists/ is on the disc."""
+def from_disk_info(r: Reader, f: Finding, want_arch: str, suite: str) -> bool:
+    """Debian/Ubuntu installer ISOs: .disk/info names product, point release and arch; dists/ is on
+    the disc."""
     data = r.read(".disk/info")
     if not data:
         return False
     info = data.decode("utf-8", "replace").strip()
-    m = re.match(r'^(.*?)\s+(\d+(?:\.\d+)*)(?:\s+LTS)?\s+"([^"]+)"\s+-\s+.*?\b(amd64|arm64|riscv64|ppc64el|s390x)\b', info)
+    m = re.match(r'^(.*?)\s+(\d+(?:\.\d+)*)(?:\s+LTS)?\s+"([^"]+)"\s+-\s+.*?'
+                 r'\b(amd64|arm64|riscv64|ppc64el|s390x)\b', info)
     if not m:
         return False
     distro, family, boot = classify(m.group(1))
-    rel, dot = release_split(m.group(2))
-    f.update(family=family, distro=distro, release=rel, dotrelease=dot, arch=norm_arch(m.group(4)), bootstrap=boot)
+    rel, dot = release_split(m.group(2), distro == "ubuntu")
+    f.update(family=family, distro=distro, release=rel, dotrelease=dot, arch=norm_arch(m.group(4)),
+             bootstrap=boot)
     f.note(".disk/info", info)
     for s in ([suite] if suite else deb_suites(r, "")):
         g = Finding()
@@ -553,7 +608,8 @@ def from_disk_info(r, f, want_arch, suite):
             f["codename"], f["suite"] = g.get("codename"), s
             f.note("dists/%s/Release" % s, "on-disc archive (pool) present")
             break
-    for sq in ("casper/ubuntu-server-minimal.squashfs", "casper/minimal.squashfs", "casper/filesystem.squashfs"):
+    for sq in ("casper/ubuntu-server-minimal.squashfs", "casper/minimal.squashfs",
+               "casper/filesystem.squashfs"):
         if r.listdir(os.path.dirname(sq)) and os.path.basename(sq) in (r.listdir(os.path.dirname(sq)) or []):
             f["rootfs_image"] = sq
             f.note(sq, "a ready root filesystem (squashfs) is on the disc")
@@ -561,7 +617,8 @@ def from_disk_info(r, f, want_arch, suite):
     return True
 
 
-def from_suse_products(r, prefix, f):
+def from_suse_products(r: Reader, prefix: str, f: Finding) -> bool:
+    """A SUSE tree's media.1/products: product and release; the arch directories beside it name the arch."""
     data = r.read(prefix + "media.1/products")
     if not data:
         return False
@@ -573,7 +630,8 @@ def from_suse_products(r, prefix, f):
     rel, dot = release_split(m.group(2))
     f.update(family=family, distro=distro, release=rel, dotrelease=dot, bootstrap=boot)
     f.note(prefix + "media.1/products", line)
-    arches = [a for a in ("x86_64", "aarch64", "ppc64le", "s390x", "riscv64") if r.listdir(prefix + a) is not None]
+    arches = [a for a in ("x86_64", "aarch64", "ppc64le", "s390x", "riscv64")
+              if r.listdir(prefix + a) is not None]
     if arches:
         f["arches_available"] = arches
         if len(arches) == 1:
@@ -581,7 +639,7 @@ def from_suse_products(r, prefix, f):
     return True
 
 
-def from_discinfo(r, f):
+def from_discinfo(r: Reader, f: Finding) -> bool:
     """EL boot/netinstall ISOs: .discinfo = timestamp, version, arch; the family comes from the volume id."""
     data = r.read(".discinfo")
     vol = getattr(r, "volume_id", "")
@@ -592,15 +650,16 @@ def from_discinfo(r, f):
     if not distro or len(lines) < 3:
         return False
     rel, dot = release_split(lines[1])
-    f.update(family=family, distro=distro, release=rel, dotrelease=dot, arch=norm_arch(lines[2]), bootstrap=boot)
+    f.update(family=family, distro=distro, release=rel, dotrelease=dot, arch=norm_arch(lines[2]),
+             bootstrap=boot)
     f.note(".discinfo", "version=%s arch=%s (family from volume id %r)" % (lines[1], lines[2], vol))
     if r.listdir("BaseOS") is None and r.listdir("repodata") is None:
-        f.setdefault("problems", []).append(
-            "no package repository on this disc (a boot/netinstall ISO): use the DVD ISO or a repository URL")
+        f.setdefault("problems", []).append("no package repository on this disc (a boot/netinstall "
+                                            "ISO): use the DVD ISO or a repository URL")
     return True
 
 
-def from_extra_repo(r, f, want_arch, suite):
+def from_extra_repo(r: Reader, f: Finding, want_arch: str, suite: str) -> bool:
     """
     A repository with packages but no identity of its own: a dnf or zypper repository
     that is repodata alone, or an apt archive whose Release names no distribution. It
@@ -616,28 +675,31 @@ def from_extra_repo(r, f, want_arch, suite):
             continue
         arches = sorted(filter(None, (norm_arch(a) for a in kv.get("Architectures", "").split())))
         f.update(kind="repo-extra", suite=s, arches_available=arches)
-        f.note("dists/%s/Release" % s, "an archive without a distribution identity: Origin=%s Label=%s" % (
-            kv.get("Origin"), kv.get("Label")))
+        f.note("dists/%s/Release" % s, "an archive without a distribution identity: Origin=%s Label=%s"
+               % (kv.get("Origin"), kv.get("Label")))
         if want_arch and arches and want_arch not in arches:
-            f.setdefault("problems", []).append("arch %s not in this archive (%s)" % (want_arch, " ".join(arches)))
+            f.setdefault("problems", []).append("arch %s not in this archive (%s)"
+                                                % (want_arch, " ".join(arches)))
         elif len(arches) == 1:
             f["arch"] = arches[0]
         return True
     return False
 
 
-def from_el_root(r, f, want_arch, arches):
-    """A Rocky or Alma release root, the directory holding BaseOS and AppStream, for the first arch that answers."""
+def from_el_root(r: Reader, f: Finding, want_arch: str, arches: list) -> bool:
+    """A Rocky or Alma release root, the directory holding BaseOS and AppStream, for the first arch
+    that answers."""
     for a in arches:
         if from_treeinfo(r, "BaseOS/%s/os/" % a, f):
             f["repos"] = {"BaseOS": "BaseOS/%s/os" % a, "AppStream": "AppStream/%s/os" % a}
             if not want_arch:
-                f.setdefault("ambiguous", []).append("arch: an EL release root; took %s, pass arch to choose" % a)
+                f.setdefault("ambiguous", []).append("arch: an EL release root; took %s, pass arch "
+                                                     "to choose" % a)
             return True
     return False
 
 
-def probe_tree(r, f, want_arch, suite, release=None):
+def probe_tree(r: Reader, f: Finding, want_arch: str, suite: str, release: str = None) -> bool:
     """A repository / directory / ISO: try the self-describing metadata in order of authority."""
     if from_treeinfo(r, "", f):
         if not f.get("repos") and r.listdir("repodata") is not None:
@@ -650,7 +712,7 @@ def probe_tree(r, f, want_arch, suite, release=None):
     arches = [want_arch] if want_arch else [a for a in EL_ARCHES if a in (listed or [])]
     if from_el_root(r, f, want_arch, arches):
         return True
-    if from_treeinfo(r, "install/", f):                   # install/: SUSE 16 offline media keep the tree there
+    if from_treeinfo(r, "install/", f):                   # SUSE 16 offline media keep the tree there
         if not f.get("repos") and r.listdir("install/repodata") is not None:
             f["repos"] = {"main": "install"}
         return True
@@ -660,16 +722,18 @@ def probe_tree(r, f, want_arch, suite, release=None):
     for s in suites:
         if from_deb_release(r, "", s, f, want_arch):
             if not suite and len(suites) > 1:
-                f.setdefault("ambiguous", []).append("suite: took %s (newest LTS) of %s; pass suite" % (s, " ".join(suites)))
+                f.setdefault("ambiguous", []).append("suite: took %s (newest LTS) of %s; pass suite"
+                                                     % (s, " ".join(suites)))
             return True
-    if suite is None and r.listdir("dists") is None:       # no autoindex: try the well-known stable aliases
+    if suite is None and r.listdir("dists") is None:       # no autoindex: try the well-known suites
         for s in ("stable", "noble", "resolute", "jammy", "trixie", "bookworm"):
             if from_deb_release(r, "", s, f, want_arch):
-                f.setdefault("ambiguous", []).append("suite: no dists/ listing; took %s, pass suite to choose" % s)
+                f.setdefault("ambiguous", []).append("suite: no dists/ listing; took %s, pass suite "
+                                                     "to choose" % s)
                 return True
     if from_suse_products(r, "", f):
         return True
-    if not arches and listed is None and from_el_root(r, f, want_arch, EL_ARCHES):   # no listing: every arch
+    if not arches and listed is None and from_el_root(r, f, want_arch, EL_ARCHES):   # no listing
         return True
     if from_discinfo(r, f):
         return True
@@ -681,7 +745,7 @@ def probe_tree(r, f, want_arch, suite, release=None):
     return False
 
 
-def arch_in_path(source):
+def arch_in_path(source: str) -> str:
     """The arch a repository path names, the only arch a repository without metadata says."""
     for part in reversed(urllib.parse.urlsplit(source).path.split("/")):
         if norm_arch(part):
@@ -689,7 +753,8 @@ def arch_in_path(source):
     return None
 
 
-def identify(source, want_arch=None, suite=None, deadline=None, release=None):
+def identify(source: str, want_arch: str = None, suite: str = None, deadline: Deadline = None,
+             release: str = None) -> tuple:
     """
     One finding for one source, and 0 when it identified cleanly, 2 when it did with
     something to ask the operator about, 1 when it did not.
@@ -740,7 +805,8 @@ def identify(source, want_arch=None, suite=None, deadline=None, release=None):
         f["error"] = str(e)
         return f, 1
     if not ok:
-        f["error"] = "no self-describing metadata found (.treeinfo, .disk/info, dists/*/Release, media.1/products, os-release)"
+        f["error"] = ("no self-describing metadata found (.treeinfo, .disk/info, dists/*/Release, "
+                      "media.1/products, os-release)")
         return f, 1
     if f.get("kind") == "repo-extra" and not f.get("arch"):
         f["arch"] = arch_in_path(source)

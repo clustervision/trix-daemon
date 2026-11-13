@@ -57,6 +57,8 @@ MOUNTS: str = "mnt"
 REPOS: str = "repo"
 # The targets a runner bound under the image tree, one a line, written before each mount.
 TREE_MOUNTS: str = "tree-mounts"
+# The process group of the book while it runs, in a session of its own; 0 once it ended.
+BOOK_GROUP: str = "book-group"
 INVENTORY: str = "inventory"
 
 TERMINAL: tuple = ("done", "failed", "cancelled")
@@ -255,11 +257,12 @@ def drop(name: str) -> None:
         CHILDREN.pop(name, None)
 
 
-def stop(name: str) -> None:
+def stop(name: str, jobdir: str) -> None:
     """
     Stop the build process of a job and wait for it, so the caller may read the result
-    once this answers: SIGTERM to its group, SIGKILL when it has not ended within the
-    grace. A job this daemon holds no process for is left alone.
+    once this answers: SIGTERM to its group, which the runner passes on to the book, and
+    SIGKILL to both groups when it has not ended within the grace. A job this daemon holds
+    no process for is left alone.
     """
     process = child(name)
     if process is None:
@@ -271,6 +274,7 @@ def stop(name: str) -> None:
         LOGGER.error("the build of %s did not end within %s s of SIGTERM, killing it", name,
                      STOP_GRACE)
         _signal_group(process, signal.SIGKILL)
+        _kill_book(jobdir)
         process.wait(STOP_GRACE)
     drop(name)
     LOGGER.info("stopped the build of %s", name)
@@ -308,6 +312,20 @@ def write_phase(jobdir: str, phase: str) -> None:
     The runner's side of read_phase.
     """
     files.write(os.path.join(jobdir, PHASE), phase + "\n", 0o600)
+
+
+def write_book_group(jobdir: str, pgid: int) -> None:
+    """
+    The runner's note of the book's process group: its pgid while it runs, 0 once it ended.
+    """
+    files.write(os.path.join(jobdir, BOOK_GROUP), f"{pgid}\n", 0o600)
+
+
+def read_book_group(jobdir: str) -> int:
+    """
+    The process group of a book still running, or 0.
+    """
+    return int(files.read_text(os.path.join(jobdir, BOOK_GROUP), "0").strip() or 0)
 
 
 def show(jobdir: str, since: int = 0) -> dict:
@@ -391,6 +409,21 @@ def _signal_group(process: subprocess.Popen, sig: int) -> None:
         os.killpg(process.pid, sig)
     except ProcessLookupError:
         LOGGER.info("the process group %s had already ended", process.pid)
+
+
+def _kill_book(jobdir: str) -> None:
+    """
+    SIGKILL to the book's own group, which the kill of the runner's group does not reach:
+    a book that did not end on the SIGTERM the runner passed on, a package manager in a
+    transaction, would go on writing into the tree Luna then removes.
+    """
+    pgid = read_book_group(jobdir)
+    if not pgid:
+        return
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        LOGGER.info("the book's process group %s had already ended", pgid)
 
 
 def _remove(jobdir: str) -> bool:

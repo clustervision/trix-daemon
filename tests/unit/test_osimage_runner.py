@@ -36,6 +36,7 @@ import datetime
 import json
 import os
 import signal
+import sys
 import time
 
 import pytest
@@ -43,7 +44,7 @@ import pytest
 from trixd.common.errors import BackendFailure, BadRequest, Conflict
 from trixd.plugins.osimage import detect, jobs, mounts, rules, runner
 
-from tests.unit.test_osimage_detect import rocky_root
+from tests.unit.test_osimage_detect import NOBLE_RELEASE, put, rocky_root
 
 SETTINGS = {"repo": "/trinity/trinityx-combined", "repo_url": "", "answers": "/trinity/local/backup/group_vars/all.yml",
             "images_root": "/trinity/images", "python": "/trinity/local/python",
@@ -60,10 +61,9 @@ BUILT = dict(SETTINGS, books="/trinity/trinityx-combined/site")
 CONTROLLER = {"family": "redhat", "distro": "rocky", "release": "9", "dotrelease": "9.6"}
 PLAYBOOK_VERSION = "ansible-playbook [core 2.17.14]\n  config file = None"
 VERSION_ASK = "import sys; print('%d.%d' % sys.version_info[:2])"
-# What the books import and name, as the installer role lays them out.
-COLLECTIONS = ("community.general", "ansible.posix", "community.crypto", "community.mysql",
-               "ansible.mysql")
-GALAXY_ROLE = "OndrejHome.pcs-modules-2"
+# What the books of every family import and name, as the installer role lays them out.
+COLLECTIONS = tuple(sorted({name for rule in rules.FAMILIES.values() for name in rule["collections"]}))
+GALAXY_ROLE = rules.FAMILIES["redhat"]["galaxy_roles"][0]
 # The sources a job is given unless a test names its own: a Rocky 9.8 mirror root.
 MIRROR = "a Rocky 9.8 mirror root"
 VERDICT = {"family": "redhat", "playbook": "compute-redhat.yml", "arch": "x86_64",
@@ -223,7 +223,7 @@ def test_the_playbook_is_invoked_as_the_proven_build_was():
                    variables={"image_el_releasever": "9", "enable_slurm": True})
     assert runner.playbook_argv(REQUEST, verdict, BUILT) == [
         "/trinity/local/python/bin/ansible-playbook", "compute-redhat.yml",
-        "-e", "image_name=rocky9", "-e", "trinityx_site=/trinity/trinityx-combined/site",
+        "-e", "image_name=rocky9",
         "-e", "ansible_remote_tmp=/tmp/.ansible-lpart",
         "--skip-tags", "pack-images,monitoring",
         "-e", "ansible_service_mgr=systemd", "-e", "ansible_become=false",
@@ -600,7 +600,7 @@ def test_every_way_a_build_fails_leaves_a_result_naming_why(tmp_path, monkeypatc
 
 @pytest.mark.parametrize("missing, said", [
     ("books", "the books are not at {repo}/site: ansible.cfg missing"),
-    ("collections", "the collections are not at {collections}: community.crypto, ansible.mysql missing"),
+    ("collections", "the collections are not at {collections}: ansible.posix, community.mysql missing"),
     ("role", "the Galaxy role OndrejHome.pcs-modules-2 is not in ~/.ansible/roles"),
     ("interpreter", "this controller's /usr/bin/python3 is 3.6; the books need 3.7 or newer "
                     "here (EL9 or later)"),
@@ -622,7 +622,7 @@ def test_a_controller_short_of_what_the_build_needs_ends_the_build_naming_it(tmp
     if missing == "books":
         os.remove(tmp_path / "repo" / "site" / "ansible.cfg")
     elif missing == "collections":
-        for name in ("community/crypto", "ansible/mysql"):
+        for name in ("ansible/posix", "community/mysql"):
             os.rmdir(tmp_path / "collections" / "ansible_collections" / name)
     elif missing == "role":
         os.rmdir(tmp_path / ".ansible" / "roles" / GALAXY_ROLE)
@@ -639,6 +639,52 @@ def test_a_controller_short_of_what_the_build_needs_ends_the_build_naming_it(tmp
                                                     collections=tmp_path / "collections")
     assert started == []
     assert commands.of("python3") in ([], [["/usr/bin/python3", "-c", VERSION_ASK]])
+
+
+def test_a_build_needs_only_the_collections_and_roles_of_its_familys_playbook(tmp_path, monkeypatch,
+                                                                                sigterm_restored):
+    """
+    Only the redhat setup play names the pcs Galaxy role, and only the redhat and ubuntu
+    playbooks load the slurm role whose mysql modules need community.mysql: an Ubuntu
+    build on a controller without the role, and a Leap build without the role or that
+    collection, still start their book, where the redhat build is refused naming what
+    is missing.
+    """
+    for family, distribution, osrelease, media, absent in (
+            ("debian", "ubuntu", "24.04", None, ()),
+            ("suse", "opensuse", "15.6", [LEAP_MIRROR], ("community/mysql",)),
+            ("redhat", "redhat", "9.6", MIRROR, ())):
+        root = tmp_path / family
+        if family == "suse":
+            jobdir, started, _ = _leap_job(root, monkeypatch, "baseurl={{ opensuse_repo_baseurl }}\n",
+                                           kernels=("6.8.0-45",))
+        else:
+            if family == "debian":
+                put(root / "archive", "dists/noble/Release", NOBLE_RELEASE)
+                media = [str(root / "archive")]
+            jobdir, started, _ = _job(root, monkeypatch, media=media, osrelease=osrelease,
+                                      distribution=distribution, kernels=("6.8.0-45",))
+        os.rmdir(root / ".ansible" / "roles" / GALAXY_ROLE)
+        for name in absent:
+            os.rmdir(root / "collections" / "ansible_collections" / name)
+        code = runner.Build(jobdir).run()
+        if family == "redhat":
+            assert code == 1 and started == [], family
+            assert _result(jobdir)["reason"] == f"the Galaxy role {GALAXY_ROLE} is not in ~/.ansible/roles"
+        else:
+            assert code == 0 and started, (family, _result(jobdir)["reason"])
+
+
+def test_every_family_says_what_its_playbook_needs_on_the_controller():
+    """
+    The preconditions read the family table, so a family added without its collections
+    and Galaxy roles would be checked for nothing.
+    """
+    for family, rule in rules.FAMILIES.items():
+        assert isinstance(rule.get("collections"), tuple) and rule["collections"], family
+        assert isinstance(rule.get("galaxy_roles"), tuple), family
+    assert rules.FAMILIES["redhat"]["galaxy_roles"] == ("OndrejHome.pcs-modules-2",)
+    assert "community.mysql" not in rules.FAMILIES["suse"]["collections"]
 
 
 def _executable(directory, name: str) -> str:
@@ -752,14 +798,13 @@ def test_a_collection_ansible_does_not_find_ends_the_build_naming_it(tmp_path, m
     """
     commands = Commands()
     found = {"/usr/share/ansible/collections/ansible_collections": {
-        "community.general": {"version": "10.7.3"}, "ansible.posix": {"version": "2.2.1"},
-        "community.mysql": {"version": "5.0.2"}}}
+        "community.general": {"version": "10.7.3"}, "community.crypto": {"version": "2.17.1"}}}
     commands.answers["ansible-galaxy"] = Ran(json.dumps(found))
     jobdir, started, _ = _job(tmp_path, monkeypatch, commands=commands)
     _on_ansibles_path(jobdir)
     assert runner.Build(jobdir).run() == 1
     assert _result(jobdir)["reason"] == ("the collections are not on ansible's search path: "
-                                         "community.crypto, ansible.mysql missing")
+                                         "ansible.posix, community.mysql missing")
     assert started == []
 
 
@@ -848,7 +893,7 @@ def test_a_job_without_sources_runs_the_book_with_no_source_override(tmp_path, m
         if item == "-e":
             given.update(json.loads(argv[number + 1]) if argv[number + 1].startswith("{")
                          else dict([argv[number + 1].split("=", 1)]))
-    assert set(given) == {"image_name", "trinityx_site", "ansible_remote_tmp", "ansible_service_mgr",
+    assert set(given) == {"image_name", "ansible_remote_tmp", "ansible_service_mgr",
                           "ansible_become", "image_proc_mount", "trix_images", "image_chroot_cmd"}
     assert verdict["variables"] == {} and verdict["base"] is None
     assert kwargs["cwd"] == str(tmp_path / "repo" / "site")
@@ -1126,6 +1171,34 @@ def test_a_stopped_unit_still_leaves_a_result_and_the_mounts_read_back(tmp_path,
     lines, _ = jobs.lines_since(jobdir)
     assert "cancelled, stopping the playbook" in [line["message"] for line in lines]
     assert "still mounted" in open(os.path.join(jobdir, "build.log")).read()
+
+
+def test_the_book_runs_in_its_own_session_and_its_group_is_noted_for_the_daemon(tmp_path):
+    """
+    A real book process: it runs in a session of its own, so what the runner forwards
+    reaches it and nothing else, and its process group is noted in the job directory
+    while it runs, for the daemon's kill of a book that ignores SIGTERM; the note reads
+    0 once it ended.
+    """
+    note = str(tmp_path / "book-group")
+    build = runner.Build(str(tmp_path))
+    build.log = runner._append(str(tmp_path / "build.log"))
+    build.progress = runner._append(str(tmp_path / "progress.jsonl"))
+    # The note is written once the book has started, so the book gives it a moment, as the
+    # daemon does: it reads the note only after the grace.
+    book = [sys.executable, "-c",
+            f"import os, time; [time.sleep(0.1) for _ in range(50) if not os.path.exists({note!r})]; "
+            f"noted = open({note!r}).read().strip() if os.path.exists({note!r}) else 'none'; "
+            f"print(os.getpid(), noted, os.getpgid(0), os.getsid(0) != os.getsid(os.getppid()))"]
+    code = build._play(book, dict(os.environ), str(tmp_path))
+    build.log.close()
+    build.progress.close()
+    assert code == 0
+    said = open(tmp_path / "build.log", encoding="utf-8").read().splitlines()[-1].split()
+    pid, noted, pgid, own_session = said
+    assert noted == pid, "the book's process group was not noted while it ran"
+    assert pgid == pid and own_session == "True"
+    assert open(note, encoding="utf-8").read().strip() == "0"
 
 
 def test_a_checkout_without_a_hosts_file_gets_this_controller_as_the_controllers_group(tmp_path, monkeypatch):

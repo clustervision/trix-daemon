@@ -83,12 +83,9 @@ STUB_FAIL: str = "stub-fail"
 BUILDERS: tuple = (BOOKS, STUB, STUB_FAIL)
 STUB_KERNEL: str = "0.0.0-stub"
 # What the books need on the controller, checked before any source is read: the tools
-# that keep the build out of a hand chroot, the collections they import and the Galaxy
-# role they name, and how long a probe of a command may take.
+# that keep the build out of a hand chroot, the collections and Galaxy roles of the
+# family's playbook as rules.FAMILIES lists them, and how long a probe of a command may take.
 TOOLS: tuple = ("lchroot", "bwrap")
-COLLECTIONS: tuple = ("community.general", "ansible.posix", "community.crypto",
-                      "community.mysql", "ansible.mysql")
-GALAXY_ROLE: str = "OndrejHome.pcs-modules-2"
 PROBE_TIMEOUT: int = 30
 # Where the runner looks for a command after its interpreter's own directory.
 SYSTEM_PATH: tuple = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
@@ -186,7 +183,7 @@ def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
     """
     skipped = ",".join(SKIP_TAGS + tuple(verdict.get("skip_tags") or ()))
     argv = [toolchain(settings, "ansible-playbook"), verdict["playbook"],
-            "-e", f"image_name={request['name']}", "-e", f"trinityx_site={settings['books']}",
+            "-e", f"image_name={request['name']}",
             "-e", f"ansible_remote_tmp={REMOTE_TMP}", "--skip-tags", skipped,
             "-e", "ansible_service_mgr=systemd", "-e", "ansible_become=false",
             "-e", "image_proc_mount=false", "-e", f"trix_images={settings['images_root']}",
@@ -285,10 +282,10 @@ def inventory_sources(books: str, hosts: str) -> str:
     raise Failed(f"no inventory line in {books}/ansible.cfg")
 
 
-def absent_collections(settings: dict) -> list:
+def absent_collections(settings: dict, wanted: tuple) -> list:
     """
-    The collections the books import that ansible does not find on its own search path,
-    as its ansible-galaxy lists them: a document of the paths, each naming its collections.
+    The collections wanted that ansible does not find on its own search path, as its
+    ansible-galaxy lists them: a document of the paths, each naming its collections.
     """
     galaxy = toolchain(settings, "ansible-galaxy")
     argv = [galaxy, "collection", "list", "--format", "json"]
@@ -304,30 +301,35 @@ def absent_collections(settings: dict) -> list:
         raise Failed(f"{galaxy} did not list the collections: "
                      f"{listed.err or listed.out or 'it said nothing'}")
     present = {name for found in paths.values() for name in found}
-    return [name for name in COLLECTIONS if name not in present]
+    return [name for name in wanted if name not in present]
 
 
-def preconditions(settings: dict) -> None:
+def preconditions(settings: dict, family: str) -> None:
     """
     What the book will need, checked before any source is read, so a build does not
-    fail an hour in: the books, their collections and Galaxy role, the tools that keep
-    the build out of a hand chroot, the controller's Python and the playbook command.
+    fail an hour in: the books, the collections and Galaxy roles of the family's
+    playbook, the tools that keep the build out of a hand chroot, the controller's
+    Python and the playbook command. A record whose distribution no family takes
+    needs no collection or role: the rules refuse it once the sources are read.
     """
     absent = checkout.missing(settings["repo"])
     if absent:
         raise Failed(f"the books are not at {settings['books']}: {', '.join(absent)} missing")
+    needs = rules.FAMILIES.get(family, {})
+    wanted = needs.get("collections", ())
     collections = settings["collections"]
     if collections:
-        missing = [name for name in COLLECTIONS if not os.path.isdir(
+        missing = [name for name in wanted if not os.path.isdir(
             os.path.join(collections, "ansible_collections", *name.split(".")))]
     else:
-        missing = absent_collections(settings)
+        missing = absent_collections(settings, wanted) if wanted else []
     if missing:
         where = f"at {collections}" if collections else "on ansible's search path"
         raise Failed(f"the collections are not {where}: {', '.join(missing)} missing")
-    if not any(os.path.isdir(os.path.join(os.path.expanduser(where), GALAXY_ROLE))
-               for where in GALAXY_ROLES):
-        raise Failed(f"the Galaxy role {GALAXY_ROLE} is not in {', '.join(GALAXY_ROLES)}")
+    for role in needs.get("galaxy_roles", ()):
+        if not any(os.path.isdir(os.path.join(os.path.expanduser(where), role))
+                   for where in GALAXY_ROLES):
+            raise Failed(f"the Galaxy role {role} is not in {', '.join(GALAXY_ROLES)}")
     # Without both, the books fall back to a native chroot with hand mounts in the
     # tree, which a build stopped half way must never have made.
     missing = [tool for tool in TOOLS if not shutil.which(tool)]
@@ -467,7 +469,7 @@ class Build:
             checkout.ensure(settings["repo"], settings["repo_url"], self.say)
         except ServiceUnavailable as error:
             raise Failed(error.message) from None
-        preconditions(settings)
+        preconditions(settings, rules.family_of(request["distribution"]))
         if os.path.isdir(tree):
             # The books write into the tree and a leftover mount there is a door onto
             # the host; Luna's remove unmounts lazily below the tree before removing it.
@@ -643,6 +645,9 @@ class Build:
                                           start_new_session=True, env=env, cwd=cwd)
         except OSError as error:
             raise Failed(f"cannot start {argv[0]}: {error}") from None
+        # The daemon's kill of this runner's group does not reach the book's: it is noted
+        # for the daemon to kill a book that did not end on SIGTERM.
+        jobs.write_book_group(self.jobdir, self.child.pid)
         for line in self.child.stdout:
             self.log.write(line)
             self.log.flush()
@@ -650,7 +655,9 @@ class Build:
                 self._emit(message, status)
         for message, status in self.parser.flush():
             self._emit(message, status)
-        return self.child.wait()
+        code = self.child.wait()
+        jobs.write_book_group(self.jobdir, 0)
+        return code
 
     def _release(self, result: dict) -> None:
         """

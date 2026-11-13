@@ -419,7 +419,8 @@ def test_books_without_the_connection_plugin_end_the_build_naming_the_file(
 
 
 @pytest.mark.parametrize("url, said", [
-    ("", "repo_url is empty, so there is nothing to fetch them from"),
+    ("", "repo_url is empty: put the checkout there, or set repo_url in the osimage settings to the "
+         "https archive of a TrinityX tag to fetch them from"),
     ("http://example.invalid/books.tar.gz", "repo_url must be an https address, not http://"),
 ])
 def test_a_build_with_no_checkout_and_no_address_to_fetch_one_from_ends_saying_so(

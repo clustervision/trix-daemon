@@ -158,7 +158,7 @@ class Supervisor:
         the runner then wrote.
         """
         LOGGER.error("stopping the build of %s: %s", held["name"], reason)
-        jobs.stop(held["name"])
+        jobs.stop(held["name"], jobdir)
         jobs.finish(jobdir, "failed", reason)
 
     def baseline(self) -> None:

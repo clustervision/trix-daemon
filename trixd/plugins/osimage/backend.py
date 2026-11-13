@@ -44,9 +44,11 @@ LOGGER = trixlog.get("osimage")
 
 PLUGIN: str = "osimage"
 
+# repo_url has no default: the books run as root, so which archive to fetch and run is a
+# setting the installer or the operator names, pinned to a tag, never a branch that moves.
 DEFAULT_SETTINGS: dict = {
     "repo": "/trinity/trinityx-combined",
-    "repo_url": "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz",
+    "repo_url": "",
     "answers": "/trinity/local/backup/group_vars/all.yml",
     "images_root": "/trinity/images",
     "state_root": "/trinity/local/trixd/var/osimage",
@@ -218,7 +220,7 @@ class Backend:
         try:
             return jobs.move(jobdir, "running", pid=child.pid, request_id=request_id)
         except Exception:
-            jobs.stop(name)
+            jobs.stop(name, jobdir)
             raise
 
     def show(self, name: str, since: int = None) -> dict:
@@ -239,7 +241,7 @@ class Backend:
             raise Conflict(f"build {name} is already {held['state']}")
         who = getattr(caller, "name", "unknown")
         if held["state"] == "running":
-            jobs.stop(name)
+            jobs.stop(name, jobdir)
             ended = jobs.finish(jobdir, "cancelled", f"cancelled by {who}")
         else:
             ended = jobs.move(jobdir, "cancelled", f"cancelled by {who}")

@@ -75,9 +75,10 @@ schemas:
       type: string
       optional: true
       description: >
-        The https archive, branch or tag included in its address, that the build fetches
-        into repo when repo is not there; empty fetches nothing
-      example: https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz
+        The https archive of a TrinityX tag that the build fetches into repo when repo is
+        not there; empty, the default, fetches nothing and a build without the checkout
+        is refused. The books run as root, so name a tag, never a branch that moves
+      example: https://github.com/clustervision/trinityX/archive/refs/tags/r12.0u2.tar.gz
     answers:
       type: string
       optional: true
@@ -169,7 +170,7 @@ endpoints:
       books, or a stub for exercising the chain around a build.
     response:
       description: The settings as held
-      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
 
   - path: settings
     methods: [PATCH]
@@ -188,7 +189,7 @@ endpoints:
     request_example: {concurrency: 1, mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}}
     response:
       description: The settings as now held
-      example: {repo: /trinity/trinityx-combined, repo_url: "https://github.com/clustervision/trinityX/archive/refs/heads/development.tar.gz", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
     errors:
       400: A path is not absolute, repo_url is not an https address, a count or a number of seconds is below one, the builder is not one offered, or a mirrors key or source is not of the shape above
 
