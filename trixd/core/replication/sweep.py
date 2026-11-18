@@ -42,6 +42,7 @@ from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.core.replication import tables
 from trixd.db import engine as database
+from trixd.utils import tls
 
 LOGGER = trixlog.get("sweep")
 
@@ -97,11 +98,14 @@ def _sign_in(peer: str, verify) -> str:
 
 def trust():
     """
-    The cluster CA to check a peer against, or the system store when it is missing. Module
-    level because the outbox sends to the same peers and must check them the same way.
+    The cluster CA to check a peer against, or the store the operating system keeps when
+    CA_FILE names nothing, which is where a controller installs that same CA. Never what
+    `requests` reaches for on its own: a peer is a remote address carrying this daemon's
+    password, and inside the virtual environment that bundle is certifi's. Module level
+    because the outbox sends to the same peers and must check them the same way.
     """
     ca_file = settings().replication.ca_file
-    return ca_file if ca_file and os.path.isfile(ca_file) else True
+    return ca_file if ca_file and os.path.isfile(ca_file) else tls.system_trust()
 
 
 def held_token(peer: str) -> str:
@@ -310,10 +314,16 @@ class Sweep:
             LOGGER.info("[REPLICATION] ENABLED is no, so no sweep is running: %s is "
                         "configured and is not reconciled", ", ".join(config.peers))
             return False
-        if self._trust() is True:
-            LOGGER.warning("CA_FILE %s is missing: peers are checked against the system store, "
-                           "which does not hold the cluster CA, so every pass will fail",
-                           config.ca_file)
+        try:
+            if self._trust() != config.ca_file:
+                LOGGER.warning("CA_FILE %s is missing: peers are checked against the system "
+                               "trust store instead, which carries the cluster CA only "
+                               "where this controller installed it there", config.ca_file)
+        except requests.exceptions.SSLError as error:
+            # Said, not raised: the sweep still runs, and each pass reports the peer it
+            # could not check, exactly as it reports one that is away.
+            LOGGER.error("CA_FILE %s is missing and %s, so no peer can be verified and "
+                         "every pass will fail", config.ca_file, error)
         self.stop.clear()
         self.thread = threading.Thread(target=self._loop, name="trixd-sweep", daemon=True)
         self.thread.start()

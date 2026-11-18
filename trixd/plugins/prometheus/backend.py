@@ -35,7 +35,6 @@ import ipaddress
 import os
 import re
 import shutil
-import ssl
 import threading
 import time
 from collections import Counter
@@ -52,7 +51,7 @@ from trixd.core.render.engine import current as renders
 from trixd.core.replication.applied import KEPT
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.prometheus import exporters
-from trixd.utils import declarations, files
+from trixd.utils import declarations, files, tls
 from trixd.utils import shell
 
 LOGGER = trixlog.get("prometheus")
@@ -798,17 +797,13 @@ class Backend:
         for _ in (1, 2, 3):
             verify = not (_is_loopback(url) and self.unverified_from
                           and time.monotonic() - self.unverified_from <= UNVERIFIED_FOR)
-            # Read per query, so a store installed after the daemon started is seen without
-            # a restart, the way the hour makes a reissued certificate seen without one.
-            trust = _system_trust() if verify else False
             try:
-                if trust == "":
-                    # Nothing to verify against is a verification that cannot succeed, and
-                    # it is answered where a failed one is - never by asking anyway.
-                    raise requests.exceptions.SSLError("no certificate store was found on "
-                                                       "this system to verify against")
+                # The store is asked for inside the try, so a system without one is a
+                # verification that cannot succeed and is answered where a failed one is -
+                # never by asking anyway.
                 answer = requests.get(f"{url}/api/v1/query", params={"query": query},
-                                      timeout=20, verify=trust)
+                                      timeout=20,
+                                      verify=tls.system_trust() if verify else False)
             except requests.exceptions.SSLError as error:
                 # The controller's certificate carries the box's own names, never localhost,
                 # so the loopback is the one address a healthy cluster cannot verify. Any
@@ -1314,19 +1309,6 @@ def _is_loopback(url: str) -> bool:
         return ipaddress.ip_address(host).is_loopback
     except ValueError:
         return False
-
-
-def _system_trust() -> str:
-    """
-    The certificate store the operating system keeps, which is where the cluster CA is
-    installed, and which is not the bundle `requests` reaches for: inside a virtual
-    environment that one is certifi's, and certifi has never heard of the cluster. Empty
-    when the system has no store, which is never answered by trusting certifi instead.
-
-    The companion directory is not a substitute: OpenSSL reads it by hashed name only, and
-    the platform leaves those out.
-    """
-    return ssl.get_default_verify_paths().cafile or ""
 
 
 def _hw_host(path: str) -> str:
