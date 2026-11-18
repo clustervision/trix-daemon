@@ -67,7 +67,7 @@ endpoints:
     response:
       description: Every user
       example:
-        - {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+        - {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
 
   - path: users/<name>
     methods: [GET]
@@ -81,7 +81,7 @@ endpoints:
       name: {description: "The user name in the directory", example: alice}
     response:
       description: The user
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
       404: No user has that name
 
@@ -98,7 +98,7 @@ endpoints:
     request_example: {username: alice, password: "a long passphrase", shell: /bin/bash, groups: [admins]}
     response:
       description: The user as created
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
       400: The user exists already, or no username was given
       502: obol failed; the message carries what it said
@@ -118,7 +118,7 @@ endpoints:
     request_example: {shell: /bin/zsh, groups: [admins, research]}
     response:
       description: The user as it now stands
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, userPassword: "{PBKDF2-SHA512}...", memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
       400: Nothing to change was sent
       404: No user has that name

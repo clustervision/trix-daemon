@@ -94,11 +94,18 @@ def _flags(body: dict, mapping: dict) -> list:
 
 def _normalise(record: dict) -> dict:
     """
-    389ds names the membership attribute differently from openldap. The users
-    application reads "member", so answer with it whichever is underneath.
+    What every obol record passes through on its way out.
+
+    389ds names the membership attribute differently from openldap; the users application
+    reads "member", so answer with it whichever is underneath. The password hash obol
+    answers with the rest of the record is dropped: nothing above the directory manages a
+    user with it. Matched whatever its case, because obol and 389ds decide that case and a
+    change there must not put the hash back into the answer.
     """
-    if isinstance(record, dict) and "member" not in record and "uniqueMember" in record:
-        record = dict(record)
+    if not isinstance(record, dict):
+        return record
+    record = {key: value for key, value in record.items() if key.lower() != "userpassword"}
+    if "member" not in record and "uniqueMember" in record:
         record["member"] = record.pop("uniqueMember")
     return record
 
@@ -112,7 +119,8 @@ class Backend:
         """
         Every user obol can see.
         """
-        return shell.run_json([OBOL, "-J", "user", "list"], TIMEOUT) or []
+        records = shell.run_json([OBOL, "-J", "user", "list"], TIMEOUT) or []
+        return [_normalise(item) for item in records] if isinstance(records, list) else records
 
     def get_user(self, name: str) -> dict:
         """

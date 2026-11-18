@@ -1384,6 +1384,56 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
     ]
 
 
+def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
+    """
+    obol answers userPassword with the rest of the record, and every route here is a
+    manager's, so the hash is readable by anyone who can list a user. Nothing above the
+    directory manages a user with it, so it must not leave the controller.
+
+    Its own stand-in rather than the one beside it: that one answers a record with no
+    password attribute at all, so this would pass whether the hash is dropped or kept.
+    """
+    from trixd.plugins.directory import backend as directory
+    from trixd.plugins.directory.backend import Backend
+
+    asked = []
+    held = {"cn": "carol", "uid": "carol", "uidNumber": "1052",
+            "userPassword": "{PBKDF2-SHA512}abc", "uniqueMember": ["carol"]}
+
+    def run_json(argv, *args, **kwargs):
+        """
+        obol -J: one record, or a list of them for a list, hash and all.
+        """
+        asked.append(list(argv))
+        return [dict(held)] if argv[-1] == "list" else dict(held)
+
+    _obol(monkeypatch, {"carol", "hpc"})
+    monkeypatch.setattr(directory.shell, "run_json", run_json)
+
+    answers = {
+        "list_users": Backend().list_users(),
+        "get_user": Backend().get_user("carol"),
+        "create_user": Backend().create_user({"username": "dave"}),
+        "update_user": Backend().update_user("carol", {"shell": "/bin/zsh"}),
+        "list_groups": Backend().list_groups(),
+        "get_group": Backend().get_group("hpc"),
+        "create_group": Backend().create_group({"groupname": "gpu"}),
+        "update_group": Backend().update_group("hpc", {"gid": 5000}),
+    }
+
+    assert asked, "obol was never asked, so none of these answers proves anything"
+    for handler, answer in answers.items():
+        records = answer if isinstance(answer, list) else [answer]
+        assert records, f"{handler} answered nothing, so it proves nothing"
+        for record in records:
+            carried = [key for key in record if key.lower() == "userpassword"]
+            assert not carried, f"{handler} answered the password hash: {record}"
+            assert record.get("uid") == "carol", \
+                f"{handler} dropped the record rather than the hash: {record}"
+    assert answers["get_group"]["member"] == ["carol"], \
+        "the membership attribute stopped being answered under the name it is read by"
+
+
 def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,
            content: str = "one") -> dict:
     """
