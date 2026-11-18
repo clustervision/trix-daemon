@@ -44,7 +44,7 @@ import trixd
 from tests.conftest import SHARED_SECRET
 from trixd.common import settings as configuration
 from trixd.common.constants import API_PREFIX, LUNA_PLUGIN, MINIMUMS, RESERVED_PLUGINS
-from trixd.common.errors import PluginRefused, Unauthenticated
+from trixd.common.errors import Forbidden, PluginRefused, Unauthenticated
 from trixd.core.plugins import loader
 from trixd.core.plugins.manifest import parse
 from trixd.core.security import audit, tokens
@@ -408,6 +408,20 @@ def test_a_node_token_is_refused_on_a_user_endpoint(rig, client):
     answer = client.get(f"{API_PREFIX}/directory/users",
                         headers={"x-access-tokens": node_token})
     assert answer.status_code == 403
+
+
+def test_a_dotted_node_token_reaches_its_own_route_and_no_other(rig):
+    """
+    A dotted node name is the node's own, not a short name with a domain after it: the
+    token reaches its own route and is refused on the node whose short name it shares.
+    """
+    from trixd.core.security.gate import admit
+
+    dotted = tokens.mint("node001.b", kind="node", node="node001.b")
+    with pytest.raises(Forbidden):
+        admit(dotted, "none", "node", "PATCH", "/hw-rules", {"node": "node001"})
+    caller = admit(dotted, "none", "node", "PATCH", "/hw-rules", {"node": "node001.b"})
+    assert caller.claims.node == "node001.b"
 
 
 def test_a_wrong_password_is_refused(rig, client):

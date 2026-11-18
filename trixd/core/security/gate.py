@@ -106,7 +106,12 @@ def admit(token: str, minimum: str, token_kind: str, method: str, target: str,
             if key in path_params:
                 node = str(path_params[key])
                 break
-        if node and claims.node.split(".")[0] != node.split(".")[0]:
+        # Two forms are the node's own: the name Luna holds, dots and all, and that name
+        # with a domain after it. Splitting the claim too would let node001.b's token
+        # through on node001's path, which is the crossing this guards.
+        # The reverse it cannot refuse: node001 on node001.b would need a Luna call per
+        # request to tell a domain from a second node's name, on the route a boot storm hits.
+        if node and node != claims.node and node.split(".")[0] != claims.node:
             LOGGER.warning("node token for %s used on %s", claims.node, node)
             audit.refused(claims.subject, method, node, f"node token for {claims.node}")
             raise Forbidden("token is not valid for this node")
