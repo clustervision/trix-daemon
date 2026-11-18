@@ -2092,10 +2092,10 @@ def test_prometheus_is_asked_over_https_by_default(rig):
     assert prometheus.DEFAULT_CONFIG["prometheus_url"] == "https://localhost:9090"
 
 
-def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
+def test_a_tls_failure_is_not_answered_by_asking_in_the_clear(rig, tmp_path, monkeypatch):
     """
-    https against a plain Prometheus, or http against a TLS one, is retried once on the
-    other scheme, and that scheme is kept.
+    Whatever is wrong with the TLS endpoint, plain http is not the answer: the rules are
+    not written over a connection nobody chose.
     """
     from types import SimpleNamespace
 
@@ -2116,14 +2116,23 @@ def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
         return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
 
     monkeypatch.setattr(prometheus.requests, "get", plain_only)
-    backend._query("up")
-    backend._query("up")
-    assert asked[0].startswith("https://") and asked[1].startswith("http://")
-    assert asked[2].startswith("http://"), "the working scheme is remembered"
+    with pytest.raises(prometheus.BackendFailure):
+        backend._query("up")
+    assert not [url for url in asked if url.startswith("http://")], asked
 
-    backend.prometheus_url = ""
+
+def test_a_tls_prometheus_asked_over_http_is_upgraded_and_remembered(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    http against a TLS Prometheus is retried once on https, and that scheme is kept.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
     backend.config(body={"prometheus_url": "http://localhost:9090"})
-    asked.clear()
+    asked = []
 
     def tls_only(url, **_):
         """
@@ -2138,6 +2147,90 @@ def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
     monkeypatch.setattr(prometheus.requests, "get", tls_only)
     backend._query("up")
     assert asked == [asked[0], asked[1]] and asked[1].startswith("https://")
+    assert backend.prometheus_url == "https://localhost:9090"
+
+
+def test_a_loopback_that_cannot_verify_is_asked_unverified_from_then_on(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    The controller certificate carries the box's own names, not localhost, so the first
+    query is the one that finds out; the ones after it do not ask again.
+    """
+    from types import SimpleNamespace
+
+    import requests
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    asked = []
+
+    def named_for_the_box(url, **kwargs):
+        """
+        A certificate that does not name the address it is being asked on.
+        """
+        asked.append(kwargs.get("verify"))
+        if kwargs.get("verify"):
+            raise requests.exceptions.SSLError("hostname 'localhost' doesn't match")
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", named_for_the_box)
+    backend._query("up")
+    backend._query("up")
+    assert asked == [True, False, False], asked
+
+
+def test_the_loopback_verdict_is_taken_again_after_an_hour(rig, tmp_path, monkeypatch):
+    """
+    A reissued certificate is verified again without a restart.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        A Prometheus that answers whether or not it is verified.
+        """
+        asked.append(kwargs.get("verify"))
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    backend.unverified_from = time.monotonic() - prometheus.UNVERIFIED_FOR - 1
+    backend._query("up")
+    assert asked == [True], asked
+
+
+def test_a_prometheus_that_is_not_the_loopback_must_verify(rig, tmp_path, monkeypatch):
+    """
+    The fallback is for the one address a certificate cannot be expected to carry. Anywhere
+    else a certificate that does not verify is the answer, and no second attempt is made.
+    """
+    from types import SimpleNamespace
+
+    import requests
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.config(body={"prometheus_url": "https://prometheus.cluster:9090"})
+    asked = []
+
+    def never_verifies(url, **kwargs):
+        """
+        A Prometheus elsewhere whose certificate does not check out.
+        """
+        asked.append(kwargs.get("verify"))
+        raise requests.exceptions.SSLError("certificate verify failed")
+
+    monkeypatch.setattr(prometheus.requests, "get", never_verifies)
+    with pytest.raises(prometheus.BackendFailure):
+        backend._query("up")
+    assert asked == [True], asked
 
 
 def test_a_node_that_rebooted_unchanged_costs_no_write_and_no_reload(rig, tmp_path,
