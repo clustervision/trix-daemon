@@ -893,23 +893,30 @@ def test_luna_is_not_asked_at_all_when_there_is_no_trust_store(rig, tmp_path, mo
     Nothing to check a certificate against is not a reason to stop checking: the call is
     never made, and the caller is told rather than quietly given an unchecked answer.
     """
-    from trixd.plugins.luna import client as luna_client
-
     path = tmp_path / "checking-luna.ini"
     path.write_text("[API]\nENDPOINT = one:7050\nVERIFY_CERTIFICATE = yes\nSECRET_KEY = "
                     + "a" * 32 + "\n", encoding="utf-8")
     monkeypatch.setenv(luna_config.LUNA_INI_ENV, str(path))
     _trust_store(monkeypatch, cafile=None)
     asked = []
-    monkeypatch.setattr(luna_client.credentials, "get_token", lambda renew=False: "a-token")
-    monkeypatch.setattr(luna_client.requests.Session, "request",
-                        lambda self, *args, **kwargs: asked.append(kwargs.get("verify")))
+
+    def record(self, method, url, **kwargs):
+        """
+        What Luna would have been asked, and an answer the client can read.
+        """
+        asked.append(kwargs.get("verify"))
+        return Answer(body={"config": {"node": {}}})
+
+    # The luna package binds the name `client` to the client factory, so the client's own
+    # modules are patched here rather than reached through it.
+    monkeypatch.setattr(credentials, "get_token", lambda renew=False: "a-token")
+    monkeypatch.setattr(requests.Session, "request", record)
     refused = ""
     try:
         LunaClient().get("config/node")
     except ServiceUnavailable as error:
         refused = error.message
-    assert asked == [], asked
+    assert asked == [], f"Luna was asked anyway, with verify={asked}"
     assert "certificate store" in refused, refused
 
 

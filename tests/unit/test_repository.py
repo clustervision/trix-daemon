@@ -543,7 +543,6 @@ def test_no_certificate_is_ever_checked_against_the_library_default():
     """
     sources = _shipped_sources()
     producers = _trust_producers(sources)
-    assert TRUST_HELPER in producers, "the helper itself was not found, so this proves nothing"
 
     calls, offending = {}, []
     for name, tree in sources:
@@ -561,15 +560,46 @@ def test_no_certificate_is_ever_checked_against_the_library_default():
             elif not _from_a_producer(said[0], producers, filled):
                 offending.append(f"{where} does not check against {TRUST_HELPER}()")
 
-    importing = {name for name, tree in sources for node in ast.walk(tree)
-                 if isinstance(node, ast.Import)
-                 and any(alias.name == "requests" for alias in node.names)}
-    assert importing, "nothing imports requests at all, so this proves nothing"
-    missed = sorted(importing - set(calls.values()))
+    sending = {name for name, tree in sources if _sends_over_http(tree)}
+    assert sending, "nothing reaches for requests to send with, so this proves nothing"
+    missed = sorted(sending - set(calls.values()))
     assert not missed, (
-        "these reach for requests and no call of theirs was found, so the walk went past "
-        f"one: {missed}")
+        "these reach for requests to send with and no call of theirs was found, so the "
+        f"walk went past one: {missed}")
     assert not offending, "\n".join(offending)
+    assert any(isinstance(node, ast.FunctionDef) and node.name == TRUST_HELPER
+               for _, tree in sources for node in ast.walk(tree)), (
+                   f"nothing defines {TRUST_HELPER}() any more, so what the sites above "
+                   "were matched against is gone and their silence proves nothing")
+
+
+def _sends_over_http(tree) -> bool:
+    """
+    Whether a module reaches for `requests` to send something, rather than only to name
+    what it raises and catches.
+
+    A module that names it nowhere but in a raise or an except clause is using the
+    library's error vocabulary: it has no call for the walk to find, and demanding one of
+    it anyway ends as a list of the files allowed not to have one, which is the parallel
+    list this test exists to do without. Every name the library is reached by counts, the
+    module and whatever is imported out of it alike, so a sender cannot become exempt by
+    importing the thing it sends with.
+    """
+    handles = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            handles.update(one.asname or one.name.split(".")[0] for one in node.names
+                           if one.name == "requests" or one.name.startswith("requests."))
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "requests":
+            handles.update(one.asname or one.name for one in node.names)
+    naming_errors = set()
+    for node in ast.walk(tree):
+        named = (node.exc if isinstance(node, ast.Raise)
+                 else node.type if isinstance(node, ast.ExceptHandler) else None)
+        if named is not None:
+            naming_errors.update(id(one) for one in ast.walk(named))
+    return any(isinstance(node, ast.Name) and node.id in handles
+               and id(node) not in naming_errors for node in ast.walk(tree))
 
 
 def _shipped_sources() -> list:
