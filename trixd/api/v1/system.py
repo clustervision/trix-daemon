@@ -213,6 +213,42 @@ def audit_trail(principal: str = Query("", description="Only this user's rows",
     return {"audit": audit.read(principal, outcome, start, limit)}
 
 
+@router.get("/tasks", summary="What is queued, running and just finished here",
+            description=(
+                "The work this controller took that outlives its request: what is "
+                "waiting, what the one worker is running now, and what has just "
+                "finished - with who asked for it, which subsystem owns it, what it was "
+                "asked to do and, once it is over, what it answered. `state` moves from "
+                "`queued` to `running` and then to `done` or `failed`. A finished task "
+                "is forgotten an hour after it finished, so this is the recent work and "
+                "never a history: `GET /api/v1/system/audit` is where a change stays. "
+                "Newest first, and local to this controller: a task runs where it was "
+                "asked for, so a pair has two of these."),
+            responses=docs.answers({"tasks": [{
+                "request_id": "1791545494-2556175-6ba51d7f", "principal": "alice",
+                "subsystem": "services", "task": "restart", "param": "slurmctld",
+                "state": "done", "message": "restart slurmctld accepted",
+                "created": "2026-10-09T11:31:34.489690",
+                "finished": "2026-10-09T11:31:34.597325"}]},
+                "The tasks, newest first"))
+def task_list(subsystem: str = Query("", description="Only this subsystem's tasks",
+                                     openapi_examples=docs.example("services")),
+              state: str = Query("", pattern="^(|queued|running|done|failed)$",
+                                 description="queued, running, done or failed; empty for all",
+                                 openapi_examples=docs.example("running")),
+              principal: str = Query("", description="Only the tasks this user asked for",
+                                     openapi_examples=docs.example("alice")),
+              limit: int = Query(100, ge=1, le=tasks.READ_LIMIT,
+                                 description=f"How many rows, 1 to {tasks.READ_LIMIT}",
+                                 openapi_examples=docs.example(100)),
+              caller: Caller = Depends(guard(ROLE_READER))) -> dict:
+    """
+    The tasks, filtered by subsystem, state and who asked. Who may read them is the
+    audit trail's rule: a reader sees every row, whoever asked for it.
+    """
+    return {"tasks": tasks.list(subsystem, (state,) if state else (), principal, limit)}
+
+
 @router.post("/plugins/{name}/reload", summary="Plug a plugin in, or reload it in place",
              description=(
                  "Reads the plugin from disk again and swaps its routes in, with no restart: "

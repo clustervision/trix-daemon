@@ -2125,8 +2125,7 @@
                     "shadowWarning": "7",
                     "sn": "alice",
                     "uid": "alice",
-                    "uidNumber": "1052",
-                    "userPassword": "{PBKDF2-SHA512}..."
+                    "uidNumber": "1052"
                   }
                 ],
                 "schema": {}
@@ -2221,8 +2220,7 @@
                   "shadowWarning": "7",
                   "sn": "alice",
                   "uid": "alice",
-                  "uidNumber": "1052",
-                  "userPassword": "{PBKDF2-SHA512}..."
+                  "uidNumber": "1052"
                 },
                 "schema": {}
               }
@@ -2449,8 +2447,7 @@
                   "shadowWarning": "7",
                   "sn": "alice",
                   "uid": "alice",
-                  "uidNumber": "1052",
-                  "userPassword": "{PBKDF2-SHA512}..."
+                  "uidNumber": "1052"
                 },
                 "schema": {}
               }
@@ -2581,8 +2578,7 @@
                   "shadowWarning": "7",
                   "sn": "alice",
                   "uid": "alice",
-                  "uidNumber": "1052",
-                  "userPassword": "{PBKDF2-SHA512}..."
+                  "uidNumber": "1052"
                 },
                 "schema": {}
               }
@@ -5586,6 +5582,7 @@
                   "finished": "2026-10-09T11:31:34.597325",
                   "message": "reload prometheus-server accepted",
                   "param": "prometheus-server",
+                  "principal": "alice",
                   "request_id": "1791545494-2556175-6ba51d7f",
                   "state": "done",
                   "subsystem": "services",
@@ -8098,6 +8095,164 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/system/tasks": {
+      "get": {
+        "description": "The work this controller took that outlives its request: what is waiting, what the one worker is running now, and what has just finished - with who asked for it, which subsystem owns it, what it was asked to do and, once it is over, what it answered. `state` moves from `queued` to `running` and then to `done` or `failed`. A finished task is forgotten an hour after it finished, so this is the recent work and never a history: `GET /api/v1/system/audit` is where a change stays. Newest first, and local to this controller: a task runs where it was asked for, so a pair has two of these.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "task_list_api_v1_system_tasks_get",
+        "parameters": [
+          {
+            "description": "Only this subsystem's tasks",
+            "examples": {
+              "example": {
+                "value": "services"
+              }
+            },
+            "in": "query",
+            "name": "subsystem",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Only this subsystem's tasks",
+              "title": "Subsystem",
+              "type": "string"
+            }
+          },
+          {
+            "description": "queued, running, done or failed; empty for all",
+            "examples": {
+              "example": {
+                "value": "running"
+              }
+            },
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "queued, running, done or failed; empty for all",
+              "pattern": "^(|queued|running|done|failed)$",
+              "title": "State",
+              "type": "string"
+            }
+          },
+          {
+            "description": "Only the tasks this user asked for",
+            "examples": {
+              "example": {
+                "value": "alice"
+              }
+            },
+            "in": "query",
+            "name": "principal",
+            "required": false,
+            "schema": {
+              "default": "",
+              "description": "Only the tasks this user asked for",
+              "title": "Principal",
+              "type": "string"
+            }
+          },
+          {
+            "description": "How many rows, 1 to 1000",
+            "examples": {
+              "example": {
+                "value": 100
+              }
+            },
+            "in": "query",
+            "name": "limit",
+            "required": false,
+            "schema": {
+              "default": 100,
+              "description": "How many rows, 1 to 1000",
+              "maximum": 1000,
+              "minimum": 1,
+              "title": "Limit",
+              "type": "integer"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "tasks": [
+                    {
+                      "created": "2026-10-09T11:31:34.489690",
+                      "finished": "2026-10-09T11:31:34.597325",
+                      "message": "restart slurmctld accepted",
+                      "param": "slurmctld",
+                      "principal": "alice",
+                      "request_id": "1791545494-2556175-6ba51d7f",
+                      "state": "done",
+                      "subsystem": "services",
+                      "task": "restart"
+                    }
+                  ]
+                },
+                "schema": {
+                  "additionalProperties": true,
+                  "title": "Response Task List Api V1 System Tasks Get",
+                  "type": "object"
+                }
+              }
+            },
+            "description": "The tasks, newest first"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "What is queued, running and just finished here",
+        "tags": [
+          "system"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
       }
     },
     "/api/v1/system/version": {

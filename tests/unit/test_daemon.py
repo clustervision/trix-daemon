@@ -1210,6 +1210,97 @@ def test_a_failing_action_is_recorded_as_failed(rig, client, headers, monkeypatc
     assert "refused to start" in found["message"]
 
 
+def test_the_task_listing_filters_and_covers_only_the_kept_window(rig):
+    """
+    Each filter names a row that must be there and one that must not, so a listing that
+    ignored its arguments fails here. The aged row pins the hour: _prune runs when a task
+    finishes rather than on a clock, so an idle daemon still holds rows past KEEP_SECONDS.
+    """
+    from trixd.core import tasks
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    def boom(task, param=""):
+        """
+        A task that will not run.
+        """
+        raise RuntimeError(f"{param} refused to {task}")
+
+    tasks.register("services", lambda task, param="": f"{task} {param} ok")
+    tasks.register("switches", boom)
+    try:
+        done = tasks.submit("services", "restart", "slurmctld", "alice")
+        failed = tasks.submit("switches", "rebuild", "sw01", "bob")
+        assert tasks.drain(), "the worker did not finish what was queued"
+
+        handle = database.session()
+        try:
+            handle.add(models.Task(
+                request_id="aged", principal="alice", subsystem="services", task="reload",
+                param="slurmd", state=tasks.DONE,
+                finished=datetime.now(timezone.utc).replace(tzinfo=None)
+                - timedelta(seconds=tasks.KEEP_SECONDS + 60)))
+            handle.commit()
+        finally:
+            handle.close()
+
+        def ids(**narrowed):
+            """
+            The request ids one listing answers.
+            """
+            return [row["request_id"] for row in tasks.list(**narrowed)]
+
+        assert ids() == [failed, done], "newest first, and the aged row is not in it"
+        assert ids(subsystem="services") == [done]
+        assert ids(states=(tasks.FAILED,)) == [failed]
+        assert ids(principal="bob") == [failed]
+        assert ids(limit=1) == [failed]
+
+        row = tasks.list(subsystem="services")[0]
+        assert (row["principal"], row["state"]) == ("alice", tasks.DONE)
+        assert row["message"] == "restart slurmctld ok"
+        assert tasks.status(done)["principal"] == "alice", \
+            "status does not answer from the same row mapping as the listing"
+    finally:
+        tasks._handlers.pop("switches", None)
+
+
+def test_the_task_route_is_a_readers_and_shows_every_principals_work(rig, client, headers):
+    """
+    The same visibility as the audit trail beside it: a reader sees every row, whoever
+    asked for it, and may filter by any principal. A token with no role sees none.
+    """
+    from trixd.core import tasks
+
+    nina = _principal(client, headers, "nina")
+    rita = _principal(client, headers, "rita", "reader")
+    tasks.register("services", lambda task, param="": f"{task} {param} ok")
+    identifier = tasks.submit("services", "restart", "slurmctld", "alice")
+    assert tasks.drain(), "the worker did not finish what was queued"
+
+    assert client.get(f"{API_PREFIX}/system/tasks", headers=nina).status_code == 403
+    answer = client.get(f"{API_PREFIX}/system/tasks", headers=rita)
+    assert answer.status_code == 200, answer.text
+    rows = answer.json()["tasks"]
+    assert [row["request_id"] for row in rows] == [identifier]
+    assert rows[0]["principal"] == "alice", \
+        "a reader must see a task that is not theirs, and see whose it was"
+
+    def listed(**params):
+        """
+        The ids the route answers for these query parameters.
+        """
+        shown = client.get(f"{API_PREFIX}/system/tasks", params=params, headers=rita)
+        assert shown.status_code == 200, shown.text
+        return [row["request_id"] for row in shown.json()["tasks"]]
+
+    assert (listed(subsystem="services"), listed(subsystem="switches")) == ([identifier], [])
+    assert (listed(state="done"), listed(state="queued")) == ([identifier], [])
+    assert (listed(principal="alice"), listed(principal="bob")) == ([identifier], [])
+    assert client.get(f"{API_PREFIX}/system/tasks", params={"state": "maybe"},
+                      headers=rita).status_code == 422
+
+
 def test_disabling_a_principal_cuts_them_at_once(rig, client, headers):
     """
     The token stays valid; the flag is read per request, so it stops working.
