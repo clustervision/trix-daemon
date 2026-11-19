@@ -71,6 +71,7 @@ MORE: str = " and {count} more"
 DEFAULT_CONFIG: dict = {
     "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
+    "other_targets_directory": "/trinity/local/etc/prometheus_server/file_sd/other",
     "prometheus_url": "https://localhost:9090",
     "reload_command": "systemctl reload prometheus-server",
     # A rule file is briefly stale after its node changes group, and absent() is true while
@@ -95,6 +96,11 @@ EXPORTERS: dict = {
 
 GENERIC_RULES: str = "trix.generic.rules"
 SERVICE_RULES: str = "trix.service.rules"
+# The scrape targets that are not Luna's: the declaration they are held under, and the
+# file_sd document they are written to. The directory is Prometheus' own `other_nodes`
+# job, so a site's own files sit beside this one and are left alone.
+OTHER_TARGETS: str = "other"
+OTHER_TARGETS_FILE: str = "trix.other.yml"
 HW_RULES: str = "trix.hw.{host}.rules"
 # libyaml's safe loader where it is installed: the same documents, an order of magnitude
 # faster, which is what a reconcile over every node's file needs.
@@ -269,6 +275,43 @@ def _refuse_unparsable(document, what: str) -> None:
                     f"leaves behind")
 
 
+def _refuse_untargetable(document) -> None:
+    """
+    Refuse a target document Prometheus would not take, before it is stored.
+
+    Refused at the store rather than at the write, as the rules are: the declaration
+    replicates, so a document this controller will not write reaches the peer as well.
+
+    Strict about what a group carries and about the type of every value in it, because
+    file_sd reads the file with known fields and string values only: one entry it cannot
+    read costs the whole file, and Prometheus then goes on scraping what it already had.
+    """
+    entries = (document or {}).get("targets")
+    if not isinstance(entries, list):
+        raise BadRequest("targets is the list of target groups to scrape")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise BadRequest("a target group is an object carrying targets and labels")
+        unknown = sorted(set(entry) - {"targets", "labels"})
+        if unknown:
+            raise BadRequest(f"a target group carries targets and labels, not {unknown}")
+        addresses = entry.get("targets")
+        if not isinstance(addresses, list):
+            raise BadRequest("the targets of a group are a list of addresses to scrape")
+        for address in addresses:
+            if not isinstance(address, str) or not address.strip():
+                raise BadRequest(f"{address!r} does not name a host to scrape")
+        labels = entry.get("labels") or {}
+        if not isinstance(labels, dict):
+            raise BadRequest("the labels of a group are a name and a value each")
+        for key, value in labels.items():
+            if not isinstance(key, str) or not exporters.LABEL_NAME.match(key):
+                raise BadRequest(f"Prometheus will not accept the label {key!r}")
+            if not isinstance(value, str):
+                raise BadRequest(f"the label {key} is {type(value).__name__}; a label "
+                                 f"value Prometheus takes is a string")
+
+
 def quoted(value) -> str:
     """
     One label value as PromQL takes it, inside the double quotes the caller writes.
@@ -391,6 +434,19 @@ class Backend:
             return held
         return {"settings": self._read_settings_file()}
 
+    # ------------------------------------------------------------- targets
+
+    def other_targets(self, body: dict = None) -> dict:
+        """
+        The scrape targets that are no node or controller Luna holds.
+        """
+        if body:
+            _refuse_untargetable(body)
+            stored = declarations.write(PLUGIN, "targets", OTHER_TARGETS, body)
+            self._write_other_targets(stored)
+            return stored
+        return declarations.read(PLUGIN, "targets", OTHER_TARGETS, {"targets": []})
+
     # ------------------------------------------------------------- hardware
 
     def get_hw_rules(self, node: str) -> dict:
@@ -402,11 +458,18 @@ class Backend:
             raise NotFound(f"no hardware rules held for {node}")
         return _read_yaml(paths[0])
 
-    def import_hw_rules(self, node: str, body: dict = None) -> dict:
+    def import_hw_rules(self, node: str, body: dict = None, caller=None) -> dict:
         """
         Generate this node's rule file from what Prometheus knows about it. The
         node asks for this itself after boot, with a token scoped to itself.
         """
+        # The node the token was minted for, not the name in the path: the gate binds the
+        # two by short name alone, so the rest of the path is the caller's own spelling,
+        # and where Luna no longer holds the node that spelling becomes a file name.
+        # Luna is not asked whether it still holds the node: a boot storm is the likely event and
+        # would pay for every call made here, while a node Luna has dropped is rare and its file
+        # is retired by the hourly reconcile anyway.
+        node = getattr(getattr(caller, "claims", None), "node", "") or node
         written = self._write_hw_rules(node, body or {})
         # A node that rebooted unchanged costs no write and no reload: a boot storm of
         # thousands of nodes reloads Prometheus only for the ones that changed.
@@ -1058,6 +1121,34 @@ class Backend:
         if written or any(reconciled[kind] for kind in ("repaired", "retired", "superseded")):
             answer["reloaded"] = self.reload_reported()
         return answer
+
+    def render_other_targets(self) -> dict:
+        """
+        Put the targets that are not Luna's on disk, where Prometheus' file_sd reads them.
+
+        This is what writes the file on the controller the document was not sent to: the
+        declaration replicates, and a declaration arriving from the peer wakes the renders
+        that read it.
+        """
+        stored = declarations.read(PLUGIN, "targets", OTHER_TARGETS, None)
+        if stored is None:
+            return {"targets": 0, "written": ""}
+        return {"targets": len(stored.get("targets") or []),
+                "written": self._write_other_targets(stored)}
+
+    def _write_other_targets(self, stored: dict) -> str:
+        """
+        The file_sd document on disk.
+
+        No reload is asked for: Prometheus watches the files its file_sd reads and takes a
+        change by itself, which it does not do for a rule file.
+        """
+        directory = self._config().get("other_targets_directory",
+                                       DEFAULT_CONFIG["other_targets_directory"])
+        groups = (stored or {}).get("targets") or []
+        written = files.write_yaml(os.path.join(directory, OTHER_TARGETS_FILE), groups)
+        LOGGER.info("wrote %d target group(s) outside Luna to %s", len(groups), written)
+        return written
 
     def _reconcile_hw_rules(self, nodes: dict) -> dict:
         """

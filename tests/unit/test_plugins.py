@@ -4688,3 +4688,132 @@ def test_a_batch_refused_part_way_through_writes_nothing(rig, tmp_path, monkeypa
     assert len(list(tmp_path.glob("trix.hw.*.rules"))) == len(known), \
         "a batch that was taken did not write a rule file for every node"
     assert len(reloads) == 1, f"one batch that changed every node, {len(reloads)} reloads"
+
+
+def test_a_token_outliving_its_node_writes_the_file_its_own_name(rig, tmp_path, monkeypatch):
+    """
+    The rule file is named for the node the token was minted for, not for the spelling in
+    the path.
+
+    The gate binds a node token to its path by short name, so everything past the first dot
+    is the caller's own. Where Luna no longer holds the node there is nothing to resolve the
+    name against, and the spelling that was sent became the name of a rule file - a hostname
+    another node answers to, which then keeps that file as its own from its next boot on.
+    """
+    import inspect
+
+    from trixd.common.constants import ROLE_NONE, TOKEN_KIND_NODE
+    from trixd.core.security import gate, tokens
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    token = tokens.mint("ghost001", kind=TOKEN_KIND_NODE, node="ghost001")
+    # The premise, through the real gate: a token for ghost001 is admitted on a path
+    # spelling it as another host. Without that there is nothing here to pin.
+    caller = gate.admit(token, ROLE_NONE, TOKEN_KIND_NODE, "PATCH",
+                        "prometheus/hw-rules/ghost001.b", {"node": "ghost001.b"})
+
+    # Handed its arguments the way the binder hands them: only the ones it declares.
+    supplied = {"node": "ghost001.b", "body": {}, "caller": caller}
+    accepted = inspect.signature(backend.import_hw_rules).parameters
+    answer = backend.import_hw_rules(**{key: value for key, value in supplied.items()
+                                        if key in accepted})
+
+    written = sorted(path.name for path in tmp_path.glob("trix.hw.*.rules"))
+    assert written == ["trix.hw.ghost001.rules"], (
+        f"the file is named for what the path spelled rather than for the node the token "
+        f"names, so another node's rules are this call's to write: {written}")
+    assert answer.get("hostname") == "ghost001", answer
+
+
+def test_the_targets_outside_luna_are_stored_and_written_for_prometheus(rig, tmp_path,
+                                                                       monkeypatch):
+    """
+    A manager's target groups reach the file Prometheus' file_sd job reads, and come back.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import yaml
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    sent = {"targets": [{"targets": ["storage01.cluster:9100"],
+                         "labels": {"job": "node", "site": "dc1"}}]}
+
+    assert backend.other_targets(body=sent) == sent
+    assert backend.other_targets() == sent, "what was stored is not what comes back"
+
+    path = directory / prometheus.OTHER_TARGETS_FILE
+    assert path.is_file(), f"nothing was written in {sorted(os.listdir(directory))}"
+    # Read with the parser Prometheus reads it with, and asked what survived: a document
+    # that parses as anything but a list of target groups is one file_sd drops whole.
+    with open(path, "r", encoding="utf-8") as handle:
+        written = yaml.safe_load(handle)
+    assert written == sent["targets"], (
+        f"the file holds {written}, which is not the target groups that were sent")
+
+
+def test_a_target_group_prometheus_would_not_take_is_refused_before_it_is_stored(
+        rig, tmp_path, monkeypatch):
+    """
+    A label name or an address Prometheus refuses costs the whole file, so it is refused
+    here instead - before the declaration that replicates it to the peer is written.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    kept = {"targets": [{"targets": ["storage01.cluster:9100"]}]}
+    backend.other_targets(body=kept)
+
+    for refused in ({"targets": [{"targets": ["switch01:9100"],
+                                  "labels": {"site-1": "dc1"}}]},
+                    {"targets": [{"targets": ["switch01:9100"], "labels": {"rack": 7}}]},
+                    {"targets": [{"targets": ["switch01:9100"], "job": "node"}]},
+                    {"targets": [{"targets": [9100]}]},
+                    {"targets": [{"targets": "switch01:9100"}]},
+                    {"targets": "switch01:9100"}):
+        with pytest.raises(BadRequest):
+            backend.other_targets(body=refused)
+
+    assert backend.other_targets() == kept, "a refused document was stored"
+    with open(directory / prometheus.OTHER_TARGETS_FILE, "r", encoding="utf-8") as handle:
+        assert kept["targets"][0]["targets"][0] in handle.read(), (
+            "a refused document was written over the one being scraped")
+
+
+def test_the_targets_outside_luna_are_written_where_the_document_was_not_sent(
+        rig, tmp_path, monkeypatch):
+    """
+    The render is what puts the file on the other controller.
+
+    The declaration replicates, and a declaration arriving from the peer wakes the renders
+    that read it; nothing else writes this file there. New surface: there is nothing at the
+    branch point for this to fail against.
+    """
+    from trixd.utils import declarations
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    path = directory / prometheus.OTHER_TARGETS_FILE
+
+    assert backend.render_other_targets() == {"targets": 0, "written": ""}
+    assert not path.exists(), "a controller that was sent nothing wrote a file anyway"
+
+    # As the sweep leaves it: the row is in the table, and this controller was never called.
+    declarations.write("prometheus", "targets", prometheus.OTHER_TARGETS,
+                       {"targets": [{"targets": ["switch01.cluster:9100"]}]})
+
+    answer = backend.render_other_targets()
+
+    assert answer["targets"] == 1, answer
+    with open(path, "r", encoding="utf-8") as handle:
+        assert "switch01.cluster:9100" in handle.read(), (
+            "the render ran and the targets the peer stored are not in the file")

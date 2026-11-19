@@ -638,6 +638,21 @@
             ],
             "title": "Hw Alert Grace"
           },
+          "other_targets_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the targets outside Luna are written, as one file beside whatever else the site puts there; Prometheus' `other_nodes` job must read this directory\n",
+            "examples": [
+              "/trinity/local/etc/prometheus_server/file_sd/other"
+            ],
+            "title": "Other Targets Directory"
+          },
           "prometheus_url": {
             "anyOf": [
               {
@@ -866,6 +881,37 @@
           "nodes"
         ],
         "title": "PrometheusHw_Rules_Many",
+        "type": "object"
+      },
+      "PrometheusOther_Targets": {
+        "properties": {
+          "targets": {
+            "description": "One target group per entry, in Prometheus' own file_sd shape: `targets`, the addresses to scrape, and `labels`, attached to every one of them\n",
+            "examples": [
+              [
+                {
+                  "labels": {
+                    "job": "node",
+                    "site": "dc1"
+                  },
+                  "targets": [
+                    "storage01.cluster:9100"
+                  ]
+                }
+              ]
+            ],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets"
+        ],
+        "title": "PrometheusOther_Targets",
         "type": "object"
       },
       "PrometheusRules": {
@@ -5311,6 +5357,189 @@
           }
         ],
         "summary": "Replace the settings new hardware rules start from",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/targets/other": {
+      "get": {
+        "description": "The hosts Prometheus scrapes that are no node or controller Luna holds - a storage\nappliance, a switch, a login host managed elsewhere. Each entry is a target group in\nPrometheus' own `file_sd` shape: the addresses under `targets`, and the `labels`\nattached to every one of them. Empty until a manager sets it.\n\nLuna's own nodes and controllers are not here: they are served from\n`GET /api/v1/prometheus/renders/targets`, which Prometheus polls.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_other_targets_get_api_v1_prometheus_targets_other_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "targets": [
+                    {
+                      "labels": {
+                        "job": "node",
+                        "site": "dc1"
+                      },
+                      "targets": [
+                        "storage01.cluster:9100"
+                      ]
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The target groups as held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The scrape targets that are not Luna's",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "Replace the whole set; what is sent is what is scraped. trixd writes it as one file\nin the directory `other_targets_directory` names, which is the directory Prometheus'\n`other_nodes` job reads, so a file a site put there itself is left alone. No reload\nis needed: Prometheus takes a `file_sd` change by itself.\n\nA group carrying anything but `targets` and `labels`, a label name Prometheus will\nnot accept, or a value that is not a string is refused rather than written: file_sd\nreads the file with known fields and string values only, so one entry it cannot read\ncosts the whole file and Prometheus goes on scraping what it already had.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_other_targets_patch_api_v1_prometheus_targets_other_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "targets": [
+                      {
+                        "labels": {
+                          "job": "node",
+                          "site": "dc1"
+                        },
+                        "targets": [
+                          "storage01.cluster:9100"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusOther_Targets"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "targets": [
+                    {
+                      "labels": {
+                        "job": "node",
+                        "site": "dc1"
+                      },
+                      "targets": [
+                        "storage01.cluster:9100"
+                      ]
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The target groups as now held"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A target group Prometheus would not take; the message says which part"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Replace the scrape targets that are not Luna's",
         "tags": [
           "prometheus"
         ],

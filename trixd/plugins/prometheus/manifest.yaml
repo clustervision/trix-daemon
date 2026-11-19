@@ -61,6 +61,14 @@ schemas:
       type: array
       items: object
       description: Prometheus rule groups, each a name and its rules
+  other_targets:
+    targets:
+      type: array
+      items: object
+      description: >
+        One target group per entry, in Prometheus' own file_sd shape: `targets`, the
+        addresses to scrape, and `labels`, attached to every one of them
+      example: [{targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}]
   settings:
     settings:
       type: object
@@ -100,6 +108,13 @@ schemas:
       optional: true
       description: Where the rule files are written; Prometheus must read this directory
       example: /trinity/local/etc/prometheus_server/rules/
+    other_targets_directory:
+      type: string
+      optional: true
+      description: >
+        Where the targets outside Luna are written, as one file beside whatever else the
+        site puts there; Prometheus' `other_nodes` job must read this directory
+      example: /trinity/local/etc/prometheus_server/file_sd/other
     prometheus_url:
       type: string
       optional: true
@@ -235,6 +250,52 @@ endpoints:
     response:
       description: The settings as now held
       example: {settings: {hw: {nhc: true, disabled: false}}}
+
+  - path: targets/other
+    methods: [GET]
+    minimum: reader
+    handler: other_targets
+    summary: The scrape targets that are not Luna's
+    description: |
+      The hosts Prometheus scrapes that are no node or controller Luna holds - a storage
+      appliance, a switch, a login host managed elsewhere. Each entry is a target group in
+      Prometheus' own `file_sd` shape: the addresses under `targets`, and the `labels`
+      attached to every one of them. Empty until a manager sets it.
+
+      Luna's own nodes and controllers are not here: they are served from
+      `GET /api/v1/prometheus/renders/targets`, which Prometheus polls.
+    response:
+      description: The target groups as held
+      example:
+        targets:
+          - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+
+  - path: targets/other
+    methods: [PATCH]
+    minimum: manager
+    handler: other_targets
+    schema: other_targets
+    summary: Replace the scrape targets that are not Luna's
+    description: |
+      Replace the whole set; what is sent is what is scraped. trixd writes it as one file
+      in the directory `other_targets_directory` names, which is the directory Prometheus'
+      `other_nodes` job reads, so a file a site put there itself is left alone. No reload
+      is needed: Prometheus takes a `file_sd` change by itself.
+
+      A group carrying anything but `targets` and `labels`, a label name Prometheus will
+      not accept, or a value that is not a string is refused rather than written: file_sd
+      reads the file with known fields and string values only, so one entry it cannot read
+      costs the whole file and Prometheus goes on scraping what it already had.
+    request_example:
+      targets:
+        - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+    response:
+      description: The target groups as now held
+      example:
+        targets:
+          - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+    errors:
+      400: A target group Prometheus would not take; the message says which part
 
   - path: hw-rules/<node>
     methods: [GET]
@@ -457,6 +518,18 @@ endpoints:
                luna.network]
     # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk
+
+  - path: renders/other-targets
+    methods: [GET]
+    minimum: reader
+    handler: render_other_targets
+    render:
+      # The stored document is the whole input: these targets are not Luna's, so no Luna
+      # table decides what goes in the file.
+      inputs: [targets]
+    # No serve: this render writes the file_sd document and answers nothing over HTTP. It
+    # is what puts the file on the controller the document was not sent to.
+    summary: The targets outside Luna, on disk
 
   - path: exporters
     methods: [GET]
