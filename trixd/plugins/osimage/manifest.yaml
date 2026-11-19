@@ -1,0 +1,272 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: osimage
+backend: backend
+description: >
+  Builds an OS image tree with the TrinityX books, from a mirror or a DVD or from what the
+  books hold, in a child process of the daemon, tells Luna how the build goes,
+  and asks Luna to pack the tree when it is built.
+
+schemas:
+  create:
+    image:
+      type: string
+      description: The image's name in Luna, which names the job, and is passed back as it came
+      example: rocky9
+    request_id:
+      type: string
+      pattern: ^[A-Za-z0-9._-]{1,128}$
+      description: Luna's own id of the create, whose status stream every line of the build goes to
+      example: "1761818733.1234567891234"
+    path:
+      type: string
+      description: The image directory Luna resolved for the record, which has to be the directory the books build, images_root/<image>
+      example: /trinity/images/rocky9
+    distribution:
+      type: string
+      pattern: ^[a-z0-9._-]{1,32}$
+      description: The distribution of the osimage record, lower-cased
+      example: redhat
+    osrelease:
+      type: string
+      pattern: ^[A-Za-z0-9._+-]{1,32}$
+      description: The release of the osimage record
+      example: "9.6"
+    architecture:
+      type: string
+      pattern: ^[a-z0-9_]{2,16}$
+      description: The architecture of the osimage record, in Luna's words (x86, arm64, openpower) or the kernel's
+      example: x86
+    media:
+      type: array
+      items: string
+      optional: true
+      description: >
+        The sources, one to eight, from a caller that names them: http or https mirror
+        URLs, file:// trees and local ISO files. One of them has to identify the
+        distribution; the others are checked for agreement. For a Red Hat family record
+        the sources may instead all be dnf repositories, directories holding repodata, taken
+        as the list to build from; a repository on this controller's own disk is bound
+        read-only in the image for the build. The release and arch are the record's. A
+        source may not carry a user name or password. Luna sends none unless the operator
+        names them, and the mirrors setting then names them.
+      example: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]
+  settings:
+    repo:
+      type: string
+      optional: true
+      description: The checkout of the TrinityX repository; its site directory holds the books the build runs
+      example: /trinity/trinityx-combined
+    repo_url:
+      type: string
+      optional: true
+      description: >
+        The https archive of a TrinityX tag that the build fetches into repo when repo is
+        not there; empty, the default, fetches nothing and a build without the checkout
+        is refused. The books run as root, so name a tag, never a branch that moves
+      example: https://github.com/clustervision/trinityX/archive/refs/tags/r12.0u2.tar.gz
+    answers:
+      type: string
+      optional: true
+      description: The cluster's answer file, used when the checkout has no site/group_vars/all.yml
+      example: /trinity/local/backup/group_vars/all.yml
+    images_root:
+      type: string
+      optional: true
+      description: Where the books build the tree, under the image name
+      example: /trinity/images
+    state_root:
+      type: string
+      optional: true
+      description: Where each build keeps its job directory
+      example: /trinity/local/trixd/var/osimage
+    python:
+      type: string
+      optional: true
+      description: The Python the builds run under, whose own ansible-playbook runs the books
+      example: /trinity/local/python
+    collections:
+      type: string
+      optional: true
+      description: Where the ansible collections the books import are, or empty for ansible's own search path
+      example: /trinity/local/trixd/collections
+    mirrors:
+      type: object
+      optional: true
+      description: >
+        The sources of a create that names none, by the record: `<distribution>/<osrelease>`
+        or `<distribution>/<osrelease>/<architecture>` to a list of sources as `media`
+        takes them. The entry for the architecture is taken before the one without; a
+        record with neither is built from what the books hold.
+      example: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"], "redhat/9.6/arm64": ["https://download.rockylinux.org/pub/rocky/9/"]}
+    concurrency:
+      type: integer
+      optional: true
+      description: How many builds may run at once
+      example: 2
+    limit_seconds:
+      type: integer
+      optional: true
+      description: A build running longer than this is stopped
+      example: 21600
+    keep_days:
+      type: integer
+      optional: true
+      description: How long the directory of a build that ended is kept
+      example: 14
+    builder:
+      type: string
+      optional: true
+      description: >
+        What builds the tree: books, or stub, which runs no book and only says lines, or
+        stub-fail, which says them and fails, so the chain around a build can be exercised
+      example: books
+    stub_gap_seconds:
+      type: integer
+      optional: true
+      description: How far apart a stub builder says its lines
+      example: 3
+
+endpoints:
+  - path: ""
+    methods: [GET]
+    minimum: reader
+    handler: listing
+    summary: Every build this daemon holds, and how many may run
+    description: |
+      Each build held, with its state and when it started, and the count against the
+      concurrency limit: `running` is the number of builds running, which is what the
+      limit counts; a build that never started is listed as prepared and counts
+      for nothing. A daemon that has never built answers no jobs.
+    response:
+      description: The builds held and the limit
+      example: {jobs: [{name: rocky9, state: running, started: "2026-10-29T10:12:03+00:00"}], running: 1, limit: 2}
+
+  - path: settings
+    methods: [GET]
+    minimum: reader
+    handler: settings
+    summary: Where the builds run, and their limits
+    description: |
+      The checkout the books are taken from, the https address it is fetched from when it
+      is not there, the cluster's answer file, where the tree and the job directories go, the Python
+      the builds run under, where the collections are when ansible is not left to find them, the
+      mirrors a create without sources builds from, the concurrency cap, the limit in
+      seconds, how many days a finished build's directory is kept, and the builder: the
+      books, or a stub for exercising the chain around a build.
+    response:
+      description: The settings as held
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+
+  - path: settings
+    methods: [PATCH]
+    # rootus: every value is a path the daemon reads or writes, or a command it runs, as root.
+    minimum: rootus
+    handler: settings
+    schema: settings
+    summary: Change where the builds run, or their limits
+    description: |
+      Send any of the settings; those left out keep their value, and the next create
+      uses them. rootus only, because every path is read or written and every command
+      run as root. A path has to be absolute, a count or a number of seconds at
+      least one, the builder books, stub or stub-fail, and every mirrors key
+      `<distribution>/<osrelease>` or `<distribution>/<osrelease>/<architecture>` with a
+      list of sources as its value; the map sent replaces the one held.
+    request_example: {concurrency: 1, mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}}
+    response:
+      description: The settings as now held
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+    errors:
+      400: A path is not absolute, repo_url is not an https address, a count or a number of seconds is below one, the builder is not one offered, or a mirrors key or source is not of the shape above
+
+  - path: create
+    methods: [POST]
+    minimum: operator
+    handler: create
+    schema: create
+    summary: Build the content of an image for Luna
+    description: |
+      What `luna osimage create` hands this daemon once the osimage record exists: the
+      image, Luna's own request id, the image directory and the record's distribution,
+      release and architecture. The job is written and the build started as a child
+      process of the daemon, and the answer comes at once, because Luna waits five
+      seconds for it: nothing is detected or probed first. The sources are
+      `media` when the body names them, else the `mirrors` setting's entry for the
+      record, else none, and the books then build from what they hold: a RedHat image
+      from this controller's own repositories, so only the controller's own release, an
+      Ubuntu or Leap image from the mirror the books name. The build fetches the books when
+      they are not there, checks what they need on the controller, reads the sources and
+      holds the record's distribution and release against them, and builds with the
+      `builder` of the settings; a refusal at any of these ends the stream with a line
+      saying the build failed and why. The daemon posts the build's lines to the status
+      stream of `request_id`, and when the build is done it sets the kernel version on
+      Luna's record and asks Luna to pack the image on that same stream, which Luna's pack
+      chain then ends. A build that fails, or whose pack Luna refuses, is ended here with
+      a line saying so and EOF. `image` names the job, so it has to match
+      `^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`
+      has to be `images_root/<image>`, the directory the books build, with no symlink
+      leading out of `images_root`, because the build mounts, chroots and removes inside
+      it and the result is read and packed from the path. `architecture` is taken in
+      Luna's words or the kernel's; one no client is published for is refused. Luna calls
+      under the account trixd.ini names.
+    request_example: {image: rocky9, request_id: "1761818733.1234567891234", path: /trinity/images/rocky9, distribution: redhat, osrelease: "9.6", architecture: x86}
+    response:
+      description: The build, now running
+      example: {name: rocky9, state: running, pid: 41872, started: "2026-10-29T10:12:03+00:00"}
+    errors:
+      400: The image name, the architecture, the path or a source is refused; the message names what
+      409: A build of that name is running, or it is still being told to Luna, or the concurrency limit is reached; the message says which
+      503: The build process could not be started
+
+  - path: <name>
+    methods: [GET]
+    minimum: reader
+    handler: show
+    summary: Where one build is, and its progress lines from a sequence number on
+    description: |
+      The build's state and phase, when it was written, started and finished, the pid of
+      its process, the exit code and the reason once it ended, and the progress lines from `since`
+      on with `next` as the number to ask for next. Once the build ended the answer
+      carries `kernelversion`.
+    params:
+      name: {description: "The image name given at create", example: rocky9}
+    query:
+      since: {type: integer, description: "The first sequence number wanted; the `next` of the previous answer", example: 12}
+    response:
+      description: The build, and its lines from the sequence number on
+      example: {name: rocky9, state: running, phase: "rocky9.osimages.luna", prepared: "2026-10-29T10:11:40+00:00", started: "2026-10-29T10:12:03+00:00", finished: null, exit: null, reason: "", pid: 41872, lines: [{seq: 12, message: "TASK [trinity/image-create : Bootstrap]", status: 200}], next: 13}
+    errors:
+      404: No build of that name is held
+
+  - path: <name>/actions/cancel
+    methods: [POST]
+    minimum: operator
+    handler: cancel
+    summary: Stop a build
+    description: |
+      Stops the build process, which gives the runner SIGTERM: it stops the book, unmounts
+      what it mounted and records the result. A runner still alive after 90 seconds is
+      killed. The tree built so far is kept for Luna to remove. A build that never started
+      is cancelled without a process to stop.
+    params:
+      name: {description: "The image name given at create", example: rocky9}
+    response:
+      description: The build, now cancelled
+      example: {name: rocky9, state: cancelled}
+    errors:
+      404: No build of that name is held
+      409: The build has already ended; the message says how
