@@ -97,26 +97,6 @@ ARCHES = {
                 "variables": {}, "family_variables": {}, "skip_tags": []},
 }
 
-INTERPRETER: str = "/usr/bin/python3"
-# The releases whose own python3 is 3.6, which ansible-core cannot run its modules on, and the
-# package that brings a newer Python into the image for the books' in-image steps.
-OLD_PYTHON: dict = {("redhat", "8"): "python3.12", ("suse", "15"): "python312"}
-NEWER_INTERPRETER: str = "/usr/bin/python3.12"
-
-
-def newer_python(verdict: dict) -> dict:
-    """
-    The verdict of a release whose own python3 is 3.6, with the newer Python its in-image
-    steps run on, put in the image by the books' bootstrap list, and the flag that has the
-    runner put the modules needing the image's own Python on ansible's library path.
-    """
-    package = OLD_PYTHON.get((verdict["family"], verdict["release"]))
-    if package:
-        verdict["interpreter"] = NEWER_INTERPRETER
-        verdict["library"] = True
-        verdict["variables"]["image_bootstrap_extra"] = [package]
-    return verdict
-
 # What a source that identifies a distribution but cannot seed a build is told.
 SEED_ONLY: tuple = ("rootfs-tarball", "oci-archive", "rootfs-directory")
 REFUSALS = {
@@ -313,14 +293,13 @@ def placement(distribution: str, osrelease: str, arch: str, controller: dict, ma
     else:
         variables["opensuse_release"] = f"leap/{dotrelease or release}"
         where = BOOK_MIRROR
-    return newer_python({"detected": f"{distribution} {osrelease} {arch} from no source, {where}",
-                         "family": family, "distribution": distribution, "distro": distribution,
-                         "release": release, "dotrelease": dotrelease, "arch": arch,
-                         "interpreter": INTERPRETER,
-                         "playbook": FAMILIES[family]["playbook"],
-                         "base": None, "base_variable": FAMILIES[family]["base"],
-                         "variables": variables, "skip_tags": list(offered["skip_tags"]),
-                         "sources": [], "where": where})
+    return {"detected": f"{distribution} {osrelease} {arch} from no source, {where}",
+            "family": family, "distribution": distribution, "distro": distribution,
+            "release": release, "dotrelease": dotrelease, "arch": arch,
+            "playbook": FAMILIES[family]["playbook"],
+            "base": None, "base_variable": FAMILIES[family]["base"],
+            "variables": variables, "skip_tags": list(offered["skip_tags"]),
+            "sources": [], "where": where}
 
 
 def check_books(verdict: dict, books: str) -> None:
@@ -402,16 +381,15 @@ def repository_verdict(findings: list, distribution: str, osrelease: str, arch: 
                                           "image_baseurl": r["image_baseurl"]}
                                          for r in repositories]})
     count = f"{len(repositories)} repositor" + ("ies" if len(repositories) > 1 else "y")
-    return newer_python({"detected": f"{distribution} {osrelease} {arch} from {count}",
-                         "family": "redhat", "distribution": distribution, "distro": distribution,
-                         "release": release, "dotrelease": dotrelease, "arch": arch,
-                         "interpreter": INTERPRETER,
-                         "playbook": FAMILIES["redhat"]["playbook"],
-                         "base": None, "base_variable": FAMILIES["redhat"]["base"],
-                         "variables": variables, "skip_tags": list(offered["skip_tags"]),
-                         "sources": [{"source": r["source"], "kind": "repository", "role": "base"}
-                                     for r in repositories],
-                         "repositories": repositories, "where": count})
+    return {"detected": f"{distribution} {osrelease} {arch} from {count}",
+            "family": "redhat", "distribution": distribution, "distro": distribution,
+            "release": release, "dotrelease": dotrelease, "arch": arch,
+            "playbook": FAMILIES["redhat"]["playbook"],
+            "base": None, "base_variable": FAMILIES["redhat"]["base"],
+            "variables": variables, "skip_tags": list(offered["skip_tags"]),
+            "sources": [{"source": r["source"], "kind": "repository", "role": "base"}
+                        for r in repositories],
+            "repositories": repositories, "where": count}
 
 
 def _refuse_repository(position: int, found: dict, release: str, arch: str) -> None:
@@ -481,17 +459,16 @@ def verdict(findings: list, arch: str = None, suite: str = None) -> dict:
         if value in (None, ""):
             raise BadRequest(f"the books need {key} and neither the request nor the sources give it")
     count = f"{len(findings)} source" + ("s" if len(findings) > 1 else "")
-    return newer_python({"detected": f"{distro} {dotrelease or release} {arch} from {count}",
-                         "family": family, "distribution": FAMILIES[family]["distribution"],
-                         "distro": distro,
-                         "release": release, "dotrelease": dotrelease, "arch": arch,
-                         "interpreter": INTERPRETER,
-                         "playbook": FAMILIES[family]["playbook"],
-                         "base": base, "base_variable": FAMILIES[family]["base"],
-                         "variables": variables, "skip_tags": list(ARCHES[arch]["skip_tags"]),
-                         "sources": [{"source": f["source"], "kind": f.get("kind"),
-                                      "role": "base" if number == base else "checked"}
-                                     for number, f in enumerate(findings)]})
+    return {"detected": f"{distro} {dotrelease or release} {arch} from {count}",
+            "family": family, "distribution": FAMILIES[family]["distribution"],
+            "distro": distro,
+            "release": release, "dotrelease": dotrelease, "arch": arch,
+            "playbook": FAMILIES[family]["playbook"],
+            "base": base, "base_variable": FAMILIES[family]["base"],
+            "variables": variables, "skip_tags": list(ARCHES[arch]["skip_tags"]),
+            "sources": [{"source": f["source"], "kind": f.get("kind"),
+                         "role": "base" if number == base else "checked"}
+                        for number, f in enumerate(findings)]}
 
 
 def _refuse_unreadable(findings: list) -> None:

@@ -59,15 +59,12 @@ REQUEST = {"name": "rocky9", "request_id": "1761818733.1234567891234", "path": "
 BUILT = dict(SETTINGS, books="/trinity/trinityx-combined/site")
 # What the controller the unit runs on says of itself, where a test needs one.
 CONTROLLER = {"family": "redhat", "distro": "rocky", "release": "9", "dotrelease": "9.6"}
-PLAYBOOK_VERSION = "ansible-playbook [core 2.17.14]\n  config file = None"
-VERSION_ASK = "import sys; print('%d.%d' % sys.version_info[:2])"
 # What the books of every family import and name, as the installer role lays them out.
 COLLECTIONS = tuple(sorted({name for rule in rules.FAMILIES.values() for name in rule["collections"]}))
 GALAXY_ROLE = rules.FAMILIES["redhat"]["galaxy_roles"][0]
 # The sources a job is given unless a test names its own: a Rocky 9.8 mirror root.
 MIRROR = "a Rocky 9.8 mirror root"
-VERDICT = {"family": "redhat", "playbook": "compute-redhat.yml", "arch": "x86_64",
-           "interpreter": "/usr/bin/python3", "base": 0,
+VERDICT = {"family": "redhat", "playbook": "compute-redhat.yml", "arch": "x86_64", "base": 0,
            "base_variable": "image_el_baseurl", "skip_tags": [],
            "variables": {"image_el_releasever": "9",
                          "image_el_baseurl": "https://download.rockylinux.org/pub/rocky/9/"},
@@ -134,8 +131,7 @@ class Commands:
         Nothing run yet; every command succeeds and says nothing.
         """
         self.ran: list = []
-        self.answers: dict = {"ansible-playbook": Ran(PLAYBOOK_VERSION), "findmnt": Ran(""),
-                              "python3": Ran("3.9\n")}
+        self.answers: dict = {"findmnt": Ran("")}
 
     def run(self, argv, **kwargs) -> Ran:
         """
@@ -192,15 +188,6 @@ class Child:
         """
         self.ended = True
         return self.code
-
-
-@pytest.fixture(autouse=True)
-def no_system_commands(monkeypatch):
-    """
-    What the controller the unit runs on has in /usr/bin is no part of a test: the toolchain
-    is looked for under the settings' interpreter only, unless a test names directories.
-    """
-    monkeypatch.setattr(runner, "SYSTEM_PATH", (), raising=False)
 
 
 @pytest.fixture
@@ -267,22 +254,15 @@ def test_the_environment_names_the_books_and_the_lchroot_connection():
                    "PYTHONUNBUFFERED": "1"}
 
 
-def test_the_inventory_pins_the_interpreter_of_each_host_as_inventory_data(tmp_path):
+def test_the_inventory_names_no_interpreter_for_any_host(tmp_path):
     """
-    The image host runs on the interpreter the verdict chose and every other host on the
-    controller's, as host data rather than an extra variable, which would also reach a
-    task delegated to the other side.
+    The run's inventory is a hosts file after the books' own and nothing more: the Python
+    of the image and of the controller is ansible's to discover, as in a hand run.
     """
-    hosts = runner.write_inventory(str(tmp_path), "rocky8", "/usr/bin/python3")
+    hosts = runner.write_inventory(str(tmp_path))
     assert hosts == str(tmp_path / "inventory" / "hosts.yml")
     assert (tmp_path / "inventory" / "hosts.yml").read_text() == "all: {}\n"
-    assert (tmp_path / "inventory" / "host_vars" / "localhost.yml").read_text() == \
-        "ansible_python_interpreter: /usr/bin/python3\n"
-    assert (tmp_path / "inventory" / "group_vars" / "all" / "controller.yml").read_text() == \
-        "ansible_python_interpreter: /usr/bin/python3\n"
-    assert not (tmp_path / "inventory" / "group_vars" / "all" / "answers.yml").exists()
-    assert (tmp_path / "inventory" / "host_vars" / "rocky8.osimages.luna.yml").read_text() == \
-        "ansible_python_interpreter: /usr/bin/python3\n"
+    assert os.listdir(tmp_path / "inventory") == ["hosts.yml"]
     books = tmp_path / "books"
     books.mkdir()
     (books / "ansible.cfg").write_text("[defaults]\ninventory = hosts,/etc/ansible/hosts,dynamic_hosts\n")
@@ -483,18 +463,15 @@ def test_a_build_that_ends_well_records_the_kernel_and_the_client(tmp_path, monk
     assert oct(os.stat(os.path.join(jobdir, "build.log")).st_mode & 0o777) == "0o600"
 
 
-def test_the_answers_sit_beside_the_interpreter_in_the_inventory_and_nobody_else_reads_them(tmp_path):
+def test_the_answers_are_a_file_of_the_inventory_that_nobody_else_reads(tmp_path):
     """
-    ansible reads group_vars/all.yml only where there is no group_vars/all directory, so
-    the answers and the interpreter are two files of that directory; the answers hold
-    passwords, so the file is the runner's alone.
+    The answers go in as a file of the group_vars/all directory, which ansible reads where
+    there is no group_vars/all.yml; they hold passwords, so the file is the runner's alone.
     """
-    runner.write_inventory(str(tmp_path), "rocky8", "/usr/bin/python3", "trix_version: 15\n")
+    runner.write_inventory(str(tmp_path), "trix_version: 15\n")
     where = tmp_path / "inventory" / "group_vars"
     assert not (where / "all.yml").exists()
     assert (where / "all" / "answers.yml").read_text() == "trix_version: 15\n"
-    assert (where / "all" / "controller.yml").read_text() == \
-        "ansible_python_interpreter: /usr/bin/python3\n"
     assert oct(os.stat(where / "all" / "answers.yml").st_mode & 0o777) == "0o600"
 
 
@@ -511,8 +488,8 @@ def test_the_checkouts_own_answers_are_left_to_ansible(tmp_path, monkeypatch, si
     jobs.files.write(os.path.join(jobdir, jobs.REQUEST), json.dumps(request))
 
     assert runner.Build(jobdir).run() == 0
-    assert not os.path.exists(os.path.join(jobdir, "inventory", "group_vars", "all", "answers.yml"))
-    assert os.path.exists(os.path.join(jobdir, "inventory", "group_vars", "all", "controller.yml"))
+    assert not os.path.exists(os.path.join(jobdir, "inventory", "group_vars"))
+    assert os.path.exists(os.path.join(jobdir, "inventory", "hosts.yml"))
 
 
 def test_without_answers_in_the_checkout_the_installers_copy_is_the_runs_own(tmp_path, monkeypatch,
@@ -554,22 +531,19 @@ def test_a_run_with_no_answers_anywhere_fails_before_the_book_starts(tmp_path, m
     assert started == []
 
 
-def test_a_rocky_8_source_is_built_on_a_newer_python(tmp_path, monkeypatch, sigterm_restored):
+def test_a_rocky_8_source_is_built_as_any_other_release_is(tmp_path, monkeypatch, sigterm_restored):
     """
-    The Python 3.6 of a Rocky 8 image cannot run ansible-core's modules: the books put
-    python3.12 in the image, the image host runs on it, and the modules that need the
-    image's own Python are on ansible's library path.
+    The books' ansible drives the Python 3.6 of a Rocky 8 image by itself: the build names
+    no module library, puts no second Python in the image and pins no interpreter.
     """
-    monkeypatch.setattr(runner, "ansible_library", lambda settings: "/srv/library")
     eight = rocky_root(str(tmp_path / "mirror8"), "8.10")
     jobdir, started, _ = _job(tmp_path, monkeypatch, media=[eight], osrelease="8.10",
                               kernels=("4.18.0-553.el8",))
     assert runner.Build(jobdir).run() == 0
     (argv, kwargs), = started
-    assert kwargs["env"]["ANSIBLE_LIBRARY"] == "/srv/library"
-    assert json.dumps({"image_bootstrap_extra": ["python3.12"]}) in argv
-    pinned = open(os.path.join(jobdir, "inventory", "host_vars", "rocky9.osimages.luna.yml")).read()
-    assert pinned == "ansible_python_interpreter: /usr/bin/python3.12\n"
+    assert "ANSIBLE_LIBRARY" not in kwargs["env"]
+    assert not [item for item in argv if "image_bootstrap_extra" in item]
+    assert not os.path.exists(os.path.join(jobdir, "inventory", "host_vars"))
 
 
 @pytest.mark.parametrize("setup, reason", [
@@ -602,19 +576,15 @@ def test_every_way_a_build_fails_leaves_a_result_naming_why(tmp_path, monkeypatc
     ("books", "the books are not at {repo}/site: ansible.cfg missing"),
     ("collections", "the collections are not at {collections}: ansible.posix, community.mysql missing"),
     ("role", "the Galaxy role OndrejHome.pcs-modules-2 is not in ~/.ansible/roles"),
-    ("interpreter", "this controller's /usr/bin/python3 is 3.6; the books need 3.7 or newer "
-                    "here (EL9 or later)"),
-    ("interpreter version", "/usr/bin/python3 did not say its version: No such file or directory"),
-    ("playbook", "{python}/bin/ansible-playbook could not be run: ansible-playbook is not installed"),
-    ("version", "{python}/bin/ansible-playbook is not ansible-core 2: ansible-playbook 2.9.27"),
+    ("playbook", "{python}/bin/ansible-playbook is not installed: the trixd role installs TrinityX's "
+                 "ansible under {python}"),
 ])
 def test_a_controller_short_of_what_the_build_needs_ends_the_build_naming_it(tmp_path, monkeypatch,
                                                                              sigterm_restored,
                                                                              missing, said):
     """
-    The books, the collections they import, the Galaxy role they name, a controller
-    Python ansible-core can drive and an ansible-core 2 playbook command are checked
-    before any source is read, so a build never starts to fail an hour in: the result
+    The books, the collections they import, the Galaxy role they name and the
+    ansible-playbook under the interpreter are checked before any source is read, so a build never starts to fail an hour in: the result
     names what is missing and no book runs.
     """
     commands = Commands()
@@ -626,19 +596,27 @@ def test_a_controller_short_of_what_the_build_needs_ends_the_build_naming_it(tmp
             os.rmdir(tmp_path / "collections" / "ansible_collections" / name)
     elif missing == "role":
         os.rmdir(tmp_path / ".ansible" / "roles" / GALAXY_ROLE)
-    elif missing == "interpreter":
-        commands.answers["python3"] = Ran("3.6\n")
-    elif missing == "interpreter version":
-        commands.answers["python3"] = Ran("", 127, "No such file or directory")
-    elif missing == "playbook":
-        commands.answers["ansible-playbook"] = BackendFailure("ansible-playbook is not installed")
     else:
-        commands.answers["ansible-playbook"] = Ran("ansible-playbook 2.9.27")
+        commands.answers["ansible-playbook"] = BackendFailure(
+            f"{SETTINGS['python']}/bin/ansible-playbook is not installed")
     assert runner.Build(jobdir).run() == 1
     assert _result(jobdir)["reason"] == said.format(repo=tmp_path / "repo", python=SETTINGS["python"],
                                                     collections=tmp_path / "collections")
     assert started == []
-    assert commands.of("python3") in ([], [["/usr/bin/python3", "-c", VERSION_ASK]])
+
+
+def test_the_ansible_under_the_interpreter_is_used_whatever_its_version(tmp_path, monkeypatch,
+                                                                        sigterm_restored):
+    """
+    The ansible of TrinityX's own Python is the one TrinityX ships for its books: the
+    build does not judge its version and runs the book with it.
+    """
+    commands = Commands()
+    commands.answers["ansible-playbook"] = Ran("ansible-playbook [core 2.15.13]\n  config file = None")
+    jobdir, started, _ = _job(tmp_path, monkeypatch, commands=commands, kernels=("5.14.0-503.el9",))
+    assert runner.Build(jobdir).run() == 0
+    (argv, _), = started
+    assert argv[0] == f"{SETTINGS['python']}/bin/ansible-playbook"
 
 
 def test_a_build_needs_only_the_collections_and_roles_of_its_familys_playbook(tmp_path, monkeypatch,
@@ -687,40 +665,6 @@ def test_every_family_says_what_its_playbook_needs_on_the_controller():
     assert "community.mysql" not in rules.FAMILIES["suse"]["collections"]
 
 
-def _executable(directory, name: str) -> str:
-    """
-    An executable file of that name in the directory, which is made; its path.
-    """
-    directory.mkdir(parents=True, exist_ok=True)
-    path = directory / name
-    path.write_text("#!/bin/sh\n")
-    path.chmod(0o755)
-    return str(path)
-
-
-def test_the_playbook_is_the_systems_when_the_interpreter_carries_none(tmp_path, monkeypatch):
-    """
-    ansible comes from the installer's prepare step, on the system: with none in the
-    interpreter's directory, the command line starts with the system's.
-    """
-    system = _executable(tmp_path / "usr" / "bin", "ansible-playbook")
-    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
-    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
-    assert argv[0] == system
-
-
-def test_an_ansible_the_interpreter_carries_is_still_the_one_used(tmp_path, monkeypatch):
-    """
-    A controller that already holds its own ansible in the interpreter's directory keeps
-    running the books with it.
-    """
-    own = _executable(tmp_path / "py" / "bin", "ansible-playbook")
-    _executable(tmp_path / "usr" / "bin", "ansible-playbook")
-    monkeypatch.setattr(runner, "SYSTEM_PATH", (str(tmp_path / "usr" / "bin"),), raising=False)
-    argv = runner.playbook_argv(REQUEST, dict(VERDICT, variables={}), dict(BUILT, python=str(tmp_path / "py")))
-    assert argv[0] == own
-
-
 def test_an_empty_collections_setting_leaves_the_path_to_ansible():
     """
     The books' collections are wherever ansible looks by itself: the environment names no
@@ -730,31 +674,6 @@ def test_an_empty_collections_setting_leaves_the_path_to_ansible():
     assert "ANSIBLE_COLLECTIONS_PATH" not in runner.playbook_env(dict(BUILT, collections=""), inventory)
     assert runner.playbook_env(dict(BUILT, collections="/srv/collections"), inventory)[
         "ANSIBLE_COLLECTIONS_PATH"] == "/srv/collections"
-
-
-def test_the_library_is_on_ansibles_path_only_for_an_image_that_needs_it():
-    """
-    An image whose Python is 3.6 gets its modules directory as ANSIBLE_LIBRARY; every other
-    build leaves the variable out, so the books' own modules run as they always did.
-    """
-    inventory = "hosts,/var/job/inventory/hosts.yml"
-    assert "ANSIBLE_LIBRARY" not in runner.playbook_env(BUILT, inventory)
-    assert runner.playbook_env(BUILT, inventory, "/srv/library")["ANSIBLE_LIBRARY"] == "/srv/library"
-
-
-def test_the_library_is_the_one_luna2_utils_ships_under_the_interpreter(tmp_path):
-    """
-    The directory is found under the interpreter's site-packages, and a luna2-utils without
-    the dnf and selinux modules is a refusal naming the interpreter.
-    """
-    settings = dict(BUILT, python=str(tmp_path / "py"))
-    library = tmp_path / "py" / "lib" / "python3.10" / "site-packages" / "utils" / "ansible_library"
-    library.mkdir(parents=True)
-    (library / "dnf.py").write_text("")
-    with pytest.raises(runner.Failed, match=f"luna2-utils under {tmp_path}/py ships no dnf and selinux"):
-        runner.ansible_library(settings)
-    (library / "selinux.py").write_text("")
-    assert runner.ansible_library(settings) == str(library)
 
 
 # What ansible-galaxy answers on the controller the installer's prepare step made: each
@@ -984,7 +903,6 @@ def _leap_job(tmp_path, monkeypatch, template: str, kernels: tuple = ()) -> tupl
     mirror = detect.Finding(source=LEAP_MIRROR, kind="repository", family="suse", distro="opensuse-leap",
                             release="15", dotrelease="15.6", arch="x86_64")
     monkeypatch.setattr(detect, "identify_all", lambda media, want_arch=None, release=None: [mirror])
-    monkeypatch.setattr(runner, "ansible_library", lambda settings: "/srv/library")
     return jobdir, started, _books_file(tmp_path, "templates/opensuse-repo.j2", template)
 
 
@@ -1009,9 +927,7 @@ def test_a_leap_mirror_is_built_by_books_that_read_it(tmp_path, monkeypatch, sig
                                        kernels=("5.14.21-150600",))
     assert runner.Build(jobdir).run() == 0
     assert jobs.read_json(jobdir, jobs.VERDICT)["variables"]["opensuse_repo_baseurl"] == LEAP_MIRROR
-    (argv, kwargs), = started
-    assert kwargs["env"]["ANSIBLE_LIBRARY"] == "/srv/library"
-    assert json.dumps({"image_bootstrap_extra": ["python312"]}) in argv
+    assert started
 
 
 UBUNTU_RELEASES = 'ubuntu_releases:\n  "22": jammy\n  "24": noble\n'
@@ -1212,7 +1128,7 @@ def test_a_checkout_without_a_hosts_file_gets_this_controller_as_the_controllers
     assert runner.controller_name(str(books)) == "ctl1"
     (books / "hosts").write_text("[controllers]\nctl1\n")
     assert runner.controller_name(str(books)) == ""
-    hosts = runner.write_inventory(str(tmp_path / "job"), "rocky9", "/usr/bin/python3.9", "", "ctl1")
+    hosts = runner.write_inventory(str(tmp_path / "job"), "", "ctl1")
     import yaml
     group = yaml.safe_load(open(hosts))["all"]["children"]["controllers"]["hosts"]
     assert group == {"ctl1": {"ansible_host": "127.0.0.1", "ansible_connection": "local"}}

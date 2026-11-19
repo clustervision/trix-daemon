@@ -43,7 +43,6 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import fcntl
-import glob
 import json
 import os
 import platform
@@ -71,7 +70,6 @@ REMOTE_TMP: str = "/tmp/.ansible-lpart"
 # that asked for the build; the books' last play takes it as it is and makes the group.
 SKIP_TAGS: tuple = ("pack-images",)
 CHROOT_COMMAND: str = "lchroot --path {{ image_path }} --force --"
-CONTROLLER_INTERPRETER: str = "/usr/bin/python3"
 # How long a reason may be: the last fatal line can carry a package manager's whole output.
 REASON_MOST: int = 400
 # What builds the tree: the books, or a stub that only says lines, so the whole chain from
@@ -84,13 +82,12 @@ BUILDERS: tuple = (BOOKS, STUB, STUB_FAIL)
 STUB_KERNEL: str = "0.0.0-stub"
 # What the books need on the controller, checked before any source is read: the tools
 # that keep the build out of a hand chroot, the collections and Galaxy roles of the
-# family's playbook as rules.FAMILIES lists them, and how long a probe of a command may take.
+# family's playbook as rules.FAMILIES lists them, the ansible-playbook under the interpreter,
+# and how long a probe of a command may take.
 TOOLS: tuple = ("lchroot", "bwrap")
 PROBE_TIMEOUT: int = 30
-# Where the runner looks for a command after its interpreter's own directory.
+# The system directories after the interpreter's own on the build's PATH.
 SYSTEM_PATH: tuple = ("/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin")
-# The oldest Python ansible-core drives on the controller side; EL8's is 3.6.
-INTERPRETER_LEAST: tuple = (3, 7)
 
 # The lines of the book's output that are relayed, the ones that start a fatal (ERROR! is
 # what ansible says before any play runs), and the ones that tell whether it ended the run.
@@ -163,16 +160,10 @@ class Progress:
 
 def toolchain(settings: dict, name: str) -> str:
     """
-    A command of the books' toolchain: the interpreter's own when its directory carries one,
-    else the system's, which the installer's prepare step puts there. When neither exists,
-    the interpreter's path, so a refusal names the first place looked.
+    A command of the books' toolchain: the one under the interpreter the builds run on,
+    the ansible of TrinityX's own Python, as a hand run of the books uses.
     """
-    own = os.path.join(settings["python"], "bin")
-    for directory in (own,) + SYSTEM_PATH:
-        found = os.path.join(directory, name)
-        if os.path.isfile(found) and os.access(found, os.X_OK):
-            return found
-    return os.path.join(own, name)
+    return os.path.join(settings["python"], "bin", name)
 
 
 def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
@@ -197,27 +188,11 @@ def playbook_argv(request: dict, verdict: dict, settings: dict) -> list:
 GALAXY_ROLES: tuple = ("~/.ansible/roles", "/usr/share/ansible/roles", "/etc/ansible/roles")
 
 
-def ansible_library(settings: dict) -> str:
-    """
-    The directory of the modules luna2-utils ships for images whose Python is 3.6, which
-    run on the image's own Python: dnf and selinux. A Failed naming the directory when
-    the interpreter's luna2-utils carries none.
-    """
-    found = sorted(glob.glob(os.path.join(settings["python"], "lib", "python3*", "site-packages",
-                                          "utils", "ansible_library")))
-    if not found or not all(os.path.isfile(os.path.join(found[0], f"{module}.py"))
-                            for module in ("dnf", "selinux")):
-        raise Failed(f"luna2-utils under {settings['python']} ships no dnf and selinux modules "
-                     f"for an image whose Python is 3.6: update luna2-utils")
-    return found[0]
-
-
-def playbook_env(settings: dict, inventory: str, library: str = "") -> dict:
+def playbook_env(settings: dict, inventory: str) -> dict:
     """
     What the book's process is told beyond the environment the build started with: the lchroot connection
     and where its plugin is, the books' roles then the installer's Galaxy roles, the
-    collections where the settings say, else on ansible's own search path, the inventory,
-    and the directory of modules for an image whose Python is 3.6 when it is given.
+    collections where the settings say, else on ansible's own search path, and the inventory.
     """
     books = settings["books"]
     env = {"LUNA_IMAGE_CONNECTION": "lchroot",
@@ -229,8 +204,6 @@ def playbook_env(settings: dict, inventory: str, library: str = "") -> dict:
            "PYTHONUNBUFFERED": "1"}
     if settings["collections"]:
         env["ANSIBLE_COLLECTIONS_PATH"] = settings["collections"]
-    if library:
-        env["ANSIBLE_LIBRARY"] = library
     return env
 
 
@@ -244,30 +217,22 @@ def controller_name(books: str) -> str:
     return socket.gethostname().split(".")[0]
 
 
-def write_inventory(jobdir: str, name: str, interpreter: str, answers: str = "",
-                    controller_host: str = "") -> str:
+def write_inventory(jobdir: str, answers: str = "", controller_host: str = "") -> str:
     """
-    The run's own inventory beside the books' one: the interpreter of each host as
-    inventory data, because an extra variable would also reach a task delegated to the
-    other side and run it on the wrong Python. The cluster's answers, when the books carry
-    none, go in beside the interpreter, as a directory of files because ansible reads
-    group_vars/all.yml only where there is no group_vars/all directory. When the books have
-    no hosts file, the controllers group is this controller, which the playbooks' controller
-    plays need. Answers the path of its hosts file.
+    The run's own inventory beside the books' one: the cluster's answers, when the books
+    carry none, as a file of a group_vars/all directory, and, when the books have no hosts
+    file, the controllers group as this controller, which the playbooks' controller plays
+    need. The Python of each host is left to ansible to discover, as a hand run leaves it.
+    Answers the path of its hosts file.
     """
     where = os.path.join(jobdir, jobs.INVENTORY)
-    controller = f"ansible_python_interpreter: {CONTROLLER_INTERPRETER}\n"
     hosts = "all: {}\n"
     if controller_host:
         hosts = (f"all:\n  children:\n    controllers:\n      hosts:\n        {controller_host}:\n"
                  "          ansible_host: 127.0.0.1\n          ansible_connection: local\n")
     files.write(os.path.join(where, "hosts.yml"), hosts, 0o600)
-    files.write(os.path.join(where, "group_vars", "all", "controller.yml"), controller, 0o600)
     if answers:
         files.write(os.path.join(where, "group_vars", "all", "answers.yml"), answers, 0o600)
-    files.write(os.path.join(where, "host_vars", "localhost.yml"), controller, 0o600)
-    files.write(os.path.join(where, "host_vars", f"{name}.osimages.luna.yml"),
-                f"ansible_python_interpreter: {interpreter}\n", 0o600)
     return os.path.join(where, "hosts.yml")
 
 
@@ -308,9 +273,9 @@ def preconditions(settings: dict, family: str) -> None:
     """
     What the book will need, checked before any source is read, so a build does not
     fail an hour in: the books, the collections and Galaxy roles of the family's
-    playbook, the tools that keep the build out of a hand chroot, the controller's
-    Python and the playbook command. A record whose distribution no family takes
-    needs no collection or role: the rules refuse it once the sources are read.
+    playbook, the tools that keep the build out of a hand chroot, and the ansible-playbook
+    under the interpreter. A record whose distribution no family takes needs no
+    collection or role: the rules refuse it once the sources are read.
     """
     absent = checkout.missing(settings["repo"])
     if absent:
@@ -336,36 +301,11 @@ def preconditions(settings: dict, family: str) -> None:
     if missing:
         raise Failed(f"{' and '.join(missing)} not on PATH, and without them the books "
                      f"would chroot by hand")
-    controller_interpreter()
-    playbook = toolchain(settings, "ansible-playbook")
     try:
-        version = shell.run([playbook, "--version"], timeout=PROBE_TIMEOUT)
+        shell.run([toolchain(settings, "ansible-playbook"), "--version"], timeout=PROBE_TIMEOUT)
     except BackendFailure as error:
-        raise Failed(f"{playbook} could not be run: {error}") from None
-    if not version.ok or "core 2." not in version.out.split("\n")[0]:
-        raise Failed(f"{playbook} is not ansible-core 2: "
-                     f"{version.err or version.out or 'it said nothing'}")
-
-
-def controller_interpreter() -> None:
-    """
-    The books run their controller-side tasks on the system Python, which has to be
-    one ansible-core can drive; EL8's dnf bindings exist only for its 3.6.
-    """
-    try:
-        asked = shell.run([CONTROLLER_INTERPRETER, "-c",
-                           "import sys; print('%d.%d' % sys.version_info[:2])"],
-                          timeout=PROBE_TIMEOUT)
-    except BackendFailure as error:
-        raise Failed(f"{CONTROLLER_INTERPRETER} could not be run: {error}") from None
-    found = re.match(r"^(\d+)\.(\d+)$", asked.out.strip()) if asked.ok else None
-    if not found:
-        raise Failed(f"{CONTROLLER_INTERPRETER} did not say its version: "
-                     f"{asked.err or asked.out or 'it said nothing'}")
-    if tuple(int(part) for part in found.groups()) < INTERPRETER_LEAST:
-        raise Failed(f"this controller's {CONTROLLER_INTERPRETER} is {found.group(0)}; the "
-                     f"books need {'.'.join(map(str, INTERPRETER_LEAST))} or newer here "
-                     f"(EL9 or later)")
+        raise Failed(f"{error}: the trixd role installs TrinityX's ansible under "
+                     f"{settings['python']}") from None
 
 
 def controller_release() -> dict:
@@ -486,12 +426,10 @@ class Build:
         if verdict["arch"] != platform.machine():
             self._register_binfmt(settings["python"], verdict["arch"])
         verdict = dict(verdict, variables=variables)
-        hosts = write_inventory(self.jobdir, request["name"], verdict["interpreter"],
-                                self._answers(settings), controller_name(settings["books"]))
+        hosts = write_inventory(self.jobdir, self._answers(settings), controller_name(settings["books"]))
         argv = playbook_argv(request, verdict, settings)
         env = dict(os.environ)
-        env.update(playbook_env(settings, inventory_sources(settings["books"], hosts),
-                                ansible_library(settings) if verdict.get("library") else ""))
+        env.update(playbook_env(settings, inventory_sources(settings["books"], hosts)))
         if self.cancelled:
             # The stop arrived during the preparation: the book is not started.
             return

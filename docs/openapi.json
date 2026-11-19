@@ -832,7 +832,7 @@
                 "type": "null"
               }
             ],
-            "description": "The Python the builds run under; its directory is searched first for ansible-playbook, then the system's",
+            "description": "The Python the builds run under, whose own ansible-playbook runs the books",
             "examples": [
               "/trinity/local/python"
             ],

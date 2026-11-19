@@ -463,6 +463,12 @@ class Finding(dict):
         self.setdefault("evidence", []).append("%s: %s" % (src, what))
 
 
+def repomd_arches(r: Reader, prefix: str) -> set:
+    """The arches a SUSE repository names in its repomd.xml, one obsproduct entry each."""
+    text = (r.read(prefix + "repodata/repomd.xml", 65536) or b"").decode("utf-8", "replace")
+    return {norm_arch(a) for a in re.findall(r"<repo>obsproduct://[^<]*/([^/<]+)</repo>", text)} - {None}
+
+
 def from_treeinfo(r: Reader, prefix: str, f: Finding) -> bool:
     """An EL tree's .treeinfo: family, version, arch and the variants' repositories."""
     data = r.read(prefix + ".treeinfo") or r.read(prefix + "treeinfo")
@@ -488,6 +494,13 @@ def from_treeinfo(r: Reader, prefix: str, f: Finding) -> bool:
     f.update(family=family, distro=distro, release=rel, dotrelease=dot, bootstrap=boot,
              arch=norm_arch(g("tree", "arch") or g("general", "arch")))
     f.note(prefix + ".treeinfo", "family=%r version=%r arch=%r" % (family_txt, version, f["arch"]))
+    # a multi-architecture tree's .treeinfo describes one platform; the others are named elsewhere
+    named = {norm_arch(p) for p in (g("general", "platforms") or "").split(",")}
+    if family == "suse":
+        named |= repomd_arches(r, prefix)
+    arches = sorted((named | {f["arch"]}) - {None})
+    if len(arches) > 1:
+        f["arches_available"] = arches
     variants = [v.strip() for v in (g("tree", "variants") or g("general", "variants") or "").split(",")
                 if v.strip()]
     repos = {}
@@ -810,6 +823,8 @@ def identify(source: str, want_arch: str = None, suite: str = None, deadline: De
         return f, 1
     if f.get("kind") == "repo-extra" and not f.get("arch"):
         f["arch"] = arch_in_path(source)
+    if want_arch in f.get("arches_available", ()):
+        f["arch"] = want_arch
     if want_arch and not f.get("arch"):
         f["arch"] = want_arch
     if f.get("arch") and want_arch and f["arch"] != want_arch:

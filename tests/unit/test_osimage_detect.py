@@ -59,6 +59,26 @@ repository = ../../../AppStream/x86_64/os
 [variant-BaseOS]
 repository = .
 """
+LEAP_TREEINFO = """[release]
+name = openSUSE Leap
+version = 15.6
+[general]
+arch = x86_64
+family = openSUSE Leap
+name = openSUSE Leap 15.6
+version = 15.6
+platforms = x86_64,xen
+"""
+LEAP_REPOMD = """<?xml version="1.0" encoding="UTF-8"?>
+<repomd xmlns="http://linux.duke.edu/metadata/repo">
+  <tags>
+    <repo>obsproduct://build.opensuse.org/openSUSE:Leap:15.6/Leap/15.6/x86_64</repo>
+    <repo>obsproduct://build.opensuse.org/openSUSE:Leap:15.6/Leap/15.6/aarch64</repo>
+    <repo>obsproduct://build.opensuse.org/openSUSE:Leap:15.6/Leap/15.6/ppc64le</repo>
+    <repo>obsproduct://build.opensuse.org/openSUSE:Leap:15.6/Leap/15.6/s390x</repo>
+  </tags>
+</repomd>
+"""
 NOBLE_RELEASE = """Origin: Ubuntu
 Label: Ubuntu
 Suite: noble
@@ -97,6 +117,16 @@ def rocky_root(root, release: str = "9.8", arch: str = "x86_64") -> str:
     treeinfo = ROCKY_BASEOS_TREEINFO.replace("9.8", release).replace("x86_64", arch)
     put(root, f"BaseOS/{arch}/os/.treeinfo", treeinfo)
     os.makedirs(os.path.join(str(root), f"AppStream/{arch}/os"))
+    return str(root)
+
+
+def leap_root(root) -> str:
+    """
+    A Leap repository as the mirrors serve it: one tree for every arch, whose .treeinfo
+    describes x86_64 alone and whose repomd.xml names the arches.
+    """
+    put(root, ".treeinfo", LEAP_TREEINFO)
+    put(root, "repodata/repomd.xml", LEAP_REPOMD)
     return str(root)
 
 
@@ -212,25 +242,23 @@ def test_the_record_is_held_against_what_the_sources_are():
         rules.check_record(found, "ubuntu", "9.6")
 
 
-def test_a_release_with_python_3_6_runs_its_image_steps_on_a_newer_python():
+def test_no_release_is_given_a_second_python_or_an_interpreter(tmp_path):
     """
-    EL8 and Leap 15 images carry Python 3.6, which ansible-core cannot run its modules on:
-    their verdict names the newer Python for the books to install, the interpreter of the
-    image's steps and the library flag. No other release gets any of the three.
+    The ansible-core the books run with drives the Python 3.6 of EL8 and Leap 15 images as
+    it drives every other: no verdict, of any family or source, names a package to add to
+    the bootstrap, a module library or an interpreter for the image.
     """
     el8 = {"family": "redhat", "distro": "rocky", "release": "8", "dotrelease": "8.10"}
     el9 = {"family": "redhat", "distro": "rocky", "release": "9", "dotrelease": "9.6"}
-    old = [rules.placement("redhat", "8.10", "x86_64", el8, "x86_64"),
-           rules.placement("opensuse", "15.6", "x86_64", el9, "x86_64")]
-    for verdict, package in zip(old, ("python3.12", "python312")):
-        assert verdict["interpreter"] == "/usr/bin/python3.12"
-        assert verdict["library"] is True
-        assert verdict["variables"]["image_bootstrap_extra"] == [package]
-    for verdict in (rules.placement("redhat", "9.6", "x86_64", el9, "x86_64"),
-                    rules.placement("ubuntu", "24.04", "x86_64", el9, "x86_64")):
-        assert verdict["interpreter"] == "/usr/bin/python3"
-        assert "library" not in verdict
-        assert "image_bootstrap_extra" not in verdict["variables"]
+    verdicts = [rules.placement("redhat", "8.10", "x86_64", el8, "x86_64"),
+                rules.placement("opensuse", "15.6", "x86_64", el9, "x86_64"),
+                rules.placement("redhat", "9.6", "x86_64", el9, "x86_64"),
+                rules.placement("ubuntu", "24.04", "x86_64", el9, "x86_64"),
+                rules.verdict(detect.identify_all([rocky_root(tmp_path, "8.10")], want_arch="x86_64"),
+                              arch="x86_64")]
+    for verdict in verdicts:
+        assert "interpreter" not in verdict and "library" not in verdict, verdict["detected"]
+        assert "image_bootstrap_extra" not in verdict["variables"], verdict["detected"]
 
 
 def test_without_a_source_the_books_place_what_they_hold():
@@ -257,7 +285,7 @@ def test_without_a_source_the_books_place_what_they_hold():
     assert ubuntu["detected"] == "ubuntu 24.04 x86_64 from no source, the mirror the books name"
     leap = rules.placement("opensuse", "15.6", "x86_64", controller, "x86_64")
     assert leap["playbook"] == "compute-opensuse.yml"
-    assert leap["variables"] == {"opensuse_release": "leap/15.6", "image_bootstrap_extra": ["python312"]}
+    assert leap["variables"] == {"opensuse_release": "leap/15.6"}
     name = "name a source in the create, or a mirrors entry for it in the settings"
     with pytest.raises(BadRequest, match=f"the books build no alma image without a source, only "
                                          f"opensuse, redhat, ubuntu: {name}"):
@@ -363,6 +391,52 @@ def test_a_suse_tree_is_read_from_its_products_file(tmp_path):
     os.makedirs(tmp_path / "x86_64")
     f, rc = detect.identify(str(tmp_path))
     assert (f["distro"], f["release"], f["dotrelease"], f["arch"]) == ("opensuse-leap", "15", "15.6", "x86_64")
+
+
+def test_a_multi_arch_suse_tree_is_accepted_for_each_arch_it_carries(tmp_path):
+    """
+    The .treeinfo of a Leap repository says x86_64, but the tree is every arch's: an aarch64
+    request must not be refused for it, and the arch asked is the one found.
+    """
+    root = leap_root(tmp_path)
+    for asked in ("aarch64", "arm64", "x86_64", "s390x"):
+        f, rc = detect.identify(root, want_arch=asked)
+        assert (rc, f.get("problems"), f["arch"]) == (0, None, detect.norm_arch(asked)), f
+    f, rc = detect.identify(root)
+    assert (rc, f["arch"]) == (0, "x86_64")
+
+
+def test_a_multi_arch_suse_tree_is_refused_for_an_arch_it_does_not_carry(tmp_path):
+    """
+    The arches the repomd.xml names are the arches of the tree; another is refused in the
+    sentence every arch mismatch gets.
+    """
+    f, rc = detect.identify(leap_root(tmp_path), want_arch="riscv64")
+    assert rc == 2
+    assert f["problems"] == ["source is x86_64, arch riscv64 was asked"]
+
+
+def test_a_treeinfo_naming_several_platforms_is_accepted_for_each_of_them(tmp_path):
+    """
+    An EL tree whose .treeinfo lists more than one platform is not pinned to the first.
+    """
+    put(tmp_path, ".treeinfo", ROCKY_BASEOS_TREEINFO.replace(
+        "name = Rocky Linux 9.8\n", "name = Rocky Linux 9.8\nplatforms = x86_64,aarch64\n"))
+    f, rc = detect.identify(str(tmp_path), want_arch="aarch64")
+    assert (rc, f.get("problems"), f["arch"]) == (0, None, "aarch64"), f
+    f, rc = detect.identify(str(tmp_path), want_arch="s390x")
+    assert (rc, f["problems"]) == (2, ["source is x86_64, arch s390x was asked"])
+
+
+def test_a_single_arch_tree_stays_pinned_to_its_arch(tmp_path):
+    """
+    A Rocky aarch64 mirror is aarch64 for an aarch64 request and refused for any other.
+    """
+    root = rocky_root(tmp_path, arch="aarch64") + "/BaseOS/aarch64/os"
+    f, rc = detect.identify(root, want_arch="aarch64")
+    assert (rc, f.get("problems"), f["arch"]) == (0, None, "aarch64"), f
+    f, rc = detect.identify(root, want_arch="x86_64")
+    assert (rc, f["problems"]) == (2, ["source is aarch64, arch x86_64 was asked"])
 
 
 def test_an_unpacked_root_filesystem_is_read_from_os_release(tmp_path):
@@ -596,7 +670,6 @@ def test_a_rocky_mirror_root_gives_the_books_their_variables(tmp_path):
     assert answer["detected"] == "rocky 9.8 x86_64 from 1 source"
     assert (answer["playbook"], answer["distribution"], answer["release"], answer["arch"]) == (
         "compute-redhat.yml", "redhat", "9", "x86_64")
-    assert answer["interpreter"] == "/usr/bin/python3"
     assert answer["base"] == 0 and answer["base_variable"] == "image_el_baseurl"
     assert answer["variables"]["image_el_baseurl"] == f"file://{root}/"
     assert answer["variables"]["image_el_releasever"] == "9"
