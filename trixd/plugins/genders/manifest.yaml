@@ -41,11 +41,13 @@ endpoints:
       inputs: [luna.node, luna.group]
       coalesce: 2s
       serve: json
+      # Nothing to reload: every reader of the genders file opens it for itself.
+      reconcile: true
     summary: What the last genders render wrote
     description: |
       The last render of the genders file: how many nodes it wrote, and where. It renders
       when a node or group changes through the luna plugin, at most every two seconds in a
-      burst, and on a notify.
+      burst, and on a notify. Reading this writes nothing: it answers from the last run.
     response:
       description: What the last render wrote
       example: {nodes: 10, file: /etc/genders}

@@ -488,6 +488,8 @@ endpoints:
                exporter, exporter-scope]
       serve: json
       coalesce: 2s
+      # A document and nothing else: this one is the pure half of the pair.
+      reconcile: false
     summary: Service discovery targets, served from the render
     description: |
       The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
@@ -516,6 +518,8 @@ endpoints:
       # that interface's address and its network. Each of those decides what to relabel.
       inputs: [settings, rules, luna.node, luna.group, luna.nodeinterface, luna.ipaddress,
                luna.network]
+      reconcile: true
+      reloads: [prometheus]
     # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk
 
@@ -527,6 +531,8 @@ endpoints:
       # The stored document is the whole input: these targets are not Luna's, so no Luna
       # table decides what goes in the file.
       inputs: [targets]
+      # Nothing to reload: Prometheus watches the files its file_sd reads.
+      reconcile: true
     # No serve: this render writes the file_sd document and answers nothing over HTTP. It
     # is what puts the file on the controller the document was not sent to.
     summary: The targets outside Luna, on disk

@@ -189,6 +189,8 @@ reload endpoint answers 409 with the reason.
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
 | a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
+| a render declares `reconcile: false` and no `serve` | refused; it writes nothing and answers no route, so nothing it did could be observed |
+| a render declares `reloads` and is not a reconcile | refused; only a reconcile reaches a service |
 | an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
 | an endpoint declares a `minimum` and is `public: true`, `forward: true` or `token: node` | refused; no role is checked on those, so the role would admit everyone |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
@@ -363,25 +365,36 @@ reach its caller rather than catching it.
 
 ## Renders
 
-A render is an output computed from inputs, such as the Prometheus target list or
-a slurm file. The daemon redoes it when an input changes and answers every later
-poll from what it last produced.
+A render is an output computed from inputs. It does one of two jobs, and `reconcile`
+is how the manifest says which: a **pure render** builds a document in memory and
+serves it, such as the Prometheus target list; a **reconcile** makes files on disk
+agree with the state and reloads whatever reads them, such as the slurm files. The
+daemon redoes either when an input changes and answers every later poll from what it
+last produced.
+
+A read never produces. The route behind a `serve` is a reader that hands back the
+last result, so a GET reaches no file and no service however much its producer
+writes - which is why a reconcile may serve as well, and what it serves is then a
+report of its last run rather than the document itself.
 
 ```yaml
   - path: renders/targets
     methods: [GET]
     minimum: reader
     render:
-      inputs:   [luna.node, luna.network]
-      coalesce: 2s
-      serve:    json
+      inputs:    [luna.node, luna.network]
+      coalesce:  2s
+      serve:     json
+      reconcile: false
 ```
 
 | Field | Meaning |
 |---|---|
 | `inputs` | what wakes it: `luna.` and one of Luna's own table names (`luna.node`, `luna.group`, `luna.nodeinterface`, `luna.ipaddress`, `luna.network`, and any other table Luna hashes), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
 | `coalesce` | how long a burst of changes is gathered, default `2s` |
-| `serve` | `json` to answer GET with what was produced; without it the render produces files and serves nothing |
+| `serve` | `json` to answer GET with what was produced; without it the render answers no route at all |
+| `reconcile` | `true` where producing writes files or reloads a service, `false` where it only builds a document. Left out, a render that serves nothing is taken as a reconcile and one that serves is not - so say it on a reconcile that also serves, which neither half derives |
+| `reloads` | the services a reconcile reloads. Reload only where the content generated differs from what is on disk: both controllers write one file on shared storage, so a reload on every pass costs twice and a boot storm costs once per node |
 
 Declare the table that *carries* what the producer reads, including a table it
 reaches only through a field Luna assembles for it, and declare the table rather

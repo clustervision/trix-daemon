@@ -2776,7 +2776,7 @@
     },
     "/api/v1/genders/renders/genders": {
       "get": {
-        "description": "The last render of the genders file: how many nodes it wrote, and where. It renders\nwhen a node or group changes through the luna plugin, at most every two seconds in a\nburst, and on a notify.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of the genders file: how many nodes it wrote, and where. It renders\nwhen a node or group changes through the luna plugin, at most every two seconds in a\nburst, and on a notify. Reading this writes nothing: it answers from the last run.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_render_genders_get_api_v1_genders_renders_genders_get",
         "responses": {
           "200": {
@@ -7065,7 +7065,7 @@
     },
     "/api/v1/slurm/renders/config": {
       "get": {
-        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\nA node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\nA node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.\nReading this writes nothing: it answers from the last run, and slurm is reconfigured\nonly where the generated blocks differ from what is on disk.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_render_config_get_api_v1_slurm_renders_config_get",
         "responses": {
           "200": {

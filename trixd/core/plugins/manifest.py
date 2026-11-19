@@ -65,7 +65,8 @@ TYPES: dict = {
 
 class Render(BaseModel):
     """
-    A derived output: what it reads, how long a burst is gathered, and whether it is served.
+    A derived output: what it reads, how long a burst is gathered, whether it is served, and
+    whether producing it changes anything outside this process.
     """
 
     model_config = ConfigDict(extra="forbid")
@@ -73,6 +74,22 @@ class Render(BaseModel):
     inputs: list = Field(default_factory=list)
     coalesce: str = "2s"
     serve: str = ""
+    # Undeclared rather than False by default: a manifest written before this field says
+    # nothing about side effects, and `reconciles` below reads it exactly as `serve` was
+    # read then, so no plugin already in the field stops loading or changes meaning.
+    reconcile: Optional[bool] = None
+    reloads: list = Field(default_factory=list)
+
+    @property
+    def reconciles(self) -> bool:
+        """
+        Whether producing this writes files or reloads a service.
+
+        Serving and writing are not opposites - the slurm and genders renders do both, and
+        what they serve is a report of the last write rather than the document itself - so
+        the derivation is only the fallback for a manifest that does not say.
+        """
+        return not self.serve if self.reconcile is None else self.reconcile
 
 
 class Doc(BaseModel):
@@ -294,6 +311,20 @@ def parse(document: dict) -> Manifest:
                     f"{endpoint.path or '/'} is a render, so it cannot also serve "
                     f"{', '.join(writes)}: the reader answers what was last rendered, so "
                     f"the document would show a write that changes nothing")
+        if endpoint.render is not None:
+            # A render is one of two jobs and the manifest has to say which: a document
+            # built in memory and served, or a task that makes files on disk agree with the
+            # state and reloads whatever reads them. The two shapes below say neither.
+            if not endpoint.render.reconciles and not endpoint.render.serve:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a render declaring reconcile: false and no "
+                    f"serve, so it writes nothing and nothing reads what it produces: it "
+                    f"would run on every wake for no effect an author could observe")
+            if endpoint.render.reloads and not endpoint.render.reconciles:
+                raise PluginRefused(
+                    f"{endpoint.path or '/'} is a pure render, so it cannot declare that it "
+                    f"reloads {', '.join(map(str, endpoint.render.reloads))}: only a "
+                    f"reconcile reaches a service")
         unguarded = "public" if endpoint.public else "forward" if endpoint.forward else ""
         if unguarded and endpoint.token == TOKEN_KIND_NODE:
             # Which half the author meant - the unguarded route or the node binding -

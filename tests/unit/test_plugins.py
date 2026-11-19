@@ -1568,6 +1568,132 @@ def test_a_declaration_the_route_would_ignore_is_refused_beside_its_neighbours()
     assert len(sound.endpoints) == 5, "five shapes that have to go on loading"
 
 
+def test_a_render_must_say_whether_it_writes_or_only_serves(rig):
+    """
+    One word carried two jobs. A render either builds a document in memory and serves it,
+    or makes files on disk agree with the state and reloads what reads them - and the
+    manifest said only whether it served, which is not the same question: the slurm and
+    genders renders do both, and what they serve is a report of the last write.
+
+    `reconcile` is the word for it, and these are the two shapes that then say neither job.
+    Left out it is derived as `serve` was read before the field existed, so a manifest
+    written against the older schema loads unchanged and means what it meant.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend"}
+
+    def one(render: dict) -> dict:
+        return {**base, "endpoints": [{"path": "renders/thing", "methods": ["GET"],
+                                       "minimum": "none", "handler": "render_thing",
+                                       "render": render}]}
+
+    # First, and before anything the new field is in: both shapes an older manifest can
+    # carry still parse. A refusal that caught these would stop a shipped plugin loading,
+    # which is worse than the ambiguity it was added for.
+    for older in ({"inputs": ["luna.node"], "serve": "json"}, {"inputs": ["luna.node"]}):
+        assert manifests.parse(one(older)).endpoints[0].render is not None, older
+
+    for render, because in (
+            # Declared pure and serving nothing: it writes no file and answers no route, so
+            # it runs on every wake and an author has nothing at all to look at.
+            ({"inputs": ["luna.node"], "reconcile": False},
+             "no effect an author could observe"),
+            # A service named by something that never reaches one.
+            ({"inputs": ["luna.node"], "serve": "json", "reloads": ["slurm"]},
+             "only a reconcile reaches a service")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse(one(render))
+        assert because in str(refusal.value), (because, str(refusal.value))
+
+    # And the derivation itself, last: a render that serves is taken as pure and one that
+    # serves nothing as a reconcile, which is what `serve` alone used to mean.
+    assert manifests.parse(one({"inputs": ["luna.node"],
+                                "serve": "json"})).endpoints[0].render.reconciles is False
+    assert manifests.parse(one({"inputs": ["luna.node"]})).endpoints[0].render.reconciles
+    # A reconcile may serve, which is the pair neither half derives.
+    both = manifests.parse(one({"inputs": ["luna.node"], "serve": "json",
+                                "reconcile": True, "reloads": ["slurm"]}))
+    assert both.endpoints[0].render.reconciles, "a reconcile that serves is still one"
+
+
+def test_every_shipped_render_says_which_of_the_two_jobs_it_does(rig):
+    """
+    Enumerated from the manifests rather than listed here, so a render added later has to
+    say which it is instead of inheriting whatever `serve` happens to imply. The derivation
+    is there for a manifest written before the field; ours have no reason to lean on it.
+    """
+    import glob as globbing
+
+    import yaml
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    renders = {}
+    for found in sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/manifest.yaml"))):
+        with open(found, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for endpoint in document.get("endpoints") or []:
+            if endpoint.get("render"):
+                renders[f"{document['plugin']}/{endpoint['path']}"] = endpoint["render"]
+    assert len(renders) >= 4, f"the manifests declared no renders to check: {renders}"
+
+    undeclared = sorted(key for key, spec in renders.items() if "reconcile" not in spec)
+    assert undeclared == [], f"shipped renders that do not say which job they do: {undeclared}"
+
+    # And a reconcile is the only one that may name a service, which the parser refuses the
+    # other way round: this is the shipped set agreeing with it.
+    wrong = sorted(key for key, spec in renders.items()
+                   if spec.get("reloads") and not spec.get("reconcile"))
+    assert wrong == [], f"pure renders naming a service they reload: {wrong}"
+
+
+def test_a_read_of_a_render_never_runs_the_producer_that_writes_its_files(rig, tmp_path):
+    """
+    The half of the split that is structural rather than declared: the route behind a
+    `serve` is the engine's reader, which hands back the last result, so a GET reaches no
+    file and no service however much the producer writes. That is what lets a reconcile
+    serve a report of itself without a poll turning into a write.
+
+    Nothing here is new, so this does not fail against the code it was written for: it pins
+    a property the split now states in the manifest, against a reader that could one day be
+    taught to produce on demand.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    sentinel = os.path.join(str(tmp_path), "written-by-the-producer")
+    ran = []
+
+    def produce() -> dict:
+        ran.append(1)
+        with open(sentinel, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        return {"runs": len(ran)}
+
+    item = renders().register("probe", "renders/thing",
+                              Render(inputs=["luna.node"], serve="json", reconcile=True),
+                              produce)
+    try:
+        # The setup, before the measurement: the producer does write, so a reader that ran
+        # it would leave the file behind. Without this the test passes on a producer that
+        # never worked.
+        assert renders().run(item) is True, "the producer did not run at all"
+        assert os.path.exists(sentinel), "the producer wrote no file, so nothing is proven"
+        os.remove(sentinel)
+        # Counted from here rather than from zero: registering produces too, once the
+        # first pass over every render has happened.
+        served, before = item.document, len(ran)
+
+        read = renders().reader("probe", "renders/thing")
+        for _ in range(3):
+            assert read() == served, "the reader answered something it did not store"
+        assert len(ran) == before, f"a read ran the producer {len(ran) - before} more time(s)"
+        assert not os.path.exists(sentinel), "a read wrote the producer's file"
+    finally:
+        renders().forget("probe")
+
+
 def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
     """
     Starlette matches the first of two routes with the same path and verb, so the second
