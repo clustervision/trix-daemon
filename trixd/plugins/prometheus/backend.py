@@ -38,6 +38,7 @@ import shutil
 import threading
 import time
 from collections import Counter
+from urllib.parse import urlsplit
 
 import requests
 import urllib3
@@ -50,7 +51,7 @@ from trixd.core.render.engine import current as renders
 from trixd.core.replication.applied import KEPT
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.prometheus import exporters
-from trixd.utils import declarations, files
+from trixd.utils import declarations, files, tls
 from trixd.utils import shell
 
 LOGGER = trixlog.get("prometheus")
@@ -77,6 +78,11 @@ DEFAULT_CONFIG: dict = {
     # because how long that window is depends on the size of the estate.
     "hw_alert_grace": "5m",
 }
+
+# How long an unverified loopback query stays unverified before TLS is tried again. The
+# hour is the daemon's cadence for a fallback pass, and it is what a reissued certificate
+# waits to take effect; nothing here is worth configuring.
+UNVERIFIED_FOR: int = 3600
 
 # Exporter name to the port it answers on. A node is a target once per exporter.
 EXPORTERS: dict = {
@@ -327,6 +333,9 @@ class Backend:
         self.reconciled_away: set = set()
         # Where Prometheus really answered, when that differs from the configured scheme.
         self.prometheus_url: str = ""
+        # When the loopback last failed to verify, so that it is asked unverified until the
+        # hour is out rather than per query. It says nothing about any other address.
+        self.unverified_from: float = 0.0
 
     # ---------------------------------------------------------------- config
 
@@ -777,24 +786,40 @@ class Backend:
 
     def _query(self, query: str):
         """
-        One instant query. TrinityX serves Prometheus over TLS; a site that does not is
-        found on the first call and remembered, so a scheme mismatch never stops the rules.
+        One instant query. Prometheus is asked over TLS and its certificate is verified
+        against the system trust store, which is where the cluster CA is installed; the
+        first query is also the probe that finds a loopback address the certificate does
+        not carry, so the rules go on being written there.
         """
         configured = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         url = self.prometheus_url or configured
-        for attempt in (1, 2):
+        upgraded = False
+        for _ in (1, 2, 3):
+            verify = not (_is_loopback(url) and self.unverified_from
+                          and time.monotonic() - self.unverified_from <= UNVERIFIED_FOR)
             try:
+                # The store is asked for inside the try, so a system without one is a
+                # verification that cannot succeed and is answered where a failed one is -
+                # never by asking anyway.
                 answer = requests.get(f"{url}/api/v1/query", params={"query": query},
-                                      timeout=20, verify=False)
+                                      timeout=20,
+                                      verify=tls.system_trust() if verify else False)
             except requests.exceptions.SSLError as error:
-                if attempt == 1:
-                    url = _other_scheme(url)
+                # The controller's certificate carries the box's own names, never localhost,
+                # so the loopback is the one address a healthy cluster cannot verify. Any
+                # other address is somebody else's, and a refusal there stays a refusal.
+                if verify and _is_loopback(url):
+                    self.unverified_from = time.monotonic()
+                    LOGGER.warning("Prometheus at %s did not verify (%s); asking the "
+                                   "loopback unverified, and verifying again in %ss",
+                                   url, error, UNVERIFIED_FOR)
                     continue
                 raise BackendFailure(f"Prometheus is not answering: {error}") from None
             except requests.RequestException as error:
                 raise BackendFailure(f"Prometheus is not answering: {error}") from None
-            if answer.status_code == 400 and "HTTPS server" in answer.text and attempt == 1:
+            if answer.status_code == 400 and "HTTPS server" in answer.text and not upgraded:
                 url = _other_scheme(url)
+                upgraded = True
                 continue
             break
         if answer.status_code >= 400:
@@ -1270,6 +1295,20 @@ def _other_scheme(url: str) -> str:
     if url.startswith("https://"):
         return "http://" + url[len("https://"):]
     return "https://" + url.split("://", 1)[-1]
+
+
+def _is_loopback(url: str) -> bool:
+    """
+    Whether an address is the box's own, which is the only one a controller certificate is
+    not expected to carry.
+    """
+    host = urlsplit(url).hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 
 def _hw_host(path: str) -> str:

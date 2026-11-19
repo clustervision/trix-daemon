@@ -2092,10 +2092,10 @@ def test_prometheus_is_asked_over_https_by_default(rig):
     assert prometheus.DEFAULT_CONFIG["prometheus_url"] == "https://localhost:9090"
 
 
-def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
+def test_a_tls_failure_is_not_answered_by_asking_in_the_clear(rig, tmp_path, monkeypatch):
     """
-    https against a plain Prometheus, or http against a TLS one, is retried once on the
-    other scheme, and that scheme is kept.
+    Whatever is wrong with the TLS endpoint, plain http is not the answer: the rules are
+    not written over a connection nobody chose.
     """
     from types import SimpleNamespace
 
@@ -2116,14 +2116,23 @@ def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
         return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
 
     monkeypatch.setattr(prometheus.requests, "get", plain_only)
-    backend._query("up")
-    backend._query("up")
-    assert asked[0].startswith("https://") and asked[1].startswith("http://")
-    assert asked[2].startswith("http://"), "the working scheme is remembered"
+    with pytest.raises(prometheus.BackendFailure):
+        backend._query("up")
+    assert not [url for url in asked if url.startswith("http://")], asked
 
-    backend.prometheus_url = ""
+
+def test_a_tls_prometheus_asked_over_http_is_upgraded_and_remembered(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    http against a TLS Prometheus is retried once on https, and that scheme is kept.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
     backend.config(body={"prometheus_url": "http://localhost:9090"})
-    asked.clear()
+    asked = []
 
     def tls_only(url, **_):
         """
@@ -2138,6 +2147,194 @@ def test_a_scheme_mismatch_is_found_and_remembered(rig, tmp_path, monkeypatch):
     monkeypatch.setattr(prometheus.requests, "get", tls_only)
     backend._query("up")
     assert asked == [asked[0], asked[1]] and asked[1].startswith("https://")
+    assert backend.prometheus_url == "https://localhost:9090"
+
+
+def _trust_store(monkeypatch, cafile="/etc/trixd-test/ca-bundle.pem"):
+    """
+    A system certificate store at a known path, so a test can say which store was handed
+    to requests rather than only that something truthy was. `cafile` of None is a system
+    with no store at all.
+    """
+    import ssl
+    from types import SimpleNamespace
+
+    monkeypatch.setattr(ssl, "get_default_verify_paths",
+                        lambda: SimpleNamespace(cafile=cafile, capath="/etc/trixd-test/certs"))
+    return cafile
+
+
+def test_a_loopback_that_cannot_verify_is_asked_unverified_from_then_on(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    The controller certificate carries the box's own names, not localhost, so the first
+    query is the one that finds out; the ones after it do not ask again.
+    """
+    from types import SimpleNamespace
+
+    import requests
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def named_for_the_box(url, **kwargs):
+        """
+        A certificate that does not name the address it is being asked on.
+        """
+        asked.append(kwargs.get("verify"))
+        if kwargs.get("verify"):
+            raise requests.exceptions.SSLError("hostname 'localhost' doesn't match")
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", named_for_the_box)
+    backend._query("up")
+    backend._query("up")
+    assert asked == [store, False, False], asked
+
+
+def test_the_loopback_verdict_is_taken_again_after_an_hour(rig, tmp_path, monkeypatch):
+    """
+    A reissued certificate is verified again without a restart.
+    """
+    import time
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        A Prometheus that answers whether or not it is verified.
+        """
+        asked.append(kwargs.get("verify"))
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    backend.unverified_from = time.monotonic() - prometheus.UNVERIFIED_FOR - 1
+    backend._query("up")
+    assert asked == [store], asked
+
+
+def test_a_prometheus_that_is_not_the_loopback_must_verify(rig, tmp_path, monkeypatch):
+    """
+    The fallback is for the one address a certificate cannot be expected to carry. Anywhere
+    else a certificate that does not verify is the answer, and no second attempt is made.
+    """
+    from types import SimpleNamespace
+
+    import requests
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.config(body={"prometheus_url": "https://prometheus.cluster:9090"})
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def never_verifies(url, **kwargs):
+        """
+        A Prometheus elsewhere whose certificate does not check out.
+        """
+        asked.append(kwargs.get("verify"))
+        raise requests.exceptions.SSLError("certificate verify failed")
+
+    monkeypatch.setattr(prometheus.requests, "get", never_verifies)
+    with pytest.raises(prometheus.BackendFailure):
+        backend._query("up")
+    assert asked == [store], asked
+
+
+def test_prometheus_is_verified_against_the_system_trust_store(rig, tmp_path, monkeypatch):
+    """
+    The cluster CA is installed in the operating system's store, so that is what the
+    certificate is checked against. The bundle requests reaches for on its own is
+    certifi's wherever the daemon runs from a virtual environment, and the cluster CA is
+    not in it, which leaves no address verifiable at all.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        A Prometheus that answers, whatever it is checked against.
+        """
+        asked.append(kwargs.get("verify"))
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    backend._query("up")
+    assert asked == [store], asked
+
+
+def test_a_prometheus_elsewhere_is_refused_when_there_is_no_trust_store(rig, tmp_path,
+                                                                       monkeypatch):
+    """
+    Nothing to check a certificate against is not a reason to stop checking: the query is
+    not sent at all, and the refusal says what is missing.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    backend.config(body={"prometheus_url": "https://prometheus.cluster:9090"})
+    _trust_store(monkeypatch, cafile=None)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        A Prometheus that would answer, if it were ever asked.
+        """
+        asked.append(kwargs.get("verify"))
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    refused = ""
+    try:
+        backend._query("up")
+    except prometheus.BackendFailure as error:
+        refused = str(error)
+    assert asked == [], asked
+    assert "certificate store" in refused, refused
+
+
+def test_a_loopback_with_no_trust_store_falls_back_like_any_other_failure(rig, tmp_path,
+                                                                         monkeypatch):
+    """
+    The loopback keeps its one probe and its hour whatever stopped the verification, so a
+    box whose store has gone missing still has its rules written.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    _trust_store(monkeypatch, cafile=None)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        A Prometheus that answers, whatever it is checked against.
+        """
+        asked.append(kwargs.get("verify"))
+        return SimpleNamespace(status_code=200, text="", json=lambda: {"data": {"result": []}})
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    backend._query("up")
+    backend._query("up")
+    assert asked == [False, False], asked
+    assert backend.unverified_from, "the hour is armed, so the next query does not probe again"
 
 
 def test_a_node_that_rebooted_unchanged_costs_no_write_and_no_reload(rig, tmp_path,

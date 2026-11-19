@@ -129,8 +129,10 @@ endpoints:
       reads the exporters from, `rules_directory` is where it writes the rule files Prometheus
       reads, `prometheus_url` is where it asks Prometheus which hardware each node reports,
       `reload_command` is what it runs after writing a rule file, and `hw_alert_grace` is how
-      long a component must be absent before a generated hardware alert fires. When the scheme
-      in `prometheus_url` is the wrong one, the plugin tries the other and remembers it.
+      long a component must be absent before a generated hardware alert fires. Prometheus is
+      asked over TLS with its certificate verified: http is upgraded to https where Prometheus
+      asks for it, and the loopback address, which a controller certificate does not carry, is
+      asked unverified for an hour at a time.
     response:
       description: The settings as held
       example: {exporters_file: /trinity/local/trixd/daemon/config/exporters.yaml, rules_directory: /trinity/local/etc/prometheus_server/rules/, prometheus_url: "https://localhost:9090", reload_command: systemctl reload prometheus-server, hw_alert_grace: 5m}

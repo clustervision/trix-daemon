@@ -36,7 +36,7 @@ import time
 import uuid
 from datetime import datetime, timedelta, timezone
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, or_, select
 
 from trixd.common import logging as trixlog
 from trixd.db import engine as database
@@ -51,6 +51,8 @@ FAILED: str = "failed"
 
 # How long a finished row is kept, so a caller that polls slowly still sees it.
 KEEP_SECONDS: int = 3600
+# The most rows one listing answers, however many are asked for.
+READ_LIMIT: int = 1000
 
 _work: queue.Queue = queue.Queue()
 _worker: threading.Thread = None
@@ -108,6 +110,17 @@ def submit(subsystem: str, task: str, param: str = "", principal: str = "") -> s
     return identifier
 
 
+def _row(row) -> dict:
+    """
+    One task as a caller reads it, for every route that answers one.
+    """
+    return {"request_id": row.request_id, "principal": row.principal,
+            "subsystem": row.subsystem, "task": row.task, "param": row.param,
+            "state": row.state, "message": row.message,
+            "created": row.created.isoformat(),
+            "finished": row.finished.isoformat() if row.finished else None}
+
+
 def status(identifier: str) -> dict:
     """
     Where one request got to, or None when nothing knows that id.
@@ -116,12 +129,36 @@ def status(identifier: str) -> dict:
     try:
         row = handle.scalar(select(models.Task)
                             .where(models.Task.request_id == identifier))
-        if row is None:
-            return None
-        return {"request_id": row.request_id, "subsystem": row.subsystem,
-                "task": row.task, "param": row.param, "state": row.state,
-                "message": row.message, "created": row.created.isoformat(),
-                "finished": row.finished.isoformat() if row.finished else None}
+        return _row(row) if row is not None else None
+    finally:
+        handle.close()
+
+
+# Named for what a caller asks for; this module uses none of the builtin it shadows.
+def list(subsystem: str = "", states: tuple = (), principal: str = "",
+         limit: int = 100) -> list:
+    """
+    What this controller holds, newest first: queued, running, and finished inside
+    KEEP_SECONDS.
+
+    Filtered on the time as well as on the state, because _prune runs when a task
+    finishes rather than on a clock: an idle daemon would otherwise answer rows it is
+    meant to have forgotten.
+    """
+    cutoff = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=KEEP_SECONDS)
+    query = select(models.Task).where(or_(models.Task.finished.is_(None),
+                                          models.Task.finished >= cutoff))
+    if subsystem:
+        query = query.where(models.Task.subsystem == subsystem)
+    if states:
+        query = query.where(models.Task.state.in_(tuple(states)))
+    if principal:
+        query = query.where(models.Task.principal == principal)
+    handle = database.session()
+    try:
+        rows = handle.scalars(query.order_by(models.Task.id.desc())
+                              .limit(max(1, min(int(limit), READ_LIMIT)))).all()
+        return [_row(row) for row in rows]
     finally:
         handle.close()
 

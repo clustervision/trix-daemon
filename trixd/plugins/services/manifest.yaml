@@ -125,6 +125,6 @@ endpoints:
       request_id: {description: "The request_id a queued action answered with", example: 1791545494-2556175-6ba51d7f}
     response:
       description: The action and how far it got
-      example: {request_id: 1791545494-2556175-6ba51d7f, subsystem: services, task: reload, param: prometheus-server, state: done, message: reload prometheus-server accepted, created: "2026-10-09T11:31:34.489690", finished: "2026-10-09T11:31:34.597325"}
+      example: {request_id: 1791545494-2556175-6ba51d7f, principal: alice, subsystem: services, task: reload, param: prometheus-server, state: done, message: reload prometheus-server accepted, created: "2026-10-09T11:31:34.489690", finished: "2026-10-09T11:31:34.597325"}
     errors:
       404: No queued action has that id

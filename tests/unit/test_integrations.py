@@ -43,7 +43,7 @@ import pytest
 import requests
 from fastapi.testclient import TestClient
 
-from tests.unit.test_plugins import Ran
+from tests.unit.test_plugins import Ran, _trust_store
 from tests.unit.test_replication import _peer
 from trixd.common import settings as configuration
 from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
@@ -807,19 +807,117 @@ def test_the_hash_baseline_and_poller_follow_the_interval(rig, monkeypatch):
     assert not poller.thread.is_alive()
 
 
-def test_a_peer_is_trusted_through_the_cluster_ca_only_when_it_is_there(rig, tmp_path,
-                                                                     monkeypatch):
+def test_a_peer_is_trusted_through_the_cluster_ca_or_the_system_store(rig, tmp_path,
+                                                                      monkeypatch):
     """
-    The CA file when present; otherwise the system store, which fails every pass.
+    The CA file when present; otherwise the store the operating system keeps, which is
+    where a controller installs that same CA. Never the bundle requests reaches for on its
+    own: inside the daemon's virtual environment that one is certifi's, which has never
+    heard of this cluster, so a pass against it could only ever fail.
     """
     sweep = replication.Sweep()
+    store = _trust_store(monkeypatch)
     monkeypatch.setattr(configuration.current().replication, "ca_file",
                         str(tmp_path / "missing-ca.crt"))
-    assert sweep._trust() is True
+    assert sweep._trust() == store
     ca = tmp_path / "cluster-ca.crt"
     ca.write_text("-----BEGIN CERTIFICATE-----\n", encoding="utf-8")
     monkeypatch.setattr(configuration.current().replication, "ca_file", str(ca))
     assert sweep._trust() == str(ca)
+
+
+def test_a_peer_is_not_asked_at_all_when_there_is_nothing_to_check_it_against(rig, tmp_path,
+                                                                              monkeypatch):
+    """
+    A peer is a remote address and this daemon's password goes with the sign-in, so with
+    no CA file and no system store there is nothing safe left to do but refuse. Nothing is
+    sent, and the pass reports it the way it reports a peer that is away.
+    """
+    _trust_store(monkeypatch, cafile=None)
+    monkeypatch.setattr(configuration.current().replication, "ca_file",
+                        str(tmp_path / "missing-ca.crt"))
+    asked = []
+    monkeypatch.setattr(replication.requests, "get",
+                        lambda url, **kwargs: asked.append(kwargs.get("verify")))
+    refused = ""
+    try:
+        replication.Sweep()._get("peer.cluster:7070", "hashes")
+    except replication.requests.exceptions.SSLError as error:
+        refused = str(error)
+    assert asked == [], asked
+    assert "certificate store" in refused, refused
+
+
+def test_the_sweep_still_starts_where_nothing_can_be_verified(rig, monkeypatch):
+    """
+    A controller with no store has a replication problem, not a start-up one: it is said
+    once and the thread runs, so health and the manual sweep keep answering and the pair
+    recovers the moment the store is back.
+    """
+    _trust_store(monkeypatch, cafile=None)
+    monkeypatch.setattr(configuration.current().replication, "peers", ["peer.cluster:7070"])
+    monkeypatch.setattr(configuration.current().replication, "interval", 3600)
+    sweep = replication.Sweep()
+    assert sweep.start() is True
+    sweep.shutdown()
+    sweep.thread.join(timeout=5)
+    assert not sweep.thread.is_alive()
+
+
+def test_luna_is_checked_against_the_system_store_when_its_ini_says_to_check_it(rig, tmp_path,
+                                                                                monkeypatch):
+    """
+    luna.ini stays the authority on whether Luna's certificate is checked; what it is
+    checked against is the store the operating system keeps, which is where the cluster CA
+    is installed. Checked against the bundle requests reaches for on its own - certifi's,
+    inside the daemon's virtual environment - the setting could never verify anything,
+    which is why it could not be turned on.
+    """
+    store = _trust_store(monkeypatch)
+    checking = tmp_path / "checking-luna.ini"
+    checking.write_text("[API]\nENDPOINT = one:7050\nVERIFY_CERTIFICATE = yes\n",
+                        encoding="utf-8")
+    assert luna_config.LunaConfig(str(checking)).verify == store
+
+    plain = tmp_path / "plain-luna.ini"
+    plain.write_text("[API]\nENDPOINT = one:7050\n", encoding="utf-8")
+    assert luna_config.LunaConfig(str(plain)).verify is False, "the default is still no"
+
+    off = tmp_path / "unchecked-luna.ini"
+    off.write_text("[API]\nENDPOINT = one:7050\nVERIFY_CERTIFICATE = no\n", encoding="utf-8")
+    assert luna_config.LunaConfig(str(off)).verify is False, "luna.ini saying no is untouched"
+
+
+def test_luna_is_not_asked_at_all_when_there_is_no_trust_store(rig, tmp_path, monkeypatch):
+    """
+    Nothing to check a certificate against is not a reason to stop checking: the call is
+    never made, and the caller is told rather than quietly given an unchecked answer.
+    """
+    path = tmp_path / "checking-luna.ini"
+    path.write_text("[API]\nENDPOINT = one:7050\nVERIFY_CERTIFICATE = yes\nSECRET_KEY = "
+                    + "a" * 32 + "\n", encoding="utf-8")
+    monkeypatch.setenv(luna_config.LUNA_INI_ENV, str(path))
+    _trust_store(monkeypatch, cafile=None)
+    asked = []
+
+    def record(self, method, url, **kwargs):
+        """
+        What Luna would have been asked, and an answer the client can read.
+        """
+        asked.append(kwargs.get("verify"))
+        return Answer(body={"config": {"node": {}}})
+
+    # The luna package binds the name `client` to the client factory, so the client's own
+    # modules are patched here rather than reached through it.
+    monkeypatch.setattr(credentials, "get_token", lambda renew=False: "a-token")
+    monkeypatch.setattr(requests.Session, "request", record)
+    refused = ""
+    try:
+        LunaClient().get("config/node")
+    except ServiceUnavailable as error:
+        refused = error.message
+    assert asked == [], f"Luna was asked anyway, with verify={asked}"
+    assert "certificate store" in refused, refused
 
 
 def test_the_peer_signs_us_in_and_the_ca_is_checked(rig, tmp_path, monkeypatch):
@@ -1382,6 +1480,56 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
         ["obol", "group", "modify", "hpc", "--gid", "5000"],
         ["obol", "group", "delete", "hpc"],
     ]
+
+
+def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
+    """
+    obol answers userPassword with the rest of the record, and every route here is a
+    manager's, so the hash is readable by anyone who can list a user. Nothing above the
+    directory manages a user with it, so it must not leave the controller.
+
+    Its own stand-in rather than the one beside it: that one answers a record with no
+    password attribute at all, so this would pass whether the hash is dropped or kept.
+    """
+    from trixd.plugins.directory import backend as directory
+    from trixd.plugins.directory.backend import Backend
+
+    asked = []
+    held = {"cn": "carol", "uid": "carol", "uidNumber": "1052",
+            "userPassword": "{PBKDF2-SHA512}abc", "uniqueMember": ["carol"]}
+
+    def run_json(argv, *args, **kwargs):
+        """
+        obol -J: one record, or a list of them for a list, hash and all.
+        """
+        asked.append(list(argv))
+        return [dict(held)] if argv[-1] == "list" else dict(held)
+
+    _obol(monkeypatch, {"carol", "hpc"})
+    monkeypatch.setattr(directory.shell, "run_json", run_json)
+
+    answers = {
+        "list_users": Backend().list_users(),
+        "get_user": Backend().get_user("carol"),
+        "create_user": Backend().create_user({"username": "dave"}),
+        "update_user": Backend().update_user("carol", {"shell": "/bin/zsh"}),
+        "list_groups": Backend().list_groups(),
+        "get_group": Backend().get_group("hpc"),
+        "create_group": Backend().create_group({"groupname": "gpu"}),
+        "update_group": Backend().update_group("hpc", {"gid": 5000}),
+    }
+
+    assert asked, "obol was never asked, so none of these answers proves anything"
+    for handler, answer in answers.items():
+        records = answer if isinstance(answer, list) else [answer]
+        assert records, f"{handler} answered nothing, so it proves nothing"
+        for record in records:
+            carried = [key for key in record if key.lower() == "userpassword"]
+            assert not carried, f"{handler} answered the password hash: {record}"
+            assert record.get("uid") == "carol", \
+                f"{handler} dropped the record rather than the hash: {record}"
+    assert answers["get_group"]["member"] == ["carol"], \
+        "the membership attribute stopped being answered under the name it is read by"
 
 
 def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,

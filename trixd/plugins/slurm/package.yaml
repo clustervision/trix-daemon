@@ -36,14 +36,14 @@ runs_as:
   handlers: root, inside trixd; they run nothing but helper.py
   helper:
     account: trinityx-slurm
-    uid: 889
+    uid: 1049
     memory: 536870912
     writes: [the three files and their .bkp, /var/lib/trixd/slurm, <slurm dir>/.trinityx-slurm]
     files_group: the admin group config-slurm gives the six (setting admin_group), held by a save and a restore alone
     slurm: AdminLevel Administrator
 
 creates:
-  - the account trinityx-slurm, uid and gid 889 on every controller of a pair, no shell, no home
+  - the account trinityx-slurm, uid and gid 1049 on every controller of a pair, no shell, no home
   - its AdminLevel Administrator in Slurm's accounting
   - a .bkp beside each of the three files where none is
   - nothing on the three files and their .bkp: config-slurm leaves them root's, of the admin group, group write
@@ -58,8 +58,8 @@ preflight:
 
 steps:
   install:
-    - [/usr/sbin/groupadd, --system, --gid, "889", trinityx-slurm]
-    - [/usr/sbin/useradd, --system, --uid, "889", --gid, "889", --no-create-home,
+    - [/usr/sbin/groupadd, --system, --gid, "1049", trinityx-slurm]
+    - [/usr/sbin/useradd, --system, --uid, "1049", --gid, "1049", --no-create-home,
        --home-dir, /nonexistent, --shell, /sbin/nologin, trinityx-slurm]
     - [/usr/bin/sacctmgr, -i, add, user, trinityx-slurm, account=root, adminlevel=Administrator]
     - [/usr/bin/install, -d, -o, trinityx-slurm, -g, trinityx-slurm, -m, "0700", /var/lib/trixd/slurm]

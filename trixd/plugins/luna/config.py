@@ -35,6 +35,7 @@ import threading
 from configparser import RawConfigParser
 
 from trixd.common import logging as trixlog
+from trixd.utils import tls
 
 LOGGER = trixlog.get("luna.config")
 
@@ -154,11 +155,19 @@ class LunaConfig:
         return self._values_now().get("protocol", "https")
 
     @property
-    def verify(self) -> bool:
+    def verify(self) -> str | bool:
         """
-        Whether Luna's certificate is checked.
+        What Luna's certificate is checked against, as `requests` wants it told.
+
+        luna.ini stays the authority on whether it is checked at all. When it says yes it
+        is the store the operating system keeps, which is where the cluster CA is
+        installed; the bundle `requests` reaches for on its own is certifi's inside the
+        daemon's virtual environment, so the setting turned on could verify nothing and
+        could not be turned on at all.
         """
-        return bool(self._values_now().get("verify", False))
+        if not self._values_now().get("verify", False):
+            return False
+        return tls.system_trust()
 
     @property
     def username(self) -> str:

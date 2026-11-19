@@ -47,6 +47,11 @@ from trixd.common.constants import DAEMON_RELEASE
 # enough to build against a clean environment. Asserted below rather than assumed.
 DAEMON_ENV_PREFIX = "TRIXD_"
 
+# How a call going out over TLS is spelled, on the requests module or on a session of it.
+HTTP_CALLS = ("get", "post", "put", "patch", "delete", "head", "options", "request")
+# The one helper that says what a certificate is checked against.
+TRUST_HELPER = "system_trust"
+
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 HEADER = "This code is part of the TrinityX software suite"
 # Files that are their own kind of text: the licence itself, plain READMEs, git's own.
@@ -521,3 +526,170 @@ def _merged_defaults(tree) -> dict:
                 found.setdefault(owner.name, set()).update(
                     key.value for key in defaults.keys if isinstance(key, ast.Constant))
     return found
+
+
+def test_no_certificate_is_ever_checked_against_the_library_default():
+    """
+    Every call the daemon makes over TLS says what the certificate is checked against, and
+    what it names traces back to the one helper. The bundle `requests` reaches for when
+    nobody says - `verify=True`, or no `verify` at all - is certifi's inside the daemon's
+    virtual environment, and certifi has never heard of this cluster, so a check against
+    it cannot succeed and a site that turns checking on gets a daemon that talks to
+    nothing.
+
+    Found by walking the shipped tree, not by listing the files that do it today: the bug
+    this closes is a second place quietly keeping its own answer, and a test naming the
+    places has to be remembered by whoever adds the third.
+    """
+    sources = _shipped_sources()
+    producers = _trust_producers(sources)
+
+    calls, offending = {}, []
+    for name, tree in sources:
+        filled = _filled_from_a_producer(tree, producers)
+        for node in ast.walk(tree):
+            if not (isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)):
+                continue
+            if node.func.attr not in HTTP_CALLS or not _over_http(node.func.value):
+                continue
+            where = f"{name}:{node.lineno}"
+            calls[where] = name
+            said = [word.value for word in node.keywords if word.arg == "verify"]
+            if not said:
+                offending.append(f"{where} says nothing about the certificate")
+            elif not _from_a_producer(said[0], producers, filled):
+                offending.append(f"{where} does not check against {TRUST_HELPER}()")
+
+    sending = {name for name, tree in sources if _sends_over_http(tree)}
+    assert sending, "nothing reaches for requests to send with, so this proves nothing"
+    missed = sorted(sending - set(calls.values()))
+    assert not missed, (
+        "these reach for requests to send with and no call of theirs was found, so the "
+        f"walk went past one: {missed}")
+    assert not offending, "\n".join(offending)
+    assert any(isinstance(node, ast.FunctionDef) and node.name == TRUST_HELPER
+               for _, tree in sources for node in ast.walk(tree)), (
+                   f"nothing defines {TRUST_HELPER}() any more, so what the sites above "
+                   "were matched against is gone and their silence proves nothing")
+
+
+def _sends_over_http(tree) -> bool:
+    """
+    Whether a module reaches for `requests` to send something, rather than only to name
+    what it raises and catches.
+
+    A module that names it nowhere but in a raise or an except clause is using the
+    library's error vocabulary: it has no call for the walk to find, and demanding one of
+    it anyway ends as a list of the files allowed not to have one, which is the parallel
+    list this test exists to do without. Every name the library is reached by counts, the
+    module and whatever is imported out of it alike, so a sender cannot become exempt by
+    importing the thing it sends with.
+    """
+    handles = set()
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            handles.update(one.asname or one.name.split(".")[0] for one in node.names
+                           if one.name == "requests" or one.name.startswith("requests."))
+        elif isinstance(node, ast.ImportFrom) and (node.module or "").split(".")[0] == "requests":
+            handles.update(one.asname or one.name for one in node.names)
+    naming_errors = set()
+    for node in ast.walk(tree):
+        named = (node.exc if isinstance(node, ast.Raise)
+                 else node.type if isinstance(node, ast.ExceptHandler) else None)
+        if named is not None:
+            naming_errors.update(id(one) for one in ast.walk(named))
+    return any(isinstance(node, ast.Name) and node.id in handles
+               and id(node) not in naming_errors for node in ast.walk(tree))
+
+
+def _shipped_sources() -> list:
+    """
+    Every tracked module under trixd/, parsed, as (name, tree).
+    """
+    return [(name, ast.parse(_read(name).decode("ascii"), filename=name))
+            for name in _tracked()
+            if name.startswith("trixd/") and name.endswith(".py")]
+
+
+def _from_a_producer(node, producers: set, filled: set) -> bool:
+    """
+    Whether an expression can only hold what the helper answered: it is False, it calls or
+    reads a producer, or it is a name this module filled from one. The expression itself
+    is matched rather than searched, so a call that merely carries a producer along - a
+    request sent with one - is not mistaken for one.
+
+    Either arm of a choice is enough, because the other is the file a site named for
+    itself; `True` matches nothing, which is the whole point.
+    """
+    if isinstance(node, ast.Constant):
+        return node.value is False
+    if isinstance(node, ast.IfExp):
+        return (_from_a_producer(node.body, producers, filled)
+                or _from_a_producer(node.orelse, producers, filled))
+    if isinstance(node, ast.BoolOp):
+        return any(_from_a_producer(one, producers, filled) for one in node.values)
+    if isinstance(node, ast.Call):
+        called = node.func
+        return (called.attr if isinstance(called, ast.Attribute)
+                else getattr(called, "id", "")) in producers
+    if isinstance(node, ast.Attribute):
+        return node.attr in producers
+    if isinstance(node, ast.Name):
+        return node.id in filled
+    return False
+
+
+def _trust_producers(sources: list) -> set:
+    """
+    Every function in the tree whose answer can only be what the helper gave it, grown
+    from the helper itself until the set stops growing. Grown rather than listed so the
+    length of the chain between a call and the helper does not matter, and so a chain
+    someone lengthens later needs nothing changed here.
+    """
+    found = {TRUST_HELPER}
+    growing = True
+    while growing:
+        growing = False
+        for _, tree in sources:
+            for node in ast.walk(tree):
+                if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if node.name in found:
+                    continue
+                answers = [one.value for one in ast.walk(node)
+                           if isinstance(one, ast.Return) and one.value is not None]
+                if answers and all(_from_a_producer(one, found, set()) for one in answers):
+                    found.add(node.name)
+                    growing = True
+    return found
+
+
+def _filled_from_a_producer(tree, producers: set) -> set:
+    """
+    The names one module fills from a producer, grown the same way. Flat over the module
+    rather than per function, because a module here gives one name one meaning.
+    """
+    filled = set()
+    growing = True
+    while growing:
+        growing = False
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.Assign, ast.AnnAssign)) or node.value is None:
+                continue
+            if not _from_a_producer(node.value, producers, filled):
+                continue
+            targets = node.targets if isinstance(node, ast.Assign) else [node.target]
+            for one in targets:
+                if isinstance(one, ast.Name) and one.id not in filled:
+                    filled.add(one.id)
+                    growing = True
+    return filled
+
+
+def _over_http(node) -> bool:
+    """
+    Whether this is the requests module, or a session held on one.
+    """
+    if isinstance(node, ast.Attribute):
+        return node.attr in ("requests", "session") or _over_http(node.value)
+    return isinstance(node, ast.Name) and node.id in ("requests", "session")
