@@ -778,17 +778,23 @@ def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
     from trixd.common.constants import API_PREFIX
     from trixd.core.security import audit
 
+    # The trail is one table for the whole run, so the row to read is the one this apply
+    # wrote - found by the origin it sent, since the newest row need not be this one.
+    sender = "ctrl-crossing"
     _crossing_plugin(rig)
     answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
         "plugin": "crossing", "path": "thing/<node>", "method": "PATCH",
         "variables": {"node": "node001"}, "body": {"count": 1},
-        "origin": "ctrl1", "request_id": "r-trail"})
+        "origin": sender, "request_id": "r-trail"})
     assert answer.status_code == 200, answer.text
 
-    applied = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
-    assert applied, "nothing in the trail says a node endpoint was reached through apply"
-    assert applied[0]["object"] == "node001", applied[0]
-    assert "ctrl1" in applied[0]["detail"], applied[0]
+    applied = [row for row in audit.read(limit=100)
+               if row["action"] == "replication.apply" and sender in row["detail"]]
+    assert applied, \
+        f"nothing in the trail says a node endpoint was reached through apply by {sender}"
+    assert applied[0]["object"] == "node001", \
+        (f"the trail records {applied[0]['object']!r} rather than the node a node endpoint "
+         f"was applied for")
 
 
 def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "") -> None:
@@ -835,16 +841,22 @@ def test_applying_a_role_gated_endpoint_leaves_a_trail_too(rig, client, headers)
     """
     from trixd.core.security import audit
 
+    # The trail is one table for the whole run, so the row to read is the one this apply
+    # wrote - found by the origin it sent, since the newest row need not be this one.
+    sender = "ctrl-gated"
     _applying_plugin(rig, "gated", "node", "user", minimum="manager")
     answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
         "plugin": "gated", "path": "thing/<node>", "method": "DELETE",
-        "variables": {"node": "node002"}, "origin": "ctrl1", "request_id": "r-gated"})
+        "variables": {"node": "node002"}, "origin": sender, "request_id": "r-gated"})
     assert answer.status_code == 200, answer.text
 
-    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
-    assert rows, "nothing in the trail says a role-gated endpoint was applied for the peer"
-    assert rows[0]["object"] == "node002", rows[0]
-    assert "ctrl1" in rows[0]["detail"], rows[0]
+    rows = [row for row in audit.read(limit=100)
+            if row["action"] == "replication.apply" and sender in row["detail"]]
+    assert rows, \
+        f"nothing in the trail says a role-gated endpoint was applied for {sender}"
+    assert rows[0]["object"] == "node002", \
+        (f"the trail records {rows[0]['object']!r} rather than the node a role-gated "
+         f"endpoint was applied for")
 
 
 @pytest.mark.parametrize("variable", NODE_PATH_PARAMS)
@@ -858,15 +870,19 @@ def test_the_trail_names_the_node_under_any_name_the_gate_binds(rig, client, var
     """
     from trixd.core.security import audit
 
+    # The trail is one table for the whole run, so the row to read is the one this apply
+    # wrote - found by the origin it sent, since the newest row need not be this one.
+    sender = f"ctrl-{variable}"
     _applying_plugin(rig, f"named{variable}", variable, "node")
     answer = client.post(f"{API_PREFIX}/system/replication/apply", headers=headers, json={
         "plugin": f"named{variable}", "path": f"thing/<{variable}>", "method": "DELETE",
-        "variables": {variable: "node003"}, "origin": "ctrl1",
+        "variables": {variable: "node003"}, "origin": sender,
         "request_id": f"r-{variable}"})
     assert answer.status_code == 200, answer.text
 
-    rows = [row for row in audit.read(limit=100) if row["action"] == "replication.apply"]
-    assert rows, f"nothing in the trail names an endpoint taking <{variable}>"
+    rows = [row for row in audit.read(limit=100)
+            if row["action"] == "replication.apply" and sender in row["detail"]]
+    assert rows, f"nothing in the trail names an endpoint taking <{variable}> sent by {sender}"
     assert rows[0]["object"] == "node003", \
         (f"the trail records {rows[0]['object']!r} rather than the node for an endpoint "
          f"taking <{variable}>, which the gate binds as well as <node>")
