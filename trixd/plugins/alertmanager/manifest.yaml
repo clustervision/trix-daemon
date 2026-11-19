@@ -1,0 +1,245 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+plugin: alertmanager
+backend: backend
+description: >
+  Silencing alerts before a node is worked on, the alerts a silence quietens, and
+  whether the pair's two Alertmanagers have found each other. These routes are named
+  for what they do and their bodies are this daemon's own: they are a translation of
+  Alertmanager's API, not a way through to it, and nothing here forwards a path a
+  caller supplied. Silences are not replicated - the two Alertmanagers gossip them
+  between themselves - so one made here is on both within seconds.
+
+schemas:
+  silence:
+    matchers:
+      type: array
+      items: object
+      description: >
+        What to quieten, at least one. Each entry is a `label`, the `value` to match it
+        against, and optionally `regex` to read the value as one and `negative` to match
+        everything the value does not. An alert is silenced when every matcher holds.
+      example: [{label: hostname, value: node001.cluster}, {label: severity, value: warning}]
+    comment:
+      type: string
+      description: Why the silence was made, which is what the next person reads
+      example: Replacing a DIMM
+    duration:
+      type: string
+      optional: true
+      description: How long it lasts from now, as 30s, 5m, 2h or 1d; two hours by default
+      example: 4h
+    ends_at:
+      type: string
+      optional: true
+      description: When it ends, instead of a duration, as an ISO time in UTC
+      example: "2026-11-19T18:00:00Z"
+  expire:
+    silence_id:
+      type: string
+      description: The identifier the silence was created with
+      example: 4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9
+  config:
+    alertmanager_url:
+      type: string
+      optional: true
+      description: Where Alertmanager answers on this controller
+      example: "https://localhost:9093"
+    credentials_file:
+      type: string
+      optional: true
+      description: >
+        The file holding the password Alertmanager is asked with, named for the account it
+        belongs to. A path rather than the password itself, so the secret stays out of the
+        settings the pair replicates
+      example: /etc/trinity/passwords/prometheus/admin.txt
+
+endpoints:
+  - path: silences
+    methods: [GET]
+    minimum: reader
+    handler: silences
+    summary: The silences Alertmanager holds
+    description: |
+      Every silence this controller's Alertmanager knows, newest first, each with who made
+      it, why, what it quietens and when it ends. An expired silence is kept as a record
+      for as long as Alertmanager retains it, so leave `state` out to see the history and
+      send `state=active` for what is quiet right now.
+
+      The fields are this daemon's: `silence_id`, `created_by`, `starts_at`, `ends_at`, and
+      `matchers` as `label`, `value`, `regex` and `negative`.
+    query:
+      state: {description: "One of active, pending and expired; leave it out for all of them", example: active}
+    response:
+      description: The silences, counted
+      example:
+        count: 1
+        silences:
+          - silence_id: 4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9
+            state: active
+            created_by: harry
+            comment: Replacing a DIMM
+            starts_at: "2026-11-19T14:00:00.000Z"
+            ends_at: "2026-11-19T18:00:00.000Z"
+            matchers: [{label: hostname, value: node001.cluster, regex: false, negative: false}]
+    errors:
+      400: state is not one of active, pending and expired
+      502: Alertmanager did not answer, or the credential it needs could not be read
+
+  - path: actions/silence
+    methods: [POST]
+    minimum: operator
+    handler: silence
+    schema: silence
+    summary: Quieten the alerts the matchers select, for a while
+    description: |
+      Silencing is what is done before a node is pulled for maintenance, so an operator may
+      do it. The silence is recorded against **the caller's own name** - whoever's token
+      made the call - and not against a shared account.
+
+      Say what to quieten with `matchers`: one node is `{"label": "hostname", "value":
+      "node001.cluster"}`, a whole group `{"label": "luna_group", "value": "compute"}`, and
+      `regex: true` reads the value as a regular expression. Every matcher must hold for an
+      alert to go quiet.
+
+      It lasts `duration` from now, two hours when that is left out, or until `ends_at`.
+      The answer carries the `silence_id` to end it with. The silence is made at this
+      controller's Alertmanager and reaches the other one by itself.
+    request_example:
+      matchers: [{label: hostname, value: node001.cluster}]
+      duration: 4h
+      comment: Replacing a DIMM
+    response:
+      description: The silence as it was made
+      example:
+        silence_id: 4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9
+        created_by: harry
+        starts_at: "2026-11-19T14:00:00Z"
+        ends_at: "2026-11-19T18:00:00Z"
+        comment: Replacing a DIMM
+        matchers: [{label: hostname, value: node001.cluster, regex: false, negative: false}]
+    errors:
+      400: No matcher was given, one names no label or value, or the time it would end could not be used
+      422: matchers or comment was not sent at all
+      502: Alertmanager did not answer, or the credential it needs could not be read
+
+  - path: actions/expire
+    methods: [POST]
+    minimum: operator
+    handler: expire
+    schema: expire
+    summary: End a silence now
+    description: |
+      The node is back, so the alerts come back with it. Alertmanager expires a silence
+      rather than deleting it: the record stays, with `state: expired`, and goes on being
+      listed until Alertmanager's own retention drops it.
+
+      Takes the `silence_id` the silence was made with, which `GET
+      /api/v1/alertmanager/silences` also answers. Letters, digits and dashes only.
+    request_example: {silence_id: 4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9}
+    response:
+      description: Which silence was ended, and by whom
+      example: {silence_id: 4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9, expired_by: harry}
+    errors:
+      400: silence_id is not an identifier
+      404: Alertmanager holds no silence with that identifier
+      422: silence_id was not sent at all
+      502: Alertmanager did not answer, or the credential it needs could not be read
+
+  - path: alerts
+    methods: [GET]
+    minimum: reader
+    handler: alerts
+    summary: The alerts Alertmanager is holding now
+    description: |
+      What has fired and reached Alertmanager, whether or not it is quiet. Each alert
+      carries its `name`, the `labels` that identify it, its `annotations`, when it started,
+      and `silenced_by` and `inhibited_by` - the silences and the other alerts keeping it
+      quiet, as lists of identifiers. An alert with both of those empty is one somebody is
+      being told about.
+    response:
+      description: The alerts, counted
+      example:
+        count: 1
+        alerts:
+          - name: MissingHardwareComponent
+            state: suppressed
+            labels: {alertname: MissingHardwareComponent, hostname: node001.cluster, severity: warning}
+            annotations: {description: "Hardware component memory is missing."}
+            starts_at: "2026-11-19T14:02:11.000Z"
+            silenced_by: [4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9]
+            inhibited_by: []
+    errors:
+      502: Alertmanager did not answer, or the credential it needs could not be read
+
+  - path: status
+    methods: [GET]
+    minimum: reader
+    handler: status
+    summary: Which Alertmanager answered, and whether it has found the other one
+    description: |
+      Where this controller's Alertmanager is, what version it runs, how long it has been
+      up, and its gossip cluster: `status` is `ready` once it has settled, and `peers` lists
+      the addresses it is talking to. On a pair, an empty `peers` is why a silence made on
+      one controller is not seen on the other.
+    response:
+      description: The Alertmanager this controller reaches
+      example:
+        url: "https://localhost:9093"
+        version: 0.26.0
+        uptime: "2026-11-18T09:14:02.113Z"
+        cluster: {status: ready, name: 01HQ8XWZ3N4K5M6P7R8S9T0V1W, peers: ["10.141.255.254:9094"]}
+    errors:
+      502: Alertmanager did not answer, or the credential it needs could not be read
+
+  - path: config
+    methods: [GET]
+    minimum: reader
+    handler: config
+    summary: Where this plugin reaches Alertmanager, and what it signs in with
+    description: |
+      `alertmanager_url` is where Alertmanager answers on this controller and
+      `credentials_file` is the file its password is read from. That file is named for the
+      account the password belongs to, so `/etc/trinity/passwords/prometheus/admin.txt` is
+      the account `admin` and nothing names it separately. The password itself is never held
+      here and never answered.
+
+      Alertmanager is asked over TLS with its certificate verified: http is upgraded to
+      https where Alertmanager asks for it, and the loopback address, which a controller
+      certificate does not carry, is asked unverified for an hour at a time.
+    response:
+      description: The settings as held
+      example: {alertmanager_url: "https://localhost:9093", credentials_file: /etc/trinity/passwords/prometheus/admin.txt}
+
+  - path: config
+    methods: [PATCH]
+    # rootus: the daemon runs as root, so the file this names is a file root can read and
+    # the address is where its contents are then sent.
+    minimum: rootus
+    handler: config
+    schema: config
+    summary: Change where this plugin reaches Alertmanager, or what it signs in with
+    description: |
+      Send either setting; the one left out keeps its value. rootus only, because the daemon
+      reads `credentials_file` as root and presents what it finds there to
+      `alertmanager_url`. Point it at a file named for the account whose password it holds:
+      a file named for something that is not an account, such as a salt or a passphrase,
+      produces an account Alertmanager will refuse.
+    request_example: {alertmanager_url: "https://localhost:9093"}
+    response:
+      description: Both settings as now held
+      example: {alertmanager_url: "https://localhost:9093", credentials_file: /etc/trinity/passwords/prometheus/admin.txt}

@@ -212,7 +212,7 @@ def test_every_user_endpoint_declares_a_minimum_role():
 
     manifests = glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
                                        "manifest.yaml"))
-    assert len(manifests) == 6, manifests
+    assert len(manifests) == 7, manifests
     for path in manifests:
         with open(path, encoding="utf-8") as handle:
             document = yaml.safe_load(handle)
@@ -2473,7 +2473,7 @@ def test_every_shipped_plugin_passes_the_check(rig):
 
     shipped = sorted(os.path.dirname(path) for path in glob.glob(
         os.path.join(os.path.dirname(trixd.__file__), "plugins", "*", "manifest.yaml")))
-    assert len(shipped) == 6
+    assert len(shipped) == 7
     for path in shipped:
         assert check(path) == [], path
 

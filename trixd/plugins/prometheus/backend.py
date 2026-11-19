@@ -38,7 +38,6 @@ import shutil
 import threading
 import time
 from collections import Counter
-from urllib.parse import urlsplit
 
 import requests
 import urllib3
@@ -858,7 +857,7 @@ class Backend:
         url = self.prometheus_url or configured
         upgraded = False
         for _ in (1, 2, 3):
-            verify = not (_is_loopback(url) and self.unverified_from
+            verify = not (tls.is_loopback(url) and self.unverified_from
                           and time.monotonic() - self.unverified_from <= UNVERIFIED_FOR)
             try:
                 # The store is asked for inside the try, so a system without one is a
@@ -871,7 +870,7 @@ class Backend:
                 # The controller's certificate carries the box's own names, never localhost,
                 # so the loopback is the one address a healthy cluster cannot verify. Any
                 # other address is somebody else's, and a refusal there stays a refusal.
-                if verify and _is_loopback(url):
+                if verify and tls.is_loopback(url):
                     self.unverified_from = time.monotonic()
                     LOGGER.warning("Prometheus at %s did not verify (%s); asking the "
                                    "loopback unverified, and verifying again in %ss",
@@ -881,7 +880,7 @@ class Backend:
             except requests.RequestException as error:
                 raise BackendFailure(f"Prometheus is not answering: {error}") from None
             if answer.status_code == 400 and "HTTPS server" in answer.text and not upgraded:
-                url = _other_scheme(url)
+                url = tls.other_scheme(url)
                 upgraded = True
                 continue
             break
@@ -1377,29 +1376,6 @@ class SharedReload:
 
 
 RELOADS: SharedReload = SharedReload()
-
-
-def _other_scheme(url: str) -> str:
-    """
-    The same address over the other scheme.
-    """
-    if url.startswith("https://"):
-        return "http://" + url[len("https://"):]
-    return "https://" + url.split("://", 1)[-1]
-
-
-def _is_loopback(url: str) -> bool:
-    """
-    Whether an address is the box's own, which is the only one a controller certificate is
-    not expected to carry.
-    """
-    host = urlsplit(url).hostname or ""
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
 
 
 def _hw_host(path: str) -> str:

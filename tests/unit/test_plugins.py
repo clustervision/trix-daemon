@@ -4943,3 +4943,362 @@ def test_the_targets_outside_luna_are_written_where_the_document_was_not_sent(
     with open(path, "r", encoding="utf-8") as handle:
         assert "switch01.cluster:9100" in handle.read(), (
             "the render ran and the targets the peer stored are not in the file")
+
+
+def _alertmanager_rig(tmp_path, monkeypatch, replies=None, url="https://alertmanager.cluster:9093"):
+    """
+    An alertmanager backend with a credential file of its own and a stubbed Alertmanager.
+
+    `replies` is the Alertmanager path to the (status, document) it answers with; anything
+    not named answers 200 and nothing. Every call made is appended to the list returned.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    secret = tmp_path / "admin.txt"
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend = alertmanager.Backend()
+    backend.config(body={"alertmanager_url": url, "credentials_file": str(secret)})
+    _trust_store(monkeypatch)
+    sent = []
+
+    def answering(method, asked, **kwargs):
+        """
+        Alertmanager, remembering what it was asked and how.
+        """
+        sent.append({"method": method, "url": asked, "body": kwargs.get("json"),
+                     "auth": kwargs.get("auth"), "verify": kwargs.get("verify")})
+        status, document = (replies or {}).get(asked.split("/api/v2", 1)[-1], (200, {}))
+        return SimpleNamespace(status_code=status, text="",
+                               json=lambda: document)
+
+    monkeypatch.setattr(alertmanager.requests, "request", answering)
+    return backend, sent
+
+
+def _alertmanager_manifest():
+    """
+    The shipped alertmanager manifest, parsed.
+    """
+    from trixd.core.plugins import manifest as manifests
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    path = os.path.join(os.path.dirname(alertmanager.__file__), "manifest.yaml")
+    return manifests.parse(manifests.read_yaml(path))
+
+
+def test_a_silence_is_recorded_against_whoever_made_it(rig, tmp_path, monkeypatch):
+    """
+    The console stamps every silence with one shared account, which is what makes a silence
+    nobody can trace. The caller's own name goes on it instead.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {"/silences": (200, {"silenceID": "abc-123"})})
+
+    answer = backend.silence({"matchers": [{"label": "hostname", "value": "node001"}],
+                              "comment": "Replacing a DIMM"},
+                             caller=SimpleNamespace(name="harry"))
+
+    assert sent[0]["body"]["createdBy"] == "harry", sent[0]["body"]
+    assert sent[0]["body"]["createdBy"] != "admin"
+    assert answer["created_by"] == "harry"
+    assert answer["silence_id"] == "abc-123"
+
+
+def test_a_silence_identifier_that_could_steer_the_request_is_refused(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    The identifier is the one caller-supplied value that reaches a path this plugin builds,
+    so anything but an identifier is refused before a request is made rather than quoted
+    into one.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BadRequest
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    for attempt in ("../../api/v2/silences", "abc/../../status", "", "a b"):
+        with pytest.raises(BadRequest):
+            backend.expire({"silence_id": attempt}, caller=SimpleNamespace(name="harry"))
+    assert sent == [], "a refusal reached Alertmanager anyway"
+
+
+def test_the_alertmanager_credential_is_read_from_the_file_and_never_stored(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    The password is on the controller already, root-readable, and the declarations table
+    replicates to the other controller: what is held here is the path, and the password is
+    read at the moment it is used so a rotated one needs no restart.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import json
+
+    from trixd.utils import declarations
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    backend.alerts()
+    assert sent[0]["auth"] == ("admin", "s3cret"), sent[0]["auth"]
+
+    held = declarations.read("alertmanager", "config", "")
+    assert "s3cret" not in json.dumps(held), held
+    assert held["credentials_file"] == str(tmp_path / "admin.txt")
+
+    (tmp_path / "admin.txt").write_text("rotated\n", encoding="utf-8")
+    backend.alerts()
+    assert sent[1]["auth"] == ("admin", "rotated"), sent[1]["auth"]
+
+
+@pytest.mark.parametrize("filename, account", [
+    ("admin.txt", "admin"),
+    ("slurm_accounting.txt", "slurm_accounting"),
+    ("trixd-delegate.txt", "trixd-delegate"),
+])
+def test_the_account_is_whatever_the_credential_file_is_named_for(rig, tmp_path, monkeypatch,
+                                                                  filename, account):
+    """
+    The installer builds every one of these paths from a username, so the file's own name is
+    the account and nothing in the daemon has to carry a copy of it. Pinned by derivation
+    rather than by the one name that ships, because the next caller of this will point it at
+    a different file.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    secret = tmp_path / filename
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    backend.config(body={"credentials_file": str(secret)})
+
+    backend.alerts()
+
+    assert sent[-1]["auth"] == (account, "s3cret"), sent[-1]["auth"]
+
+
+def test_a_401_names_the_account_tried_and_the_file_it_came_from(rig, tmp_path, monkeypatch):
+    """
+    A file named for something that is not an account - a salt, a passphrase - is refused in
+    exactly the way a stale password is, so the refusal has to say which account was
+    presented and where it was read from, or the two cannot be told apart from the message.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    secret = tmp_path / "root-salt.txt"
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch, {"/alerts": (401, {})})
+    backend.config(body={"credentials_file": str(secret)})
+
+    refused = ""
+    try:
+        backend.alerts()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "root-salt" in refused, refused
+    assert str(secret) in refused, refused
+
+
+def test_a_credential_that_cannot_be_read_is_loud_and_sends_nothing(rig, tmp_path,
+                                                                    monkeypatch):
+    """
+    Sending no credential would read as Alertmanager refusing the caller; the file not
+    being there is the controller's problem and says so, before anything is sent.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    (tmp_path / "admin.txt").unlink()
+
+    refused = ""
+    try:
+        backend.alerts()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "credential could not be read" in refused, refused
+    assert str(tmp_path / "admin.txt") in refused, refused
+    assert sent == [], refused
+
+
+def test_an_alertmanager_that_is_away_names_itself_in_the_refusal(rig, tmp_path,
+                                                                  monkeypatch):
+    """
+    A service that is not there is a 502 that says which service, never an empty list that
+    reads as nothing being silenced.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+
+    def refusing(*args, **kwargs):
+        """
+        A socket with nothing behind it.
+        """
+        raise alertmanager.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(alertmanager.requests, "request", refusing)
+    refused = ""
+    try:
+        backend.silences()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "Alertmanager is not answering" in refused, refused
+    assert BackendFailure.status_code == 502
+
+
+def test_a_matcher_is_translated_into_alertmanagers_words_and_back(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    The route is a translation rather than a way through, so a caller writes `label`,
+    `regex` and `negative` and never Alertmanager's own `name`, `isRegex` and `isEqual`.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {"/silences": (200, {"silenceID": "abc-123"})})
+
+    answer = backend.silence({"matchers": [{"label": "hostname", "value": "node00[12]",
+                                            "regex": True},
+                                           {"label": "severity", "value": "info",
+                                            "negative": True}],
+                              "comment": "Maintenance"},
+                             caller=SimpleNamespace(name="harry"))
+
+    assert sent[0]["body"]["matchers"] == [
+        {"name": "hostname", "value": "node00[12]", "isRegex": True, "isEqual": True},
+        {"name": "severity", "value": "info", "isRegex": False, "isEqual": False}]
+    assert answer["matchers"] == [
+        {"label": "hostname", "value": "node00[12]", "regex": True, "negative": False},
+        {"label": "severity", "value": "info", "regex": False, "negative": True}]
+
+
+@pytest.mark.parametrize("body, reason", [
+    ({"matchers": [], "comment": "x"}, "at least one matcher"),
+    ({"matchers": [{"value": "node001"}], "comment": "x"}, "names the label"),
+    ({"matchers": [{"label": "hostname"}], "comment": "x"}, "no value to match"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": ""}, "says why"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": "x",
+      "duration": "soon"}, "not a duration"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": "x",
+      "ends_at": "2001-01-01T00:00:00Z"}, "ends after it starts"),
+])
+def test_a_silence_that_could_not_mean_anything_is_refused_here(rig, tmp_path, monkeypatch,
+                                                                body, reason):
+    """
+    Each of these is a 400 said in our own words, rather than whatever Alertmanager answers
+    for it, and none of them reaches Alertmanager at all.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BadRequest
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    with pytest.raises(BadRequest) as refused:
+        backend.silence(body, caller=SimpleNamespace(name="harry"))
+    assert reason in str(refused.value), str(refused.value)
+    assert sent == [], "a refusal reached Alertmanager anyway"
+
+
+def test_expiring_a_silence_alertmanager_does_not_hold_is_a_404(rig, tmp_path, monkeypatch):
+    """
+    Alertmanager expires rather than deletes, so a silence it has no record of at all is
+    the caller naming the wrong one - a 404 and not a 502, which would read as the service
+    being broken.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import TrixdError
+
+    identifier = "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {f"/silence/{identifier}": (404, {})})
+    with pytest.raises(TrixdError) as refused:
+        backend.expire({"silence_id": identifier}, caller=SimpleNamespace(name="harry"))
+    assert refused.value.status_code == 404, type(refused.value).__name__
+    assert identifier in str(refused.value), str(refused.value)
+    assert sent[0]["method"] == "DELETE"
+    assert sent[0]["url"].endswith(f"/api/v2/silence/{identifier}"), sent[0]["url"]
+
+
+def test_the_alertmanager_loopback_is_probed_once_and_then_asked_unverified(rig, tmp_path,
+                                                                            monkeypatch):
+    """
+    The controller certificate carries the box's own names, never localhost, so the first
+    call is the one that finds out and the ones after it do not ask again.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch, url="https://localhost:9093")
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def answering(method, url, **kwargs):
+        """
+        An Alertmanager whose certificate does not carry the loopback.
+        """
+        asked.append(kwargs.get("verify"))
+        if kwargs.get("verify"):
+            raise alertmanager.requests.exceptions.SSLError("hostname mismatch")
+        return SimpleNamespace(status_code=200, text="", json=lambda: [])
+
+    monkeypatch.setattr(alertmanager.requests, "request", answering)
+    backend.alerts()
+    backend.alerts()
+    assert asked == [store, False, False], asked
+    assert backend.unverified_from, "the hour is armed, so the next call does not probe again"
+
+
+def test_every_alertmanager_route_admits_the_role_its_work_needs(rig):
+    """
+    The whole surface rather than one route: silencing is what an operator does before
+    pulling a node, reading is a reader's, and the settings name a file the daemon reads as
+    root and the address it then sends what it finds there to.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    parsed = _alertmanager_manifest()
+    roles = {(endpoint.path, verb): endpoint.minimum
+             for endpoint in parsed.endpoints for verb in endpoint.methods}
+    assert roles == {("silences", "GET"): "reader",
+                     ("alerts", "GET"): "reader",
+                     ("status", "GET"): "reader",
+                     ("config", "GET"): "reader",
+                     ("actions/silence", "POST"): "operator",
+                     ("actions/expire", "POST"): "operator",
+                     ("config", "PATCH"): "rootus"}
+
+
+def test_the_alertmanager_plugin_replicates_nothing_and_renders_nothing(rig):
+    """
+    Silences live in Alertmanager and gossip between the pair's two of them, so a second
+    copy made here would be a second silence to expire. Nothing is computed either: these
+    are five routes onto a service, and a render would be a document with no reader.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    parsed = _alertmanager_manifest()
+    assert [one.path for one in parsed.endpoints if one.replicate] == []
+    assert [one.path for one in parsed.endpoints if one.render] == []
+    assert [one.path for one in parsed.endpoints if one.forward or one.public] == []
+    assert parsed.hooks == {}

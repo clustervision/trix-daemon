@@ -37,7 +37,8 @@ import pytest
 
 from tests.e2e.stack import operations
 
-SHIPPED = ("luna", "directory", "prometheus", "services", "slurm", "genders")
+SHIPPED = ("luna", "directory", "prometheus", "services", "slurm", "genders",
+           "alertmanager")
 CYCLES = 3
 
 

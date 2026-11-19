@@ -29,7 +29,9 @@ __maintainer__  = "Antoine Schonewille"
 __email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
+import ipaddress
 import ssl
+from urllib.parse import urlsplit
 
 import requests
 
@@ -57,3 +59,27 @@ def system_trust() -> str:
         raise requests.exceptions.SSLError(
             "no certificate store was found on this system to verify against")
     return store
+
+
+def other_scheme(url: str) -> str:
+    """
+    The same address over the other scheme, for the one probe that answers whether a
+    service wanted TLS after all.
+    """
+    if url.startswith("https://"):
+        return "http://" + url[len("https://"):]
+    return "https://" + url.split("://", 1)[-1]
+
+
+def is_loopback(url: str) -> bool:
+    """
+    Whether an address is the box's own, which is the only one a controller certificate is
+    not expected to carry.
+    """
+    host = urlsplit(url).hostname or ""
+    if host == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
