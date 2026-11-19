@@ -457,6 +457,30 @@ identifier = tasks.submit(PLUGIN, action, param, caller.name)
 The caller polls whatever route you declare for it; the services plugin uses
 `status/<request_id>`.
 
+Work that runs for hours does not go on the queue: the queue is one worker, a task
+holds it for as long as it runs, and a restart of trixd kills the task with the
+daemon's control group and runs it again from the start. The osimage plugin runs an
+hours-long build as a child process instead, started with `subprocess.Popen` in a
+session of its own and supervised by a background trigger the plugin registers in its
+`install()`. The child keeps a job directory of its own and talks to the daemon through
+files alone. A restart of trixd mid-build is the operator's doing and is not handled: the
+trigger leaves a job recorded as running that the daemon holds no process for as it is, and
+the cancel route clears it. The same trigger tells the caller how the build goes, by posting
+its lines to Luna's status stream in batches and keeping how far it got in the job's own
+state file. Delivery is at least once: a crash between Luna
+taking a batch and the offset being written sends that one batch again. The route a
+caller with a deadline hits does the least it can before answering: Luna's `create`
+checks the body, writes the job and starts the build inside the five seconds Luna waits,
+and leaves every slow step to the build, reading the sources and probing the controller
+included; a refusal found there is the reason the build failed, which the trigger tells
+the caller as it would any failed build. What the sources are is a setting too, a
+`mirrors` map keyed by the record's distribution, release and architecture, looked up at
+the accept when the body names none, so the body Luna sends needs no source of its own;
+with no entry the build runs the books with no source named and they build from what
+they hold. What the build runs is a setting, so the chain around a build can be exercised
+with a `builder` that only says a few lines, or says them and fails, before any real
+build exists.
+
 ## Documenting a route
 
 Whoever reaches `/api/v1/docs` should be able to call the route from what it says there:
