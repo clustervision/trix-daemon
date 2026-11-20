@@ -5302,3 +5302,215 @@ def test_the_alertmanager_plugin_replicates_nothing_and_renders_nothing(rig):
     assert [one.path for one in parsed.endpoints if one.render] == []
     assert [one.path for one in parsed.endpoints if one.forward or one.public] == []
     assert parsed.hooks == {}
+
+
+def _reported_rig(tmp_path, monkeypatch, replies=None):
+    """
+    A prometheus backend with Prometheus stubbed, keyed by the route under its own API.
+
+    `replies` is the path under that API to the (status, document) it answers with; anything
+    not named answers a success document with nothing in it. Every call made is appended to
+    the list returned.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _trust_store(monkeypatch)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        Prometheus, remembering what it was asked and what it was checked against.
+        """
+        asked.append({"url": url, "params": kwargs.get("params"),
+                      "verify": kwargs.get("verify")})
+        status, document = (replies or {}).get(url.split(prometheus.API, 1)[-1],
+                                               (200, {"status": "success", "data": {}}))
+        return SimpleNamespace(status_code=status, text="", json=lambda: document)
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    return backend, asked
+
+
+def test_the_rules_reported_are_the_files_prometheus_took_not_the_ones_we_wrote(rig, tmp_path,
+                                                                               monkeypatch):
+    """
+    A rule file Prometheus will not take is still on disk while Prometheus goes on serving
+    the configuration it had, so the files it names are the only place that shows it.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    loaded = {"status": "success", "data": {"groups": [
+        {"name": "trinityx_generic", "file": "/etc/prometheus/trix.generic.rules",
+         "lastEvaluation": "2026-11-20T09:14:02.113Z", "evaluationTime": 0.0004,
+         "rules": [{"name": "NodeDown", "type": "alerting", "state": "inactive",
+                    "health": "ok", "query": "up == 0"}]}]}}
+    backend, asked = _reported_rig(tmp_path, monkeypatch, {"/rules": (200, loaded)})
+    (tmp_path / "trix.hw.node001.cluster.rules").write_text("groups: []\n", encoding="utf-8")
+
+    answer = backend.reported_rules()
+
+    assert asked[0]["url"].endswith("/api/v1/rules"), asked
+    assert answer.get("files") == ["/etc/prometheus/trix.generic.rules"], answer.get("files")
+    assert answer["groups"][0]["file"] == "/etc/prometheus/trix.generic.rules"
+
+
+def test_a_rule_prometheus_cannot_evaluate_carries_its_error_and_is_counted(rig, tmp_path,
+                                                                            monkeypatch):
+    """
+    The other failure: the file was taken and the rule inside it does not run. Nothing is
+    missing from the answer, so only the health and the error it came with say so. A rule
+    not yet reached is unknown rather than failing, and every rule is that for an interval
+    after a reload, which is the whole estate at once.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    loaded = {"status": "success", "data": {"groups": [
+        {"name": "trinityx_hw", "file": "/etc/prometheus/trix.hw.node001.cluster.rules",
+         "rules": [{"name": "MissingHardwareComponent", "type": "alerting", "health": "err",
+                    "lastError": "vector contains metrics with the same labelset",
+                    "state": "inactive", "query": "absent(lshw_device)"},
+                   {"name": "NodeDown", "type": "alerting", "health": "ok",
+                    "state": "firing", "query": "up == 0"},
+                   {"name": "JustReloaded", "type": "alerting", "health": "unknown",
+                    "state": "inactive", "query": "up == 0"}]}]}}
+    backend, _ = _reported_rig(tmp_path, monkeypatch, {"/rules": (200, loaded)})
+
+    answer = backend.reported_rules()
+    held = answer["groups"][0]["rules"]
+
+    assert answer.get("unhealthy") == 1, answer
+    assert held[0].get("last_error") == "vector contains metrics with the same labelset", held[0]
+    assert [one["health"] for one in held] == ["err", "ok", "unknown"], held
+
+
+def test_both_reads_go_to_prometheus_over_the_one_verified_path(rig, tmp_path, monkeypatch):
+    """
+    Neither read brings a way of reaching Prometheus of its own: the same address the
+    hardware query probed, checked against the same system trust store.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    backend, asked = _reported_rig(tmp_path, monkeypatch)
+    store = _trust_store(monkeypatch)
+
+    backend.reported_rules()
+    backend.reported_alerts()
+
+    assert [one["verify"] for one in asked] == [store, store], asked
+    assert [one["url"] for one in asked] == ["https://localhost:9090/api/v1/rules",
+                                             "https://localhost:9090/api/v1/alerts"], asked
+
+
+@pytest.mark.parametrize("read, path", [("reported_rules", "/rules"),
+                                        ("reported_alerts", "/alerts")])
+def test_an_error_document_from_prometheus_is_not_an_empty_answer(rig, tmp_path, monkeypatch,
+                                                                  read, path):
+    """
+    Prometheus answers an error it can describe with 200 and a document that says so. Shaped
+    like a good one it is an empty list, and then not being able to ask and nothing being
+    there are the same answer.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, _ = _reported_rig(tmp_path, monkeypatch,
+                               {path: (200, {"status": "error", "errorType": "unavailable",
+                                             "error": "too many concurrent queries"})})
+
+    refused = ""
+    try:
+        answered = getattr(backend, read)()
+    except BackendFailure as error:
+        refused = str(error)
+    assert refused, f"the error document was answered as {answered}"
+    assert "too many concurrent queries" in refused, refused
+
+
+@pytest.mark.parametrize("read", ["reported_rules", "reported_alerts"])
+def test_a_prometheus_that_is_away_is_a_502_rather_than_nothing_firing(rig, tmp_path,
+                                                                       monkeypatch, read):
+    """
+    These two reads are what a console shows when it says the cluster is quiet, so a
+    Prometheus that is not there has to be said out loud rather than answered as quiet.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _reported_rig(tmp_path, monkeypatch)
+
+    def refusing(url, **kwargs):
+        """
+        A Prometheus that is not listening.
+        """
+        raise prometheus.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(prometheus.requests, "get", refusing)
+
+    with pytest.raises(BackendFailure) as refused:
+        getattr(backend, read)()
+    assert refused.value.status_code == 502
+    assert "Prometheus is not answering" in str(refused.value), str(refused.value)
+
+
+def test_an_alert_is_answered_in_the_words_the_alertmanager_plugin_uses(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    One alert has two views, Prometheus' and Alertmanager's, and a reader holds them side by
+    side: the fields that mean the same thing are named the same, derived from that plugin's
+    own shaping rather than from a list kept here. What Prometheus cannot know is left out
+    rather than answered empty, which would read as nothing silencing it.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    firing = {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+              "annotations": {"description": "Hardware component memory is missing."},
+              "state": "firing", "activeAt": "2026-11-20T09:02:11.000Z", "value": "1"}
+    backend, _ = _reported_rig(tmp_path, monkeypatch, {
+        "/alerts": (200, {"status": "success", "data": {"alerts": [firing]}})})
+
+    ours = backend.reported_alerts()["alerts"][0]
+    theirs = alertmanager._alert({"labels": firing["labels"],
+                                  "annotations": firing["annotations"],
+                                  "startsAt": firing["activeAt"],
+                                  "status": {"state": "suppressed",
+                                             "silencedBy": ["4b1c7d5e"]}})
+
+    shared = {"name", "state", "labels", "annotations", "starts_at"}
+    assert shared <= set(theirs), sorted(theirs)
+    assert shared <= set(ours), sorted(ours)
+    assert {key: ours[key] for key in shared - {"state"}} == \
+           {key: theirs[key] for key in shared - {"state"}}
+    assert not set(ours) & {"silenced_by", "inhibited_by"}, sorted(ours)
+    assert (ours["state"], theirs["state"]) == ("firing", "suppressed")
+
+
+def test_every_reported_route_admits_a_reader_and_only_reads(rig):
+    """
+    Prometheus' own view is a read, and a reader may have it. Derived from the prefix rather
+    than listed, so the next one added arrives here with nothing to remember.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import yaml
+
+    from trixd.core.plugins import manifest as manifests
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    parsed = manifests.parse(yaml.safe_load(
+        open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
+
+    reported = [one for one in parsed.endpoints if one.path.startswith("reported/")]
+
+    assert reported, "no route under reported/ was found, so this test proves nothing"
+    for one in reported:
+        assert one.minimum == "reader", one.path
+        assert [verb.upper() for verb in one.methods] == ["GET"], one.path
+        assert not (one.render or one.replicate or one.public or one.forward), one.path

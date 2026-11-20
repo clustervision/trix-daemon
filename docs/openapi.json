@@ -6724,6 +6724,190 @@
         "x-trixd-minimum": ""
       }
     },
+    "/api/v1/prometheus/reported/alerts": {
+      "get": {
+        "description": "What Prometheus has evaluated to an alert right now, before Alertmanager has had\nanything to do with it. `state` is `firing`, or `pending` while the rule's `for` is\nstill running down - Prometheus' own two words, where Alertmanager answers `active`\nand `suppressed` for its view of the same alert at `GET /api/v1/alertmanager/alerts`.\n\nRead this one to see what Prometheus is sending and that one to see what became of it:\n`name`, `labels`, `annotations` and `starts_at` are the same fields there, so the two\ncan be held side by side. Nothing here says what is quietening an alert, because\nPrometheus does not know - silences are Alertmanager's. `value` is what the rule's\nexpression evaluated to.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_reported_alerts_get_api_v1_prometheus_reported_alerts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alerts": [
+                    {
+                      "annotations": {
+                        "description": "Hardware component memory is missing."
+                      },
+                      "labels": {
+                        "alertname": "MissingHardwareComponent",
+                        "hostname": "node001.cluster",
+                        "severity": "warning"
+                      },
+                      "name": "MissingHardwareComponent",
+                      "starts_at": "2026-11-20T09:02:11.000Z",
+                      "state": "firing",
+                      "value": "1"
+                    }
+                  ],
+                  "count": 1
+                },
+                "schema": {}
+              }
+            },
+            "description": "The alerts, counted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Prometheus did not answer, or answered that it could not"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The alerts Prometheus says are firing",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/prometheus/reported/rules": {
+      "get": {
+        "description": "What Prometheus is evaluating, which is not the same as the files trixd wrote. A file\nPrometheus will not take is not here at all - it keeps the configuration it had and\nsays so in its own log - so `files`, the rule files it did load, is what tells a\nreader that a file in `rules_directory` was refused.\n\nA rule it loaded and then cannot evaluate is a different failure, and this is where\nthat one shows: such a rule carries `health: err` and the `last_error` of its last\nevaluation, and `unhealthy` counts them. A rule Prometheus has not reached yet is\n`unknown`, which every rule is for an interval after a reload, and is not counted.\nEach group names the `file` it came from and when it was last evaluated; each rule\ncarries its `type`, the `state` of an alerting rule, its `query` and its labels. The\nalert instances are left out, because the alerts below answer those in full. Answered\nfor the whole estate, which is one group per node holding hardware rules.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_reported_rules_get_api_v1_prometheus_reported_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "files": [
+                    "/trinity/local/etc/prometheus_server/rules/trix.generic.rules",
+                    "/trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules"
+                  ],
+                  "groups": [
+                    {
+                      "evaluation_time": 0.000431,
+                      "file": "/trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules",
+                      "last_evaluation": "2026-11-20T09:14:02.113Z",
+                      "name": "trinityx_hw",
+                      "rules": [
+                        {
+                          "annotations": {
+                            "description": "Hardware component memory is missing."
+                          },
+                          "duration": 300,
+                          "health": "ok",
+                          "labels": {
+                            "category": "hardware",
+                            "severity": "warning"
+                          },
+                          "last_error": "",
+                          "name": "MissingHardwareComponent",
+                          "query": "absent(lshw_device{class=\"memory\", hostname=\"node001.cluster\"})",
+                          "state": "inactive",
+                          "type": "alerting"
+                        }
+                      ]
+                    }
+                  ],
+                  "unhealthy": 0
+                },
+                "schema": {}
+              }
+            },
+            "description": "Every group Prometheus holds, the files they were loaded from, and how many rules it cannot evaluate"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Prometheus did not answer, or answered that it could not"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The rules Prometheus has loaded, as Prometheus reports them",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
     "/api/v1/prometheus/rules": {
       "get": {
         "description": "The generic and service alert rules as one document, in Prometheus' own rule-file\nformat: `groups`, each with a `name` and its `rules`. trixd writes the groups whose\nname starts with `service` to `trix.service.rules` and the others to\n`trix.generic.rules`, both in the rules directory. Empty until a manager sets it.\n\n**Access:** reader or above: reader, operator, manager and rootus",

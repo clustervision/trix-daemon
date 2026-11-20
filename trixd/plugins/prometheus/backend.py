@@ -84,6 +84,10 @@ DEFAULT_CONFIG: dict = {
 # waits to take effect; nothing here is worth configuring.
 UNVERIFIED_FOR: int = 3600
 
+# Prometheus' own API, which this plugin asks and translates the answers of. Its routes are
+# not ours, and they are the same version string this daemon serves its own under.
+API: str = "/api/v1"
+
 # Exporter name to the port it answers on. A node is a target once per exporter.
 EXPORTERS: dict = {
     "node": 14200,
@@ -846,12 +850,57 @@ class Backend:
         result = ((answer.json() or {}).get("data") or {}).get("result") or []
         return [dict(item.get("metric") or {}) for item in result]
 
+    # ----------------------------------------------------- what Prometheus reports
+
+    def reported_rules(self) -> dict:
+        """
+        The rule groups Prometheus holds, as Prometheus reports them.
+
+        A file Prometheus refused is not here at all - it keeps the configuration it had -
+        so the files it did load are what tells a reader that one of ours was not taken.
+        """
+        groups = [_group(one) for one in self._reported("/rules").get("groups") or []]
+        return {"files": sorted({one["file"] for one in groups if one["file"]}),
+                # Only err: a rule Prometheus has not reached yet is unknown, which every
+                # rule is for an evaluation interval after a reload.
+                "unhealthy": len([rule for one in groups for rule in one["rules"]
+                                  if rule["health"] == "err"]),
+                "groups": groups}
+
+    def reported_alerts(self) -> dict:
+        """
+        What Prometheus has evaluated to an alert, firing or still pending.
+        """
+        held = self._reported("/alerts").get("alerts") or []
+        return {"count": len(held), "alerts": [_alert(one) for one in held]}
+
+    def _reported(self, path: str) -> dict:
+        """
+        What Prometheus answers under one of its own read routes.
+
+        An error document is raised rather than shaped: Prometheus answers one with 200,
+        and nothing firing and not being able to ask read the same once it is.
+        """
+        document = self._call(path).json() or {}
+        if document.get("status") != "success":
+            raise BackendFailure(f"Prometheus answered an error at {API}{path}: "
+                                 f"{document.get('error') or document.get('status') or '?'}")
+        return document.get("data") or {}
+
+    # ------------------------------------------------------- reaching Prometheus
+
     def _query(self, query: str):
         """
-        One instant query. Prometheus is asked over TLS and its certificate is verified
-        against the system trust store, which is where the cluster CA is installed; the
-        first query is also the probe that finds a loopback address the certificate does
-        not carry, so the rules go on being written there.
+        One instant query, which is how this plugin reads a series.
+        """
+        return self._call("/query", {"query": query})
+
+    def _call(self, path: str, params: dict = None):
+        """
+        One request to Prometheus. Its certificate is verified against the system trust
+        store, which is where the cluster CA is installed; the first call is also the probe
+        that finds a loopback address the certificate does not carry, so the rules go on
+        being written there.
         """
         configured = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         url = self.prometheus_url or configured
@@ -863,7 +912,7 @@ class Backend:
                 # The store is asked for inside the try, so a system without one is a
                 # verification that cannot succeed and is answered where a failed one is -
                 # never by asking anyway.
-                answer = requests.get(f"{url}/api/v1/query", params={"query": query},
+                answer = requests.get(f"{url}{API}{path}", params=params,
                                       timeout=20,
                                       verify=tls.system_trust() if verify else False)
             except requests.exceptions.SSLError as error:
@@ -1517,3 +1566,49 @@ def _provision_address(node: dict) -> str:
                 return ""
             return held
     return ""
+
+
+def _group(held: dict) -> dict:
+    """
+    One rule group as this daemon describes it, carrying the file Prometheus loaded it from.
+    """
+    return {"name": held.get("name", ""),
+            "file": held.get("file", ""),
+            "last_evaluation": held.get("lastEvaluation", ""),
+            "evaluation_time": held.get("evaluationTime", 0),
+            "rules": [_rule(one) for one in held.get("rules") or []]}
+
+
+def _rule(held: dict) -> dict:
+    """
+    One rule, with the health and the error of its last evaluation.
+
+    Its alert instances are left out: a group per node carrying every instance is the same
+    document twice, and the alerts route answers them in full.
+    """
+    return {"name": held.get("name", ""),
+            "type": held.get("type", ""),
+            "state": held.get("state", ""),
+            "health": held.get("health", ""),
+            "last_error": held.get("lastError", ""),
+            "duration": held.get("duration", 0),
+            "query": held.get("query", ""),
+            "labels": held.get("labels") or {},
+            "annotations": held.get("annotations") or {}}
+
+
+def _alert(held: dict) -> dict:
+    """
+    One alert in the words the alertmanager plugin answers one in, so a reader can hold the
+    two views of it side by side.
+
+    Nothing says what is quietening it. That is Alertmanager's to know, and an empty
+    `silenced_by` here would read as nothing being silenced.
+    """
+    labels = held.get("labels") or {}
+    return {"name": labels.get("alertname", ""),
+            "state": held.get("state", ""),
+            "labels": labels,
+            "annotations": held.get("annotations") or {},
+            "starts_at": held.get("activeAt", ""),
+            "value": held.get("value", "")}
