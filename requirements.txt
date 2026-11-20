@@ -37,6 +37,10 @@ urllib3==1.26.16
 # pulls it in: a dependency we import is ours to state. The floor is fastapi's own.
 starlette>=0.46.0
 
+# Run by the osimage plugin as ansible-playbook from this Python. 2.16 is the last core that
+# drives the Python 3.6 of EL8 and Leap 15 images, so the pin stays below 2.17.
+ansible-core>=2.16,<2.17
+
 # trinityx-config-slurm and trinityx-config-genders are deliberately NOT here. The
 # installer puts them on a controller, each plugin imports its own inside a try, and
 # trixd has to run where neither is present.
