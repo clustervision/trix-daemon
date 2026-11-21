@@ -1568,6 +1568,132 @@ def test_a_declaration_the_route_would_ignore_is_refused_beside_its_neighbours()
     assert len(sound.endpoints) == 5, "five shapes that have to go on loading"
 
 
+def test_a_render_must_say_whether_it_writes_or_only_serves(rig):
+    """
+    One word carried two jobs. A render either builds a document in memory and serves it,
+    or makes files on disk agree with the state and reloads what reads them - and the
+    manifest said only whether it served, which is not the same question: the slurm and
+    genders renders do both, and what they serve is a report of the last write.
+
+    `reconcile` is the word for it, and these are the two shapes that then say neither job.
+    Left out it is derived as `serve` was read before the field existed, so a manifest
+    written against the older schema loads unchanged and means what it meant.
+    """
+    from trixd.common.errors import PluginRefused
+    from trixd.core.plugins import manifest as manifests
+
+    base = {"plugin": "probe", "backend": "backend.Backend"}
+
+    def one(render: dict) -> dict:
+        return {**base, "endpoints": [{"path": "renders/thing", "methods": ["GET"],
+                                       "minimum": "none", "handler": "render_thing",
+                                       "render": render}]}
+
+    # First, and before anything the new field is in: both shapes an older manifest can
+    # carry still parse. A refusal that caught these would stop a shipped plugin loading,
+    # which is worse than the ambiguity it was added for.
+    for older in ({"inputs": ["luna.node"], "serve": "json"}, {"inputs": ["luna.node"]}):
+        assert manifests.parse(one(older)).endpoints[0].render is not None, older
+
+    for render, because in (
+            # Declared pure and serving nothing: it writes no file and answers no route, so
+            # it runs on every wake and an author has nothing at all to look at.
+            ({"inputs": ["luna.node"], "reconcile": False},
+             "no effect an author could observe"),
+            # A service named by something that never reaches one.
+            ({"inputs": ["luna.node"], "serve": "json", "reloads": ["slurm"]},
+             "only a reconcile reaches a service")):
+        with pytest.raises(PluginRefused) as refusal:
+            manifests.parse(one(render))
+        assert because in str(refusal.value), (because, str(refusal.value))
+
+    # And the derivation itself, last: a render that serves is taken as pure and one that
+    # serves nothing as a reconcile, which is what `serve` alone used to mean.
+    assert manifests.parse(one({"inputs": ["luna.node"],
+                                "serve": "json"})).endpoints[0].render.reconciles is False
+    assert manifests.parse(one({"inputs": ["luna.node"]})).endpoints[0].render.reconciles
+    # A reconcile may serve, which is the pair neither half derives.
+    both = manifests.parse(one({"inputs": ["luna.node"], "serve": "json",
+                                "reconcile": True, "reloads": ["slurm"]}))
+    assert both.endpoints[0].render.reconciles, "a reconcile that serves is still one"
+
+
+def test_every_shipped_render_says_which_of_the_two_jobs_it_does(rig):
+    """
+    Enumerated from the manifests rather than listed here, so a render added later has to
+    say which it is instead of inheriting whatever `serve` happens to imply. The derivation
+    is there for a manifest written before the field; ours have no reason to lean on it.
+    """
+    import glob as globbing
+
+    import yaml
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    renders = {}
+    for found in sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/manifest.yaml"))):
+        with open(found, encoding="utf-8") as handle:
+            document = yaml.safe_load(handle)
+        for endpoint in document.get("endpoints") or []:
+            if endpoint.get("render"):
+                renders[f"{document['plugin']}/{endpoint['path']}"] = endpoint["render"]
+    assert len(renders) >= 4, f"the manifests declared no renders to check: {renders}"
+
+    undeclared = sorted(key for key, spec in renders.items() if "reconcile" not in spec)
+    assert undeclared == [], f"shipped renders that do not say which job they do: {undeclared}"
+
+    # And a reconcile is the only one that may name a service, which the parser refuses the
+    # other way round: this is the shipped set agreeing with it.
+    wrong = sorted(key for key, spec in renders.items()
+                   if spec.get("reloads") and not spec.get("reconcile"))
+    assert wrong == [], f"pure renders naming a service they reload: {wrong}"
+
+
+def test_a_read_of_a_render_never_runs_the_producer_that_writes_its_files(rig, tmp_path):
+    """
+    The half of the split that is structural rather than declared: the route behind a
+    `serve` is the engine's reader, which hands back the last result, so a GET reaches no
+    file and no service however much the producer writes. That is what lets a reconcile
+    serve a report of itself without a poll turning into a write.
+
+    Nothing here is new, so this does not fail against the code it was written for: it pins
+    a property the split now states in the manifest, against a reader that could one day be
+    taught to produce on demand.
+    """
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+
+    sentinel = os.path.join(str(tmp_path), "written-by-the-producer")
+    ran = []
+
+    def produce() -> dict:
+        ran.append(1)
+        with open(sentinel, "w", encoding="utf-8") as handle:
+            handle.write("x")
+        return {"runs": len(ran)}
+
+    item = renders().register("probe", "renders/thing",
+                              Render(inputs=["luna.node"], serve="json", reconcile=True),
+                              produce)
+    try:
+        # The setup, before the measurement: the producer does write, so a reader that ran
+        # it would leave the file behind. Without this the test passes on a producer that
+        # never worked.
+        assert renders().run(item) is True, "the producer did not run at all"
+        assert os.path.exists(sentinel), "the producer wrote no file, so nothing is proven"
+        os.remove(sentinel)
+        # Counted from here rather than from zero: registering produces too, once the
+        # first pass over every render has happened.
+        served, before = item.document, len(ran)
+
+        read = renders().reader("probe", "renders/thing")
+        for _ in range(3):
+            assert read() == served, "the reader answered something it did not store"
+        assert len(ran) == before, f"a read ran the producer {len(ran) - before} more time(s)"
+        assert not os.path.exists(sentinel), "a read wrote the producer's file"
+    finally:
+        renders().forget("probe")
+
+
 def test_loading_a_plugin_that_declares_a_verb_twice_is_refused(rig, tmp_path):
     """
     Starlette matches the first of two routes with the same path and verb, so the second
@@ -4688,3 +4814,968 @@ def test_a_batch_refused_part_way_through_writes_nothing(rig, tmp_path, monkeypa
     assert len(list(tmp_path.glob("trix.hw.*.rules"))) == len(known), \
         "a batch that was taken did not write a rule file for every node"
     assert len(reloads) == 1, f"one batch that changed every node, {len(reloads)} reloads"
+
+
+def test_a_token_outliving_its_node_writes_the_file_its_own_name(rig, tmp_path, monkeypatch):
+    """
+    The rule file is named for the node the token was minted for, not for the spelling in
+    the path.
+
+    The gate binds a node token to its path by short name, so everything past the first dot
+    is the caller's own. Where Luna no longer holds the node there is nothing to resolve the
+    name against, and the spelling that was sent became the name of a rule file - a hostname
+    another node answers to, which then keeps that file as its own from its next boot on.
+    """
+    import inspect
+
+    from trixd.common.constants import ROLE_NONE, TOKEN_KIND_NODE
+    from trixd.core.security import gate, tokens
+
+    backend, _ = _hw_backend(tmp_path, monkeypatch)
+    token = tokens.mint("ghost001", kind=TOKEN_KIND_NODE, node="ghost001")
+    # The premise, through the real gate: a token for ghost001 is admitted on a path
+    # spelling it as another host. Without that there is nothing here to pin.
+    caller = gate.admit(token, ROLE_NONE, TOKEN_KIND_NODE, "PATCH",
+                        "prometheus/hw-rules/ghost001.b", {"node": "ghost001.b"})
+
+    # Handed its arguments the way the binder hands them: only the ones it declares.
+    supplied = {"node": "ghost001.b", "body": {}, "caller": caller}
+    accepted = inspect.signature(backend.import_hw_rules).parameters
+    answer = backend.import_hw_rules(**{key: value for key, value in supplied.items()
+                                        if key in accepted})
+
+    written = sorted(path.name for path in tmp_path.glob("trix.hw.*.rules"))
+    assert written == ["trix.hw.ghost001.rules"], (
+        f"the file is named for what the path spelled rather than for the node the token "
+        f"names, so another node's rules are this call's to write: {written}")
+    assert answer.get("hostname") == "ghost001", answer
+
+
+def test_the_targets_outside_luna_are_stored_and_written_for_prometheus(rig, tmp_path,
+                                                                       monkeypatch):
+    """
+    A manager's target groups reach the file Prometheus' file_sd job reads, and come back.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import yaml
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    sent = {"targets": [{"targets": ["storage01.cluster:9100"],
+                         "labels": {"job": "node", "site": "dc1"}}]}
+
+    assert backend.other_targets(body=sent) == sent
+    assert backend.other_targets() == sent, "what was stored is not what comes back"
+
+    path = directory / prometheus.OTHER_TARGETS_FILE
+    assert path.is_file(), f"nothing was written in {sorted(os.listdir(directory))}"
+    # Read with the parser Prometheus reads it with, and asked what survived: a document
+    # that parses as anything but a list of target groups is one file_sd drops whole.
+    with open(path, "r", encoding="utf-8") as handle:
+        written = yaml.safe_load(handle)
+    assert written == sent["targets"], (
+        f"the file holds {written}, which is not the target groups that were sent")
+
+
+def test_a_target_group_prometheus_would_not_take_is_refused_before_it_is_stored(
+        rig, tmp_path, monkeypatch):
+    """
+    A label name or an address Prometheus refuses costs the whole file, so it is refused
+    here instead - before the declaration that replicates it to the peer is written.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    kept = {"targets": [{"targets": ["storage01.cluster:9100"]}]}
+    backend.other_targets(body=kept)
+
+    for refused in ({"targets": [{"targets": ["switch01:9100"],
+                                  "labels": {"site-1": "dc1"}}]},
+                    {"targets": [{"targets": ["switch01:9100"], "labels": {"rack": 7}}]},
+                    {"targets": [{"targets": ["switch01:9100"], "job": "node"}]},
+                    {"targets": [{"targets": [9100]}]},
+                    {"targets": [{"targets": "switch01:9100"}]},
+                    {"targets": "switch01:9100"}):
+        with pytest.raises(BadRequest):
+            backend.other_targets(body=refused)
+
+    assert backend.other_targets() == kept, "a refused document was stored"
+    with open(directory / prometheus.OTHER_TARGETS_FILE, "r", encoding="utf-8") as handle:
+        assert kept["targets"][0]["targets"][0] in handle.read(), (
+            "a refused document was written over the one being scraped")
+
+
+def test_the_targets_outside_luna_are_written_where_the_document_was_not_sent(
+        rig, tmp_path, monkeypatch):
+    """
+    The render is what puts the file on the other controller.
+
+    The declaration replicates, and a declaration arriving from the peer wakes the renders
+    that read it; nothing else writes this file there. New surface: there is nothing at the
+    branch point for this to fail against.
+    """
+    from trixd.utils import declarations
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    directory = tmp_path / "file_sd_other"
+    backend.config(body={"other_targets_directory": str(directory)})
+    path = directory / prometheus.OTHER_TARGETS_FILE
+
+    assert backend.render_other_targets() == {"targets": 0, "written": ""}
+    assert not path.exists(), "a controller that was sent nothing wrote a file anyway"
+
+    # As the sweep leaves it: the row is in the table, and this controller was never called.
+    declarations.write("prometheus", "targets", prometheus.OTHER_TARGETS,
+                       {"targets": [{"targets": ["switch01.cluster:9100"]}]})
+
+    answer = backend.render_other_targets()
+
+    assert answer["targets"] == 1, answer
+    with open(path, "r", encoding="utf-8") as handle:
+        assert "switch01.cluster:9100" in handle.read(), (
+            "the render ran and the targets the peer stored are not in the file")
+
+
+def _alertmanager_rig(tmp_path, monkeypatch, replies=None, url="https://alertmanager.cluster:9093"):
+    """
+    An alertmanager backend with a credential file of its own and a stubbed Alertmanager.
+
+    `replies` is the Alertmanager path to the (status, document) it answers with; anything
+    not named answers 200 and nothing. Every call made is appended to the list returned.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    secret = tmp_path / "admin.txt"
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend = alertmanager.Backend()
+    backend.config(body={"alertmanager_url": url, "credentials_file": str(secret)})
+    _trust_store(monkeypatch)
+    sent = []
+
+    def answering(method, asked, **kwargs):
+        """
+        Alertmanager, remembering what it was asked and how.
+        """
+        sent.append({"method": method, "url": asked, "body": kwargs.get("json"),
+                     "auth": kwargs.get("auth"), "verify": kwargs.get("verify")})
+        status, document = (replies or {}).get(asked.split("/api/v2", 1)[-1], (200, {}))
+        return SimpleNamespace(status_code=status, text="",
+                               json=lambda: document)
+
+    monkeypatch.setattr(alertmanager.requests, "request", answering)
+    return backend, sent
+
+
+def _alertmanager_manifest():
+    """
+    The shipped alertmanager manifest, parsed.
+    """
+    from trixd.core.plugins import manifest as manifests
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    path = os.path.join(os.path.dirname(alertmanager.__file__), "manifest.yaml")
+    return manifests.parse(manifests.read_yaml(path))
+
+
+def test_a_silence_is_recorded_against_whoever_made_it(rig, tmp_path, monkeypatch):
+    """
+    The console stamps every silence with one shared account, which is what makes a silence
+    nobody can trace. The caller's own name goes on it instead.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {"/silences": (200, {"silenceID": "abc-123"})})
+
+    answer = backend.silence({"matchers": [{"label": "hostname", "value": "node001"}],
+                              "comment": "Replacing a DIMM"},
+                             caller=SimpleNamespace(name="harry"))
+
+    assert sent[0]["body"]["createdBy"] == "harry", sent[0]["body"]
+    assert sent[0]["body"]["createdBy"] != "admin"
+    assert answer["created_by"] == "harry"
+    assert answer["silence_id"] == "abc-123"
+
+
+def test_a_silence_identifier_that_could_steer_the_request_is_refused(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    The identifier is the one caller-supplied value that reaches a path this plugin builds,
+    so anything but an identifier is refused before a request is made rather than quoted
+    into one.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BadRequest
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    for attempt in ("../../api/v2/silences", "abc/../../status", "", "a b"):
+        with pytest.raises(BadRequest):
+            backend.expire({"silence_id": attempt}, caller=SimpleNamespace(name="harry"))
+    assert sent == [], "a refusal reached Alertmanager anyway"
+
+
+def test_the_alertmanager_credential_is_read_from_the_file_and_never_stored(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    The password is on the controller already, root-readable, and the declarations table
+    replicates to the other controller: what is held here is the path, and the password is
+    read at the moment it is used so a rotated one needs no restart.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import json
+
+    from trixd.utils import declarations
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    backend.alerts()
+    assert sent[0]["auth"] == ("admin", "s3cret"), sent[0]["auth"]
+
+    held = declarations.read("alertmanager", "config", "")
+    assert "s3cret" not in json.dumps(held), held
+    assert held["credentials_file"] == str(tmp_path / "admin.txt")
+
+    (tmp_path / "admin.txt").write_text("rotated\n", encoding="utf-8")
+    backend.alerts()
+    assert sent[1]["auth"] == ("admin", "rotated"), sent[1]["auth"]
+
+
+@pytest.mark.parametrize("filename, account", [
+    ("admin.txt", "admin"),
+    ("slurm_accounting.txt", "slurm_accounting"),
+    ("trixd-delegate.txt", "trixd-delegate"),
+])
+def test_the_account_is_whatever_the_credential_file_is_named_for(rig, tmp_path, monkeypatch,
+                                                                  filename, account):
+    """
+    The installer builds every one of these paths from a username, so the file's own name is
+    the account and nothing in the daemon has to carry a copy of it. Pinned by derivation
+    rather than by the one name that ships, because the next caller of this will point it at
+    a different file.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    secret = tmp_path / filename
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    backend.config(body={"credentials_file": str(secret)})
+
+    backend.alerts()
+
+    assert sent[-1]["auth"] == (account, "s3cret"), sent[-1]["auth"]
+
+
+def test_a_401_names_the_account_tried_and_the_file_it_came_from(rig, tmp_path, monkeypatch):
+    """
+    A file named for something that is not an account - a salt, a passphrase - is refused in
+    exactly the way a stale password is, so the refusal has to say which account was
+    presented and where it was read from, or the two cannot be told apart from the message.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    secret = tmp_path / "root-salt.txt"
+    secret.write_text("s3cret\n", encoding="utf-8")
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch, {"/alerts": (401, {})})
+    backend.config(body={"credentials_file": str(secret)})
+
+    refused = ""
+    try:
+        backend.alerts()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "root-salt" in refused, refused
+    assert str(secret) in refused, refused
+
+
+def test_a_credential_that_cannot_be_read_is_loud_and_sends_nothing(rig, tmp_path,
+                                                                    monkeypatch):
+    """
+    Sending no credential would read as Alertmanager refusing the caller; the file not
+    being there is the controller's problem and says so, before anything is sent.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    (tmp_path / "admin.txt").unlink()
+
+    refused = ""
+    try:
+        backend.alerts()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "credential could not be read" in refused, refused
+    assert str(tmp_path / "admin.txt") in refused, refused
+    assert sent == [], refused
+
+
+def test_an_alertmanager_that_is_away_names_itself_in_the_refusal(rig, tmp_path,
+                                                                  monkeypatch):
+    """
+    A service that is not there is a 502 that says which service, never an empty list that
+    reads as nothing being silenced.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+
+    def refusing(*args, **kwargs):
+        """
+        A socket with nothing behind it.
+        """
+        raise alertmanager.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(alertmanager.requests, "request", refusing)
+    refused = ""
+    try:
+        backend.silences()
+    except BackendFailure as error:
+        refused = str(error)
+    assert "Alertmanager is not answering" in refused, refused
+    assert BackendFailure.status_code == 502
+
+
+def test_a_matcher_is_translated_into_alertmanagers_words_and_back(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    The route is a translation rather than a way through, so a caller writes `label`,
+    `regex` and `negative` and never Alertmanager's own `name`, `isRegex` and `isEqual`.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {"/silences": (200, {"silenceID": "abc-123"})})
+
+    answer = backend.silence({"matchers": [{"label": "hostname", "value": "node00[12]",
+                                            "regex": True},
+                                           {"label": "severity", "value": "info",
+                                            "negative": True}],
+                              "comment": "Maintenance"},
+                             caller=SimpleNamespace(name="harry"))
+
+    assert sent[0]["body"]["matchers"] == [
+        {"name": "hostname", "value": "node00[12]", "isRegex": True, "isEqual": True},
+        {"name": "severity", "value": "info", "isRegex": False, "isEqual": False}]
+    assert answer["matchers"] == [
+        {"label": "hostname", "value": "node00[12]", "regex": True, "negative": False},
+        {"label": "severity", "value": "info", "regex": False, "negative": True}]
+
+
+@pytest.mark.parametrize("body, reason", [
+    ({"matchers": [], "comment": "x"}, "at least one matcher"),
+    ({"matchers": [{"value": "node001"}], "comment": "x"}, "names the label"),
+    ({"matchers": [{"label": "hostname"}], "comment": "x"}, "no value to match"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": ""}, "says why"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": "x",
+      "duration": "soon"}, "not a duration"),
+    ({"matchers": [{"label": "hostname", "value": "n"}], "comment": "x",
+      "ends_at": "2001-01-01T00:00:00Z"}, "ends after it starts"),
+])
+def test_a_silence_that_could_not_mean_anything_is_refused_here(rig, tmp_path, monkeypatch,
+                                                                body, reason):
+    """
+    Each of these is a 400 said in our own words, rather than whatever Alertmanager answers
+    for it, and none of them reaches Alertmanager at all.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BadRequest
+
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch)
+    with pytest.raises(BadRequest) as refused:
+        backend.silence(body, caller=SimpleNamespace(name="harry"))
+    assert reason in str(refused.value), str(refused.value)
+    assert sent == [], "a refusal reached Alertmanager anyway"
+
+
+def test_expiring_a_silence_alertmanager_does_not_hold_is_a_404(rig, tmp_path, monkeypatch):
+    """
+    Alertmanager expires rather than deletes, so a silence it has no record of at all is
+    the caller naming the wrong one - a 404 and not a 502, which would read as the service
+    being broken.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import TrixdError
+
+    identifier = "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+    backend, sent = _alertmanager_rig(tmp_path, monkeypatch,
+                                      {f"/silence/{identifier}": (404, {})})
+    with pytest.raises(TrixdError) as refused:
+        backend.expire({"silence_id": identifier}, caller=SimpleNamespace(name="harry"))
+    assert refused.value.status_code == 404, type(refused.value).__name__
+    assert identifier in str(refused.value), str(refused.value)
+    assert sent[0]["method"] == "DELETE"
+    assert sent[0]["url"].endswith(f"/api/v2/silence/{identifier}"), sent[0]["url"]
+
+
+def test_the_alertmanager_loopback_is_probed_once_and_then_asked_unverified(rig, tmp_path,
+                                                                            monkeypatch):
+    """
+    The controller certificate carries the box's own names, never localhost, so the first
+    call is the one that finds out and the ones after it do not ask again.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch, url="https://localhost:9093")
+    store = _trust_store(monkeypatch)
+    asked = []
+
+    def answering(method, url, **kwargs):
+        """
+        An Alertmanager whose certificate does not carry the loopback.
+        """
+        asked.append(kwargs.get("verify"))
+        if kwargs.get("verify"):
+            raise alertmanager.requests.exceptions.SSLError("hostname mismatch")
+        return SimpleNamespace(status_code=200, text="", json=lambda: [])
+
+    monkeypatch.setattr(alertmanager.requests, "request", answering)
+    backend.alerts()
+    backend.alerts()
+    assert asked == [store, False, False], asked
+    assert backend.unverified_from, "the hour is armed, so the next call does not probe again"
+
+
+def test_every_alertmanager_route_admits_the_role_its_work_needs(rig):
+    """
+    The whole surface rather than one route: silencing is what an operator does before
+    pulling a node, reading is a reader's, and the settings name a file the daemon reads as
+    root and the address it then sends what it finds there to.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    parsed = _alertmanager_manifest()
+    roles = {(endpoint.path, verb): endpoint.minimum
+             for endpoint in parsed.endpoints for verb in endpoint.methods}
+    assert roles == {("silences", "GET"): "reader",
+                     ("alerts", "GET"): "reader",
+                     ("status", "GET"): "reader",
+                     ("config", "GET"): "reader",
+                     ("actions/silence", "POST"): "operator",
+                     ("actions/expire", "POST"): "operator",
+                     ("config", "PATCH"): "rootus"}
+
+
+def test_the_alertmanager_plugin_replicates_nothing_and_renders_nothing(rig):
+    """
+    Silences live in Alertmanager and gossip between the pair's two of them, so a second
+    copy made here would be a second silence to expire. Nothing is computed either: these
+    are five routes onto a service, and a render would be a document with no reader.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    parsed = _alertmanager_manifest()
+    assert [one.path for one in parsed.endpoints if one.replicate] == []
+    assert [one.path for one in parsed.endpoints if one.render] == []
+    assert [one.path for one in parsed.endpoints if one.forward or one.public] == []
+    assert parsed.hooks == {}
+
+
+def _reported_rig(tmp_path, monkeypatch, replies=None):
+    """
+    A prometheus backend with Prometheus stubbed, keyed by the route under its own API.
+
+    `replies` is the path under that API to the (status, document) it answers with; anything
+    not named answers a success document with nothing in it. Every call made is appended to
+    the list returned.
+    """
+    from types import SimpleNamespace
+
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    _trust_store(monkeypatch)
+    asked = []
+
+    def answering(url, **kwargs):
+        """
+        Prometheus, remembering what it was asked and what it was checked against.
+        """
+        asked.append({"url": url, "params": kwargs.get("params"),
+                      "verify": kwargs.get("verify")})
+        status, document = (replies or {}).get(url.split(prometheus.API, 1)[-1],
+                                               (200, {"status": "success", "data": {}}))
+        return SimpleNamespace(status_code=status, text="", json=lambda: document)
+
+    monkeypatch.setattr(prometheus.requests, "get", answering)
+    return backend, asked
+
+
+def test_the_rules_reported_are_the_files_prometheus_took_not_the_ones_we_wrote(rig, tmp_path,
+                                                                               monkeypatch):
+    """
+    A rule file Prometheus will not take is still on disk while Prometheus goes on serving
+    the configuration it had, so the files it names are the only place that shows it.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    loaded = {"status": "success", "data": {"groups": [
+        {"name": "trinityx_generic", "file": "/etc/prometheus/trix.generic.rules",
+         "lastEvaluation": "2026-11-20T09:14:02.113Z", "evaluationTime": 0.0004,
+         "rules": [{"name": "NodeDown", "type": "alerting", "state": "inactive",
+                    "health": "ok", "query": "up == 0"}]}]}}
+    backend, asked = _reported_rig(tmp_path, monkeypatch, {"/rules": (200, loaded)})
+    (tmp_path / "trix.hw.node001.cluster.rules").write_text("groups: []\n", encoding="utf-8")
+
+    answer = backend.reported_rules()
+
+    assert asked[0]["url"].endswith("/api/v1/rules"), asked
+    assert answer.get("files") == ["/etc/prometheus/trix.generic.rules"], answer.get("files")
+    assert answer["groups"][0]["file"] == "/etc/prometheus/trix.generic.rules"
+
+
+def test_a_rule_prometheus_cannot_evaluate_carries_its_error_and_is_counted(rig, tmp_path,
+                                                                            monkeypatch):
+    """
+    The other failure: the file was taken and the rule inside it does not run. Nothing is
+    missing from the answer, so only the health and the error it came with say so. A rule
+    not yet reached is unknown rather than failing, and every rule is that for an interval
+    after a reload, which is the whole estate at once.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    loaded = {"status": "success", "data": {"groups": [
+        {"name": "trinityx_hw", "file": "/etc/prometheus/trix.hw.node001.cluster.rules",
+         "rules": [{"name": "MissingHardwareComponent", "type": "alerting", "health": "err",
+                    "lastError": "vector contains metrics with the same labelset",
+                    "state": "inactive", "query": "absent(lshw_device)"},
+                   {"name": "NodeDown", "type": "alerting", "health": "ok",
+                    "state": "firing", "query": "up == 0"},
+                   {"name": "JustReloaded", "type": "alerting", "health": "unknown",
+                    "state": "inactive", "query": "up == 0"}]}]}}
+    backend, _ = _reported_rig(tmp_path, monkeypatch, {"/rules": (200, loaded)})
+
+    answer = backend.reported_rules()
+    held = answer["groups"][0]["rules"]
+
+    assert answer.get("unhealthy") == 1, answer
+    assert held[0].get("last_error") == "vector contains metrics with the same labelset", held[0]
+    assert [one["health"] for one in held] == ["err", "ok", "unknown"], held
+
+
+def test_both_reads_go_to_prometheus_over_the_one_verified_path(rig, tmp_path, monkeypatch):
+    """
+    Neither read brings a way of reaching Prometheus of its own: the same address the
+    hardware query probed, checked against the same system trust store.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    backend, asked = _reported_rig(tmp_path, monkeypatch)
+    store = _trust_store(monkeypatch)
+
+    backend.reported_rules()
+    backend.reported_alerts()
+
+    assert [one["verify"] for one in asked] == [store, store], asked
+    assert [one["url"] for one in asked] == ["https://localhost:9090/api/v1/rules",
+                                             "https://localhost:9090/api/v1/alerts"], asked
+
+
+@pytest.mark.parametrize("read, path", [("reported_rules", "/rules"),
+                                        ("reported_alerts", "/alerts")])
+def test_an_error_document_from_prometheus_is_not_an_empty_answer(rig, tmp_path, monkeypatch,
+                                                                  read, path):
+    """
+    Prometheus answers an error it can describe with 200 and a document that says so. Shaped
+    like a good one it is an empty list, and then not being able to ask and nothing being
+    there are the same answer.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, _ = _reported_rig(tmp_path, monkeypatch,
+                               {path: (200, {"status": "error", "errorType": "unavailable",
+                                             "error": "too many concurrent queries"})})
+
+    refused = ""
+    try:
+        answered = getattr(backend, read)()
+    except BackendFailure as error:
+        refused = str(error)
+    assert refused, f"the error document was answered as {answered}"
+    assert "too many concurrent queries" in refused, refused
+
+
+@pytest.mark.parametrize("read", ["reported_rules", "reported_alerts"])
+def test_a_prometheus_that_is_away_is_a_502_rather_than_nothing_firing(rig, tmp_path,
+                                                                       monkeypatch, read):
+    """
+    These two reads are what a console shows when it says the cluster is quiet, so a
+    Prometheus that is not there has to be said out loud rather than answered as quiet.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend, _ = _reported_rig(tmp_path, monkeypatch)
+
+    def refusing(url, **kwargs):
+        """
+        A Prometheus that is not listening.
+        """
+        raise prometheus.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(prometheus.requests, "get", refusing)
+
+    with pytest.raises(BackendFailure) as refused:
+        getattr(backend, read)()
+    assert refused.value.status_code == 502
+    assert "Prometheus is not answering" in str(refused.value), str(refused.value)
+
+
+def test_an_alert_is_answered_in_the_words_the_alertmanager_plugin_uses(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    One alert has two views, Prometheus' and Alertmanager's, and a reader holds them side by
+    side: the fields that mean the same thing are named the same, derived from that plugin's
+    own shaping rather than from a list kept here. What Prometheus cannot know is left out
+    rather than answered empty, which would read as nothing silencing it.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    firing = {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+              "annotations": {"description": "Hardware component memory is missing."},
+              "state": "firing", "activeAt": "2026-11-20T09:02:11.000Z", "value": "1"}
+    backend, _ = _reported_rig(tmp_path, monkeypatch, {
+        "/alerts": (200, {"status": "success", "data": {"alerts": [firing]}})})
+
+    ours = backend.reported_alerts()["alerts"][0]
+    theirs = alertmanager._alert({"labels": firing["labels"],
+                                  "annotations": firing["annotations"],
+                                  "startsAt": firing["activeAt"],
+                                  "status": {"state": "suppressed",
+                                             "silencedBy": ["4b1c7d5e"]}})
+
+    shared = {"name", "state", "labels", "annotations", "starts_at"}
+    assert shared <= set(theirs), sorted(theirs)
+    assert shared <= set(ours), sorted(ours)
+    assert {key: ours[key] for key in shared - {"state"}} == \
+           {key: theirs[key] for key in shared - {"state"}}
+    assert not set(ours) & {"silenced_by", "inhibited_by"}, sorted(ours)
+    assert (ours["state"], theirs["state"]) == ("firing", "suppressed")
+
+
+def test_every_reported_route_admits_a_reader_and_only_reads(rig):
+    """
+    Prometheus' own view is a read, and a reader may have it. Derived from the prefix rather
+    than listed, so the next one added arrives here with nothing to remember.
+
+    New surface: there is nothing at the branch point for this to fail against.
+    """
+    import yaml
+
+    from trixd.core.plugins import manifest as manifests
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    parsed = manifests.parse(yaml.safe_load(
+        open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
+
+    reported = [one for one in parsed.endpoints if one.path.startswith("reported/")]
+
+    assert reported, "no route under reported/ was found, so this test proves nothing"
+    for one in reported:
+        assert one.minimum == "reader", one.path
+        assert [verb.upper() for verb in one.methods] == ["GET"], one.path
+        assert not (one.render or one.replicate or one.public or one.forward), one.path
+
+
+def _firing():
+    """
+    One alert as Prometheus reports it, which a silence at Alertmanager would have quietened.
+    """
+    return {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+            "annotations": {"description": "Hardware component memory is missing."},
+            "state": "firing", "activeAt": "2026-11-20T09:02:11.000Z", "value": "1"}
+
+
+def _suppressed():
+    """
+    The same alert as Alertmanager reports it, with the silence that is holding it down.
+    """
+    return {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+            "annotations": {"description": "Hardware component memory is missing."},
+            "startsAt": "2026-11-20T09:02:11.000Z",
+            "status": {"state": "suppressed", "silencedBy": ["4b1c7d5e"], "inhibitedBy": []}}
+
+
+def _prometheus_loaded(tmp_path, monkeypatch, alerts=None, backend=None):
+    """
+    The prometheus plugin loaded, answering the alerts Prometheus reports.
+
+    `backend` stands in for the plugin's own, for a test about which object is asked. The
+    autouse fixture takes the entry back out, as it does for any plugin a test registers.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED
+    from trixd.core.plugins.registry import LoadedPlugin, current as registry
+
+    if backend is None:
+        backend, _ = _reported_rig(tmp_path, monkeypatch, {
+            "/alerts": (200, {"status": "success", "data": {"alerts": alerts or []}})})
+    entry = LoadedPlugin("prometheus", PLUGIN_STATE_LOADED)
+    entry.backend = backend
+    registry().put(entry)
+    return backend
+
+
+def _alertmanager_away(monkeypatch):
+    """
+    An Alertmanager that is not listening, as against one answering a refusal.
+    """
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    def refusing(method, url, **kwargs):
+        """
+        Nothing at the other end.
+        """
+        raise alertmanager.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(alertmanager.requests, "request", refusing)
+
+
+def _answered(backend):
+    """
+    What the alerts route answered, or the refusal it raised instead.
+
+    Captured rather than raised so a test asserts on the answer it wanted either way: a
+    refusal read as an assertion failure says what came back, where an uncaught one only
+    says the call did not finish.
+    """
+    from trixd.common.errors import BackendFailure
+
+    try:
+        return backend.alerts()
+    except BackendFailure as refused:
+        return {"refused": str(refused)}
+
+
+def test_the_alerts_come_from_prometheus_while_alertmanager_is_away(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    A console that empties because Alertmanager is restarting is a cluster that looks quiet.
+    The same alerts are at Prometheus, which is where they are read from while Alertmanager
+    is not answering, and the answer names the service it was read from.
+    """
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+
+    assert answered.get("source") == "prometheus", answered
+    assert answered.get("count") == 1, answered
+    assert [one.get("name") for one in answered.get("alerts") or []] == \
+           ["MissingHardwareComponent"], answered
+
+
+def test_a_silenced_alert_is_not_answered_as_one_nothing_is_quietening(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    Prometheus knows nothing of silences, so an alert a silence is holding down is plain
+    firing there. Each service's own words are kept - a firing relabelled active would be
+    this daemon claiming Alertmanager's view of it - the two fields only Alertmanager can
+    fill are left out rather than answered empty, which would read as an alert nobody has
+    quietened, and the sentence beside them says so in words.
+    """
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+    alert = (answered.get("alerts") or [{}])[0]
+
+    assert alert.get("state") == "firing", alert
+    assert set(alert) & {"silenced_by", "inhibited_by"} == set(), sorted(alert)
+    assert "silence" in answered.get("degraded", ""), answered
+
+
+def test_the_alerts_answer_names_alertmanager_when_alertmanager_answered(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    The field is there on both paths. A caller that tells the two apart by the absence of a
+    key learns that by being wrong once, and the point of the field is that it never is.
+    Everything else about the answer is what it was.
+    """
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch,
+                                   {"/alerts": (200, [_suppressed()])})
+
+    answer = backend.alerts()
+
+    assert answer.get("source") == "alertmanager", answer
+    assert answer["count"] == 1, answer
+    assert answer["alerts"][0]["state"] == "suppressed", answer["alerts"][0]
+    assert answer["alerts"][0]["silenced_by"] == ["4b1c7d5e"], answer["alerts"][0]
+    assert "degraded" not in answer, answer
+
+
+def test_nothing_about_a_silence_falls_back_while_alertmanager_is_away(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    A silence lives at Alertmanager and nowhere else, so there is nothing to answer one
+    from and nothing to write one to. Making one, ending one and listing them all refuse
+    while it is away, with Prometheus answering and its plugin loaded beside them.
+
+    Pins what must not change rather than a change: these refuse before this fallback and
+    after it, and the fallback reaching any of them is what this fires on.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BackendFailure
+
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+    harry = SimpleNamespace(name="harry")
+
+    for attempt in (lambda: backend.silences(),
+                    lambda: backend.silence({"matchers": [{"label": "hostname",
+                                                           "value": "node001"}],
+                                             "comment": "Replacing a DIMM"}, caller=harry),
+                    lambda: backend.expire({"silence_id": "abc-123"}, caller=harry)):
+        with pytest.raises(BackendFailure) as refused:
+            attempt()
+        assert refused.value.status_code == 502, refused.value
+        assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+
+
+def test_the_alerts_fall_back_through_the_loaded_prometheus_plugin(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    Asked for by name, so what answers is the backend that plugin's own routes answer from -
+    the address it probed, the configuration it holds - and what a reload of it replaces. A
+    second one built here would be a second copy of all of that, going stale at the reload
+    with nothing to say so.
+    """
+    from types import SimpleNamespace
+
+    standing = SimpleNamespace(reported_alerts=lambda: {
+        "count": 1, "alerts": [{"name": "AskedTheLoadedOne", "state": "firing"}]})
+    _prometheus_loaded(tmp_path, monkeypatch, backend=standing)
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+
+    assert [one.get("name") for one in answered.get("alerts") or []] == \
+           ["AskedTheLoadedOne"], answered
+
+
+def test_the_refusal_stands_where_the_prometheus_plugin_is_not_loaded(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    An operator who unplugged the plugin that owns this read has unplugged the fallback with
+    it, and a controller that never had it never had one. The Alertmanager refusal is then
+    the answer, rather than a read going round the control surface.
+
+    Pins the decision rather than a change: this refuses before the fallback as well, and a
+    fallback that reaches past an unloaded plugin is what it fires on.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    with pytest.raises(BackendFailure) as refused:
+        backend.alerts()
+
+    assert refused.value.status_code == 502, refused.value
+    assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+    assert "Prometheus" not in str(refused.value), str(refused.value)
+
+
+def test_a_prometheus_that_is_away_as_well_is_one_refusal_naming_both(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    Falling back onto something that is not there must not answer a question about
+    Alertmanager with Prometheus' silence. One refusal, naming both, so whoever reads it
+    knows there is nothing further to ask.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.prometheus import backend as prometheus
+
+    _prometheus_loaded(tmp_path, monkeypatch)
+
+    def refusing(url, **kwargs):
+        """
+        A Prometheus that is not listening either.
+        """
+        raise prometheus.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(prometheus.requests, "get", refusing)
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    with pytest.raises(BackendFailure) as refused:
+        backend.alerts()
+
+    assert refused.value.status_code == 502, refused.value
+    assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+    assert "Prometheus is not answering" in str(refused.value), str(refused.value)
+
+
+def test_the_read_the_alerts_fall_back_to_keeps_out_whoever_this_route_does(rig):
+    """
+    The fallback hands a caller admitted here a document the other plugin's own route
+    guards, so that route may not be the stricter of the two. Read from both shipped
+    manifests rather than asserted of the roles they hold today, so raising either one
+    arrives here rather than at a customer.
+    """
+    import yaml
+
+    from trixd.common.constants import MINIMUMS
+    from trixd.core.plugins import manifest as manifests
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    other = manifests.parse(yaml.safe_load(
+        open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
+    ours = [one for one in _alertmanager_manifest().endpoints if one.path == "alerts"]
+    theirs = [one for one in other.endpoints if one.path == "reported/alerts"]
+
+    def rung(endpoint) -> int:
+        """
+        Where a route sits on the ladder, with an undeclared minimum at the bottom of it.
+
+        A route the gate reads no role on declares none at all, and reading that as missing
+        would fail this on a lookup rather than on what it is here to say.
+        """
+        return MINIMUMS.index(endpoint.minimum) if endpoint.minimum in MINIMUMS else 0
+
+    assert ours and theirs, "a route the fallback is between was not found"
+    assert rung(theirs[0]) <= rung(ours[0]), \
+        f"{theirs[0].minimum} is above {ours[0].minimum}, so this route answers past it"

@@ -1,0 +1,13 @@
+# the site's own settings, above everything
+NodeName=DEFAULT State=UNKNOWN
+### TrinityX Managed block start ###
+
+#### TrinityX Managed block start ####
+
+node001 all,compute
+#### TrinityX Managed block end   ####
+
+# and below it
+Include /etc/slurm/site.conf
+
+

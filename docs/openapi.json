@@ -50,6 +50,128 @@
         "title": "Action",
         "type": "object"
       },
+      "AlertmanagerConfig": {
+        "properties": {
+          "alertmanager_url": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where Alertmanager answers on this controller",
+            "examples": [
+              "https://localhost:9093"
+            ],
+            "title": "Alertmanager Url"
+          },
+          "credentials_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The file holding the password Alertmanager is asked with, named for the account it belongs to. A path rather than the password itself, so the secret stays out of the settings the pair replicates\n",
+            "examples": [
+              "/etc/trinity/passwords/prometheus/admin.txt"
+            ],
+            "title": "Credentials File"
+          }
+        },
+        "title": "AlertmanagerConfig",
+        "type": "object"
+      },
+      "AlertmanagerExpire": {
+        "properties": {
+          "silence_id": {
+            "description": "The identifier the silence was created with",
+            "examples": [
+              "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+            ],
+            "title": "Silence Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "silence_id"
+        ],
+        "title": "AlertmanagerExpire",
+        "type": "object"
+      },
+      "AlertmanagerSilence": {
+        "properties": {
+          "comment": {
+            "description": "Why the silence was made, which is what the next person reads",
+            "examples": [
+              "Replacing a DIMM"
+            ],
+            "title": "Comment",
+            "type": "string"
+          },
+          "duration": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "How long it lasts from now, as 30s, 5m, 2h or 1d; two hours by default",
+            "examples": [
+              "4h"
+            ],
+            "title": "Duration"
+          },
+          "ends_at": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "When it ends, instead of a duration, as an ISO time in UTC",
+            "examples": [
+              "2026-11-19T18:00:00Z"
+            ],
+            "title": "Ends At"
+          },
+          "matchers": {
+            "description": "What to quieten, at least one. Each entry is a `label`, the `value` to match it against, and optionally `regex` to read the value as one and `negative` to match everything the value does not. An alert is silenced when every matcher holds.\n",
+            "examples": [
+              [
+                {
+                  "label": "hostname",
+                  "value": "node001.cluster"
+                },
+                {
+                  "label": "severity",
+                  "value": "warning"
+                }
+              ]
+            ],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Matchers",
+            "type": "array"
+          }
+        },
+        "required": [
+          "matchers",
+          "comment"
+        ],
+        "title": "AlertmanagerSilence",
+        "type": "object"
+      },
       "Change": {
         "description": "What changed, named as <source>.<object>.<event>, and whatever the source holds about it.",
         "properties": {
@@ -934,6 +1056,21 @@
             ],
             "title": "Hw Alert Grace"
           },
+          "other_targets_directory": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Where the targets outside Luna are written, as one file beside whatever else the site puts there; Prometheus' `other_nodes` job must read this directory\n",
+            "examples": [
+              "/trinity/local/etc/prometheus_server/file_sd/other"
+            ],
+            "title": "Other Targets Directory"
+          },
           "prometheus_url": {
             "anyOf": [
               {
@@ -1162,6 +1299,37 @@
           "nodes"
         ],
         "title": "PrometheusHw_Rules_Many",
+        "type": "object"
+      },
+      "PrometheusOther_Targets": {
+        "properties": {
+          "targets": {
+            "description": "One target group per entry, in Prometheus' own file_sd shape: `targets`, the addresses to scrape, and `labels`, attached to every one of them\n",
+            "examples": [
+              [
+                {
+                  "labels": {
+                    "job": "node",
+                    "site": "dc1"
+                  },
+                  "targets": [
+                    "storage01.cluster:9100"
+                  ]
+                }
+              ]
+            ],
+            "items": {
+              "additionalProperties": true,
+              "type": "object"
+            },
+            "title": "Targets",
+            "type": "array"
+          }
+        },
+        "required": [
+          "targets"
+        ],
+        "title": "PrometheusOther_Targets",
         "type": "object"
       },
       "PrometheusRules": {
@@ -1657,6 +1825,692 @@
   },
   "openapi": "3.1.0",
   "paths": {
+    "/api/v1/alertmanager/actions/expire": {
+      "post": {
+        "description": "The node is back, so the alerts come back with it. Alertmanager expires a silence\nrather than deleting it: the record stays, with `state: expired`, and goes on being\nlisted until Alertmanager's own retention drops it.\n\nTakes the `silence_id` the silence was made with, which `GET\n/api/v1/alertmanager/silences` also answers. Letters, digits and dashes only.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "alertmanager_expire_post_api_v1_alertmanager_actions_expire_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "silence_id": "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/AlertmanagerExpire"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "expired_by": "harry",
+                  "silence_id": "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+                },
+                "schema": {}
+              }
+            },
+            "description": "Which silence was ended, and by whom"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "silence_id is not an identifier"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "404": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager holds no silence with that identifier"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "silence_id was not sent at all"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager did not answer, or the credential it needs could not be read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "End a silence now",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
+      }
+    },
+    "/api/v1/alertmanager/actions/silence": {
+      "post": {
+        "description": "Silencing is what is done before a node is pulled for maintenance, so an operator may\ndo it. The silence is recorded against **the caller's own name** - whoever's token\nmade the call - and not against a shared account.\n\nSay what to quieten with `matchers`: one node is `{\"label\": \"hostname\", \"value\":\n\"node001.cluster\"}`, a whole group `{\"label\": \"luna_group\", \"value\": \"compute\"}`, and\n`regex: true` reads the value as a regular expression. Every matcher must hold for an\nalert to go quiet.\n\nIt lasts `duration` from now, two hours when that is left out, or until `ends_at`.\nThe answer carries the `silence_id` to end it with. The silence is made at this\ncontroller's Alertmanager and reaches the other one by itself.\n\n**Access:** operator or above: operator, manager and rootus",
+        "operationId": "alertmanager_silence_post_api_v1_alertmanager_actions_silence_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "comment": "Replacing a DIMM",
+                    "duration": "4h",
+                    "matchers": [
+                      {
+                        "label": "hostname",
+                        "value": "node001.cluster"
+                      }
+                    ]
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/AlertmanagerSilence"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "comment": "Replacing a DIMM",
+                  "created_by": "harry",
+                  "ends_at": "2026-11-19T18:00:00Z",
+                  "matchers": [
+                    {
+                      "label": "hostname",
+                      "negative": false,
+                      "regex": false,
+                      "value": "node001.cluster"
+                    }
+                  ],
+                  "silence_id": "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9",
+                  "starts_at": "2026-11-19T14:00:00Z"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The silence as it was made"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No matcher was given, one names no label or value, or the time it would end could not be used"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "matchers or comment was not sent at all"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager did not answer, or the credential it needs could not be read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Quieten the alerts the matchers select, for a while",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "operator"
+      }
+    },
+    "/api/v1/alertmanager/alerts": {
+      "get": {
+        "description": "What has fired and reached Alertmanager, whether or not it is quiet. Each alert\ncarries its `name`, the `labels` that identify it, its `annotations`, when it started,\nand `silenced_by` and `inhibited_by` - the silences and the other alerts keeping it\nquiet, as lists of identifiers. An alert with both of those empty is one somebody is\nbeing told about.\n\n`source` says which of two services the answer came from, and is always there. An\nAlertmanager that is not answering at all is not the end of the answer: the alerts are\nthen read from Prometheus instead, through the prometheus plugin, and `source` is\n`prometheus` with a `degraded` sentence beside it saying so. Those alerts are in\nPrometheus' own words - `state` is `firing` or `pending`, never `active` or\n`suppressed` - and they say nothing about what is being quietened, because Prometheus\ndoes not know: `silenced_by` and `inhibited_by` are absent rather than empty, so an\nalert a silence is holding down is here like any other. Read `source` before reading a\nstate.\n\nAlertmanager answering a refusal is Alertmanager reached, and that refusal stands\nrather than becoming a degraded answer. The fallback needs the prometheus plugin\nloaded; without it the refusal stands too. Nothing else here falls back - a silence\nhas nowhere else to live, so making, ending and listing silences all refuse while\nAlertmanager is away.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "alertmanager_alerts_get_api_v1_alertmanager_alerts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alerts": [
+                    {
+                      "annotations": {
+                        "description": "Hardware component memory is missing."
+                      },
+                      "inhibited_by": [],
+                      "labels": {
+                        "alertname": "MissingHardwareComponent",
+                        "hostname": "node001.cluster",
+                        "severity": "warning"
+                      },
+                      "name": "MissingHardwareComponent",
+                      "silenced_by": [
+                        "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9"
+                      ],
+                      "starts_at": "2026-11-19T14:02:11.000Z",
+                      "state": "suppressed"
+                    }
+                  ],
+                  "count": 1,
+                  "source": "alertmanager"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The alerts, counted, and which service they were read from"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager did not answer and neither did Prometheus, Alertmanager answered a refusal, or the credential it needs could not be read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The alerts Alertmanager is holding now",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/alertmanager/config": {
+      "get": {
+        "description": "`alertmanager_url` is where Alertmanager answers on this controller and\n`credentials_file` is the file its password is read from. That file is named for the\naccount the password belongs to, so `/etc/trinity/passwords/prometheus/admin.txt` is\nthe account `admin` and nothing names it separately. The password itself is never held\nhere and never answered.\n\nAlertmanager is asked over TLS with its certificate verified: http is upgraded to\nhttps where Alertmanager asks for it, and the loopback address, which a controller\ncertificate does not carry, is asked unverified for an hour at a time.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "alertmanager_config_get_api_v1_alertmanager_config_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alertmanager_url": "https://localhost:9093",
+                  "credentials_file": "/etc/trinity/passwords/prometheus/admin.txt"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The settings as held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Where this plugin reaches Alertmanager, and what it signs in with",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "Send either setting; the one left out keeps its value. rootus only, because the daemon\nreads `credentials_file` as root and presents what it finds there to\n`alertmanager_url`. Point it at a file named for the account whose password it holds:\na file named for something that is not an account, such as a salt or a passphrase,\nproduces an account Alertmanager will refuse.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "operationId": "alertmanager_config_patch_api_v1_alertmanager_config_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "alertmanager_url": "https://localhost:9093"
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/AlertmanagerConfig"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alertmanager_url": "https://localhost:9093",
+                  "credentials_file": "/etc/trinity/passwords/prometheus/admin.txt"
+                },
+                "schema": {}
+              }
+            },
+            "description": "Both settings as now held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Change where this plugin reaches Alertmanager, or what it signs in with",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "rootus"
+      }
+    },
+    "/api/v1/alertmanager/silences": {
+      "get": {
+        "description": "Every silence this controller's Alertmanager knows, newest first, each with who made\nit, why, what it quietens and when it ends. An expired silence is kept as a record\nfor as long as Alertmanager retains it, so leave `state` out to see the history and\nsend `state=active` for what is quiet right now.\n\nThe fields are this daemon's: `silence_id`, `created_by`, `starts_at`, `ends_at`, and\n`matchers` as `label`, `value`, `regex` and `negative`.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "alertmanager_silences_get_api_v1_alertmanager_silences_get",
+        "parameters": [
+          {
+            "description": "One of active, pending and expired; leave it out for all of them",
+            "examples": {
+              "example": {
+                "value": "active"
+              }
+            },
+            "in": "query",
+            "name": "state",
+            "required": false,
+            "schema": {
+              "anyOf": [
+                {
+                  "type": "string"
+                },
+                {
+                  "type": "null"
+                }
+              ],
+              "description": "One of active, pending and expired; leave it out for all of them",
+              "title": "State"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "count": 1,
+                  "silences": [
+                    {
+                      "comment": "Replacing a DIMM",
+                      "created_by": "harry",
+                      "ends_at": "2026-11-19T18:00:00.000Z",
+                      "matchers": [
+                        {
+                          "label": "hostname",
+                          "negative": false,
+                          "regex": false,
+                          "value": "node001.cluster"
+                        }
+                      ],
+                      "silence_id": "4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9",
+                      "starts_at": "2026-11-19T14:00:00.000Z",
+                      "state": "active"
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The silences, counted"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "state is not one of active, pending and expired"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager did not answer, or the credential it needs could not be read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The silences Alertmanager holds",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/alertmanager/status": {
+      "get": {
+        "description": "Where this controller's Alertmanager is, what version it runs, how long it has been\nup, and its gossip cluster: `status` is `ready` once it has settled, and `peers` lists\nthe addresses it is talking to. On a pair, an empty `peers` is why a silence made on\none controller is not seen on the other.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "alertmanager_status_get_api_v1_alertmanager_status_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "cluster": {
+                    "name": "01HQ8XWZ3N4K5M6P7R8S9T0V1W",
+                    "peers": [
+                      "10.141.255.254:9094"
+                    ],
+                    "status": "ready"
+                  },
+                  "uptime": "2026-11-18T09:14:02.113Z",
+                  "url": "https://localhost:9093",
+                  "version": "0.26.0"
+                },
+                "schema": {}
+              }
+            },
+            "description": "The Alertmanager this controller reaches"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Alertmanager did not answer, or the credential it needs could not be read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Which Alertmanager answered, and whether it has found the other one",
+        "tags": [
+          "alertmanager"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
     "/api/v1/auth/node/{node}": {
       "post": {
         "description": "How a node signs in after boot, on the terms Luna uses. When the cluster enforces security the node presents its TPM measurement, `tpm_sha256`, which must match what Luna holds for it; otherwise the daemon's own account, or one holding a role that may act for a node. Never on the node name alone, and never on being merely a known user: this token is the node's identity, and Luna honours it as such.\n\nThe token is confined to that node: it is accepted only on node routes for the node it names, such as `PATCH /api/v1/prometheus/hw-rules/{node}`.\n\n**Access:** public, no token",
@@ -3026,7 +3880,7 @@
     },
     "/api/v1/genders/renders/genders": {
       "get": {
-        "description": "The last render of the genders file: how many nodes it wrote, and where. It renders\nwhen a node or group changes through the luna plugin, at most every two seconds in a\nburst, and on a notify.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of the genders file: how many nodes it wrote, and where. It renders\nwhen a node or group changes through the luna plugin, at most every two seconds in a\nburst, and on a notify. Reading this writes nothing: it answers from the last run.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_render_genders_get_api_v1_genders_renders_genders_get",
         "responses": {
           "200": {
@@ -5871,6 +6725,190 @@
         "x-trixd-minimum": ""
       }
     },
+    "/api/v1/prometheus/reported/alerts": {
+      "get": {
+        "description": "What Prometheus has evaluated to an alert right now, before Alertmanager has had\nanything to do with it. `state` is `firing`, or `pending` while the rule's `for` is\nstill running down - Prometheus' own two words, where Alertmanager answers `active`\nand `suppressed` for its view of the same alert at `GET /api/v1/alertmanager/alerts`.\n\nRead this one to see what Prometheus is sending and that one to see what became of it:\n`name`, `labels`, `annotations` and `starts_at` are the same fields there, so the two\ncan be held side by side. Nothing here says what is quietening an alert, because\nPrometheus does not know - silences are Alertmanager's. `value` is what the rule's\nexpression evaluated to.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_reported_alerts_get_api_v1_prometheus_reported_alerts_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "alerts": [
+                    {
+                      "annotations": {
+                        "description": "Hardware component memory is missing."
+                      },
+                      "labels": {
+                        "alertname": "MissingHardwareComponent",
+                        "hostname": "node001.cluster",
+                        "severity": "warning"
+                      },
+                      "name": "MissingHardwareComponent",
+                      "starts_at": "2026-11-20T09:02:11.000Z",
+                      "state": "firing",
+                      "value": "1"
+                    }
+                  ],
+                  "count": 1
+                },
+                "schema": {}
+              }
+            },
+            "description": "The alerts, counted"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Prometheus did not answer, or answered that it could not"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The alerts Prometheus says are firing",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/prometheus/reported/rules": {
+      "get": {
+        "description": "What Prometheus is evaluating, which is not the same as the files trixd wrote. A file\nPrometheus will not take is not here at all - it keeps the configuration it had and\nsays so in its own log - so `files`, the rule files it did load, is what tells a\nreader that a file in `rules_directory` was refused.\n\nA rule it loaded and then cannot evaluate is a different failure, and this is where\nthat one shows: such a rule carries `health: err` and the `last_error` of its last\nevaluation, and `unhealthy` counts them. A rule Prometheus has not reached yet is\n`unknown`, which every rule is for an interval after a reload, and is not counted.\nEach group names the `file` it came from and when it was last evaluated; each rule\ncarries its `type`, the `state` of an alerting rule, its `query` and its labels. The\nalert instances are left out, because the alerts below answer those in full. Answered\nfor the whole estate, which is one group per node holding hardware rules.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_reported_rules_get_api_v1_prometheus_reported_rules_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "files": [
+                    "/trinity/local/etc/prometheus_server/rules/trix.generic.rules",
+                    "/trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules"
+                  ],
+                  "groups": [
+                    {
+                      "evaluation_time": 0.000431,
+                      "file": "/trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules",
+                      "last_evaluation": "2026-11-20T09:14:02.113Z",
+                      "name": "trinityx_hw",
+                      "rules": [
+                        {
+                          "annotations": {
+                            "description": "Hardware component memory is missing."
+                          },
+                          "duration": 300,
+                          "health": "ok",
+                          "labels": {
+                            "category": "hardware",
+                            "severity": "warning"
+                          },
+                          "last_error": "",
+                          "name": "MissingHardwareComponent",
+                          "query": "absent(lshw_device{class=\"memory\", hostname=\"node001.cluster\"})",
+                          "state": "inactive",
+                          "type": "alerting"
+                        }
+                      ]
+                    }
+                  ],
+                  "unhealthy": 0
+                },
+                "schema": {}
+              }
+            },
+            "description": "Every group Prometheus holds, the files they were loaded from, and how many rules it cannot evaluate"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Prometheus did not answer, or answered that it could not"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The rules Prometheus has loaded, as Prometheus reports them",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
     "/api/v1/prometheus/rules": {
       "get": {
         "description": "The generic and service alert rules as one document, in Prometheus' own rule-file\nformat: `groups`, each with a `name` and its `rules`. trixd writes the groups whose\nname starts with `service` to `trix.service.rules` and the others to\n`trix.generic.rules`, both in the rules directory. Empty until a manager sets it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
@@ -6226,6 +7264,189 @@
           }
         ],
         "summary": "Replace the settings new hardware rules start from",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/prometheus/targets/other": {
+      "get": {
+        "description": "The hosts Prometheus scrapes that are no node or controller Luna holds - a storage\nappliance, a switch, a login host managed elsewhere. Each entry is a target group in\nPrometheus' own `file_sd` shape: the addresses under `targets`, and the `labels`\nattached to every one of them. Empty until a manager sets it.\n\nLuna's own nodes and controllers are not here: they are served from\n`GET /api/v1/prometheus/renders/targets`, which Prometheus polls.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_other_targets_get_api_v1_prometheus_targets_other_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "targets": [
+                    {
+                      "labels": {
+                        "job": "node",
+                        "site": "dc1"
+                      },
+                      "targets": [
+                        "storage01.cluster:9100"
+                      ]
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The target groups as held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The scrape targets that are not Luna's",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      },
+      "patch": {
+        "description": "Replace the whole set; what is sent is what is scraped. trixd writes it as one file\nin the directory `other_targets_directory` names, which is the directory Prometheus'\n`other_nodes` job reads, so a file a site put there itself is left alone. No reload\nis needed: Prometheus takes a `file_sd` change by itself.\n\nA group carrying anything but `targets` and `labels`, a label name Prometheus will\nnot accept, or a value that is not a string is refused rather than written: file_sd\nreads the file with known fields and string values only, so one entry it cannot read\ncosts the whole file and Prometheus goes on scraping what it already had.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "prometheus_other_targets_patch_api_v1_prometheus_targets_other_patch",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "targets": [
+                      {
+                        "labels": {
+                          "job": "node",
+                          "site": "dc1"
+                        },
+                        "targets": [
+                          "storage01.cluster:9100"
+                        ]
+                      }
+                    ]
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/PrometheusOther_Targets"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "targets": [
+                    {
+                      "labels": {
+                        "job": "node",
+                        "site": "dc1"
+                      },
+                      "targets": [
+                        "storage01.cluster:9100"
+                      ]
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "The target groups as now held"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A target group Prometheus would not take; the message says which part"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Replace the scrape targets that are not Luna's",
         "tags": [
           "prometheus"
         ],
@@ -7751,7 +8972,7 @@
     },
     "/api/v1/slurm/renders/config": {
       "get": {
-        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\nA node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The last render of slurm's managed blocks: how many nodes it wrote, the files, and\nwhether `reconfigure` ran without error. It renders when a node or group changes\nthrough the luna plugin, at most every two seconds in a burst, and on a notify.\nA node name new to the files waits up to 60 s for DNS, so slurm is not reconfigured first.\nReading this writes nothing: it answers from the last run, and slurm is reconfigured\nonly where the generated blocks differ from what is on disk.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_render_config_get_api_v1_slurm_renders_config_get",
         "responses": {
           "200": {

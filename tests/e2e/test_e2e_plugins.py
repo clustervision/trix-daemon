@@ -37,7 +37,10 @@ import pytest
 
 from tests.e2e.stack import operations
 
-SHIPPED = ("luna", "directory", "prometheus", "services", "slurm", "genders")
+# Written out rather than read from this tree: the daemon under test may be a remote one
+# (TRIXD_E2E_URL), whose install is what has to carry them all.
+SHIPPED = ("luna", "directory", "prometheus", "services", "slurm", "genders",
+           "alertmanager", "osimage")
 CYCLES = 3
 
 

@@ -94,10 +94,11 @@ Each endpoint:
 | `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, and only, on a user-token route; `public`, `forward` and `token: node` check no role and are refused with one |
 | `handler` | the method on the backend that answers | yes, unless `render` |
 | `schema` | a name from `schemas`; the body is validated against it before the handler runs | no; only POST and PATCH carry a body |
-| `token` | `user`, or `node` to accept only that node's own token | no |
+| `token` | `user`, or `node` to accept only that node's own token, which the path has to carry as `node`, `name` or `hostname` for the gate to bind it to | no |
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
 | `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
+| `replicate` | make this call on the other controller too, for a write whose result no replicated table and no render brings across | no, and only on a route that writes |
 | `websocket` | a WebSocket, opened by a `GET`; see "A WebSocket endpoint" | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
@@ -139,7 +140,9 @@ A handler is given only the arguments it declares:
 - `body`, the validated request body as a dict, and `None` on a verb that carries
   none, which is how one handler serves both a read and a write;
 - `caller`, who is asking: a `trixd.core.security.gate.Caller`, with `.name`,
-  `.role`, `.kind` (`user`, `node` or `service`) and `.rootus`.
+  `.role`, `.kind` (`user` or `node`) and `.rootus`;
+- `request`, the request itself, for a handler that needs its headers - which is how
+  a route acts as the person behind it; see "Calling Luna as a person".
 
 What the handler returns becomes a JSON 200. To answer anything else, raise one of
 the errors in `trixd/common/errors.py` (`BadRequest` 400, `NotFound` 404,
@@ -189,8 +192,14 @@ reload endpoint answers 409 with the reason.
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
 | a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
+| a render declares a path variable or a query parameter | refused; the reader takes no arguments, so one document would answer for every value |
+| a render declares `reconcile: false` and no `serve` | refused; it writes nothing and answers no route, so nothing it did could be observed |
+| a render declares `reloads` and is not a reconcile | refused; only a reconcile reaches a service |
 | an endpoint is `public: true` or `forward: true` and also `token: node` | refused; neither is served with a guard to ask for the token |
 | an endpoint declares a `minimum` and is `public: true`, `forward: true` or `token: node` | refused; no role is checked on those, so the role would admit everyone |
+| an endpoint takes `token: node` and its path carries no `node`, `name` or `hostname` | refused; the gate would have nothing to bind the token to, so one node's token would answer for another |
+| a `replicate` endpoint only reads, or is also a render, `forward: true` or `public: true` | refused; a read has nothing to carry, and the other three are already carried or must not be |
+| a `replicate` endpoint serves a read alongside its write | refused; replication is applied per verb, so the read would write an outbox row on every call |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | an endpoint handler takes a positional-only argument the route could not fill | refused; everything is handed over by keyword |
 | a hook handler takes a positional-only argument the payload could not fill | refused |
@@ -224,7 +233,8 @@ As a rule, a read admits `reader`, a `POST` under `.../actions/...` admits
 `operator`, and a change of configuration needs `manager`. A setting that names a
 command the daemon runs, or a path it writes, needs `rootus`: the daemon runs as
 root. The ini account is rootus, and a route with `minimum: rootus` admits it
-alone, apart from the other controller's service token, which passes every check.
+alone; the other controller is no exception, because it signs in with that same
+account and is judged on it.
 Everyone else holds what the `principal` table says, and a user with no row is
 `none`, which may sign in and read nothing. A unit test refuses a shipped plugin
 whose read admits `none`. A manager or rootus gives a user a role:
@@ -363,25 +373,36 @@ reach its caller rather than catching it.
 
 ## Renders
 
-A render is an output computed from inputs, such as the Prometheus target list or
-a slurm file. The daemon redoes it when an input changes and answers every later
-poll from what it last produced.
+A render is an output computed from inputs. It does one of two jobs, and `reconcile`
+is how the manifest says which: a **pure render** builds a document in memory and
+serves it, such as the Prometheus target list; a **reconcile** makes files on disk
+agree with the state and reloads whatever reads them, such as the slurm files. The
+daemon redoes either when an input changes and answers every later poll from what it
+last produced.
+
+A read never produces. The route behind a `serve` is a reader that hands back the
+last result, so a GET reaches no file and no service however much its producer
+writes - which is why a reconcile may serve as well, and what it serves is then a
+report of its last run rather than the document itself.
 
 ```yaml
   - path: renders/targets
     methods: [GET]
     minimum: reader
     render:
-      inputs:   [luna.node, luna.network]
-      coalesce: 2s
-      serve:    json
+      inputs:    [luna.node, luna.network]
+      coalesce:  2s
+      serve:     json
+      reconcile: false
 ```
 
 | Field | Meaning |
 |---|---|
 | `inputs` | what wakes it: `luna.` and one of Luna's own table names (`luna.node`, `luna.group`, `luna.nodeinterface`, `luna.ipaddress`, `luna.network`, and any other table Luna hashes), or the name of one of this plugin's own declarations when a new one arrives from the other controller. At least one is required: a render with none produces at start-up and then never again |
 | `coalesce` | how long a burst of changes is gathered, default `2s` |
-| `serve` | `json` to answer GET with what was produced; without it the render produces files and serves nothing |
+| `serve` | `json` to answer GET with what was produced; without it the render answers no route at all |
+| `reconcile` | `true` where producing writes files or reloads a service, `false` where it only builds a document. Left out, a render that serves nothing is taken as a reconcile and one that serves is not - so say it on a reconcile that also serves, which neither half derives |
+| `reloads` | the services a reconcile reloads. Reload only where the content generated differs from what is on disk: both controllers write one file on shared storage, so a reload on every pass costs twice and a boot storm costs once per node |
 
 Declare the table that *carries* what the producer reads, including a table it
 reaches only through a field Luna assembles for it, and declare the table rather

@@ -57,7 +57,7 @@ lowest role it admits.
 |---|---|
 | Routes, each with its own access | `minimum`, the lowest role admitted; `token: node` for a node's own token; `public` for none |
 | Validated input | a JSON Schema per route; a body that fails it never reaches the handler |
-| Renders | an output computed from declared `inputs`, redone when one changes, coalesced so a burst of changes costs one run, and served from a route |
+| Renders | an output computed from declared `inputs`, redone when one changes, coalesced so a burst of changes costs one run; a pure render is served from a route, a reconcile writes files |
 | Acting on a change | `hooks:` on events named `<source>.<object>.<event>`; the core dispatches them, so a new event needs no list anywhere |
 | Being told of a change | `POST /api/v1/system/notify` to say something happened, `POST /api/v1/system/bulk` to hand over a whole set in one request |
 | Queued work | work that is long or must run in order goes on the daemon's task queue, which picks up after a restart |
@@ -105,11 +105,11 @@ path: outputs are redone when something changes, never when a node boots.
 | minimum | the lowest role a route admits, written in the route's manifest entry |
 | plugin | a directory with a `manifest.yaml` and a backend class; it adds routes under `/api/v1/<plugin>/` |
 | manifest | a plugin's declaration of its routes, their minimums, schemas and renders |
-| render | an output computed from inputs, such as the Prometheus target list or a slurm file, redone when an input changes |
+| render | an output computed from inputs, redone when an input changes: a pure render serves a document, such as the Prometheus target list, and a reconcile writes files, such as slurm's |
 | declaration | a settings document a plugin stores, kept in the `declaration` table |
 | hook | what a plugin does when an event it declared under `hooks:` happens, such as `luna.node.update` |
 | node token | a token a booted node gets for itself, confined to that node |
-| service token | a short-lived token one controller's trixd gives the other's, for replication |
+| service token | a short-lived token the luna plugin signs for trixd's own calls to Luna; one presented to this daemon is refused |
 | replication | how the two controllers of an HA pair keep `principal` and `declaration` the same |
 
 ## How a request moves through the code
@@ -126,7 +126,7 @@ path: outputs are redone when something changes, never when a node boots.
 4. The body is validated against the manifest's schema, then the backend method in
    `trixd/plugins/prometheus/backend.py` runs.
 5. A return value becomes a JSON 200. A `TrixdError` from `trixd/common/errors.py`
-   becomes its own status (400, 401, 403, 404, 409, 502 or 503), a body that fails
+   becomes its own status (400, 401, 403, 404, 409, 413, 502 or 503), a body that fails
    its schema is a 422, and anything else is a 500, with the detail in the log.
 
 **Startup** (`trixd/core/lifespan.py`): read and check `trixd.ini`, open the database
@@ -157,6 +157,8 @@ render once, start the background timers, and only then open the listeners.
 | `docs/openapi.json` | The whole API with every shipped plugin, and who may call each route (`x-trixd-access`, `x-trixd-minimum`). |
 | `docs/manifest.schema.json` | The plugin manifest format, as a JSON Schema. |
 | `tools/build_schemas.py` | Writes both from the code; a test fails when they drift. |
+| `tests/unit/golden/` | The slurm and genders files as the packaged generators leave them, case by case. |
+| `tools/build_goldens.py` | Writes them, on a controller that has those generators; never in the pipeline. |
 | `setup.py` | The package itself; see Building and publishing. |
 
 ## Run it on a workstation
@@ -445,8 +447,9 @@ person's calls and sign-ins go to that host:port instead, with `luna.ini`'s prot
 certificate check. On an HA pair it names the floating name, so a person's Luna token
 always comes from the active Luna. trixd's own calls still go where `luna.ini` says.
 An engineer changes Luna in one place and trixd follows. A `trixd.ini`
-that still has a `[LUNA]` section or a `[TOKENS] SECRET_KEY` starts as before, with a
-warning that names them as ignored.
+that still has a `[LUNA]` or a `[TRIGGERS]` section starts as before, with a warning
+that names them as ignored: where Luna answers is Luna's own business, and the Luna
+hash poll is fixed at an hour rather than configured.
 
 slurm and genders write the same blocks luna2-daemon's node hook still writes, from the
 same generator and node list, so the two agree; once that hook stops, they are the only
@@ -469,7 +472,7 @@ administrator, so trixd always sets it:
 |---|---|---|
 | rootus, the ini account | 0 | Luna's administrator, the account `luna.ini` names |
 | any other user | -1 | refused, 401: Luna never issues -1 |
-| the other controller's service token | -1 | refused, 401 |
+| a service token | - | refused by this daemon before the pass-through, so none reaches Luna this way |
 | a node token | none | confined to that node by its provision scope |
 
 So a user who is not rootus reaches Luna only with a token Luna issued, and a role
@@ -503,12 +506,16 @@ python -m pytest
 |---|---|---|
 | API and RBAC | `tests/unit/test_daemon.py` | tokens both ways with Luna, roles on every route, the audit trail, the task queue, the pass-through |
 | Plugins | `tests/unit/test_plugins.py` | each shipped plugin's handlers and renders, the scaffold, site plugins |
+| slurm | `tests/unit/test_slurm_changes.py`, `test_slurm_ops.py`, `test_slurm_reconfigure.py` | the change routes as a person, the helper on slurm's own files, and what is put back when slurm refuses a reconfigure |
 | Replication | `tests/unit/test_replication.py` | table hashes, the merge, deletions, two controllers converging |
 | Integrations | `tests/unit/test_integrations.py` | Luna, the peer, PAM, LDAP, obol, the slurm and genders generators, each stood in for at its edge; the role gate on its own |
 | Foundations | `tests/unit/test_foundations.py` | the shell runner, file writes and managed blocks, settings, keys, logging |
 | Migrations | `tests/unit/test_migrations.py` | every revision up, down and up again; the models against what the migrations build |
 | Command line | `tests/unit/test_entrypoint.py` | listeners, keygen, the plugin scaffold, a bad `trixd.ini` |
+| Published API | `tests/unit/test_docs.py` | `docs/openapi.json` against the code, and the docs page offline and in the TrinityX look |
+| Dependencies | `tests/unit/test_declared_requirements.py` | `requirements.txt` against what the shipped code imports |
 | Repository | `tests/unit/test_repository.py` | plain ASCII and the licence header in every file, the version, a real wheel build |
+| Generated files | `tests/unit/test_golden_files.py` | the whole slurm and genders files against what the packaged generators write for the same nodes |
 
 Each test builds its own daemon in a temporary directory, so nothing outside the
 checkout is read or written, and the suite runs on Windows as well as Linux.

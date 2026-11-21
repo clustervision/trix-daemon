@@ -48,7 +48,15 @@ def manifest_schema() -> dict:
             "coalesce": {"type": "string", "pattern": "^[0-9]+[smhd]?$",
                          "description": "how long a burst of changes is gathered, e.g. 2s"},
             "serve": {"type": "string", "enum": ["", "json"],
-                      "description": "served from the last result; empty writes files only"},
+                      "description": "json answers GET from the last result, which for a "
+                                     "reconcile is a report of what it last wrote"},
+            "reconcile": {"type": "boolean",
+                          "description": "true where producing writes files or reloads a "
+                                         "service; left out, a render that serves nothing "
+                                         "is taken as one and a render that serves is not"},
+            "reloads": {"type": "array", "items": {"type": "string"},
+                        "description": "the services a reconcile reloads, and only where "
+                                       "the content it generated differs"},
         },
     }
     doc = {

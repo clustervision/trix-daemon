@@ -19,7 +19,9 @@ backend: backend
 description: >
   The whole Prometheus surface as one plugin: service discovery targets, the
   generic and service rule files, the per-node hardware rules and the settings
-  they are generated from. One plugin means one writer of the configuration.
+  they are generated from, and what Prometheus itself reports of the rules it
+  took and the alerts they fired. One plugin means one writer of the
+  configuration.
 
 hooks:
   luna.node.update: node_updated
@@ -61,6 +63,14 @@ schemas:
       type: array
       items: object
       description: Prometheus rule groups, each a name and its rules
+  other_targets:
+    targets:
+      type: array
+      items: object
+      description: >
+        One target group per entry, in Prometheus' own file_sd shape: `targets`, the
+        addresses to scrape, and `labels`, attached to every one of them
+      example: [{targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}]
   settings:
     settings:
       type: object
@@ -100,6 +110,13 @@ schemas:
       optional: true
       description: Where the rule files are written; Prometheus must read this directory
       example: /trinity/local/etc/prometheus_server/rules/
+    other_targets_directory:
+      type: string
+      optional: true
+      description: >
+        Where the targets outside Luna are written, as one file beside whatever else the
+        site puts there; Prometheus' `other_nodes` job must read this directory
+      example: /trinity/local/etc/prometheus_server/file_sd/other
     prometheus_url:
       type: string
       optional: true
@@ -235,6 +252,52 @@ endpoints:
     response:
       description: The settings as now held
       example: {settings: {hw: {nhc: true, disabled: false}}}
+
+  - path: targets/other
+    methods: [GET]
+    minimum: reader
+    handler: other_targets
+    summary: The scrape targets that are not Luna's
+    description: |
+      The hosts Prometheus scrapes that are no node or controller Luna holds - a storage
+      appliance, a switch, a login host managed elsewhere. Each entry is a target group in
+      Prometheus' own `file_sd` shape: the addresses under `targets`, and the `labels`
+      attached to every one of them. Empty until a manager sets it.
+
+      Luna's own nodes and controllers are not here: they are served from
+      `GET /api/v1/prometheus/renders/targets`, which Prometheus polls.
+    response:
+      description: The target groups as held
+      example:
+        targets:
+          - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+
+  - path: targets/other
+    methods: [PATCH]
+    minimum: manager
+    handler: other_targets
+    schema: other_targets
+    summary: Replace the scrape targets that are not Luna's
+    description: |
+      Replace the whole set; what is sent is what is scraped. trixd writes it as one file
+      in the directory `other_targets_directory` names, which is the directory Prometheus'
+      `other_nodes` job reads, so a file a site put there itself is left alone. No reload
+      is needed: Prometheus takes a `file_sd` change by itself.
+
+      A group carrying anything but `targets` and `labels`, a label name Prometheus will
+      not accept, or a value that is not a string is refused rather than written: file_sd
+      reads the file with known fields and string values only, so one entry it cannot read
+      costs the whole file and Prometheus goes on scraping what it already had.
+    request_example:
+      targets:
+        - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+    response:
+      description: The target groups as now held
+      example:
+        targets:
+          - {targets: ["storage01.cluster:9100"], labels: {job: node, site: dc1}}
+    errors:
+      400: A target group Prometheus would not take; the message says which part
 
   - path: hw-rules/<node>
     methods: [GET]
@@ -427,6 +490,8 @@ endpoints:
                exporter, exporter-scope]
       serve: json
       coalesce: 2s
+      # A document and nothing else: this one is the pure half of the pair.
+      reconcile: false
     summary: Service discovery targets, served from the render
     description: |
       The document Prometheus' `http_sd` polls: one entry per node and exporter, with the
@@ -455,8 +520,24 @@ endpoints:
       # that interface's address and its network. Each of those decides what to relabel.
       inputs: [settings, rules, luna.node, luna.group, luna.nodeinterface, luna.ipaddress,
                luna.network]
+      reconcile: true
+      reloads: [prometheus]
     # No serve: this render writes the rule files and answers nothing over HTTP.
     summary: The rule files on disk
+
+  - path: renders/other-targets
+    methods: [GET]
+    minimum: reader
+    handler: render_other_targets
+    render:
+      # The stored document is the whole input: these targets are not Luna's, so no Luna
+      # table decides what goes in the file.
+      inputs: [targets]
+      # Nothing to reload: Prometheus watches the files its file_sd reads.
+      reconcile: true
+    # No serve: this render writes the file_sd document and answers nothing over HTTP. It
+    # is what puts the file on the controller the document was not sent to.
+    summary: The targets outside Luna, on disk
 
   - path: exporters
     methods: [GET]
@@ -559,3 +640,75 @@ endpoints:
     response:
       description: The scope, with nothing held for it
       example: {applied: "group:gpu", forgotten: true, exporters: {}}
+
+  - path: reported/rules
+    methods: [GET]
+    minimum: reader
+    handler: reported_rules
+    summary: The rules Prometheus has loaded, as Prometheus reports them
+    description: |
+      What Prometheus is evaluating, which is not the same as the files trixd wrote. A file
+      Prometheus will not take is not here at all - it keeps the configuration it had and
+      says so in its own log - so `files`, the rule files it did load, is what tells a
+      reader that a file in `rules_directory` was refused.
+
+      A rule it loaded and then cannot evaluate is a different failure, and this is where
+      that one shows: such a rule carries `health: err` and the `last_error` of its last
+      evaluation, and `unhealthy` counts them. A rule Prometheus has not reached yet is
+      `unknown`, which every rule is for an interval after a reload, and is not counted.
+      Each group names the `file` it came from and when it was last evaluated; each rule
+      carries its `type`, the `state` of an alerting rule, its `query` and its labels. The
+      alert instances are left out, because the alerts below answer those in full. Answered
+      for the whole estate, which is one group per node holding hardware rules.
+    response:
+      description: Every group Prometheus holds, the files they were loaded from, and how many rules it cannot evaluate
+      example:
+        files: [/trinity/local/etc/prometheus_server/rules/trix.generic.rules, /trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules]
+        unhealthy: 0
+        groups:
+          - name: trinityx_hw
+            file: /trinity/local/etc/prometheus_server/rules/trix.hw.node001.cluster.rules
+            last_evaluation: "2026-11-20T09:14:02.113Z"
+            evaluation_time: 0.000431
+            rules:
+              - name: MissingHardwareComponent
+                type: alerting
+                state: inactive
+                health: ok
+                last_error: ""
+                duration: 300
+                query: absent(lshw_device{class="memory", hostname="node001.cluster"})
+                labels: {severity: warning, category: hardware}
+                annotations: {description: "Hardware component memory is missing."}
+    errors:
+      502: Prometheus did not answer, or answered that it could not
+
+  - path: reported/alerts
+    methods: [GET]
+    minimum: reader
+    handler: reported_alerts
+    summary: The alerts Prometheus says are firing
+    description: |
+      What Prometheus has evaluated to an alert right now, before Alertmanager has had
+      anything to do with it. `state` is `firing`, or `pending` while the rule's `for` is
+      still running down - Prometheus' own two words, where Alertmanager answers `active`
+      and `suppressed` for its view of the same alert at `GET /api/v1/alertmanager/alerts`.
+
+      Read this one to see what Prometheus is sending and that one to see what became of it:
+      `name`, `labels`, `annotations` and `starts_at` are the same fields there, so the two
+      can be held side by side. Nothing here says what is quietening an alert, because
+      Prometheus does not know - silences are Alertmanager's. `value` is what the rule's
+      expression evaluated to.
+    response:
+      description: The alerts, counted
+      example:
+        count: 1
+        alerts:
+          - name: MissingHardwareComponent
+            state: firing
+            labels: {alertname: MissingHardwareComponent, hostname: node001.cluster, severity: warning}
+            annotations: {description: "Hardware component memory is missing."}
+            starts_at: "2026-11-20T09:02:11.000Z"
+            value: "1"
+    errors:
+      502: Prometheus did not answer, or answered that it could not

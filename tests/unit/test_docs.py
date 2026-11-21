@@ -210,7 +210,8 @@ def test_every_route_says_who_may_call_it_in_words():
 def test_only_replication_plugin_control_and_the_root_run_settings_are_kept_for_rootus():
     """
     Users and the cluster directory are a manager's: a new route declaring rootus has to
-    be one of these, by decision. The osimage plugin's settings name what trixd runs as root.
+    be one of these, by decision. The osimage plugin's settings name what trixd runs as root,
+    and the alertmanager plugin's a file root reads and where its contents are then sent.
     """
     kept = {name for name, operation in _operations(_published()).items()
             if operation.get("x-trixd-minimum") == "rootus"}
@@ -220,7 +221,8 @@ def test_only_replication_plugin_control_and_the_root_run_settings_are_kept_for_
     always = {"POST /api/v1/system/plugins/{name}/reload",
               "POST /api/v1/system/plugins/{name}/disable",
               "PATCH /api/v1/slurm/config",
-              "PATCH /api/v1/prometheus/config"}
+              "PATCH /api/v1/prometheus/config",
+              "PATCH /api/v1/alertmanager/config"}
     assert always <= kept - replication, sorted(kept)
     assert kept - replication <= always | {"PATCH /api/v1/osimage/settings"}, sorted(kept)
 

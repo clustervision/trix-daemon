@@ -38,7 +38,6 @@ import shutil
 import threading
 import time
 from collections import Counter
-from urllib.parse import urlsplit
 
 import requests
 import urllib3
@@ -71,6 +70,7 @@ MORE: str = " and {count} more"
 DEFAULT_CONFIG: dict = {
     "exporters_file": "/trinity/local/trixd/daemon/config/exporters.yaml",
     "rules_directory": "/trinity/local/etc/prometheus_server/rules/",
+    "other_targets_directory": "/trinity/local/etc/prometheus_server/file_sd/other",
     "prometheus_url": "https://localhost:9090",
     "reload_command": "systemctl reload prometheus-server",
     # A rule file is briefly stale after its node changes group, and absent() is true while
@@ -84,6 +84,10 @@ DEFAULT_CONFIG: dict = {
 # waits to take effect; nothing here is worth configuring.
 UNVERIFIED_FOR: int = 3600
 
+# Prometheus' own API, which this plugin asks and translates the answers of. Its routes are
+# not ours, and they are the same version string this daemon serves its own under.
+API: str = "/api/v1"
+
 # Exporter name to the port it answers on. A node is a target once per exporter.
 EXPORTERS: dict = {
     "node": 14200,
@@ -95,6 +99,11 @@ EXPORTERS: dict = {
 
 GENERIC_RULES: str = "trix.generic.rules"
 SERVICE_RULES: str = "trix.service.rules"
+# The scrape targets that are not Luna's: the declaration they are held under, and the
+# file_sd document they are written to. The directory is Prometheus' own `other_nodes`
+# job, so a site's own files sit beside this one and are left alone.
+OTHER_TARGETS: str = "other"
+OTHER_TARGETS_FILE: str = "trix.other.yml"
 HW_RULES: str = "trix.hw.{host}.rules"
 # libyaml's safe loader where it is installed: the same documents, an order of magnitude
 # faster, which is what a reconcile over every node's file needs.
@@ -269,6 +278,43 @@ def _refuse_unparsable(document, what: str) -> None:
                     f"leaves behind")
 
 
+def _refuse_untargetable(document) -> None:
+    """
+    Refuse a target document Prometheus would not take, before it is stored.
+
+    Refused at the store rather than at the write, as the rules are: the declaration
+    replicates, so a document this controller will not write reaches the peer as well.
+
+    Strict about what a group carries and about the type of every value in it, because
+    file_sd reads the file with known fields and string values only: one entry it cannot
+    read costs the whole file, and Prometheus then goes on scraping what it already had.
+    """
+    entries = (document or {}).get("targets")
+    if not isinstance(entries, list):
+        raise BadRequest("targets is the list of target groups to scrape")
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise BadRequest("a target group is an object carrying targets and labels")
+        unknown = sorted(set(entry) - {"targets", "labels"})
+        if unknown:
+            raise BadRequest(f"a target group carries targets and labels, not {unknown}")
+        addresses = entry.get("targets")
+        if not isinstance(addresses, list):
+            raise BadRequest("the targets of a group are a list of addresses to scrape")
+        for address in addresses:
+            if not isinstance(address, str) or not address.strip():
+                raise BadRequest(f"{address!r} does not name a host to scrape")
+        labels = entry.get("labels") or {}
+        if not isinstance(labels, dict):
+            raise BadRequest("the labels of a group are a name and a value each")
+        for key, value in labels.items():
+            if not isinstance(key, str) or not exporters.LABEL_NAME.match(key):
+                raise BadRequest(f"Prometheus will not accept the label {key!r}")
+            if not isinstance(value, str):
+                raise BadRequest(f"the label {key} is {type(value).__name__}; a label "
+                                 f"value Prometheus takes is a string")
+
+
 def quoted(value) -> str:
     """
     One label value as PromQL takes it, inside the double quotes the caller writes.
@@ -391,6 +437,19 @@ class Backend:
             return held
         return {"settings": self._read_settings_file()}
 
+    # ------------------------------------------------------------- targets
+
+    def other_targets(self, body: dict = None) -> dict:
+        """
+        The scrape targets that are no node or controller Luna holds.
+        """
+        if body:
+            _refuse_untargetable(body)
+            stored = declarations.write(PLUGIN, "targets", OTHER_TARGETS, body)
+            self._write_other_targets(stored)
+            return stored
+        return declarations.read(PLUGIN, "targets", OTHER_TARGETS, {"targets": []})
+
     # ------------------------------------------------------------- hardware
 
     def get_hw_rules(self, node: str) -> dict:
@@ -402,11 +461,18 @@ class Backend:
             raise NotFound(f"no hardware rules held for {node}")
         return _read_yaml(paths[0])
 
-    def import_hw_rules(self, node: str, body: dict = None) -> dict:
+    def import_hw_rules(self, node: str, body: dict = None, caller=None) -> dict:
         """
         Generate this node's rule file from what Prometheus knows about it. The
         node asks for this itself after boot, with a token scoped to itself.
         """
+        # The node the token was minted for, not the name in the path: the gate binds the
+        # two by short name alone, so the rest of the path is the caller's own spelling,
+        # and where Luna no longer holds the node that spelling becomes a file name.
+        # Luna is not asked whether it still holds the node: a boot storm is the likely event and
+        # would pay for every call made here, while a node Luna has dropped is rare and its file
+        # is retired by the hourly reconcile anyway.
+        node = getattr(getattr(caller, "claims", None), "node", "") or node
         written = self._write_hw_rules(node, body or {})
         # A node that rebooted unchanged costs no write and no reload: a boot storm of
         # thousands of nodes reloads Prometheus only for the ones that changed.
@@ -784,31 +850,76 @@ class Backend:
         result = ((answer.json() or {}).get("data") or {}).get("result") or []
         return [dict(item.get("metric") or {}) for item in result]
 
+    # ----------------------------------------------------- what Prometheus reports
+
+    def reported_rules(self) -> dict:
+        """
+        The rule groups Prometheus holds, as Prometheus reports them.
+
+        A file Prometheus refused is not here at all - it keeps the configuration it had -
+        so the files it did load are what tells a reader that one of ours was not taken.
+        """
+        groups = [_group(one) for one in self._reported("/rules").get("groups") or []]
+        return {"files": sorted({one["file"] for one in groups if one["file"]}),
+                # Only err: a rule Prometheus has not reached yet is unknown, which every
+                # rule is for an evaluation interval after a reload.
+                "unhealthy": len([rule for one in groups for rule in one["rules"]
+                                  if rule["health"] == "err"]),
+                "groups": groups}
+
+    def reported_alerts(self) -> dict:
+        """
+        What Prometheus has evaluated to an alert, firing or still pending.
+        """
+        held = self._reported("/alerts").get("alerts") or []
+        return {"count": len(held), "alerts": [_alert(one) for one in held]}
+
+    def _reported(self, path: str) -> dict:
+        """
+        What Prometheus answers under one of its own read routes.
+
+        An error document is raised rather than shaped: Prometheus answers one with 200,
+        and nothing firing and not being able to ask read the same once it is.
+        """
+        document = self._call(path).json() or {}
+        if document.get("status") != "success":
+            raise BackendFailure(f"Prometheus answered an error at {API}{path}: "
+                                 f"{document.get('error') or document.get('status') or '?'}")
+        return document.get("data") or {}
+
+    # ------------------------------------------------------- reaching Prometheus
+
     def _query(self, query: str):
         """
-        One instant query. Prometheus is asked over TLS and its certificate is verified
-        against the system trust store, which is where the cluster CA is installed; the
-        first query is also the probe that finds a loopback address the certificate does
-        not carry, so the rules go on being written there.
+        One instant query, which is how this plugin reads a series.
+        """
+        return self._call("/query", {"query": query})
+
+    def _call(self, path: str, params: dict = None):
+        """
+        One request to Prometheus. Its certificate is verified against the system trust
+        store, which is where the cluster CA is installed; the first call is also the probe
+        that finds a loopback address the certificate does not carry, so the rules go on
+        being written there.
         """
         configured = self._config().get("prometheus_url", DEFAULT_CONFIG["prometheus_url"])
         url = self.prometheus_url or configured
         upgraded = False
         for _ in (1, 2, 3):
-            verify = not (_is_loopback(url) and self.unverified_from
+            verify = not (tls.is_loopback(url) and self.unverified_from
                           and time.monotonic() - self.unverified_from <= UNVERIFIED_FOR)
             try:
                 # The store is asked for inside the try, so a system without one is a
                 # verification that cannot succeed and is answered where a failed one is -
                 # never by asking anyway.
-                answer = requests.get(f"{url}/api/v1/query", params={"query": query},
+                answer = requests.get(f"{url}{API}{path}", params=params,
                                       timeout=20,
                                       verify=tls.system_trust() if verify else False)
             except requests.exceptions.SSLError as error:
                 # The controller's certificate carries the box's own names, never localhost,
                 # so the loopback is the one address a healthy cluster cannot verify. Any
                 # other address is somebody else's, and a refusal there stays a refusal.
-                if verify and _is_loopback(url):
+                if verify and tls.is_loopback(url):
                     self.unverified_from = time.monotonic()
                     LOGGER.warning("Prometheus at %s did not verify (%s); asking the "
                                    "loopback unverified, and verifying again in %ss",
@@ -818,7 +929,7 @@ class Backend:
             except requests.RequestException as error:
                 raise BackendFailure(f"Prometheus is not answering: {error}") from None
             if answer.status_code == 400 and "HTTPS server" in answer.text and not upgraded:
-                url = _other_scheme(url)
+                url = tls.other_scheme(url)
                 upgraded = True
                 continue
             break
@@ -1059,6 +1170,34 @@ class Backend:
             answer["reloaded"] = self.reload_reported()
         return answer
 
+    def render_other_targets(self) -> dict:
+        """
+        Put the targets that are not Luna's on disk, where Prometheus' file_sd reads them.
+
+        This is what writes the file on the controller the document was not sent to: the
+        declaration replicates, and a declaration arriving from the peer wakes the renders
+        that read it.
+        """
+        stored = declarations.read(PLUGIN, "targets", OTHER_TARGETS, None)
+        if stored is None:
+            return {"targets": 0, "written": ""}
+        return {"targets": len(stored.get("targets") or []),
+                "written": self._write_other_targets(stored)}
+
+    def _write_other_targets(self, stored: dict) -> str:
+        """
+        The file_sd document on disk.
+
+        No reload is asked for: Prometheus watches the files its file_sd reads and takes a
+        change by itself, which it does not do for a rule file.
+        """
+        directory = self._config().get("other_targets_directory",
+                                       DEFAULT_CONFIG["other_targets_directory"])
+        groups = (stored or {}).get("targets") or []
+        written = files.write_yaml(os.path.join(directory, OTHER_TARGETS_FILE), groups)
+        LOGGER.info("wrote %d target group(s) outside Luna to %s", len(groups), written)
+        return written
+
     def _reconcile_hw_rules(self, nodes: dict) -> dict:
         """
         Every hardware file names a node Luna has, under its current host and group, or it
@@ -1288,29 +1427,6 @@ class SharedReload:
 RELOADS: SharedReload = SharedReload()
 
 
-def _other_scheme(url: str) -> str:
-    """
-    The same address over the other scheme.
-    """
-    if url.startswith("https://"):
-        return "http://" + url[len("https://"):]
-    return "https://" + url.split("://", 1)[-1]
-
-
-def _is_loopback(url: str) -> bool:
-    """
-    Whether an address is the box's own, which is the only one a controller certificate is
-    not expected to carry.
-    """
-    host = urlsplit(url).hostname or ""
-    if host == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(host).is_loopback
-    except ValueError:
-        return False
-
-
 def _hw_host(path: str) -> str:
     """
     The host a hardware rule file names, read from its filename alone.
@@ -1450,3 +1566,49 @@ def _provision_address(node: dict) -> str:
                 return ""
             return held
     return ""
+
+
+def _group(held: dict) -> dict:
+    """
+    One rule group as this daemon describes it, carrying the file Prometheus loaded it from.
+    """
+    return {"name": held.get("name", ""),
+            "file": held.get("file", ""),
+            "last_evaluation": held.get("lastEvaluation", ""),
+            "evaluation_time": held.get("evaluationTime", 0),
+            "rules": [_rule(one) for one in held.get("rules") or []]}
+
+
+def _rule(held: dict) -> dict:
+    """
+    One rule, with the health and the error of its last evaluation.
+
+    Its alert instances are left out: a group per node carrying every instance is the same
+    document twice, and the alerts route answers them in full.
+    """
+    return {"name": held.get("name", ""),
+            "type": held.get("type", ""),
+            "state": held.get("state", ""),
+            "health": held.get("health", ""),
+            "last_error": held.get("lastError", ""),
+            "duration": held.get("duration", 0),
+            "query": held.get("query", ""),
+            "labels": held.get("labels") or {},
+            "annotations": held.get("annotations") or {}}
+
+
+def _alert(held: dict) -> dict:
+    """
+    One alert in the words the alertmanager plugin answers one in, so a reader can hold the
+    two views of it side by side.
+
+    Nothing says what is quietening it. That is Alertmanager's to know, and an empty
+    `silenced_by` here would read as nothing being silenced.
+    """
+    labels = held.get("labels") or {}
+    return {"name": labels.get("alertname", ""),
+            "state": held.get("state", ""),
+            "labels": labels,
+            "annotations": held.get("annotations") or {},
+            "starts_at": held.get("activeAt", ""),
+            "value": held.get("value", "")}

@@ -212,7 +212,7 @@ def test_every_user_endpoint_declares_a_minimum_role():
 
     manifests = glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
                                        "manifest.yaml"))
-    assert len(manifests) == 7, manifests
+    assert manifests, "no shipped plugin was found, so this proves nothing"
     for path in manifests:
         with open(path, encoding="utf-8") as handle:
             document = yaml.safe_load(handle)
@@ -2473,9 +2473,26 @@ def test_every_shipped_plugin_passes_the_check(rig):
 
     shipped = sorted(os.path.dirname(path) for path in glob.glob(
         os.path.join(os.path.dirname(trixd.__file__), "plugins", "*", "manifest.yaml")))
-    assert len(shipped) == 7
+    assert shipped, "no shipped plugin was found, so this proves nothing"
     for path in shipped:
         assert check(path) == [], path
+
+
+def test_every_shipped_plugin_directory_ships_a_manifest():
+    """
+    A directory under plugins/ without manifest.yaml is not a plugin: the loader skips it
+    with a warning and the daemon serves one plugin fewer. Both sides are derived, so a
+    new plugin needs no edit here and a manifest that went missing is still named.
+    """
+    import glob
+
+    root = os.path.join(os.path.dirname(trixd.__file__), "plugins")
+    packages = {name for name in os.listdir(root)
+                if os.path.isfile(os.path.join(root, name, "__init__.py"))}
+    manifests = {os.path.basename(os.path.dirname(path))
+                 for path in glob.glob(os.path.join(root, "*", "manifest.yaml"))}
+    assert packages, "no shipped plugin was found, so this proves nothing"
+    assert packages == manifests, packages ^ manifests
 
 
 def test_the_check_lists_every_problem_at_once(rig, tmp_path):

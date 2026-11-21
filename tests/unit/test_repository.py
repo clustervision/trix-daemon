@@ -56,8 +56,11 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 HEADER = "This code is part of the TrinityX software suite"
 # Files that are their own kind of text: the licence itself, plain READMEs, git's own.
 # Files that are their own kind of text, and the JSON tools/build_schemas.py writes,
-# which carries its licence in its own fields since JSON has no comments.
-NO_HEADER = re.compile(r"(^|/)(LICENSE\.txt|README|\.gitattributes)$|^docs/.*\.json$")
+# which carries its licence in its own fields since JSON has no comments. The golden
+# files are whole slurm and genders files as another writer leaves them, so a header of
+# ours in one would be bytes under test.
+NO_HEADER = re.compile(r"(^|/)(LICENSE\.txt|README|\.gitattributes)$|^docs/.*\.json$"
+                       r"|^tests/unit/golden/")
 # Shipped as their authors made them: Swagger UI, unchanged, and images, which are bytes.
 AS_IS = re.compile(r"^trixd/static/vendor/|\.(png|ico)$")
 
