@@ -20,8 +20,9 @@
 """
 Write tests/unit/golden/ from the packaged generators: for every case in
 tests/unit/golden_cases.py, the file as the administrator left it, handed to
-trinityx-config-slurm and trinityx-config-genders exactly as a render hands it to them,
-and kept as they left it.
+trinityx-config-slurm and trinityx-config-genders with the node list the renders build,
+and kept as they left it. Neither plugin calls a generator any more - these files are what
+the renders are held to, which is the whole reason they are produced from here.
 
 It also reads the table's `NODESETS` rows back off the slurm generator's own hostlist
 filter, so a fold that has moved is a refusal here rather than a mismatch nobody can

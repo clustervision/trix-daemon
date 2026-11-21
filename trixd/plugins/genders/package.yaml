@@ -1,0 +1,65 @@
+# This code is part of the TrinityX software suite
+# Copyright (C) 2026  ClusterVision Solutions b.v.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>
+
+
+# What installing the genders plugin needs on a controller, beyond the daemon: read by people and
+# by the installer today; meant for a generic `plugin setup` step (preflight, then the steps, as
+# root, idempotent). Every path a step touches is in `creates` or `depends`.
+
+name: genders
+version: "1.0"
+description: >
+  The TrinityX managed block of the genders file, rendered from Luna's node list, so pdsh addresses
+  every node by `all` and by its group. The file is written in place and nothing is reloaded: every
+  reader of it opens it for itself.
+
+depends:
+  daemon: trixd with the luna plugin enabled (the node list is Luna's)
+  # Nothing here folds a hostlist, but the node list is the slurm plugin's node_set, read by its
+  # canonical path, and that plugin's own modules import python-hostlist when they load.
+  python: [hostlist]
+  files: /etc/genders, carrying a TrinityX managed block; on a pair it is the shared file both
+    controllers write
+
+runs_as:
+  handlers: root, inside trixd; the render writes one file and starts no process
+
+creates:
+  - >-
+    nothing of its own. The installer's pdsh role makes /etc/genders a symlink into the shared
+    tree and puts the file and its managed block there; a file with no block of ours is left
+    exactly as it is
+
+preflight:
+  - [/usr/bin/test, -f, /etc/genders]
+
+# Nothing to install, nothing to reload: enabling the plugin is the daemon loading it, and
+# disabling it leaves the file as the last render left it.
+steps:
+  install: []
+  start: []
+  stop: []
+  remove: []
+
+checklist:
+  - text: the file the render leaves is the file the packaged generator leaves, byte for byte
+    test: tests/unit/test_golden_files.py::test_the_genders_render_writes_what_the_generators_wrote
+  - text: a second pass leaves one block, in the markers the other writers find
+    test: tests/unit/test_golden_files.py::test_the_genders_render_writes_no_second_block
+  - text: a file an administrator took the block out of is a named refusal, not a block put back
+    test: tests/unit/test_integrations.py::test_genders_says_why_it_wrote_nothing
+  - text: the shared file is written through the symlink the installer makes, not over it
+    test: tests/unit/test_integrations.py::test_the_genders_render_writes_through_the_installers_symlink

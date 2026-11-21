@@ -52,8 +52,8 @@ IMPORTED_AS = {"pyjwt": "jwt", "pyyaml": "yaml", "python-pam": "pam"}
 # required, which is the opposite of what they are.
 # On a controller python-hostlist comes with luna2-daemon's pin and slurmlint with the trixd
 # role's slurm helper tasks (and the OOD Slurm app); CI installs both itself. The slurm
-# plugin's helper imports them inside a try and answers 503 without them.
-OPTIONAL = {"trinityx_config_genders", "hostlist", "slurmlint"}
+# plugin's helper imports slurmlint inside a try and answers 503 without it.
+OPTIONAL = {"hostlist", "slurmlint"}
 
 
 def test_everything_the_daemon_imports_is_in_requirements():

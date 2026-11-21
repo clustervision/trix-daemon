@@ -45,9 +45,8 @@ import difflib
 import importlib.util
 import os
 import socket
-import sys
 from pathlib import Path
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import hostlist
 import pytest
@@ -258,27 +257,67 @@ def test_the_slurm_render_writes_no_second_block(rig, monkeypatch, tmp_path, cas
         assert wrote == _golden(case, kind), _why(case, kind, wrote, _golden(case, kind))
 
 
-@pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
-def test_the_genders_render_hands_the_generator_the_case(rig, monkeypatch, case):
+def _genders(monkeypatch, tmp_path, case) -> str:
     """
-    The same node list reaches the genders generator, and a file the administrator took
-    the block out of is a named failure rather than a block put back.
+    The genders file as the administrator left it, and Luna holding the case's nodes.
+    Nothing stands in for a generator: the render builds the file itself, which is what the
+    comparison below is of.
+    """
+    from trixd.plugins.genders import backend as genders
+
+    path = str(tmp_path / TABLE.KINDS["genders"])
+    with open(path, "w", encoding="utf-8", newline=chr(10)) as handle:
+        handle.write(TABLE.before(case, "genders"))
+    monkeypatch.setitem(genders.WRITES, "genders_file", path)
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
+                        lambda: SimpleNamespace(nodes=lambda: case["luna"]))
+    return path
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
+def test_the_genders_render_writes_what_the_generators_wrote(rig, monkeypatch, tmp_path, case):
+    """
+    The render over the file as the administrator left it, against the file the generator
+    left for the same input, byte for byte. This is what the ticket is held to: the bytes
+    come from the plugin's own renderer, not from the table beside it, and a node Luna holds
+    without a group reaches neither.
     """
     from trixd.plugins.genders.backend import Backend
 
-    handed: list = []
-    managed = case.get("managed", True)
-    package = ModuleType("trinityx_config_genders")
-    package.Generate = lambda: SimpleNamespace(
-        Genders=lambda given: (handed.extend(given), managed)[1])
-    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
-    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
-                        lambda: SimpleNamespace(nodes=lambda: case["luna"]))
-
-    if not managed:
-        with pytest.raises(BackendFailure, match="no TrinityX managed block"):
-            Backend().render_genders()
-    else:
+    path = _genders(monkeypatch, tmp_path, case)
+    if case.get("managed", True):
         answer = Backend().render_genders()
         assert answer.get("skipped", []) == case.get("skipped", []), answer
-    assert handed == case["nodes"], f"{case['case']}: {handed}"
+        assert answer["nodes"] == len(case["nodes"]), answer
+    else:
+        with pytest.raises(BackendFailure, match="has no TrinityX managed block"):
+            Backend().render_genders()
+    with open(path, encoding="utf-8") as handle:
+        wrote = handle.read()
+    assert wrote == _golden(case, "genders"), \
+        _why(case, "genders", wrote, _golden(case, "genders"))
+
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
+def test_the_genders_render_writes_no_second_block(rig, monkeypatch, tmp_path, case):
+    """
+    A writer that does not find the generator's markers appends a block of its own instead
+    of replacing it, and every node is then in the file twice - which libgenders reads as a
+    duplicate rather than as a mistake. Two passes over one file leave one block, with the
+    daemon's own pair of markers nowhere in it.
+    """
+    from trixd.plugins.genders.backend import Backend
+
+    if not case.get("managed", True):
+        pytest.skip("a file with no block of ours is never written")
+    path = _genders(monkeypatch, tmp_path, case)
+    Backend().render_genders()
+    Backend().render_genders()
+    with open(path, encoding="utf-8") as handle:
+        wrote = handle.read()
+    assert wrote.count(TABLE.BLOCK_START.format(manager=TABLE.MANAGER)) == 1, \
+        f"{case['case']}: a second block was added"
+    assert daemon_files.BLOCK_START.format(manager=TABLE.MANAGER) not in wrote, \
+        f"{case['case']}: the daemon's own markers reached the genders file"
+    assert wrote == _golden(case, "genders"), \
+        _why(case, "genders", wrote, _golden(case, "genders"))

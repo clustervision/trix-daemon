@@ -36,6 +36,7 @@ import os
 import socket
 import stat
 import sys
+from pathlib import Path
 from types import ModuleType, SimpleNamespace
 
 import jwt
@@ -1569,10 +1570,10 @@ def _inside(tmp_path, name: str) -> list:
     """
     What our block of that file holds now.
     """
-    from trixd.plugins.slurm import configfiles
+    from trixd.utils import blocks
 
-    return (configfiles.block((tmp_path / name).read_text(encoding="utf-8"),
-                              "TrinityX") or "").splitlines()
+    return (blocks.block((tmp_path / name).read_text(encoding="utf-8"),
+                         "TrinityX") or "").splitlines()
 
 
 def test_slurm_renders_luna_nodes_into_its_own_files(rig, monkeypatch, tmp_path):
@@ -1662,36 +1663,38 @@ def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeyp
         Backend().render_config()
 
 
-def test_the_slurm_plugin_imports_no_generator_package(rig):
+def test_no_shipped_module_imports_a_generator_package(rig):
     """
-    What trixd writes into slurm's files is trixd's own code, so no module of the plugin
-    may import a trinityx-config generator - not at the top and not inside a function,
-    which is where the import it replaced lived. Every module of the plugin is read, so a
-    module added later is covered without being named here.
+    What trixd writes into the slurm and genders files is trixd's own code, so nothing that
+    ships may import a trinityx-config generator - not at the top and not inside a function,
+    which is where the imports these replaced lived. Every module under trixd/ is read, so a
+    module or a plugin added later is covered without being named here.
     """
     import ast
     import os
 
-    from trixd.plugins import slurm
+    import trixd
 
-    folder = os.path.dirname(slurm.__file__)
+    root = os.path.dirname(trixd.__file__)
     found = {}
-    for name in sorted(os.listdir(folder)):
-        if not name.endswith(".py"):
-            continue
-        with open(os.path.join(folder, name), encoding="utf-8") as handle:
-            tree = ast.parse(handle.read())
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                heads = [alias.name.split(".")[0] for alias in node.names]
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                heads = [node.module.split(".")[0]]
-            else:
+    for folder, _, names in os.walk(root):
+        for name in sorted(names):
+            if not name.endswith(".py"):
                 continue
-            for head in heads:
-                if head.startswith("trinityx_config"):
-                    found.setdefault(name, []).append(head)
-    assert found == {}, f"the slurm plugin imports a generator again: {found}"
+            source = os.path.join(folder, name)
+            with open(source, encoding="utf-8") as handle:
+                tree = ast.parse(handle.read())
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    heads = [alias.name.split(".")[0] for alias in node.names]
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    heads = [node.module.split(".")[0]]
+                else:
+                    continue
+                for head in heads:
+                    if head.startswith("trinityx_config"):
+                        found.setdefault(os.path.relpath(source, root), []).append(head)
+    assert found == {}, f"a shipped module imports a generator again: {found}"
 
 
 def _gated() -> TestClient:
@@ -1959,9 +1962,10 @@ def test_a_queued_service_action_runs_the_configured_command(rig, monkeypatch):
         services.run_task("start", "slurmctld")
 
 
-def test_genders_says_why_it_wrote_nothing(rig, monkeypatch):
+def test_genders_says_why_it_wrote_nothing(rig, monkeypatch, tmp_path):
     """
-    No nodes is nothing to do; no managed block, or no package, is a named failure.
+    No nodes is nothing to do; a file an administrator took our block out of, and a file
+    that is not there at all, are named failures that leave what is on disk alone.
     """
     from trixd.plugins.genders import backend as genders
 
@@ -1971,15 +1975,18 @@ def test_genders_says_why_it_wrote_nothing(rig, monkeypatch):
 
     monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
                         lambda: SimpleNamespace(nodes=lambda: {"node001": {"group": "a"}}))
-    package = ModuleType("trinityx_config_genders")
-    package.Generate = lambda: SimpleNamespace(Genders=lambda nodes: False)
-    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
-    with pytest.raises(BackendFailure, match="no TrinityX managed block"):
+    path = tmp_path / "genders"
+    theirs = "# the site's own genders file\nnode001 all,compute\n"
+    path.write_text(theirs, encoding="utf-8")
+    monkeypatch.setitem(genders.WRITES, "genders_file", str(path))
+    with pytest.raises(BackendFailure, match="has no TrinityX managed block"):
         genders.Backend().render_genders()
+    assert path.read_text(encoding="utf-8") == theirs, "a file with no block of ours was written"
 
-    monkeypatch.setitem(sys.modules, "trinityx_config_genders", None)
-    with pytest.raises(BackendFailure, match="not installed on this controller"):
+    path.unlink()
+    with pytest.raises(BackendFailure, match="cannot read"):
         genders.Backend().render_genders()
+    assert not path.exists(), "a genders file was created where the installer put none"
 
 
 def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkeypatch, tmp_path):
@@ -2030,21 +2037,34 @@ def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch
     assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
 
 
-def _genders(monkeypatch, nodes: dict) -> list:
+def _genders(monkeypatch, nodes: dict, tmp_path) -> Path:
     """
-    Luna holding `nodes`, and a stand-in generator recording the set it was handed.
+    Luna holding `nodes`, and the genders file laid out with an empty managed block of ours,
+    so what a pass left is what the next one reads back. The render builds the file itself,
+    so nothing stands in for a generator.
     """
+    from trixd.plugins.genders import backend as genders
+
     monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
                         lambda: SimpleNamespace(nodes=lambda: nodes))
-    handed: list = []
-    package = ModuleType("trinityx_config_genders")
-    package.Generate = lambda: SimpleNamespace(
-        Genders=lambda given: (handed.extend(given), True)[1])
-    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
-    return handed
+    path = tmp_path / "genders"
+    path.write_text("# the site's own header\n"
+                    "#### TrinityX Managed block start ####\n"
+                    "#### TrinityX Managed block end   ####\n", encoding="utf-8")
+    monkeypatch.setitem(genders.WRITES, "genders_file", str(path))
+    return path
 
 
-def test_a_node_with_no_group_is_left_out_of_the_genders_file(rig, monkeypatch):
+def _genders_lines(path: Path) -> list:
+    """
+    What our block of the genders file holds now.
+    """
+    from trixd.utils import blocks
+
+    return (blocks.block(path.read_text(encoding="utf-8"), "TrinityX") or "").splitlines()
+
+
+def test_a_node_with_no_group_is_left_out_of_the_genders_file(rig, monkeypatch, tmp_path):
     """
     A node Luna holds with no group renders as `<node> all,`, and libgenders refuses an empty
     attribute for the whole file rather than for the line, so one such node makes the genders
@@ -2052,32 +2072,68 @@ def test_a_node_with_no_group_is_left_out_of_the_genders_file(rig, monkeypatch):
     """
     from trixd.plugins.genders.backend import Backend
 
-    handed = _genders(monkeypatch, {"node001": {"group": "compute"},
-                                    "node002": {"group": None},
-                                    "node003": {"group": ""}})
+    path = _genders(monkeypatch, {"node001": {"group": "compute"},
+                                  "node002": {"group": None},
+                                  "node003": {"group": ""}}, tmp_path)
     answer = Backend().render_genders()
 
-    # True on either build, and first: no node reached the generator without a group, so no
-    # line it writes can carry the empty attribute libgenders refuses.
-    assert [one["name"] for one in handed] == ["node001"], handed
-    assert all(one["group"] for one in handed), handed
+    # The attribute libgenders refuses is an empty one, so the line that would carry it is
+    # the thing to look for rather than the node's name.
+    wrote = _genders_lines(path)
+    assert wrote == ["", "node001 all,compute"], wrote
+    assert not [line for line in wrote if line.endswith(",")], wrote
     assert answer["nodes"] == 1, answer
     assert answer.get("skipped") == ["node002", "node003"], answer
 
 
-def test_every_node_without_a_group_writes_no_genders_file_and_says_why(rig, monkeypatch):
+def test_every_node_without_a_group_writes_no_genders_file_and_says_why(rig, monkeypatch,
+                                                                        tmp_path):
     """
-    Nothing to write, which is not the same as no nodes: the generator is not handed an empty
-    set, which would empty the managed block, and the names are in the answer.
+    Nothing to write, which is not the same as no nodes: the block is left as it was rather
+    than emptied, and the names are in the answer.
     """
     from trixd.plugins.genders.backend import Backend
 
-    handed = _genders(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}})
+    path = _genders(monkeypatch, {"node001": {"group": None}, "node002": {"group": ""}},
+                    tmp_path)
+    held = path.read_text(encoding="utf-8")
     answer = Backend().render_genders()
 
-    assert handed == [], "the generator was handed a set that would empty the genders file"
+    assert path.read_text(encoding="utf-8") == held, "the genders file was written anyway"
     assert answer["nodes"] == 0, answer
     assert answer.get("skipped") == ["node001", "node002"], answer
+
+
+def test_the_genders_render_writes_through_the_installers_symlink(rig, monkeypatch, tmp_path):
+    """
+    The installer's pdsh role makes /etc/genders a symlink into the shared tree, which on a
+    pair is the one file both controllers write. So the render follows the link rather than
+    refusing it, and writes the file that is there rather than replacing it: a controller
+    that replaced the link would keep a genders file of its own from then on, and the pair
+    would disagree with nothing to say so.
+    """
+    from trixd.plugins.genders import backend as genders
+
+    shared = tmp_path / "shared"
+    shared.mkdir()
+    target = shared / "genders"
+    target.write_text("# the site's own header\n"
+                      "#### TrinityX Managed block start ####\n"
+                      "#### TrinityX Managed block end   ####\n", encoding="utf-8")
+    link = tmp_path / "etc-genders"
+    link.symlink_to(target)
+    was = target.stat().st_ino
+
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna", lambda: SimpleNamespace(
+        nodes=lambda: {"node001": {"group": "compute"}}))
+    monkeypatch.setitem(genders.WRITES, "genders_file", str(link))
+
+    assert genders.Backend().render_genders()["nodes"] == 1
+
+    assert link.is_symlink(), "the link into the shared tree was replaced by a local file"
+    assert target.stat().st_ino == was, "the shared file was replaced rather than written"
+    assert "node001 all,compute" in target.read_text(encoding="utf-8"), \
+        target.read_text(encoding="utf-8")
 
 
 def test_listing_the_services_reads_the_catalogue_once(rig, monkeypatch):
@@ -2172,11 +2228,8 @@ def test_the_renders_keep_their_files_when_lunas_node_answer_cannot_be_read(rig,
     from trixd.plugins.genders import backend as genders
     from trixd.plugins.slurm import backend as slurm
 
-    wrote = []
-    package = ModuleType("trinityx_config_genders")
-    package.Generate = lambda: SimpleNamespace(
-        Genders=lambda nodes: wrote.append(nodes) or True)
-    monkeypatch.setitem(sys.modules, "trinityx_config_genders", package)
+    kept = _genders(monkeypatch, {}, tmp_path)
+    held = kept.read_text(encoding="utf-8")
     seen = _slurm(monkeypatch, {}, tmp_path)
 
     def answering(answer):
@@ -2189,9 +2242,10 @@ def test_the_renders_keep_their_files_when_lunas_node_answer_cannot_be_read(rig,
     # Luna's own answer for a cluster holding no node, which is a 404.
     answering(Answer(404))
     assert slurm.Backend().render_config() == {"nodes": 0, "files": []}
-    assert genders.Backend().render_genders() == {"nodes": 0, "file": "/etc/genders"}
+    assert genders.Backend().render_genders() == {"nodes": 0, "file": str(kept)}
     assert "nodes" not in seen, "the slurm generator ran for a cluster with no nodes"
-    assert wrote == [], "the genders generator ran for a cluster with no nodes"
+    assert kept.read_text(encoding="utf-8") == held, \
+        "the genders file was written for a cluster with no nodes"
 
     # The same two renders over an answer whose shape has moved.
     answering(Answer(body={"config": {"nodes": {"node001": {"group": "a"}}}}))
@@ -2200,7 +2254,8 @@ def test_the_renders_keep_their_files_when_lunas_node_answer_cannot_be_read(rig,
     with pytest.raises(ServiceUnavailable, match="cannot read"):
         genders.Backend().render_genders()
     assert "nodes" not in seen, "the slurm generator was handed an answer nothing could read"
-    assert wrote == [], "the genders file was rewritten from an answer nothing could read"
+    assert kept.read_text(encoding="utf-8") == held, \
+        "the genders file was rewritten from an answer nothing could read"
 
 
 def test_a_node_name_is_encoded_into_lunas_path(rig):

@@ -581,6 +581,42 @@ def test_the_contents_reach_the_disk_before_the_rename(tmp_path, monkeypatch):
         f"durability of the rename, which is not what this protects against"
 
 
+def test_a_managed_block_is_written_in_place_and_follows_a_link_only_when_asked(tmp_path):
+    """
+    These files are written where they are, so a reader keeps the inode and the file keeps
+    the owner, group and mode the installer gave it - a temporary file and a rename would
+    hand it this process's own.
+
+    Whether a symlink is followed is the caller's to say, and the two writers want opposite
+    answers: the slurm files are regular files of the cluster's admin group, where a link
+    is somebody redirecting root's write, while /etc/genders is a link into the shared tree
+    and refusing to follow it refuses the only path there is.
+    """
+    from trixd.utils import blocks
+
+    target = tmp_path / "shared"
+    target.write_text("#### TrinityX Managed block start ####\n"
+                      "#### TrinityX Managed block end   ####\n", encoding="utf-8")
+    was = target.stat().st_ino
+    link = tmp_path / "etc-file"
+    link.symlink_to(target)
+
+    wanted = blocks.replace(target.read_text(encoding="utf-8"), "TrinityX", "\nnode001 all,a")
+    with pytest.raises(OSError):
+        blocks.put(str(link), wanted)
+    assert target.read_text(encoding="utf-8") == ("#### TrinityX Managed block start ####\n"
+                                                  "#### TrinityX Managed block end   ####\n"), \
+        "a write that was supposed to refuse the link went through it"
+
+    blocks.put(str(link), wanted, follow=True)
+    assert target.read_text(encoding="utf-8") == ("#### TrinityX Managed block start ####\n"
+                                                  "\nnode001 all,a\n"
+                                                  "#### TrinityX Managed block end   ####\n"), \
+        target.read_text(encoding="utf-8")
+    assert link.is_symlink(), "the link was replaced by a file of its own"
+    assert target.stat().st_ino == was, "the file was replaced rather than written in place"
+
+
 def test_a_file_with_one_marker_missing_is_refused_rather_than_doubled(tmp_path):
     """
     A block whose end marker somebody removed used to get a second block appended, leaving

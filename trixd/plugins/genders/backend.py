@@ -19,6 +19,11 @@
 
 """
 The genders file, from the same node list the slurm blocks are built from.
+
+Luna's own config hooks write this file too, so what is written here has to be what they
+write, down to the byte: the markers, the blank line the block opens with and the
+administrator's own text around it. tests/unit/golden/ holds the file their generator
+produces for the cases in tests/unit/golden_cases.py and the suite holds this against it.
 """
 
 __author__      = "Sumit Sharma"
@@ -32,38 +37,62 @@ __status__      = "Production"
 from trixd.common import logging as trixlog
 from trixd.common.errors import BackendFailure
 from trixd.plugins.slurm.backend import node_set
+from trixd.utils import blocks
 
 LOGGER = trixlog.get("genders")
 
-# The generator writes this file and this managed block and takes no other.
+# The file this plugin writes and the block in it that is ours. Luna's own writer and the
+# pdsh role the installer runs both fix them, so there is nothing here to configure.
 WRITES: dict = {
     "genders_file": "/etc/genders",
     "managed_block": "TrinityX",
 }
 
 
-def _generator():
+def genders_block(nodes: list) -> str:
     """
-    The packaged generator, imported only when a render actually runs.
+    A line per node: every node is in `all` and in its own group, which is what pdsh
+    addresses them by. Each line opens with its own newline, so the block begins with a
+    blank line - that line is in the file the other writers leave behind.
     """
-    try:
-        from trinityx_config_genders import Generate
-    except ImportError as error:
-        raise BackendFailure(
-            f"trinityx_config_genders is not installed on this controller: {error}") from None
-    return Generate()
+    return "".join(f"\n{one['name']} all,{one['group']}" for one in nodes)
 
 
 class Backend:
     """
-    A thin shell around the package.
+    The genders render.
     """
 
     def config(self) -> dict:
         """
-        Where this plugin writes, which the generator fixes.
+        Where this plugin writes, which the installer fixes.
         """
         return dict(WRITES)
+
+    def _write(self, nodes: list) -> None:
+        """
+        Our block of the genders file, with everything outside it left as it was found.
+
+        A file carrying no block of ours is the administrator having taken it out to keep a
+        genders file of their own, so it is left exactly as it is. /etc/genders is a symlink
+        into the shared tree, which is the one file both controllers write, so the link is
+        followed rather than refused.
+        """
+        where = self.config()
+        path, manager = where["genders_file"], where["managed_block"]
+        try:
+            with open(path, "r", encoding="utf-8") as handle:
+                held = handle.read()
+        except OSError as error:
+            raise BackendFailure(f"cannot read {path}: {error}") from None
+        wanted = blocks.replace(held, manager, genders_block(nodes))
+        if wanted is None:
+            raise BackendFailure(f"{path} has no {manager} managed block, so it was left "
+                                 "alone")
+        try:
+            blocks.put(path, wanted, follow=True)
+        except OSError as error:
+            raise BackendFailure(f"cannot write {path}: {error}") from None
 
     def render_genders(self) -> dict:
         """
@@ -88,9 +117,7 @@ class Backend:
                          "write a genders file from")
             return {"nodes": 0, "file": self.config()["genders_file"], "skipped": skipped}
 
-        if not _generator().Genders(fullset):
-            raise BackendFailure(f"{WRITES['genders_file']} has no {WRITES['managed_block']} "
-                                 "managed block, so it was left alone")
+        self._write(fullset)
         LOGGER.info("wrote the genders file for %d node(s)", len(fullset))
         return {"nodes": len(fullset), "file": self.config()["genders_file"],
                 **({"skipped": skipped} if skipped else {})}

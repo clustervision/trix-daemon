@@ -3820,7 +3820,7 @@
     },
     "/api/v1/genders/config": {
       "get": {
-        "description": "The genders file and the name of its managed block. The genders generator fixes\nboth, so there is nothing to change here.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The genders file and the name of its managed block. The installer fixes both, so\nthere is nothing to change here.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "genders_config_get_api_v1_genders_config_get",
         "responses": {
           "200": {

@@ -17,8 +17,8 @@
 plugin: genders
 backend: backend
 description: >
-  The genders file, rendered from the same node list through the
-  trinityx-config-genders package.
+  The genders file, rendered here from the same node list the slurm blocks are
+  built from.
 
 endpoints:
   - path: config
@@ -27,8 +27,8 @@ endpoints:
     handler: config
     summary: Where the plugin writes the genders file
     description: |
-      The genders file and the name of its managed block. The genders generator fixes
-      both, so there is nothing to change here.
+      The genders file and the name of its managed block. The installer fixes both, so
+      there is nothing to change here.
     response:
       description: Where the plugin writes
       example: {genders_file: /etc/genders, managed_block: TrinityX}

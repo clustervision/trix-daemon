@@ -179,36 +179,30 @@ def test_a_systemctl_that_did_not_run_is_not_silent(rig, monkeypatch):
     assert "Failed to get properties" in said[0], said
 
 
-def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch):
+def test_the_genders_render_builds_from_the_node_list(rig, monkeypatch, tmp_path):
     """
-    The whole node list goes to the generator in one call, and a file without the
-    managed block is reported as such rather than as a generic failure.
+    The whole node list reaches the file in one pass, every node by `all` and by its group,
+    and a file without the managed block is reported as such rather than as a generic
+    failure.
     """
     from trixd.common.errors import BackendFailure
     from trixd.plugins.genders import backend as genders
 
     nodes = [{"name": "node001", "group": "compute"}, {"name": "node002", "group": "compute"}]
-    given = []
-    managed = {"block": True}
-
-    class Generate:
-        """
-        Stands in for trinityx_config_genders.Generate.
-        """
-
-        def Genders(self, fullset):
-            """
-            Record the call and say whether the file had its block.
-            """
-            given.append(fullset)
-            return managed["block"]
-
+    path = tmp_path / "genders"
+    path.write_text("#### TrinityX Managed block start ####\n"
+                    "#### TrinityX Managed block end   ####\n", encoding="utf-8")
     monkeypatch.setattr(genders, "node_set", lambda: nodes)
-    monkeypatch.setattr(genders, "_generator", Generate)
-    assert genders.Backend().render_genders() == {"nodes": 2, "file": "/etc/genders"}
-    assert given == [nodes]
-    managed["block"] = False
-    with pytest.raises(BackendFailure, match="no TrinityX managed block"):
+    monkeypatch.setitem(genders.WRITES, "genders_file", str(path))
+
+    assert genders.Backend().render_genders() == {"nodes": 2, "file": str(path)}
+    assert path.read_text(encoding="utf-8") == (
+        "#### TrinityX Managed block start ####\n"
+        "\nnode001 all,compute\nnode002 all,compute\n"
+        "#### TrinityX Managed block end   ####\n"), path.read_text(encoding="utf-8")
+
+    path.write_text("# the site's own genders file\n", encoding="utf-8")
+    with pytest.raises(BackendFailure, match="has no TrinityX managed block"):
         genders.Backend().render_genders()
 
 
@@ -1646,6 +1640,43 @@ def test_every_shipped_render_says_which_of_the_two_jobs_it_does(rig):
     wrong = sorted(key for key, spec in renders.items()
                    if spec.get("reloads") and not spec.get("reconcile"))
     assert wrong == [], f"pure renders naming a service they reload: {wrong}"
+
+
+def test_every_shipped_package_file_declares_what_its_plugin_needs(rig):
+    """
+    A plugin's package.yaml is what the installer reads to put the plugin's own
+    prerequisites on a controller, and it is the only place they are written down. Driven
+    from the tree rather than listed here, so a plugin that gains one has to say the same
+    things in the same words: a plugin whose manifest named a dependency nothing declared
+    is exactly what these replaced.
+
+    What a plugin's own account, limits and steps are stays with that plugin's tests; this
+    is the shape every one of them shares.
+    """
+    import glob as globbing
+
+    import yaml
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    found = sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/package.yaml")))
+    assert len(found) >= 2, f"no plugin package files to check: {found}"
+
+    for source in found:
+        folder = os.path.basename(os.path.dirname(source))
+        with open(source, encoding="ascii") as handle:
+            package = yaml.safe_load(handle)
+        assert set(package) == {"name", "version", "description", "depends", "runs_as",
+                                "creates", "preflight", "steps", "checklist"}, folder
+        assert package["name"] == folder, source
+        assert set(package["steps"]) == {"install", "start", "stop", "remove"}, folder
+        for argv in package["preflight"] + [a for step in package["steps"].values()
+                                            for a in step]:
+            assert isinstance(argv, list) and all(isinstance(word, str) for word in argv), argv
+            assert os.path.isabs(argv[0]), argv
+        for item in package["checklist"]:
+            test, name = item["test"].split("::")
+            with open(os.path.join(here, test), encoding="utf-8") as handle:
+                assert f"def {name}(" in handle.read(), item["test"]
 
 
 def test_a_read_of_a_render_never_runs_the_producer_that_writes_its_files(rig, tmp_path):
