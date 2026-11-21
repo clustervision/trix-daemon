@@ -40,6 +40,8 @@ import sys
 import zipfile
 
 import pytest
+from packaging.requirements import Requirement
+from packaging.utils import canonicalize_name
 
 from trixd.common.constants import DAEMON_RELEASE
 
@@ -120,6 +122,19 @@ def test_the_version_is_the_release_line_and_the_commit_time():
     assert versions == {f"{DAEMON_RELEASE}.1791360000"}
 
 
+def _requirement(text: str) -> str:
+    """
+    One requirement by what it means rather than how it is spelled. The packaging tools
+    rewrite a specifier when they write Requires-Dist - a two-bound pin comes back with
+    its bounds the other way round - so both sides are parsed and spelled back one way.
+    """
+    parsed = Requirement(text)
+    extras = f"[{','.join(sorted(parsed.extras))}]" if parsed.extras else ""
+    bounds = ",".join(sorted(str(bound) for bound in parsed.specifier))
+    marker = f"; {parsed.marker}" if parsed.marker else ""
+    return f"{canonicalize_name(parsed.name)}{extras}{bounds}{marker}"
+
+
 def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
     """
     Every tracked file under trixd/ is in the wheel, under the name the pipeline expects,
@@ -145,8 +160,8 @@ def test_the_wheel_carries_every_file_the_daemon_ships(tmp_path):
     with open(os.path.join(ROOT, "requirements.txt"), encoding="utf-8") as handle:
         pins = [line.strip() for line in handle if line.strip() and not line.startswith("#")]
     required = re.findall(r"^Requires-Dist: (.+)$", metadata.decode("utf-8"), re.M)
-    normal = {re.sub(r"[\s()]", "", item) for item in required}
-    assert normal == set(pins), (normal, pins)
+    declared = {_requirement(item) for item in required}
+    assert declared == {_requirement(pin) for pin in pins}, (declared, pins)
 
 
 def _shape(document: dict) -> dict:
