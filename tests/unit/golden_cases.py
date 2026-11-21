@@ -110,9 +110,9 @@ CASES: tuple = (
     },
     {
         "case": "two-numeric-fields",
-        "why": "names carrying two numbers fold on the first of them, where the library "
-               "the plugin folds a hostlist with elsewhere folds on the last: a render "
-               "folding them that way writes a file the other writers do not",
+        "why": "names carrying two numbers fold on the first of them, where python-hostlist "
+               "folds on the last: a render folding them that way writes a file the other "
+               "writers do not",
         "luna": {"r1n01": {"group": "gpu"}, "r1n02": {"group": "gpu"},
                  "r2n01": {"group": "gpu"}},
         "nodes": [{"name": "r1n01", "group": "gpu"}, {"name": "r1n02", "group": "gpu"},

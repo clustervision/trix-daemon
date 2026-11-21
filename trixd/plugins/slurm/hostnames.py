@@ -16,29 +16,17 @@
 # You should have received a copy of the GNU General Public License
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
-"""A set of node names folded into a hostlist, two ways: see each function."""
+"""A set of node names folded into a hostlist, as the writers of the slurm files fold one."""
 
 from __future__ import annotations
 
 import re
 from collections.abc import Iterable
 
-import hostlist
-
-
-def fold(names: Iterable[str]) -> str:
-    """node[001-003]; names the library cannot fold go as a plain comma list."""
-    names = list(names)
-    try:
-        return hostlist.collect_hostlist(names) if names else ""
-    except hostlist.BadHostlist:
-        return ",".join(names)
-
 
 # trinityx-config-slurm folds a NodeSet line on a name's FIRST run of digits and orders the
-# names by prefix, then suffix, then that number; python-hostlist above folds on the last run.
-# Both expand to the same nodes, and three writers keep these files, so the bytes a NodeSet
-# line carries are these and `fold` stays what every other caller asks for.
+# names by prefix, then suffix, then that number. Three writers keep these files, so the bytes
+# a NodeSet line carries have to be theirs.
 _FIELDS = re.compile(r"([a-zA-Z_.-]+)([0-9]+)?([a-zA-Z0-9_.-]+)?")
 
 

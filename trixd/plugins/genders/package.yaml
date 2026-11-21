@@ -28,9 +28,6 @@ description: >
 
 depends:
   daemon: trixd with the luna plugin enabled (the node list is Luna's)
-  # Nothing here folds a hostlist, but the node list is the slurm plugin's node_set, read by its
-  # canonical path, and that plugin's own modules import python-hostlist when they load.
-  python: [hostlist]
   files: /etc/genders, carrying a TrinityX managed block; on a pair it is the shared file both
     controllers write
 

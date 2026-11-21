@@ -22,7 +22,7 @@ The slurm plugin's helper on files laid out as Luna and the Slurm app left them:
 resume as scontrol is asked, save and restore whole or not at all, the lock, the mark.
 
 The helper is loaded by its path and imports nothing of trixd's, so these run wherever its
-libraries are (python-hostlist, slurmlint). scontrol and sacctmgr are faked at `subprocess`.
+library is (slurmlint). scontrol and sacctmgr are faked at `subprocess`.
 """
 
 __author__      = "Alex Ninaber"
@@ -212,6 +212,23 @@ def test_a_resume_carries_no_reason(slurm):
     """A resume runs scontrol update with State=RESUME and no Reason argument."""
     assert slurm.ask("resume", names=["node002"])["code"] == 200
     assert slurm.ran[-1] == ["/usr/bin/scontrol", "update", "NodeName=node002", "State=RESUME"]
+
+
+def test_the_names_are_folded_as_the_rendered_files_fold_them(slurm):
+    """
+    Names carrying two numbers fold on the first of them, which is how the rendered NodeSet
+    lines fold and not how python-hostlist does: scontrol takes either expression, and the
+    helper needs no fold of its own. The answer's `did` carries the same expression.
+    """
+    nodes = slurm.files["nodes"]
+    rendered = "".join(f"NodeName={name} State=UNKNOWN # GroupName=compute-group\n"
+                       for name in ("r1n01", "r1n02", "r2n01"))
+    nodes.write_text(nodes.read_text().replace("# Nodesets", rendered + "# Nodesets"))
+    said = slurm.ask("resume", names=["r2n01", "r1n01", "r1n02"])
+    assert said["code"] == 200, said
+    assert slurm.ran[-1] == ["/usr/bin/scontrol", "update", "NodeName=r[1-2]n01,r1n02",
+                             "State=RESUME"]
+    assert said["did"] == "resume r[1-2]n01,r1n02"
 
 
 def test_a_drain_names_its_person(slurm):
