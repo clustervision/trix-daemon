@@ -38,8 +38,10 @@ import requests
 import urllib3
 
 from trixd.common import logging as trixlog
+from trixd.common.constants import PLUGIN_STATE_LOADED
 from trixd.common.errors import BackendFailure, BadRequest, NotFound
 from trixd.common.settings import seconds
+from trixd.core.plugins.registry import current as registry
 from trixd.utils import declarations, tls
 
 LOGGER = trixlog.get("alertmanager")
@@ -74,6 +76,29 @@ SILENCE_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9-]{0,63}$")
 # What a silence can be in, as Alertmanager reports it.
 STATES: tuple = ("active", "pending", "expired")
 
+# The plugin the alerts are read from while Alertmanager is away. It is asked for by name
+# rather than imported, so the one backend its own routes answer from is the one asked -
+# and an operator who unplugged it has unplugged this too.
+SOURCE: str = "prometheus"
+
+# How often the degraded answer is said out loud. A console polls this route, so the
+# warning is per spell of Alertmanager being away rather than per request.
+SAY_DEGRADED_EVERY: int = 3600
+
+# What the caller is told when the alerts are Prometheus'. Prometheus knows nothing of
+# silences, so the one thing it cannot say is the one a caller would otherwise read into it.
+DEGRADED: str = (
+    "Alertmanager did not answer, so these are the alerts Prometheus reports: its own "
+    "states, firing and pending, and nothing about what is being quietened. An alert a "
+    "silence is holding down is here like any other, and silenced_by and inhibited_by are "
+    "absent rather than empty.")
+
+
+class Unreachable(BackendFailure):
+    """
+    Alertmanager did not answer at all, as against answering a refusal.
+    """
+
 
 class Backend:
     """
@@ -89,6 +114,9 @@ class Backend:
         # When the loopback last failed to verify, so that it is asked unverified until the
         # hour is out rather than per call. It says nothing about any other address.
         self.unverified_from: float = 0.0
+        # When the alerts were last answered from Prometheus, so a spell of Alertmanager
+        # being away is said once rather than on every poll.
+        self.said_degraded: float = 0.0
 
     # ---------------------------------------------------------------- config
 
@@ -159,9 +187,37 @@ class Backend:
     def alerts(self) -> dict:
         """
         What is firing now, with the silenced and inhibited ones marked as such.
+
+        Prometheus answers this while Alertmanager is away, and `source` says which of the
+        two it was. An Alertmanager that answered a refusal is reached, so that refusal
+        stands: a credential the account cannot use would otherwise read as a degraded
+        answer for ever.
         """
-        held = self._call("GET", "/alerts").json() or []
-        return {"count": len(held), "alerts": [_alert(one) for one in held]}
+        try:
+            held = self._call("GET", "/alerts").json() or []
+        except Unreachable as away:
+            return self._reported_alerts(away)
+        return {"source": PLUGIN, "count": len(held),
+                "alerts": [_alert(one) for one in held]}
+
+    def _reported_alerts(self, away: Unreachable) -> dict:
+        """
+        The alerts Prometheus reports, through the plugin that owns that read.
+        """
+        entry = registry().get(SOURCE)
+        backend = entry.backend if entry and entry.state == PLUGIN_STATE_LOADED else None
+        if backend is None:
+            raise away
+        try:
+            answer = backend.reported_alerts()
+        except BackendFailure as error:
+            raise BackendFailure(f"{away.message}; nor is Prometheus, which answers these "
+                                 f"while Alertmanager is away: {error}") from None
+        if time.monotonic() - self.said_degraded > SAY_DEGRADED_EVERY:
+            self.said_degraded = time.monotonic()
+            LOGGER.warning("answering the alerts from Prometheus: %s", away.message)
+        held = answer.get("alerts") or []
+        return {"source": SOURCE, "degraded": DEGRADED, "count": len(held), "alerts": held}
 
     def status(self) -> dict:
         """
@@ -232,9 +288,9 @@ class Backend:
                                    "loopback unverified, and verifying again in %ss",
                                    url, error, UNVERIFIED_FOR)
                     continue
-                raise BackendFailure(f"Alertmanager is not answering: {error}") from None
+                raise Unreachable(f"Alertmanager is not answering: {error}") from None
             except requests.RequestException as error:
-                raise BackendFailure(f"Alertmanager is not answering: {error}") from None
+                raise Unreachable(f"Alertmanager is not answering: {error}") from None
             if answer.status_code == 400 and "HTTPS server" in answer.text and not upgraded:
                 url = tls.other_scheme(url)
                 upgraded = True

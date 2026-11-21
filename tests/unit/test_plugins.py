@@ -5514,3 +5514,268 @@ def test_every_reported_route_admits_a_reader_and_only_reads(rig):
         assert one.minimum == "reader", one.path
         assert [verb.upper() for verb in one.methods] == ["GET"], one.path
         assert not (one.render or one.replicate or one.public or one.forward), one.path
+
+
+def _firing():
+    """
+    One alert as Prometheus reports it, which a silence at Alertmanager would have quietened.
+    """
+    return {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+            "annotations": {"description": "Hardware component memory is missing."},
+            "state": "firing", "activeAt": "2026-11-20T09:02:11.000Z", "value": "1"}
+
+
+def _suppressed():
+    """
+    The same alert as Alertmanager reports it, with the silence that is holding it down.
+    """
+    return {"labels": {"alertname": "MissingHardwareComponent", "hostname": "node001.cluster"},
+            "annotations": {"description": "Hardware component memory is missing."},
+            "startsAt": "2026-11-20T09:02:11.000Z",
+            "status": {"state": "suppressed", "silencedBy": ["4b1c7d5e"], "inhibitedBy": []}}
+
+
+def _prometheus_loaded(tmp_path, monkeypatch, alerts=None, backend=None):
+    """
+    The prometheus plugin loaded, answering the alerts Prometheus reports.
+
+    `backend` stands in for the plugin's own, for a test about which object is asked. The
+    autouse fixture takes the entry back out, as it does for any plugin a test registers.
+    """
+    from trixd.common.constants import PLUGIN_STATE_LOADED
+    from trixd.core.plugins.registry import LoadedPlugin, current as registry
+
+    if backend is None:
+        backend, _ = _reported_rig(tmp_path, monkeypatch, {
+            "/alerts": (200, {"status": "success", "data": {"alerts": alerts or []}})})
+    entry = LoadedPlugin("prometheus", PLUGIN_STATE_LOADED)
+    entry.backend = backend
+    registry().put(entry)
+    return backend
+
+
+def _alertmanager_away(monkeypatch):
+    """
+    An Alertmanager that is not listening, as against one answering a refusal.
+    """
+    from trixd.plugins.alertmanager import backend as alertmanager
+
+    def refusing(method, url, **kwargs):
+        """
+        Nothing at the other end.
+        """
+        raise alertmanager.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(alertmanager.requests, "request", refusing)
+
+
+def _answered(backend):
+    """
+    What the alerts route answered, or the refusal it raised instead.
+
+    Captured rather than raised so a test asserts on the answer it wanted either way: a
+    refusal read as an assertion failure says what came back, where an uncaught one only
+    says the call did not finish.
+    """
+    from trixd.common.errors import BackendFailure
+
+    try:
+        return backend.alerts()
+    except BackendFailure as refused:
+        return {"refused": str(refused)}
+
+
+def test_the_alerts_come_from_prometheus_while_alertmanager_is_away(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    A console that empties because Alertmanager is restarting is a cluster that looks quiet.
+    The same alerts are at Prometheus, which is where they are read from while Alertmanager
+    is not answering, and the answer names the service it was read from.
+    """
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+
+    assert answered.get("source") == "prometheus", answered
+    assert answered.get("count") == 1, answered
+    assert [one.get("name") for one in answered.get("alerts") or []] == \
+           ["MissingHardwareComponent"], answered
+
+
+def test_a_silenced_alert_is_not_answered_as_one_nothing_is_quietening(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    Prometheus knows nothing of silences, so an alert a silence is holding down is plain
+    firing there. Each service's own words are kept - a firing relabelled active would be
+    this daemon claiming Alertmanager's view of it - the two fields only Alertmanager can
+    fill are left out rather than answered empty, which would read as an alert nobody has
+    quietened, and the sentence beside them says so in words.
+    """
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+    alert = (answered.get("alerts") or [{}])[0]
+
+    assert alert.get("state") == "firing", alert
+    assert set(alert) & {"silenced_by", "inhibited_by"} == set(), sorted(alert)
+    assert "silence" in answered.get("degraded", ""), answered
+
+
+def test_the_alerts_answer_names_alertmanager_when_alertmanager_answered(rig, tmp_path,
+                                                                        monkeypatch):
+    """
+    The field is there on both paths. A caller that tells the two apart by the absence of a
+    key learns that by being wrong once, and the point of the field is that it never is.
+    Everything else about the answer is what it was.
+    """
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch,
+                                   {"/alerts": (200, [_suppressed()])})
+
+    answer = backend.alerts()
+
+    assert answer.get("source") == "alertmanager", answer
+    assert answer["count"] == 1, answer
+    assert answer["alerts"][0]["state"] == "suppressed", answer["alerts"][0]
+    assert answer["alerts"][0]["silenced_by"] == ["4b1c7d5e"], answer["alerts"][0]
+    assert "degraded" not in answer, answer
+
+
+def test_nothing_about_a_silence_falls_back_while_alertmanager_is_away(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    A silence lives at Alertmanager and nowhere else, so there is nothing to answer one
+    from and nothing to write one to. Making one, ending one and listing them all refuse
+    while it is away, with Prometheus answering and its plugin loaded beside them.
+
+    Pins what must not change rather than a change: these refuse before this fallback and
+    after it, and the fallback reaching any of them is what this fires on.
+    """
+    from types import SimpleNamespace
+
+    from trixd.common.errors import BackendFailure
+
+    _prometheus_loaded(tmp_path, monkeypatch, [_firing()])
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+    harry = SimpleNamespace(name="harry")
+
+    for attempt in (lambda: backend.silences(),
+                    lambda: backend.silence({"matchers": [{"label": "hostname",
+                                                           "value": "node001"}],
+                                             "comment": "Replacing a DIMM"}, caller=harry),
+                    lambda: backend.expire({"silence_id": "abc-123"}, caller=harry)):
+        with pytest.raises(BackendFailure) as refused:
+            attempt()
+        assert refused.value.status_code == 502, refused.value
+        assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+
+
+def test_the_alerts_fall_back_through_the_loaded_prometheus_plugin(rig, tmp_path,
+                                                                   monkeypatch):
+    """
+    Asked for by name, so what answers is the backend that plugin's own routes answer from -
+    the address it probed, the configuration it holds - and what a reload of it replaces. A
+    second one built here would be a second copy of all of that, going stale at the reload
+    with nothing to say so.
+    """
+    from types import SimpleNamespace
+
+    standing = SimpleNamespace(reported_alerts=lambda: {
+        "count": 1, "alerts": [{"name": "AskedTheLoadedOne", "state": "firing"}]})
+    _prometheus_loaded(tmp_path, monkeypatch, backend=standing)
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    answered = _answered(backend)
+
+    assert [one.get("name") for one in answered.get("alerts") or []] == \
+           ["AskedTheLoadedOne"], answered
+
+
+def test_the_refusal_stands_where_the_prometheus_plugin_is_not_loaded(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    An operator who unplugged the plugin that owns this read has unplugged the fallback with
+    it, and a controller that never had it never had one. The Alertmanager refusal is then
+    the answer, rather than a read going round the control surface.
+
+    Pins the decision rather than a change: this refuses before the fallback as well, and a
+    fallback that reaches past an unloaded plugin is what it fires on.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    with pytest.raises(BackendFailure) as refused:
+        backend.alerts()
+
+    assert refused.value.status_code == 502, refused.value
+    assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+    assert "Prometheus" not in str(refused.value), str(refused.value)
+
+
+def test_a_prometheus_that_is_away_as_well_is_one_refusal_naming_both(rig, tmp_path,
+                                                                     monkeypatch):
+    """
+    Falling back onto something that is not there must not answer a question about
+    Alertmanager with Prometheus' silence. One refusal, naming both, so whoever reads it
+    knows there is nothing further to ask.
+    """
+    from trixd.common.errors import BackendFailure
+    from trixd.plugins.prometheus import backend as prometheus
+
+    _prometheus_loaded(tmp_path, monkeypatch)
+
+    def refusing(url, **kwargs):
+        """
+        A Prometheus that is not listening either.
+        """
+        raise prometheus.requests.exceptions.ConnectionError("connection refused")
+
+    monkeypatch.setattr(prometheus.requests, "get", refusing)
+    backend, _ = _alertmanager_rig(tmp_path, monkeypatch)
+    _alertmanager_away(monkeypatch)
+
+    with pytest.raises(BackendFailure) as refused:
+        backend.alerts()
+
+    assert refused.value.status_code == 502, refused.value
+    assert "Alertmanager is not answering" in str(refused.value), str(refused.value)
+    assert "Prometheus is not answering" in str(refused.value), str(refused.value)
+
+
+def test_the_read_the_alerts_fall_back_to_keeps_out_whoever_this_route_does(rig):
+    """
+    The fallback hands a caller admitted here a document the other plugin's own route
+    guards, so that route may not be the stricter of the two. Read from both shipped
+    manifests rather than asserted of the roles they hold today, so raising either one
+    arrives here rather than at a customer.
+    """
+    import yaml
+
+    from trixd.common.constants import MINIMUMS
+    from trixd.core.plugins import manifest as manifests
+
+    here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+    other = manifests.parse(yaml.safe_load(
+        open(os.path.join(here, "trixd/plugins/prometheus/manifest.yaml"), encoding="utf-8")))
+    ours = [one for one in _alertmanager_manifest().endpoints if one.path == "alerts"]
+    theirs = [one for one in other.endpoints if one.path == "reported/alerts"]
+
+    def rung(endpoint) -> int:
+        """
+        Where a route sits on the ladder, with an undeclared minimum at the bottom of it.
+
+        A route the gate reads no role on declares none at all, and reading that as missing
+        would fail this on a lookup rather than on what it is here to say.
+        """
+        return MINIMUMS.index(endpoint.minimum) if endpoint.minimum in MINIMUMS else 0
+
+    assert ours and theirs, "a route the fallback is between was not found"
+    assert rung(theirs[0]) <= rung(ours[0]), \
+        f"{theirs[0].minimum} is above {ours[0].minimum}, so this route answers past it"

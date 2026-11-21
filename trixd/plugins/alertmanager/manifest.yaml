@@ -22,7 +22,9 @@ description: >
   for what they do and their bodies are this daemon's own: they are a translation of
   Alertmanager's API, not a way through to it, and nothing here forwards a path a
   caller supplied. Silences are not replicated - the two Alertmanagers gossip them
-  between themselves - so one made here is on both within seconds.
+  between themselves - so one made here is on both within seconds. The alerts are the
+  one read here with somewhere else to go: Prometheus answers them while Alertmanager
+  is away, and the answer says which of the two it came from.
 
 schemas:
   silence:
@@ -171,9 +173,26 @@ endpoints:
       and `silenced_by` and `inhibited_by` - the silences and the other alerts keeping it
       quiet, as lists of identifiers. An alert with both of those empty is one somebody is
       being told about.
+
+      `source` says which of two services the answer came from, and is always there. An
+      Alertmanager that is not answering at all is not the end of the answer: the alerts are
+      then read from Prometheus instead, through the prometheus plugin, and `source` is
+      `prometheus` with a `degraded` sentence beside it saying so. Those alerts are in
+      Prometheus' own words - `state` is `firing` or `pending`, never `active` or
+      `suppressed` - and they say nothing about what is being quietened, because Prometheus
+      does not know: `silenced_by` and `inhibited_by` are absent rather than empty, so an
+      alert a silence is holding down is here like any other. Read `source` before reading a
+      state.
+
+      Alertmanager answering a refusal is Alertmanager reached, and that refusal stands
+      rather than becoming a degraded answer. The fallback needs the prometheus plugin
+      loaded; without it the refusal stands too. Nothing else here falls back - a silence
+      has nowhere else to live, so making, ending and listing silences all refuse while
+      Alertmanager is away.
     response:
-      description: The alerts, counted
+      description: The alerts, counted, and which service they were read from
       example:
+        source: alertmanager
         count: 1
         alerts:
           - name: MissingHardwareComponent
@@ -184,7 +203,7 @@ endpoints:
             silenced_by: [4b1c7d5e-9f20-4a3c-8d11-7c6be0a2f3d9]
             inhibited_by: []
     errors:
-      502: Alertmanager did not answer, or the credential it needs could not be read
+      502: Alertmanager did not answer and neither did Prometheus, Alertmanager answered a refusal, or the credential it needs could not be read
 
   - path: status
     methods: [GET]

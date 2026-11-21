@@ -2069,7 +2069,7 @@
     },
     "/api/v1/alertmanager/alerts": {
       "get": {
-        "description": "What has fired and reached Alertmanager, whether or not it is quiet. Each alert\ncarries its `name`, the `labels` that identify it, its `annotations`, when it started,\nand `silenced_by` and `inhibited_by` - the silences and the other alerts keeping it\nquiet, as lists of identifiers. An alert with both of those empty is one somebody is\nbeing told about.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "What has fired and reached Alertmanager, whether or not it is quiet. Each alert\ncarries its `name`, the `labels` that identify it, its `annotations`, when it started,\nand `silenced_by` and `inhibited_by` - the silences and the other alerts keeping it\nquiet, as lists of identifiers. An alert with both of those empty is one somebody is\nbeing told about.\n\n`source` says which of two services the answer came from, and is always there. An\nAlertmanager that is not answering at all is not the end of the answer: the alerts are\nthen read from Prometheus instead, through the prometheus plugin, and `source` is\n`prometheus` with a `degraded` sentence beside it saying so. Those alerts are in\nPrometheus' own words - `state` is `firing` or `pending`, never `active` or\n`suppressed` - and they say nothing about what is being quietened, because Prometheus\ndoes not know: `silenced_by` and `inhibited_by` are absent rather than empty, so an\nalert a silence is holding down is here like any other. Read `source` before reading a\nstate.\n\nAlertmanager answering a refusal is Alertmanager reached, and that refusal stands\nrather than becoming a degraded answer. The fallback needs the prometheus plugin\nloaded; without it the refusal stands too. Nothing else here falls back - a silence\nhas nowhere else to live, so making, ending and listing silences all refuse while\nAlertmanager is away.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "alertmanager_alerts_get_api_v1_alertmanager_alerts_get",
         "responses": {
           "200": {
@@ -2095,12 +2095,13 @@
                       "state": "suppressed"
                     }
                   ],
-                  "count": 1
+                  "count": 1,
+                  "source": "alertmanager"
                 },
                 "schema": {}
               }
             },
-            "description": "The alerts, counted"
+            "description": "The alerts, counted, and which service they were read from"
           },
           "401": {
             "content": {
@@ -2136,7 +2137,7 @@
                 }
               }
             },
-            "description": "Alertmanager did not answer, or the credential it needs could not be read"
+            "description": "Alertmanager did not answer and neither did Prometheus, Alertmanager answered a refusal, or the credential it needs could not be read"
           }
         },
         "security": [
