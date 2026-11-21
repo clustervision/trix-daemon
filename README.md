@@ -157,6 +157,8 @@ render once, start the background timers, and only then open the listeners.
 | `docs/openapi.json` | The whole API with every shipped plugin, and who may call each route (`x-trixd-access`, `x-trixd-minimum`). |
 | `docs/manifest.schema.json` | The plugin manifest format, as a JSON Schema. |
 | `tools/build_schemas.py` | Writes both from the code; a test fails when they drift. |
+| `tests/unit/golden/` | The slurm and genders files as the packaged generators leave them, case by case. |
+| `tools/build_goldens.py` | Writes them, on a controller that has those generators; never in the pipeline. |
 | `setup.py` | The package itself; see Building and publishing. |
 
 ## Run it on a workstation
@@ -513,6 +515,7 @@ python -m pytest
 | Published API | `tests/unit/test_docs.py` | `docs/openapi.json` against the code, and the docs page offline and in the TrinityX look |
 | Dependencies | `tests/unit/test_declared_requirements.py` | `requirements.txt` against what the shipped code imports |
 | Repository | `tests/unit/test_repository.py` | plain ASCII and the licence header in every file, the version, a real wheel build |
+| Generated files | `tests/unit/test_golden_files.py` | the whole slurm and genders files against what the packaged generators write for the same nodes |
 
 Each test builds its own daemon in a temporary directory, so nothing outside the
 checkout is read or written, and the suite runs on Windows as well as Linux.

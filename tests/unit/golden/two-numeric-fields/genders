@@ -1,0 +1,8 @@
+# the administrator's own header, which the render leaves alone
+#### TrinityX Managed block start ####
+
+r1n01 all,gpu
+r1n02 all,gpu
+r2n01 all,gpu
+#### TrinityX Managed block end   ####
+# and the administrator's own footer

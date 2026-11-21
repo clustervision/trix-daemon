@@ -1,0 +1,7 @@
+# the administrator's own header, which the render leaves alone
+#### TrinityX Managed block start ####
+
+compute all,compute
+node001 all,compute
+#### TrinityX Managed block end   ####
+# and the administrator's own footer
