@@ -1532,46 +1532,31 @@ def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
         "the membership attribute stopped being answered under the name it is read by"
 
 
-def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured: int = 0,
-           content: str = "one") -> dict:
-    """
-    The slurm plugin on a stand-in generator package, Luna, scontrol and a resolver that
-    knows every name.
+SLURM_FILES: tuple = ("slurm-nodes.conf", "slurm-partitions.conf", "slurm-gres.conf")
 
-    The stand-in writes the files it is handed, as the real generator does. It did not, and
-    that mattered once the reconfigure became conditional on their content: a generator that
-    writes nothing leaves them unchanged for ever, so a test built on it would have pinned
-    the opposite of what happens in production.
+
+def _slurm(monkeypatch, nodes: dict, tmp_path, reconfigured: int = 0) -> dict:
+    """
+    The slurm plugin on Luna, scontrol and a resolver that knows every name, writing the
+    three files it renders itself. Each is laid out with an empty managed block of ours
+    once, so a later pass reads back what the one before it left.
     """
     from trixd.plugins.slurm import backend as slurm
     from trixd.utils import declarations
 
     seen = {}
+    for name in SLURM_FILES:
+        path = tmp_path / name
+        if not path.exists():
+            path.write_text("# the site's own header\n"
+                            "#### TrinityX Managed block start ####\n"
+                            "#### TrinityX Managed block end   ####\n", encoding="utf-8")
     declarations.write("slurm", "config", "", {
         **slurm.DEFAULT_CONFIG,
-        "nodes_file": str(tmp_path / "slurm-nodes.conf"),
-        "partitions_file": str(tmp_path / "slurm-partitions.conf"),
-        "gres_file": str(tmp_path / "slurm-gres.conf")})
+        "nodes_file": str(tmp_path / SLURM_FILES[0]),
+        "partitions_file": str(tmp_path / SLURM_FILES[1]),
+        "gres_file": str(tmp_path / SLURM_FILES[2])})
 
-    class Generate:
-        """
-        trinityx_config_slurm's entry point, recording what it was given.
-        """
-
-        def all_configs(self, nodes, configs, manager):
-            """
-            Remember the call, write what it was asked to, and report success or failure.
-            """
-            seen.update(nodes=nodes, configs=configs, manager=manager)
-            if wrote:
-                for path in configs.values():
-                    with open(path, "w", encoding="utf-8") as handle:
-                        handle.write(content)
-            return wrote
-
-    package = ModuleType("trinityx_config_slurm")
-    package.Generate = Generate
-    monkeypatch.setitem(sys.modules, "trinityx_config_slurm", package)
     monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: nodes))
     monkeypatch.setattr(slurm.shell, "run", lambda argv, **kwargs: (
         seen.setdefault("ran", argv), Ran("", reconfigured, "boom"))[1])
@@ -1580,21 +1565,36 @@ def _slurm(monkeypatch, nodes: dict, tmp_path, wrote: bool = True, reconfigured:
     return seen
 
 
-def test_slurm_renders_luna_nodes_through_the_generator(rig, monkeypatch, tmp_path):
+def _inside(tmp_path, name: str) -> list:
     """
-    Sorted node and group pairs, the three files, then scontrol reconfigure.
+    What our block of that file holds now.
+    """
+    from trixd.plugins.slurm import configfiles
+
+    return (configfiles.block((tmp_path / name).read_text(encoding="utf-8"),
+                              "TrinityX") or "").splitlines()
+
+
+def test_slurm_renders_luna_nodes_into_its_own_files(rig, monkeypatch, tmp_path):
+    """
+    Sorted node and group pairs into the three files, then scontrol reconfigure. The bytes
+    are held against the generators' own in tests/unit/test_golden_files.py; what this says
+    is that Luna's nodes reach them, in order, with no package in between.
     """
     from trixd.plugins.slurm.backend import Backend
 
     seen = _slurm(monkeypatch, {"node002": {"group": "gpu"}, "node001": {"group": "compute"}},
                   tmp_path)
     answer = Backend().render_config()
-    assert seen["nodes"] == [{"name": "node001", "group": "compute"},
-                             {"name": "node002", "group": "gpu"}]
-    assert set(seen["configs"]) == {"nodes", "partitions", "gres"}
-    assert seen["manager"] == "TrinityX"
+    assert _inside(tmp_path, SLURM_FILES[0]) == [
+        "", "NodeName=node001 # GroupName=compute", "NodeName=node002 # GroupName=gpu",
+        "", "# Nodesets", "NodeSet=compute Nodes=node001", "NodeSet=gpu Nodes=node002"], \
+        _inside(tmp_path, SLURM_FILES[0])
+    assert _inside(tmp_path, SLURM_FILES[1]) == [
+        "", "PartitionName=compute Nodes=compute", "PartitionName=gpu Nodes=gpu"]
     assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
     assert answer["nodes"] == 2 and answer["reconfigured"] is True
+    assert answer["files"] == sorted(str(tmp_path / name) for name in SLURM_FILES)
 
 
 def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatch,
@@ -1614,10 +1614,10 @@ def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatc
     assert first["reconfigured"] is True, "the first pass wrote the files and must reconfigure"
     assert seen["ran"] == ["/usr/bin/scontrol", "reconfigure"]
 
-    # The same nodes again, so the generator writes the same bytes. The behaviour is
-    # asserted before the reported value, and through get(): a build without the fix has
-    # no such key, and reaching for it would error in place of asserting, which reads as
-    # proof and is not.
+    # The same nodes again, so the render builds the same bytes. The behaviour is asserted
+    # before the reported value, and through get(): a build without the fix has no such
+    # key, and reaching for it would error in place of asserting, which reads as proof and
+    # is not.
     seen.pop("ran")
     again = Backend().render_config()
     assert "ran" not in seen, "slurm was reconfigured for files that had not changed"
@@ -1625,7 +1625,7 @@ def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatc
     assert again.get("changed") is False, again
 
     # And a real change still reconfigures, so this is not simply switched off.
-    _slurm(monkeypatch, nodes, tmp_path, content="two")
+    nodes["node001"] = {"group": "b"}
     moved = Backend().render_config()
     assert moved.get("reconfigured") is True, moved
     assert moved.get("changed") is True, moved
@@ -1634,37 +1634,64 @@ def test_slurm_is_not_reconfigured_when_its_files_did_not_change(rig, monkeypatc
 def test_slurm_writes_nothing_without_nodes_and_says_when_it_failed(rig, monkeypatch,
                                                                      tmp_path):
     """
-    No nodes is not an error; a failing generator is; a reconfigure slurm refuses fails
-    the render, because the blocks it refused are put back first.
+    No nodes is not an error; a file a site took our block out of is, loudly, with nothing
+    written at all; a reconfigure slurm refuses fails the render, because the blocks it
+    refused are put back first.
     """
     from trixd.plugins.slurm.backend import Backend
 
     seen = _slurm(monkeypatch, {}, tmp_path)
     assert Backend().render_config() == {"nodes": 0, "files": []}
-    assert "nodes" not in seen, "the generator ran with no nodes"
+    assert "ran" not in seen, "slurm was reconfigured with no nodes"
+    assert _inside(tmp_path, SLURM_FILES[0]) == [], "a block was written with no nodes"
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, wrote=False)
-    with pytest.raises(BackendFailure, match="generator reported a failure"):
+    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path)
+    assert Backend().render_config()["changed"] is True
+    held = [(tmp_path / name).read_text(encoding="utf-8") for name in SLURM_FILES]
+
+    _slurm(monkeypatch, {"node002": {"group": "a"}}, tmp_path)
+    (tmp_path / SLURM_FILES[2]).write_text("# the site's own gres file\n", encoding="utf-8")
+    with pytest.raises(BackendFailure, match="has no TrinityX managed block"):
         Backend().render_config()
+    assert [(tmp_path / name).read_text(encoding="utf-8") for name in SLURM_FILES[:2]] == \
+        held[:2], "a file was written although another had no block of ours"
 
-    _slurm(monkeypatch, {"node001": {"group": "a"}}, tmp_path, reconfigured=1)
+    (tmp_path / SLURM_FILES[2]).unlink()
+    _slurm(monkeypatch, {"node003": {"group": "a"}}, tmp_path, reconfigured=1)
     with pytest.raises(BackendFailure, match="reconfigure refused the slurm blocks"):
         Backend().render_config()
 
 
-def test_slurm_without_its_generator_says_so(rig, monkeypatch):
+def test_the_slurm_plugin_imports_no_generator_package(rig):
     """
-    A controller without slurm's package gets a named failure, not an ImportError.
+    What trixd writes into slurm's files is trixd's own code, so no module of the plugin
+    may import a trinityx-config generator - not at the top and not inside a function,
+    which is where the import it replaced lived. Every module of the plugin is read, so a
+    module added later is covered without being named here.
     """
-    from trixd.plugins.slurm import backend as slurm
+    import ast
+    import os
 
-    monkeypatch.setitem(sys.modules, "trinityx_config_slurm", None)
-    # With a group: a node without one is left out before the generator is reached, as an
-    # empty Luna already was, and this test is about the package rather than the group.
-    monkeypatch.setattr(slurm, "luna",
-                        lambda: SimpleNamespace(nodes=lambda: {"n": {"group": "a"}}))
-    with pytest.raises(BackendFailure, match="not installed on this controller"):
-        slurm.Backend().render_config()
+    from trixd.plugins import slurm
+
+    folder = os.path.dirname(slurm.__file__)
+    found = {}
+    for name in sorted(os.listdir(folder)):
+        if not name.endswith(".py"):
+            continue
+        with open(os.path.join(folder, name), encoding="utf-8") as handle:
+            tree = ast.parse(handle.read())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                heads = [alias.name.split(".")[0] for alias in node.names]
+            elif isinstance(node, ast.ImportFrom) and node.module:
+                heads = [node.module.split(".")[0]]
+            else:
+                continue
+            for head in heads:
+                if head.startswith("trinityx_config"):
+                    found.setdefault(name, []).append(head)
+    assert found == {}, f"the slurm plugin imports a generator again: {found}"
 
 
 def _gated() -> TestClient:
@@ -1966,12 +1993,15 @@ def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkey
     from trixd.plugins.slurm import backend as slurm
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, {"node001": {"group": "compute"},
-                                "node002": {"group": None},
-                                "node003": {"group": ""}}, tmp_path)
+    _slurm(monkeypatch, {"node001": {"group": "compute"},
+                         "node002": {"group": None},
+                         "node003": {"group": ""}}, tmp_path)
     answer = Backend().render_config()
 
-    assert seen["nodes"] == [{"name": "node001", "group": "compute"}], seen["nodes"]
+    assert _inside(tmp_path, SLURM_FILES[0]) == [
+        "", "NodeName=node001 # GroupName=compute",
+        "", "# Nodesets", "NodeSet=compute Nodes=node001"], \
+        _inside(tmp_path, SLURM_FILES[0])
     assert answer["nodes"] == 1, answer
     assert answer["skipped"] == ["node002", "node003"], answer
     assert answer["changed"] is True, "the node that does have a group was not configured"
@@ -1986,8 +2016,8 @@ def test_a_node_with_no_group_is_left_out_of_the_slurm_configuration(rig, monkey
 
 def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch, tmp_path):
     """
-    Nothing to configure slurm with, which is not the same as no nodes: the generator is not
-    called at all rather than handed an empty set, and the names are in the answer.
+    Nothing to configure slurm with, which is not the same as no nodes: no block is built
+    at all rather than an empty one written, and the names are in the answer.
     """
     from trixd.plugins.slurm.backend import Backend
 
@@ -1996,7 +2026,7 @@ def test_every_node_without_a_group_writes_nothing_and_says_why(rig, monkeypatch
     answer = Backend().render_config()
 
     assert answer == {"nodes": 0, "files": [], "skipped": ["node001", "node002"]}, answer
-    assert "nodes" not in seen, "the generator was called with nothing to write"
+    assert _inside(tmp_path, SLURM_FILES[0]) == [], "a block was written with nothing in it"
     assert "ran" not in seen, "scontrol was reconfigured over a configuration never written"
 
 

@@ -17,9 +17,9 @@
 plugin: slurm
 backend: backend
 description: >
-  The managed blocks of the slurm node, partition and gres files, rendered from
-  Luna's nodes through the trinityx-config-slurm package, and the person's own
-  changes to them (drain, resume, save, restore, apply), run by helper.py as the
+  The managed blocks of the slurm node, partition and gres files, rendered here
+  from Luna's nodes and each file's own presets, and the person's own changes to
+  them (drain, resume, save, restore, apply), run by helper.py as the
   account trinityx-slurm. A person makes each change with their own trixd token,
   and Luna, asked as that person through the luna plugin, decides whether they
   may; rootus passes, as it passes the route to Luna.

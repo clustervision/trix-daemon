@@ -681,7 +681,7 @@ def test_a_reconfigure_that_does_not_finish_puts_the_blocks_back(rig, monkeypatc
     _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     backend.Backend().render_config()
     kept = _held(tmp_path)
-    _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path, content="two")
+    _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path)
     calls = []
 
     def silent_once(argv, **kwargs):

@@ -53,7 +53,7 @@ import hostlist
 import pytest
 
 from trixd.common.errors import BackendFailure
-from trixd.plugins.slurm.hostnames import fold
+from trixd.plugins.slurm.hostnames import fold_nodeset
 from trixd.utils import files as daemon_files
 
 HERE = Path(__file__).resolve().parent
@@ -139,9 +139,9 @@ def test_a_file_without_our_block_is_left_exactly_as_it_was(case):
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
 def test_a_set_of_names_folds_as_the_generators_fold_it(case):
     """
-    The nodesets in the file, against the fold this daemon has. The two libraries disagree
-    where a name carries more than one number, and a case that says so is held to the
-    disagreement: both expand to the same nodes, and the bytes are the generators'.
+    The nodesets in the file, against the fold the render writes them with. It folds on a
+    name's first number where python-hostlist folds on its last, so every group of every
+    case is held to the generators' own bytes rather than to an equivalent hostlist.
     """
     with open(TABLE.golden(case, "nodes"), encoding="utf-8") as handle:
         wrote = [line for line in handle.read().splitlines() if line.startswith("NodeSet=")]
@@ -156,47 +156,50 @@ def test_a_set_of_names_folds_as_the_generators_fold_it(case):
         theirs = line.split("Nodes=", 1)[1]
         assert sorted(hostlist.expand_hostlist(theirs)) == sorted(names), \
             f"{case['case']}: {line}"
-        if group in case.get("folds", {}):
-            assert fold(names) != theirs, (f"{case['case']}: {group} is declared as a fold "
-                                           f"the daemon's library does not reproduce, and "
-                                           f"it now does: take the declaration out")
-            assert sorted(hostlist.expand_hostlist(fold(names))) == sorted(names), \
-                f"{case['case']}: {line}"
-        else:
-            assert fold(names) == theirs, (f"{case['case']}: the daemon folds {names} as "
-                                           f"{fold(names)!r} and the generators as "
-                                           f"{theirs!r}")
+        assert fold_nodeset(names) == theirs, \
+            (f"{case['case']}: the render folds {names} as {fold_nodeset(names)!r} and "
+             f"the generators as {theirs!r}")
+
+
+@pytest.mark.parametrize("names,folded", TABLE.NODESETS,
+                         ids=[folded for _names, folded in TABLE.NODESETS])
+def test_the_fold_answers_what_the_generators_answer(names, folded):
+    """
+    The fold rule itself, past the corners the eight cases' own node names reach: these are
+    what the generators' hostlist filter answers, so a set it will not fold has to come back
+    as the plain list it comes back as there, rather than as a bracketed term of our own.
+    """
+    assert fold_nodeset(names) == folded, f"{names} folds as {fold_nodeset(names)!r}"
+    assert sorted(hostlist.expand_hostlist(folded)) == sorted(names), \
+        f"{folded} is not the nodes it was folded from"
+
+
+def _golden(case: dict, kind: str) -> str:
+    """
+    The file the generators left for this case.
+    """
+    with open(TABLE.golden(case, kind), encoding="utf-8") as handle:
+        return handle.read()
 
 
 def _slurm(monkeypatch, tmp_path, case) -> dict:
     """
-    Luna holding the case's nodes, and a stand-in generator that records the set it was
-    handed and writes what the real one wrote for that case.
+    The three files as the administrator left them, Luna holding the case's nodes, and
+    scontrol and the resolver answering. Nothing stands in for a generator: the render
+    builds these files itself, which is what the comparison below is of.
     """
     from trixd.plugins.slurm import backend as slurm
     from trixd.utils import declarations
 
-    seen: dict = {}
-    kinds = {kind: str(tmp_path / TABLE.KINDS[kind])
+    paths = {kind: str(tmp_path / TABLE.KINDS[kind])
              for kind in ("nodes", "partitions", "gres")}
+    for kind, path in paths.items():
+        with open(path, "w", encoding="utf-8", newline=chr(10)) as handle:
+            handle.write(TABLE.before(case, kind))
     declarations.write("slurm", "config", "", {**slurm.DEFAULT_CONFIG,
-                                               "nodes_file": kinds["nodes"],
-                                               "partitions_file": kinds["partitions"],
-                                               "gres_file": kinds["gres"]})
-
-    def all_configs(nodes, configs, manager):
-        """
-        What trinityx_config_slurm does: write each file and say it worked.
-        """
-        seen.update(nodes=nodes, configs=configs, manager=manager)
-        for kind, path in configs.items():
-            with open(path, "w", encoding="utf-8") as handle:
-                handle.write(TABLE.whole(case, kind))
-        return True
-
-    package = ModuleType("trinityx_config_slurm")
-    package.Generate = lambda: SimpleNamespace(all_configs=all_configs)
-    monkeypatch.setitem(sys.modules, "trinityx_config_slurm", package)
+                                               "nodes_file": paths["nodes"],
+                                               "partitions_file": paths["partitions"],
+                                               "gres_file": paths["gres"]})
     monkeypatch.setattr(slurm, "luna",
                         lambda: SimpleNamespace(nodes=lambda: case["luna"]))
     monkeypatch.setattr(slurm.shell, "run",
@@ -204,27 +207,55 @@ def _slurm(monkeypatch, tmp_path, case) -> dict:
                                                                ok=True))
     monkeypatch.setattr(socket, "getaddrinfo", lambda host, *args, **kwargs: [
         (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("10.141.0.1", 0))])
-    return seen
+    return paths
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
-def test_the_slurm_render_hands_the_generator_the_case(rig, monkeypatch, tmp_path, case):
+def test_the_slurm_render_writes_what_the_generators_wrote(rig, monkeypatch, tmp_path, case):
     """
-    The node list the render hands over is the one the goldens were built from, so what
-    the generators wrote there is what this input produces. A node Luna holds without a
-    group never reaches them.
+    The render over the file as the administrator left it, against the file the generators
+    left for the same input, byte for byte. This is what the ticket is held to: the bytes
+    come from the plugin's own renderer, not from the table beside it, and a node Luna
+    holds without a group reaches neither.
     """
     from trixd.plugins.slurm.backend import Backend
 
-    seen = _slurm(monkeypatch, tmp_path, case)
-    answer = Backend().render_config()
+    paths = _slurm(monkeypatch, tmp_path, case)
+    if case.get("managed", True):
+        answer = Backend().render_config()
+        assert answer.get("skipped", []) == case.get("skipped", []), answer
+        assert answer.get("changed") is True, answer
+    else:
+        with pytest.raises(BackendFailure, match="has no TrinityX managed block"):
+            Backend().render_config()
+    for kind, path in paths.items():
+        with open(path, encoding="utf-8") as handle:
+            wrote = handle.read()
+        assert wrote == _golden(case, kind), _why(case, kind, wrote, _golden(case, kind))
 
-    assert seen.get("nodes") == case["nodes"], f"{case['case']}: {seen.get('nodes')}"
-    assert seen.get("manager") == TABLE.MANAGER, seen.get("manager")
-    assert answer.get("skipped", []) == case.get("skipped", []), answer
-    for kind in ("nodes", "partitions", "gres"):
-        with open(seen["configs"][kind], encoding="utf-8") as handle:
-            assert handle.read() == TABLE.whole(case, kind), f"{case['case']}: {kind}"
+
+@pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])
+def test_the_slurm_render_writes_no_second_block(rig, monkeypatch, tmp_path, case):
+    """
+    A writer that does not find the generators' markers appends a block of its own instead
+    of replacing theirs, and every node is then in the file twice. Two passes over one file
+    leave one block, with the daemon's own pair of markers nowhere in it.
+    """
+    from trixd.plugins.slurm.backend import Backend
+
+    if not case.get("managed", True):
+        pytest.skip("a file with no block of ours is never written")
+    paths = _slurm(monkeypatch, tmp_path, case)
+    Backend().render_config()
+    Backend().render_config()
+    for kind, path in paths.items():
+        with open(path, encoding="utf-8") as handle:
+            wrote = handle.read()
+        assert wrote.count(TABLE.BLOCK_START.format(manager=TABLE.MANAGER)) == 1, \
+            f"{case['case']}/{kind}: a second block was added"
+        assert daemon_files.BLOCK_START.format(manager=TABLE.MANAGER) not in wrote, \
+            f"{case['case']}/{kind}: the daemon's own markers reached a slurm file"
+        assert wrote == _golden(case, kind), _why(case, kind, wrote, _golden(case, kind))
 
 
 @pytest.mark.parametrize("case", CASES, ids=lambda case: case["case"])

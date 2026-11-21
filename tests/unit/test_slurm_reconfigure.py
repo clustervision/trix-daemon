@@ -36,10 +36,9 @@ __status__      = "Production"
 
 import re
 import socket
-import sys
 import threading
 import time
-from types import ModuleType, SimpleNamespace
+from types import SimpleNamespace
 
 import pytest
 
@@ -58,44 +57,45 @@ REFUSAL: str = (
     "scontrol: fatal: Unable to process configuration file")
 
 
-def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
-           content: str = "one", dark: set = frozenset()) -> dict:
+def _lay_out(tmp_path) -> dict:
     """
-    The slurm plugin on a stand-in generator package, Luna, DNS and scontrol.
+    The three files as a controller has them: the administrator's own lines around an empty
+    managed block of ours, which is what the render replaces. Only ones that are not there
+    yet, so a second pass over the same directory reads what the first one left.
+    """
+    paths = {}
+    for name in BLOCKS:
+        path = tmp_path / name
+        paths[name] = str(path)
+        if not path.exists():
+            path.write_text("# the site's own header\n"
+                            "#### TrinityX Managed block start ####\n"
+                            "#### TrinityX Managed block end   ####\n"
+                            "# and the site's own footer\n", encoding="utf-8")
+    return paths
+
+
+def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
+           dark: set = frozenset()) -> dict:
+    """
+    The slurm plugin on Luna, DNS and scontrol, writing real files it renders itself.
 
     `codes` is what each successive reconfigure answers, the last one standing for the rest,
     so a test can let the written blocks be refused and still say what the restored ones
-    meet. The stand-in writes the files it is handed, as the real generator does: one that
-    wrote nothing would leave them unchanged for ever and pin the opposite of a controller.
-    `content` None writes the generator's `NodeName=` lines. Every name resolves but those
-    in `dark`, which the test may change between passes.
+    meet. The bytes move when the nodes or their groups move, which is the only thing that
+    moves them on a controller. Every name resolves but those in `dark`, which the test may
+    change between passes.
     """
     from trixd.plugins.slurm import backend as slurm
     from trixd.utils import declarations
 
     seen = {"ran": [], "looked": [], "dark_at_reconfigure": []}
+    paths = _lay_out(tmp_path)
     declarations.write("slurm", "config", "", {
         **slurm.DEFAULT_CONFIG,
-        "nodes_file": str(tmp_path / BLOCKS[0]),
-        "partitions_file": str(tmp_path / BLOCKS[1]),
-        "gres_file": str(tmp_path / BLOCKS[2])})
-
-    class Generate:
-        """
-        trinityx_config_slurm's entry point, recording what it was given.
-        """
-
-        def all_configs(self, nodes, configs, manager):
-            """
-            Remember the call and write what it was asked to, as the real one does.
-            """
-            seen.update(nodes=nodes, configs=configs, manager=manager)
-            text = content if content is not None else "".join(
-                f"NodeName={one['name']} # GroupName={one['group']}\n" for one in nodes)
-            for path in configs.values():
-                with open(path, "w", encoding="utf-8") as handle:
-                    handle.write(text)
-            return True
+        "nodes_file": paths[BLOCKS[0]],
+        "partitions_file": paths[BLOCKS[1]],
+        "gres_file": paths[BLOCKS[2]]})
 
     def resolve(host, *args, **kwargs):
         """
@@ -115,9 +115,6 @@ def _slurm(monkeypatch, nodes: dict, tmp_path, codes: tuple = (0,),
         code = codes[min(len(seen["ran"]), len(codes)) - 1]
         return Ran("", code, REFUSAL if code else "")
 
-    package = ModuleType("trinityx_config_slurm")
-    package.Generate = Generate
-    monkeypatch.setitem(sys.modules, "trinityx_config_slurm", package)
     monkeypatch.setattr(slurm, "luna", lambda: SimpleNamespace(nodes=lambda: nodes))
     monkeypatch.setattr(slurm.shell, "run", reconfigure)
     monkeypatch.setattr(socket, "getaddrinfo", resolve)
@@ -148,10 +145,9 @@ def test_a_refused_reconfigure_puts_the_previous_slurm_blocks_back(rig, monkeypa
     _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     assert Backend().render_config()["reconfigured"] is True
     kept = _held(tmp_path)
-    assert kept == {name: b"one" for name in BLOCKS}, kept
+    assert b"NodeName=node001 # GroupName=compute" in kept[BLOCKS[0]], kept
 
-    seen = _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path, codes=(1, 0),
-                  content="two")
+    seen = _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path, codes=(1, 0))
     # The disk is read before the failure is. A build without the rollback does not raise at
     # all, and a pytest.raises around the call would then end the test on its own premise
     # instead of on the bytes, which are there to read whichever build this is.
@@ -167,26 +163,28 @@ def test_a_refused_reconfigure_puts_the_previous_slurm_blocks_back(rig, monkeypa
     assert "ThisIsNotASlurmOption" in refused, f"slurm's own reason is missing: {refused!r}"
 
 
-def test_a_block_that_was_not_there_before_is_taken_away_again(rig, monkeypatch, tmp_path):
+def test_a_slurm_file_that_is_not_there_is_refused_whole(rig, monkeypatch, tmp_path):
     """
-    An empty file is not the same as no file: slurm includes it either way, so a rollback
-    that wrote nought bytes over a gres file a cluster never had would leave the include it
-    was there to remove.
+    A render never creates one of these files: slurm includes whatever is at the path, and
+    a gres file a cluster never had is a directive nobody asked for. Named instead, with
+    the two files that are there left exactly as they were and no reconfigure over them.
     """
     from trixd.plugins.slurm.backend import Backend
 
     _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     Backend().render_config()
-    (tmp_path / BLOCKS[2]).unlink()
+    kept = _held(tmp_path)
 
-    _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path, codes=(1, 0),
-           content="two")
-    with pytest.raises(BackendFailure):
+    seen = _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path)
+    (tmp_path / BLOCKS[2]).unlink()  # after the lay-out, which puts back one that is missing
+    with pytest.raises(BackendFailure, match="cannot read") as raised:
         Backend().render_config()
 
+    assert BLOCKS[2] in str(raised.value), str(raised.value)
+    assert seen["ran"] == [], "slurm was reconfigured over a file that is not there"
     held = _held(tmp_path)
-    assert held == {BLOCKS[0]: b"one", BLOCKS[1]: b"one", BLOCKS[2]: None}, \
-        f"the gres block came back as {held[BLOCKS[2]]!r}"
+    assert held[BLOCKS[0]] == kept[BLOCKS[0]] and held[BLOCKS[1]] == kept[BLOCKS[1]], held
+    assert held[BLOCKS[2]] is None, f"the gres file was created: {held[BLOCKS[2]]!r}"
 
 
 def test_a_render_slurm_accepts_still_reconfigures(rig, monkeypatch, tmp_path):
@@ -200,7 +198,7 @@ def test_a_render_slurm_accepts_still_reconfigures(rig, monkeypatch, tmp_path):
 
     assert seen["ran"] == [["/usr/bin/scontrol", "reconfigure"]], seen["ran"]
     assert answer["reconfigured"] is True and answer["changed"] is True, answer
-    assert _held(tmp_path) == {name: b"one" for name in BLOCKS}
+    assert b"NodeName=node001 # GroupName=compute" in _held(tmp_path)[BLOCKS[0]]
 
 
 def test_an_unchanged_render_does_not_reconfigure_slurm(rig, monkeypatch, tmp_path):
@@ -212,12 +210,13 @@ def test_an_unchanged_render_does_not_reconfigure_slurm(rig, monkeypatch, tmp_pa
 
     seen = _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     assert Backend().render_config()["changed"] is True
+    kept = _held(tmp_path)
 
     seen["ran"].clear()
     again = Backend().render_config()
     assert seen["ran"] == [], "slurm was reconfigured for blocks that had not changed"
     assert again["changed"] is False and again["reconfigured"] is False, again
-    assert _held(tmp_path) == {name: b"one" for name in BLOCKS}
+    assert _held(tmp_path) == kept, "a second pass over the same nodes moved the bytes"
 
 
 def test_a_restore_slurm_refuses_as_well_reads_differently(rig, monkeypatch, tmp_path):
@@ -230,9 +229,9 @@ def test_a_restore_slurm_refuses_as_well_reads_differently(rig, monkeypatch, tmp
 
     _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     Backend().render_config()
+    kept = _held(tmp_path)
 
-    seen = _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path, codes=(1, 1),
-                  content="two")
+    seen = _slurm(monkeypatch, {"node001": {"group": "gpu"}}, tmp_path, codes=(1, 1))
     with pytest.raises(BackendFailure) as raised:
         Backend().render_config()
 
@@ -240,7 +239,7 @@ def test_a_restore_slurm_refuses_as_well_reads_differently(rig, monkeypatch, tmp
     assert len(seen["ran"]) == 2, f"the restored blocks were never reconfigured in: {seen}"
     assert "previous blocks as well" in said, said
     assert "back in place" not in said, f"this still reads as an ordinary rollback: {said}"
-    assert _held(tmp_path) == {name: b"one" for name in BLOCKS}
+    assert _held(tmp_path) == kept
 
 
 def test_an_entry_slurm_cannot_load_is_left_out(rig, monkeypatch, tmp_path):
@@ -259,15 +258,18 @@ def test_an_entry_slurm_cannot_load_is_left_out(rig, monkeypatch, tmp_path):
              "node 005": {"group": "compute"},
              "": {"group": "compute"},
              "node006": {"group": "gpu"}}
-    seen = _slurm(monkeypatch, nodes, tmp_path)
+    _slurm(monkeypatch, nodes, tmp_path)
     answer = Backend().render_config()
 
-    assert seen["nodes"] == [{"name": "node001", "group": "compute"},
-                             {"name": "node006", "group": "gpu"}], seen["nodes"]
+    wrote = [line for line in _file_names(tmp_path).splitlines()
+             if line.startswith(("NodeName=", "NodeSet="))]
+    assert wrote == ["NodeName=node001 # GroupName=compute",
+                     "NodeName=node006 # GroupName=gpu",
+                     "NodeSet=compute Nodes=node001",
+                     "NodeSet=gpu Nodes=node006"], wrote
     assert answer["skipped"] == sorted(["", "node 005", "node002", "node003", "node004"]), \
         answer["skipped"]
     assert answer["nodes"] == 2 and answer["reconfigured"] is True, answer
-    assert _held(tmp_path) == {name: b"one" for name in BLOCKS}
 
 
 def _render() -> str:
@@ -298,7 +300,7 @@ def test_a_rename_to_a_name_that_does_not_resolve_does_not_reconfigure(rig, monk
     after trixd has already rendered: the files keep the old name until the new one resolves.
     """
     nodes, dark = {"node001": {"group": "compute"}}, set()
-    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    seen = _slurm(monkeypatch, nodes, tmp_path, dark=dark)
     _render()
     seen["ran"].clear()
 
@@ -318,7 +320,7 @@ def test_every_reconfigure_runs_while_every_name_resolves(rig, monkeypatch, tmp_
     reload finds the files unchanged, so the one reconfigure has to be the late one.
     """
     nodes, dark = {"node001": {"group": "compute"}}, set()
-    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    seen = _slurm(monkeypatch, nodes, tmp_path, dark=dark)
     _render()
 
     nodes.clear()
@@ -348,7 +350,7 @@ def test_a_name_that_never_resolves_is_written_after_the_wait(rig, monkeypatch, 
     trixlog.get("slurm").addHandler(said)
     try:
         seen = _slurm(monkeypatch, {"node009": {"group": "compute"}}, tmp_path,
-                      content=None, dark={"node009"})
+                      dark={"node009"})
         _render()
         assert seen["ran"] == [], "slurm was reconfigured before the name had a chance"
         clock[0] += getattr(slurm, "RESOLVE_WAIT", 60.0) + 1
@@ -369,7 +371,7 @@ def test_many_new_names_wait_for_one_and_reconfigure_once(rig, monkeypatch, tmp_
     """
     names = [f"node{number:03d}" for number in range(100)]
     nodes, dark = {name: {"group": "compute"} for name in names}, {names[0]}
-    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    seen = _slurm(monkeypatch, nodes, tmp_path, dark=dark)
     real = socket.getaddrinfo
 
     def slow(host, *args, **kwargs):
@@ -399,7 +401,7 @@ def test_a_lookup_that_hangs_puts_the_render_off_within_the_budget(rig, monkeypa
     """
     from trixd.plugins.slurm import backend as slurm
 
-    seen = _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path, content=None)
+    seen = _slurm(monkeypatch, {"node001": {"group": "compute"}}, tmp_path)
     answered = threading.Event()
 
     def hangs(host, *args, **kwargs):
@@ -429,7 +431,7 @@ def test_a_change_with_no_new_name_reconfigures_at_once(rig, monkeypatch, tmp_pa
     nobody new, so it costs no lookup and is not held off.
     """
     nodes, dark = {"node001": {"group": "compute"}}, set()
-    seen = _slurm(monkeypatch, nodes, tmp_path, content=None, dark=dark)
+    seen = _slurm(monkeypatch, nodes, tmp_path, dark=dark)
     _render()
     seen["ran"].clear()
     seen["looked"].clear()
@@ -452,8 +454,7 @@ def test_names_that_resolve_slowly_are_written_within_a_few_passes(rig, monkeypa
     from trixd.plugins.slurm import backend as slurm
 
     names = [f"node{number:04d}" for number in range(4000)]
-    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path,
-                  content=None)
+    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path)
     real, clock = socket.getaddrinfo, time.monotonic
     skew = [0.0]
 
@@ -486,7 +487,7 @@ def test_a_dark_resolver_never_holds_more_than_the_resolvers(rig, monkeypatch, t
     from trixd.plugins.slurm import backend as slurm
 
     seen = _slurm(monkeypatch, {f"node{number:03d}": {"group": "compute"}
-                                for number in range(100)}, tmp_path, content=None)
+                                for number in range(100)}, tmp_path)
     answered, counting = threading.Event(), threading.Lock()
     hung, peak = [0], [0]
 
@@ -527,8 +528,7 @@ def test_the_forced_write_names_only_what_did_not_resolve(rig, monkeypatch, tmp_
     from trixd.plugins.slurm import backend as slurm
 
     names = [f"node{number:03d}" for number in range(121)]
-    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path,
-                  content=None)
+    seen = _slurm(monkeypatch, {name: {"group": "compute"} for name in names}, tmp_path)
     real, clock = socket.getaddrinfo, time.monotonic
     answered, skew = threading.Event(), [0.0]
 

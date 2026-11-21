@@ -51,7 +51,7 @@ from trixd.core.render.engine import NotNow, current as renders
 from trixd.core.security import audit
 from trixd.plugins.luna import persons
 from trixd.plugins.luna.client import current as luna
-from trixd.plugins.slurm import rules
+from trixd.plugins.slurm import configfiles, rules
 from trixd.utils import declarations, shell
 
 LOGGER = trixlog.get("slurm")
@@ -297,24 +297,6 @@ def render_lock(settings: dict):
         yield
     finally:
         os.close(fd)
-
-
-def _generator():
-    """
-    The packaged generator, imported only when a render runs. It is absent where
-    slurm is not installed, which is not an error until a render asks for it.
-    """
-    try:
-        from trinityx_config_slurm import Generate
-    except ImportError as error:
-        # Both ways out are named, because the installer enables this plugin on every
-        # cluster while the generator it needs is installed only where slurm is the
-        # workload manager. On such a cluster the right answer is not to install anything.
-        raise BackendFailure(
-            f"trinityx_config_slurm is not installed on this controller, so the slurm "
-            f"blocks cannot be written ({error}). Install it where slurm is the workload "
-            f"manager, or take slurm out of [PLUGINS] ENABLED where it is not") from None
-    return Generate()
 
 
 def _contents(paths) -> dict:
@@ -563,12 +545,8 @@ class Backend:
             "gres": settings["gres_file"],
         }
         before = _contents(files.values())
-        generate = _generator()
         _resolvable(fullset, before[files["nodes"]])
-        written = generate.all_configs(nodes=fullset, configs=files,
-                                       manager=settings["manager"])
-        if not written:
-            raise BackendFailure("the slurm generator reported a failure")
+        configfiles.write_all(fullset, files, settings["manager"])
 
         # Only for a real change, as the Prometheus plugin already does for its reload. This
         # ran on every pass: at start-up, where it is the one thing slow enough to put the

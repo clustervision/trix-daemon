@@ -23,6 +23,10 @@ tests/unit/golden_cases.py, the file as the administrator left it, handed to
 trinityx-config-slurm and trinityx-config-genders exactly as a render hands it to them,
 and kept as they left it.
 
+It also reads the table's `NODESETS` rows back off the slurm generator's own hostlist
+filter, so a fold that has moved is a refusal here rather than a mismatch nobody can
+account for.
+
 Those packages are not on PyPI and are not in requirements.txt, so this runs on a
 controller that has them and never in the pipeline; the files it writes are committed, and
 test_golden_files.py reads them. Run it when the table changes, or to bless a generator
@@ -77,6 +81,22 @@ def generators() -> tuple:
     return Slurm(), Genders()
 
 
+def nodesets(table) -> None:
+    """
+    The table's declared folds against the generator's own filter. The rows are committed
+    rather than written, so this says which have drifted rather than quietly moving them.
+    """
+    from trinityx_config_slurm.trinityx_config_slurm import Templating
+
+    moved = [(names, folded, Templating.jinja_compress(",".join(names)))
+             for names, folded in table.NODESETS
+             if Templating.jinja_compress(",".join(names)) != folded]
+    if moved:
+        raise SystemExit("\n".join(f"{list(names)}: the table says {folded!r} and the "
+                                   f"generator answers {theirs!r}"
+                                   for names, folded, theirs in moved))
+
+
 def build(table, slurm, genders) -> list:
     """
     One directory per case, each file written as the administrator left it and then handed
@@ -105,6 +125,7 @@ def build(table, slurm, genders) -> list:
 if __name__ == "__main__":
     table = cases()
     slurm, genders = generators()
+    nodesets(table)
     # Whatever is there is replaced, so a case taken out of the table takes its files with
     # it rather than leaving a golden nothing reads any more.
     shutil.rmtree(table.GOLDEN, ignore_errors=True)
