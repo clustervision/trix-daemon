@@ -38,7 +38,7 @@ from fastapi.testclient import TestClient
 
 from trixd.app import create_app
 from trixd.common import settings as configuration
-from trixd.core import tasks
+from trixd.core import serving, tasks
 from trixd.core.lifespan import start
 from trixd.core.plugins.loader import MODULE_PREFIX
 from trixd.core.plugins.registry import current as registry
@@ -141,10 +141,11 @@ def _own_process_state():
     reviewer who found it three probes that stopped reproducing their own defects.
 
     The rest - the render engine, the applied record, the stall counts, the breaker, the
-    sweep's last pass and its peer tokens, what is held, refused and already said for a
-    person reaching Luna, and when the slurm render began waiting on DNS and the names that
-    resolved since - are cleared because they are process state that no rig owns, not
-    because a test fails without them today.
+    sweep's last pass and its peer tokens, how many connections closed with nothing
+    answered on them, what is held, refused and already said for a person reaching Luna,
+    and when the slurm render began waiting on DNS and the names that resolved since - are
+    cleared because they are process state that no rig owns, not because a test fails
+    without them today.
     """
     standing = set(registry().plugins)
     yield
@@ -160,6 +161,7 @@ def _own_process_state():
     outbox._failures.clear()
     outbox._open.clear()
     outbox._sending.clear()
+    serving._closed_unanswered = 0
     persons._held.clear()
     persons._refused.clear()
     persons._warned.clear()
