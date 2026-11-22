@@ -659,7 +659,7 @@ def _what_the_sender_does_with(status: int, monkeypatch) -> str:
 
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
     return outbox._send("ctrl2", Row())[0]
 
 
@@ -924,14 +924,14 @@ def test_a_call_on_a_request_path_never_signs_in_at_the_peer(rig, monkeypatch):
 
     With nothing held the row waits for the sweep, which can afford to sign in.
     """
-    from trixd.core.replication import outbox, sweep
+    from trixd.core.replication import outbox, peering
 
     monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
     signed = []
-    monkeypatch.setattr(sweep, "_sign_in",
-                        lambda peer, verify: signed.append(peer) or "token")
+    monkeypatch.setattr(peering, "_sign_in",
+                        lambda peer: signed.append(peer) or "token")
     # Nothing held for this peer, which is the state after any restart.
-    monkeypatch.setattr(sweep, "held_token", lambda peer: "")
+    monkeypatch.setattr(peering, "held_token", lambda peer: "")
     monkeypatch.setattr(outbox, "held_token", lambda peer: "")
 
     for _ in range(5):
@@ -1685,7 +1685,7 @@ def test_a_peer_saying_it_skipped_is_not_recorded_as_done(rig, monkeypatch):
                   {"node": "node001"}, {"force": True}, "req-skip", "tester")
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
 
     result = outbox.drain("ctrl2")
     assert result["sent"] == 0, result
@@ -1991,7 +1991,7 @@ def test_a_decline_is_not_asked_for_ever(rig, monkeypatch):
                            {"node": "node001"}, {"force": True}, "req-decline", "tester")
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
 
     # Driven through the real send, so the message the decline is recognised by is the one
     # the send produces: the two are a pair, and a test that built the message itself would
@@ -2050,7 +2050,7 @@ def test_a_row_the_peer_answered_for_is_not_offered_again_on_the_next_pass(
                            {"node": "node001"}, {"force": True}, "req-backoff", "tester")
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
 
     def offers() -> int:
         """How many times the row has been offered, read back between passes."""
@@ -2176,7 +2176,7 @@ def test_a_row_owed_past_the_span_is_still_offered_so_that_it_can_end(rig, monke
                            {"node": "node001"}, {"force": True}, "req-clamp", "tester")
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
 
     handle = database.session()
     try:
@@ -2749,7 +2749,7 @@ def test_a_status_code_the_peer_answers_with_is_not_asked_for_ever(rig, monkeypa
                            {"node": "node001"}, None, "req-behind", "tester")
     monkeypatch.setattr(outbox.requests, "post", lambda *args, **kwargs: Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
     outbox._failures.clear()
     outbox._open.clear()
     try:
@@ -2935,7 +2935,7 @@ def test_the_drain_waits_as_long_as_the_sweep_rather_than_as_a_caller_would(rig,
                         lambda *args, **kwargs: waited.append(kwargs["timeout"])
                         or Answer())
     monkeypatch.setattr(outbox, "trust", lambda: True)
-    monkeypatch.setattr(outbox, "peer_token", lambda peer, verify, renew=False: "a-token")
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
     monkeypatch.setattr(outbox, "held_token", lambda peer: "a-token")
     outbox._failures.clear()
     outbox._open.clear()

@@ -49,6 +49,7 @@ from tests.unit.test_replication import _peer
 from trixd.common import settings as configuration
 from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
                                  Unauthenticated)
+from trixd.core.replication import peering
 from trixd.core.replication import sweep as replication
 from trixd.core.replication import tables
 from trixd.db import engine as database
@@ -939,7 +940,7 @@ def test_the_peer_signs_us_in_and_the_ca_is_checked(rig, tmp_path, monkeypatch):
         return Answer(body={"hashes": {}})
 
     signed_in = []
-    monkeypatch.setattr(replication, "_tokens", {})
+    monkeypatch.setattr(peering, "_tokens", {})
     monkeypatch.setattr(replication.requests, "post", lambda url, **kwargs: (
         signed_in.append((url, kwargs.get("verify"))),
         Answer(201, body={"token": _signed("s" * 32)}))[1])

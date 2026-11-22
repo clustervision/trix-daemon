@@ -45,7 +45,7 @@ from trixd.core.plugins.registry import current as registry
 from trixd.core.render import triggers
 from trixd.core.render.engine import current as renders
 from trixd.core.replication import applied, outbox
-from trixd.core.replication import sweep as replication_sweep
+from trixd.core.replication import peering
 from trixd.core.replication.sweep import current as sweep
 from trixd.core.security import keys
 from trixd.db import engine as database
@@ -141,7 +141,7 @@ def _own_process_state():
     reviewer who found it three probes that stopped reproducing their own defects.
 
     The rest - the render engine, the applied record, the stall counts, the breaker, the
-    sweep's last pass and its peer tokens, how many connections closed with nothing
+    sweep's last pass, the tokens peers issued, how many connections closed with nothing
     answered on them, what is held, refused and already said for a person reaching Luna,
     and when the slurm render began waiting on DNS and the names that resolved since - are
     cleared because they are process state that no rig owns, not because a test fails
@@ -157,7 +157,7 @@ def _own_process_state():
     applied.forget_all()
     sweep().stubborn.clear()
     sweep().last = {}
-    replication_sweep._tokens.clear()
+    peering._tokens.clear()
     outbox._failures.clear()
     outbox._open.clear()
     outbox._sending.clear()
