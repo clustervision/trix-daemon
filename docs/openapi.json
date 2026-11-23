@@ -8719,6 +8719,82 @@
         "x-trixd-minimum": "manager"
       }
     },
+    "/api/v1/slurm/nodes": {
+      "get": {
+        "description": "Every node Luna holds, by name and in name order, each with the group it is in. A node\nLuna holds without a group is listed with `group` empty rather than left out: what to\ndo with such a node is each render's own decision, and the slurm render leaves it out\nof the node file and names it in `renders/config`. This is the list the node,\npartition and gres blocks are built from, so it is also what a name in a drain, a\nresume or an edited node file is held against.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "slurm_nodes_get_api_v1_slurm_nodes_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": [
+                  {
+                    "group": "compute",
+                    "name": "node001"
+                  },
+                  {
+                    "group": "",
+                    "name": "node002"
+                  }
+                ],
+                "schema": {}
+              }
+            },
+            "description": "Every node and its group"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna did not answer, or answered in a shape this daemon cannot read"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "The nodes and the group of each, as the render reads them from Luna",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
     "/api/v1/slurm/nodes/actions/drain": {
       "post": {
         "description": "`scontrol update NodeName=<names> State=DRAIN Reason=\"[person] reason\"`, run by the\nhelper as its account, for the person whose trixd token made the request (or rootus).\nLuna's x on every node named, asked as that person; refused whole when a node lacks it,\nor when a name is not a node Luna renders into the node file.\n\n**Access:** operator or above: operator, manager and rootus",

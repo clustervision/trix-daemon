@@ -22,6 +22,7 @@
 The slurm plugin's change routes: only a person asks, Luna decides as that person through the
 luna plugin, the body reaches the helper stepped down to its account, the helper's refusals come
 back as trixd's classes, and the render shares the helper's lock without ever waiting for it.
+The node list those names are held against is read here too.
 """
 
 __author__      = "Alex Ninaber"
@@ -753,6 +754,39 @@ def test_a_person_drains_over_http_as_their_trixd_role_allows(rig, client, heade
     assert shapeless.status_code == 422, shapeless.text
     assert client.post(drain, json=body, headers=headers).status_code == 200
     assert [run.get("person") for run in ran] == ["anna", "tester"] and len(asked) == 1
+
+
+def test_the_console_reads_the_node_list_the_render_builds_from(rig, client, headers,
+                                                                monkeypatch):
+    """
+    The node list as the console reaches it: every node Luna holds, in name order, each with
+    its group, and a node Luna holds without a group carried with `group` empty rather than
+    left out. A Luna that is away is 503, the only refusal the read has of its own.
+    """
+    from trixd.core.plugins import loader
+
+    assert loader.load(rig, "slurm").state == "loaded"
+    loaded = sys.modules["trixd_plugin_slurm.backend"]
+    held = {"node002": {"group": "compute"}, "node001": {"group": "gpu"},
+            "node003": {"group": None}}
+    monkeypatch.setattr(loaded, "luna", lambda: SimpleNamespace(nodes=lambda: held))
+
+    answer = client.get("/api/v1/slurm/nodes", headers=headers)
+
+    assert answer.status_code == 200, answer.text
+    listed = answer.json()
+    assert listed, "the node list is empty for a Luna holding three nodes"
+    assert listed == [{"name": "node001", "group": "gpu"},
+                      {"name": "node002", "group": "compute"},
+                      {"name": "node003", "group": ""}], listed
+
+    def away():
+        """Luna as the client reports it when it cannot be reached or cannot be read."""
+        raise ServiceUnavailable("Luna is not answering")
+
+    monkeypatch.setattr(loaded, "luna", lambda: SimpleNamespace(nodes=away))
+    gone = client.get("/api/v1/slurm/nodes", headers=headers)
+    assert gone.status_code == 503, gone.text
 
 
 # -- the audit and the bounds -------------------------------------------------------------------

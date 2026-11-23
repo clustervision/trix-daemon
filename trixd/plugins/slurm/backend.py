@@ -441,6 +441,12 @@ class Backend:
         """
         return helper("files", self.config(), {})
 
+    def nodes(self) -> list:
+        """
+        Every node and the group it is in, as the renders read them.
+        """
+        return node_set()
+
     def drain(self, body: dict = None, caller=None, request=None) -> dict:
         """
         Drain the named nodes with the person's reason.
