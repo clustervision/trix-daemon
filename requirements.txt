@@ -41,6 +41,6 @@ starlette>=0.46.0
 # drives the Python 3.6 of EL8 and Leap 15 images, so the pin stays below 2.17.
 ansible-core>=2.16,<2.17
 
-# trinityx-config-slurm and trinityx-config-genders are deliberately NOT here. The
-# installer puts them on a controller, each plugin imports its own inside a try, and
-# trixd has to run where neither is present.
+# The trinityx-config-* generators are deliberately NOT here. The slurm and genders
+# plugins render their own files and import none of them, so there is nothing for an
+# airgapped site to mirror for a render to run.

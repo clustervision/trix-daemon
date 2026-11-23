@@ -30,18 +30,49 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import json
 import os
 import threading
 
 import pytest
 
-from tests.e2e.stack import operations
+from trixd.common.constants import RESERVED_PLUGINS
 
-# Written out rather than read from this tree: the daemon under test may be a remote one
-# (TRIXD_E2E_URL), whose install is what has to carry them all.
-SHIPPED = ("luna", "directory", "prometheus", "services", "slurm", "genders",
-           "alertmanager", "osimage")
+from tests.e2e.stack import PREFIX, ROOT, operations
+
+
+def _shipped() -> tuple:
+    """
+    The plugins this tree publishes routes for, so a new plugin is cycled without an edit
+    here. Which of them a daemon has plugged in is the daemon's own answer, not this one:
+    an install chooses what it enables.
+    """
+    with open(os.path.join(ROOT, "docs", "openapi.json"), encoding="utf-8") as handle:
+        paths = json.load(handle)["paths"]
+    names = {path[len(PREFIX):].split("/")[1] for path in paths} - set(RESERVED_PLUGINS)
+    assert names, "docs/openapi.json publishes no plugin route, so this proves nothing"
+    return tuple(sorted(names))
+
+
+SHIPPED = _shipped()
 CYCLES = 3
+
+
+@pytest.fixture(scope="session")
+def plugged(stack) -> tuple:
+    """
+    The plugins this daemon has plugged in, read once.
+
+    A reload plugs a plugin in and records it as enabled, whatever the install left out of
+    its enabled list. So a test that cycles a plugin asks this first: putting one back
+    afterwards is not the same as never having changed the daemon under test.
+    """
+    listed = stack.call("GET", "/system/plugins", stack.rootus())
+    assert listed.status_code == 200, listed.text
+    names = tuple(sorted(item["name"] for item in listed.json()["plugins"]
+                         if item["state"] == "loaded"))
+    assert names, "this daemon has no plugin plugged in, so cycling them proves nothing"
+    return names
 
 
 def _probe(stack, document, plugin: str) -> str:
@@ -58,10 +89,15 @@ def _probe(stack, document, plugin: str) -> str:
 
 @pytest.mark.parametrize("plugin", SHIPPED)
 @pytest.mark.parametrize("cycle", range(CYCLES))
-def test_a_plugin_unplugs_and_plugs_back_while_the_daemon_runs(stack, document, plugin, cycle):
+def test_a_plugin_unplugs_and_plugs_back_while_the_daemon_runs(stack, document, plugged,
+                                                               plugin, cycle):
     """
     Disabled: its routes answer 404. Reloaded: they are back. The daemon never restarts.
     """
+    if plugin not in plugged:
+        # Not a failure: whether an install carries every published plugin is reported by
+        # the access matrix, which reads the committed document.
+        pytest.skip(f"{plugin} is not plugged in here, and the reload below would plug it in")
     probe = _probe(stack, document, plugin)
     assert probe, f"{plugin} publishes no GET route"
     before = stack.call("GET", "/system/health").json()
@@ -77,7 +113,7 @@ def test_a_plugin_unplugs_and_plugs_back_while_the_daemon_runs(stack, document, 
     assert after["plugins"] == before["plugins"]
 
 
-def test_reloads_at_the_same_moment_leave_every_plugin_serving(stack, document):
+def test_reloads_at_the_same_moment_leave_every_plugin_serving(stack, plugged):
     """
     Twenty reloads of different plugins at once: each is serialised, none is lost.
     """
@@ -90,7 +126,7 @@ def test_reloads_at_the_same_moment_leave_every_plugin_serving(stack, document):
         answers.append(stack.call("POST", f"/system/plugins/{name}/reload",
                                   stack.rootus()).status_code)
 
-    threads = [threading.Thread(target=reload, args=(SHIPPED[n % len(SHIPPED)],))
+    threads = [threading.Thread(target=reload, args=(plugged[n % len(plugged)],))
                for n in range(20)]
     for thread in threads:
         thread.start()
@@ -99,7 +135,7 @@ def test_reloads_at_the_same_moment_leave_every_plugin_serving(stack, document):
     assert answers == [200] * 20
     listed = stack.call("GET", "/system/plugins", stack.rootus()).json()
     states = {item["name"]: item["state"] for item in listed["plugins"]}
-    assert all(states.get(name) == "loaded" for name in SHIPPED), states
+    assert all(states.get(name) == "loaded" for name in plugged), states
 
 
 @pytest.mark.parametrize("name", ["auth", "identity", "system", "docs"])

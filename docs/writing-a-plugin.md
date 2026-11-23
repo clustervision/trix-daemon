@@ -98,7 +98,7 @@ Each endpoint:
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
 | `forward` | hand the request on as sent; the service behind decides who may (the luna plugin) | no |
-| `replicate` | make this call on the other controller too, for a write whose result no replicated table and no render brings across | no, and only on a route that writes |
+| `replicate` | make this call on the other controller too, for a write whose result no replicated table and no render brings across; see "Reaching the other controller" | no, and only on a route that writes |
 | `websocket` | a WebSocket, opened by a `GET`; see "A WebSocket endpoint" | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
@@ -431,6 +431,69 @@ Writing files is the producer's own job. Write through `trixd.utils.files.write`
 `write_yaml`, which go through a temporary file and a rename, so no reader sees a
 half-written file; and produce the same bytes from the same inputs, so two
 controllers agree without talking to each other.
+
+## Reaching the other controller
+
+Each controller of an HA pair runs its own trixd with its own database, and three
+different things decide whether a write of yours reaches the other one. They are not
+interchangeable, and most plugins want the first.
+
+**A declaration crosses as state.** The sweep asks each peer in `[REPLICATION] PEERS`
+for one hash per replicated table - `GET /system/replication/hashes`, which is
+`principal` and `declaration` and nothing else - reads the documents of a table that
+differs, from `/system/replication/table/<name>`, and keeps whichever copy carries the
+higher `version` - the later write, where the versions are equal. A controller that was
+switched off is therefore brought up to date by the first pass after it comes back,
+however many changes it missed. Passes run every `[REPLICATION] INTERVAL`, and
+`POST /system/replication/sweep` runs one now. A plugin gets all of that by keeping
+its settings as declarations and doing nothing else; see "Storing something". Delete
+one with `declarations.forget`, which leaves a marker the peer reads as the deletion:
+a row deleted outright is copied back by the peer, which still holds it.
+
+**A file on shared storage is one file, and needs no replication.** Where the installer
+puts a plugin's output on the shared mount - the genders file and the slurm files are
+reached through it on a pair - both controllers write the same inode, and declaring
+`replicate` on the route that writes it only has the peer write the same bytes again.
+Such a file is written in place, through `trixd.utils.blocks`, which keeps the owner,
+group, mode and inode the installer gave it, and keeps whatever the file's other writers
+left outside our block; a path the installer made a symlink into that mount is written
+through the link, with `put(..., follow=True)`. The temporary file and rename under
+"Renders" is for a file this daemon alone writes: over a shared one it hands the file
+this process's own ownership and swaps it out from under the other controller. Nothing
+in trixd works out which kind a path is, so read the layout on the cluster rather than
+assuming either.
+
+**A write that landed here alone has to be sent.** With `replicate: true` on the
+endpoint, and once its handler has returned, the call - the path variables and the body,
+not the request - is written to the `outbox` table once per peer and offered to the
+peer's `POST /system/replication/apply`, which calls the same handler there rather than
+re-entering the route, so there is nothing that can loop. The row stays until the peer
+takes it: a peer that is away is offered it again, with a growing gap between offers,
+for as long as that lasts; one that answers without doing the work is given up on once it
+has owed the row for long enough; and a 4xx that is not 401 or 403 - a peer that does not
+serve this endpoint, say - is terminal at once. `GET /system/replication/owed` lists what
+is still owed, and `/api/v1/system/health` counts it under `owed` for a monitor. Where
+`[REPLICATION]` names no peers, or is switched off, nothing is written down and the
+answer says so.
+
+**The outbox carries intents, and nothing compares afterwards.** Once a row has been
+sent, refused or let go of, nothing asks again what the peer holds, because the sweep
+compares `principal` and `declaration` and no plugin's files. A call the peer never
+applied is a difference the pair then keeps until somebody acts on that object again, and
+the log line and the `owed` row are its only account. So prefer a declaration, or one
+shared file, wherever the choice is there to make.
+
+**What a replicating handler has to be.** It is idempotent: delivery is at least once,
+and while a repeat is answered with what was answered the first time, that record is held
+in memory and a restart empties it. It is called with its path variables and `body`
+alone, so a parameter such as `caller` needs a default, and who asked on the other
+controller does not reach it; the body is checked against the endpoint's declared schema
+there as it is here. An answer carrying `changed: false` sends nothing, being the peer
+already holding what was asked for. A handler that did not do the work says what it left
+undone in `skipped`, as a sentence: a non-empty string there is read as not done and the
+row is offered again, while a count or a list under that key reads as the whole call
+having been applied. A handler answering a dict gets a `replicated` block added to it,
+saying what became of the call at each peer.
 
 ## Queued work
 

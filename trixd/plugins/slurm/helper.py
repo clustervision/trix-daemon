@@ -59,6 +59,7 @@ from pathlib import Path
 HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE))  # -I leaves the script's directory out; the rules live here
 
+import hostnames  # noqa: E402  # the fold the rendered files use, beside this file
 import rules  # noqa: E402  # the console's slurmrules.py, beside this file
 
 KINDS = ("nodes", "partitions", "gres")
@@ -370,10 +371,6 @@ def _update(request: dict, files: dict, share: Path, state: Path, how: str, reas
     why = granted(state)
     if why:
         raise Refused(503, why)
-    try:
-        import hostnames  # the console's copy, beside this file; it imports python-hostlist
-    except ImportError as error:
-        raise Refused(503, f"the helper cannot fold node names here: {error}") from None
     # The lock is held across scontrol update: a save truncates the file before it writes it,
     # and a render cannot rename a node between this read and the update.
     with locked(share):
@@ -382,7 +379,7 @@ def _update(request: dict, files: dict, share: Path, state: Path, how: str, reas
         if unknown:
             raise Refused(400, "not nodes Luna renders into %s: %s"
                           % (files["nodes"], ", ".join(unknown)))
-        hosts = hostnames.fold(names)
+        hosts = hostnames.fold_nodeset(names)
         args = [rules.SCONTROL, "update", "NodeName=" + hosts, "State=" + how]
         run(args + (["Reason=" + reason] if reason else []), QUICK)
     return {"ok": True, "code": 200, "names": names, "did": f"{how.lower()} {hosts}"}

@@ -39,7 +39,7 @@ __status__      = "Production"
 
 import os
 
-from trixd.plugins.slurm.hostnames import fold
+from trixd.plugins.slurm.hostnames import fold_nodeset
 
 MANAGER: str = "TrinityX"
 DEFAULTS: str = "Defaults"
@@ -60,6 +60,27 @@ TAIL: list = ["# and the administrator's own footer"]
 # Inside the block before the render, so a golden proves the block was replaced rather
 # than added to.
 STALE: str = "NodeName=stale # GroupName=gone"
+
+
+# A NodeSet line's value, as the generators' own hostlist filter answers it. The eight
+# cases below cover the fold only where their own nodes happen to reach it, and the rule has
+# corners their node names never visit: a run that is not contiguous, one whose numbers change
+# width partway, a set mixing a name that carries a number with one that does not. Each row
+# was read off that filter on a controller that has it, the same way as the files in golden/.
+NODESETS: tuple = (
+    (("node001", "node002", "node003"), "node[001-003]"),
+    (("node001", "node003", "node004"), "node[001,003-004]"),
+    (("node008", "node009", "node010"), "node[008-010]"),
+    (("r1n01", "r1n02", "r2n01"), "r[1-2]n01,r1n02"),
+    (("rack1node01", "rack1node02", "rack2node01", "rack2node02"),
+     "rack[1-2]node01,rack[1-2]node02"),
+    (("compute", "node001"), "compute,node001"),
+    (("node1", "node001"), "node[1,001]"),
+    (("node9", "node11"), "node9,node11"),
+    (("gpu-node001", "gpu-node002"), "gpu-node[001-002]"),
+    (("node001.cluster", "node002.cluster"), "node[001-002].cluster"),
+    (("node1", "node2", "node10"), "node[1-2,10]"),
+)
 
 
 CASES: tuple = (
@@ -89,16 +110,13 @@ CASES: tuple = (
     },
     {
         "case": "two-numeric-fields",
-        "why": "names carrying two numbers fold differently in the two libraries, so a "
-               "render that folds them its own way writes a file the other writers do not",
+        "why": "names carrying two numbers fold on the first of them, where python-hostlist "
+               "folds on the last: a render folding them that way writes a file the other "
+               "writers do not",
         "luna": {"r1n01": {"group": "gpu"}, "r1n02": {"group": "gpu"},
                  "r2n01": {"group": "gpu"}},
         "nodes": [{"name": "r1n01", "group": "gpu"}, {"name": "r1n02", "group": "gpu"},
                   {"name": "r2n01", "group": "gpu"}],
-        # python-hostlist, which trixd folds with, answers r1n[01-02],r2n01 here. Both
-        # expand to the same three nodes and both load, but the bytes differ, so a render
-        # folding with it rewrites the file on every pass against the other writers.
-        "folds": {"gpu": "r[1-2]n01,r1n02"},
         "defaults": {
             "nodes": ["# NodeName=gpu CPUs=16 RealMemory=64000"],
             "partitions": ["# PartitionName=gpu MaxTime=INFINITE State=UP"],
@@ -260,13 +278,13 @@ CASES: tuple = (
 
 def nodesets(case: dict) -> list:
     """
-    One NodeSet per group, in the order the groups first appear, folded as trixd folds a
-    set of names. `folds` names a group whose fold trixd's own library does not reproduce.
+    One NodeSet per group, in the order the groups first appear, folded as the render
+    folds a set of names.
     """
     groups: dict = {}
     for one in case["nodes"]:
         groups.setdefault(one["group"], []).append(one["name"])
-    return [f"NodeSet={group} Nodes={case.get('folds', {}).get(group) or fold(names)}"
+    return [f"NodeSet={group} Nodes={fold_nodeset(names)}"
             for group, names in groups.items()]
 
 

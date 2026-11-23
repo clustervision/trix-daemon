@@ -34,6 +34,7 @@ import inspect
 import logging as logmodule
 import os
 import re
+import ssl
 from datetime import datetime, timedelta, timezone
 
 import jwt
@@ -45,6 +46,7 @@ from tests.conftest import SHARED_SECRET
 from trixd.common import settings as configuration
 from trixd.common.constants import API_PREFIX, LUNA_PLUGIN, MINIMUMS, RESERVED_PLUGINS
 from trixd.common.errors import Forbidden, PluginRefused, Unauthenticated
+from trixd.core import serving
 from trixd.core.plugins import loader
 from trixd.core.plugins.manifest import parse
 from trixd.core.security import audit, tokens
@@ -67,6 +69,23 @@ def test_health_needs_no_token(client):
     assert body["status"] == "ok"
     assert "luna_hashes" in body["triggers"] and "replication" in body["triggers"]
     assert all(set(item) == {"render", "rendered_at", "ok"} for item in body["renders"])
+
+
+def test_health_counts_the_connections_closed_without_an_answer(client):
+    """
+    A caller whose connection closed with no response on it can ask health whether this
+    daemon did that, and how often since it started: the count is the only trace left.
+    """
+    body = client.get(f"{API_PREFIX}/system/health").json()
+    assert "connections" in body, "health says nothing about the connections it closed"
+    assert body["connections"]["closed_unanswered"] == 0
+    raced = ssl.SSLError(1, "[SSL: APPLICATION_DATA_AFTER_CLOSE_NOTIFY] application data "
+                            "after close notify (_ssl.c:2702)")
+    raced.reason = "APPLICATION_DATA_AFTER_CLOSE_NOTIFY"
+    # The race returns before the loop is reached, so there is nothing to stand in for.
+    serving.exception_handler(None, {"exception": raced})
+    body = client.get(f"{API_PREFIX}/system/health").json()
+    assert body["connections"]["closed_unanswered"] == 1
 
 
 def test_token_is_a_jwt_signed_the_way_luna_signs(token):

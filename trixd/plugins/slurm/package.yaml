@@ -29,7 +29,7 @@ description: >
 depends:
   daemon: trixd with the luna plugin enabled (the person's rights are Luna's)
   commands: [/usr/bin/scontrol, /usr/bin/sacctmgr, /usr/bin/setpriv, /usr/bin/prlimit]
-  python: [hostlist, slurmlint, trinityx_config_slurm]
+  python: [slurmlint]
   slurm: accounting answers (sacctmgr), the node, partition and gres files exist
 
 runs_as:

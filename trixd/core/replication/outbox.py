@@ -48,9 +48,8 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.settings import current as settings
 from trixd.core.replication import applied
-from trixd.core.replication.sweep import TIMEOUT as SWEEP_TIMEOUT
-from trixd.core.replication.sweep import held_token, trust
-from trixd.core.replication.sweep import _token as peer_token
+from trixd.core.replication.peering import TIMEOUT as PEER_TIMEOUT
+from trixd.core.replication.peering import held_token, peer_token, trust
 from trixd.db import engine as database
 from trixd.db import models
 
@@ -70,9 +69,10 @@ ANSWERED: str = "answered"
 # This process's other sender has the row, so it was neither offered nor refused.
 IN_FLIGHT: str = "in-flight"
 
-# The caller is waiting on this, so it is shorter than the sweep's: the row makes giving up
-# free, and a dark peer must not hold a request thread. The inline path's alone - the drain
-# pays the sweep's, imported rather than repeated, since a merely slow peer drains nothing.
+# The caller is waiting on this, so it is shorter than the shared one: the row makes
+# giving up free, and a dark peer must not hold a request thread. The inline path's alone -
+# the drain pays the shared one, imported rather than repeated, since a merely slow peer
+# drains nothing.
 TIMEOUT: int = 3
 # After this many offers a row still waiting is said loudly, once, and then every
 # this-many offers. Offers, not passes: a row the peer keeps answering for is not offered
@@ -377,10 +377,10 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     the three above: having no token to present is not evidence about the peer, and a peer
     that answers badly is not a peer that has stopped answering.
 
-    The renewal margin and the certificate are the sweep's, unchanged: a second way to
+    The renewal margin and the certificate are the shared ones, unchanged: a second way to
     authenticate to the same peer is a second thing to get wrong.
 
-    `may_sign_in` is false on a caller's request path. Signing in carries the sweep's own
+    `may_sign_in` is false on a caller's request path. Signing in carries the shared
     thirty-second timeout, so inheriting it would undo this module's short one and hold a
     thread for half a minute against a dark peer - the stall the breaker exists to stop,
     arriving through the back door. With nothing held, the row waits for the sweep, which
@@ -393,7 +393,7 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     first silence and the breaker, not the clock on one offer.
     """
     verify = trust()
-    patience = SWEEP_TIMEOUT if may_sign_in else TIMEOUT
+    patience = PEER_TIMEOUT if may_sign_in else TIMEOUT
     if not may_sign_in and not held_token(peer):
         return QUEUED, "no token held for the peer, so the sweep will sign in", NOT_ATTEMPTED
     held = json.loads(row.payload or "{}")
@@ -403,7 +403,7 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     url = f"{settings().api.protocol}://{peer}{API_PREFIX}/system/replication/apply"
     for attempt in (1, 2):
         if may_sign_in:
-            token = peer_token(peer, verify, renew=attempt == 2)
+            token = peer_token(peer, renew=attempt == 2)
         else:
             # Held or nothing: never a sign-in on a request path.
             token = held_token(peer)

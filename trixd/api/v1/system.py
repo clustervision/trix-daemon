@@ -44,7 +44,7 @@ from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
                                    ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused, ServiceUnavailable
-from trixd.core import tasks
+from trixd.core import serving, tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import applied, outbox, tables
@@ -113,8 +113,12 @@ class Action(BaseModel):
                 "peers not answering - counts only, and no peer is named, because this "
                 "route takes no token: `GET /system/replication/owed` says where, and "
                 "`oldest_pending` says in seconds how long the oldest waiting call has "
-                "waited, which is what tells a busy queue from a stuck one. States "
-                "and times only: an error's text stays in the log."),
+                "waited, which is what tells a busy queue from a stuck one. "
+                "`connections.closed_unanswered` counts the TLS connections closed since "
+                "start-up with nothing answered on them, which happens when a caller "
+                "writes on one trixd had already begun closing; a caller sees that as its "
+                "connection closing with no response, and retrying the call is the answer. "
+                "States and times only: an error's text stays in the log."),
             responses=docs.answers({
                 "status": "ok", "daemon": "trixd", "plugins": 6,
                 "renders": [{"render": "prometheus/renders/targets",
@@ -124,7 +128,8 @@ class Action(BaseModel):
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
                              "replication": {"at": 1791545526.87, "not_converging": 0}},
                 "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0,
-                         "oldest_pending": 0}},
+                         "oldest_pending": 0},
+                "connections": {"closed_unanswered": 0}},
                 "How trixd is doing"))
 def health() -> dict:
     """
@@ -141,7 +146,7 @@ def health() -> dict:
                             for name, state in triggers.states().items()},
                          "replication": {"at": (sweep().last or {}).get("at", 0),
                                          "not_converging": sweep().stalled()}},
-            "owed": outbox.states()}
+            "owed": outbox.states(), "connections": serving.states()}
 
 
 @router.get("/version", summary="What is running here",

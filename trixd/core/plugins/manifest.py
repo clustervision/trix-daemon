@@ -218,159 +218,20 @@ def parse(document: dict) -> Manifest:
     if not manifest.plugin:
         raise PluginRefused("manifest names no plugin")
     for endpoint in manifest.endpoints:
-        bad = [verb for verb in endpoint.methods if verb.upper() not in HTTP_VERBS]
-        if bad:
-            raise PluginRefused(f'{endpoint.path or "/"} declares unsupported verbs: {", ".join(bad)}')
-        if endpoint.token not in (TOKEN_KIND_USER, TOKEN_KIND_NODE):
-            raise PluginRefused(f'{endpoint.path or "/"} declares an unknown token kind')
-        if endpoint.render is None and not endpoint.handler:
-            raise PluginRefused(f'{endpoint.path or "/"} names no handler')
-        if endpoint.websocket:
-            for refusal, blocked in (
-                    ("is opened by a GET only",
-                     [verb.upper() for verb in endpoint.methods] != ["GET"]),
-                    ("cannot also be a render", endpoint.render is not None),
-                    ("cannot also be forwarded", endpoint.forward),
-                    ("cannot also be replicated", endpoint.replicate),
-                    ("cannot also take a body schema", bool(endpoint.body_schema)),
-                    # Never published: a socket is not in the API document.
-                    ("documents no request example", endpoint.request_example is not None),
-                    ("documents no response", endpoint.response is not None),
-                    ("documents no errors", bool(endpoint.errors)),
-                    ("is handed the socket as websocket, so cannot take that name",
-                     "websocket" in (*endpoint.variables, *endpoint.query))):
-                if blocked:
-                    raise PluginRefused(
-                        f"{endpoint.path or '/'} is a websocket, which {refusal}")
-        if (not endpoint.public and not endpoint.forward and endpoint.token == TOKEN_KIND_USER
-                and endpoint.minimum not in MINIMUMS):
-            raise PluginRefused(
-                f'{endpoint.path or "/"} must declare a minimum role from '
-                f'{", ".join(MINIMUMS)}, not {endpoint.minimum or "nothing"}')
-        if endpoint.replicate:
-            # A read has nothing to carry; a render is already driven at both ends by the
-            # same source; a forwarded call is replicated by the service behind it; and a
-            # public one would let anyone make this controller call its peer.
-            reads = [verb.upper() for verb in endpoint.methods
-                     if verb.upper() in ("GET", "HEAD")]
-            if len(reads) == len(endpoint.methods):
-                raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
-                                    f"to replicate")
-            for why, blocked in (("a render", endpoint.render is not None),
-                                 ("forwarded", endpoint.forward),
-                                 ("public", endpoint.public)):
-                if blocked:
-                    raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
-                                        f"also replicate")
-            if reads:
-                # Replicate is applied per verb, so a read sharing the endpoint replicates
-                # as well: it writes an outbox row and asks the peer on every call, and
-                # answers with a block no read is documented to carry.
-                raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
-                                    f"serve {', '.join(reads)}: a read that replicated "
-                                    f"would write an outbox row for every call")
-        if endpoint.render is not None:
-            # Nothing wakes a render with no inputs, and nothing wakes one whose input has
-            # an empty segment: the engine matches an input against <source>.<object>, so
-            # `luna.` and `` match no change there is. Either way it produces once at
-            # start-up, serves that for ever and reports a healthy render while the files
-            # it writes drift from Luna. Refused rather than logged, because an author's
-            # only other signal is stale data at a customer.
-            if not endpoint.render.inputs:
-                raise PluginRefused(f"{endpoint.path or '/'} is a render and declares no "
-                                    f"inputs, so nothing would ever wake it")
-            unusable = [str(item) for item in endpoint.render.inputs
-                        if not all(part.strip() for part in str(item).split("."))]
-            if unusable:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} declares input {', '.join(unusable)}, which "
-                    f"names no change: an input is <source>.<object>, such as luna.node, "
-                    f"or one of this plugin's own declarations")
-        if endpoint.render is not None and (endpoint.variables or endpoint.query):
-            # A render is served by a reader that takes no arguments, so a variable or a
-            # query parameter is accepted and then ignored: one document answers for every
-            # value of it, the producer is never told which was asked for, and the author's
-            # only signal is wrong data at a customer.
-            unusable = "a path variable" if endpoint.variables else "a query parameter"
-            raise PluginRefused(f"{endpoint.path or '/'} is a render, so it cannot take "
-                                f"{unusable}: the reader is given none")
-        if endpoint.render is not None:
-            # The same shape once more: the reader behind a render is handed neither a body
-            # nor a verb of its own. A declared schema is built, documented and dropped on
-            # the way in, and any verb but a read reaches that same reader, which answers
-            # what was last rendered. Both are accepted today and ignored in silence.
-            if endpoint.body_schema:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} is a render, so it cannot also declare schema "
-                    f"{endpoint.body_schema}: a body is documented and checked, and then "
-                    f"the reader is not handed it")
-            writes = [verb.upper() for verb in endpoint.methods
-                      if verb.upper() not in ("GET", "HEAD")]
-            if writes:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} is a render, so it cannot also serve "
-                    f"{', '.join(writes)}: the reader answers what was last rendered, so "
-                    f"the document would show a write that changes nothing")
-        if endpoint.render is not None:
-            # A render is one of two jobs and the manifest has to say which: a document
-            # built in memory and served, or a task that makes files on disk agree with the
-            # state and reloads whatever reads them. The two shapes below say neither.
-            if not endpoint.render.reconciles and not endpoint.render.serve:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} is a render declaring reconcile: false and no "
-                    f"serve, so it writes nothing and nothing reads what it produces: it "
-                    f"would run on every wake for no effect an author could observe")
-            if endpoint.render.reloads and not endpoint.render.reconciles:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} is a pure render, so it cannot declare that it "
-                    f"reloads {', '.join(map(str, endpoint.render.reloads))}: only a "
-                    f"reconcile reaches a service")
-        unguarded = "public" if endpoint.public else "forward" if endpoint.forward else ""
-        if unguarded and endpoint.token == TOKEN_KIND_NODE:
-            # Which half the author meant - the unguarded route or the node binding -
-            # cannot be derived from the declaration, so neither is assumed.
-            raise PluginRefused(
-                f"{endpoint.path or '/'} is {unguarded} and takes a node token: such a "
-                f"route is served with no guard, so no token is asked for or bound")
-        ignores_role = unguarded or ("on a node token"
-                                     if endpoint.token == TOKEN_KIND_NODE else "")
-        if ignores_role and endpoint.minimum:
-            # The gate reads `minimum` on a guarded user-token route and nowhere else: a
-            # node token carries no principal, and an unguarded route is not asked. The
-            # manifest then reads as a restriction that is not applied anywhere.
-            raise PluginRefused(
-                f"{endpoint.path or '/'} is {ignores_role} and declares minimum "
-                f"{endpoint.minimum}: no role is checked on such a route, so the "
-                f"declaration admits everyone it reads as keeping out")
-        if endpoint.token == TOKEN_KIND_NODE and not any(
-                key in endpoint.variables for key in NODE_PATH_PARAMS):
-            # The gate binds a node token to the node its path names, and looks for it under
-            # one of these names only. With none of them there the binding is skipped in
-            # silence and one node's token is accepted for another node's data.
-            raise PluginRefused(
-                f"{endpoint.path or '/'} takes a node token, so its path has to carry one "
-                f"of {', '.join(NODE_PATH_PARAMS)} for the gate to bind it to")
-        if endpoint.body_schema:
-            if endpoint.body_schema not in manifest.schemas:
-                raise PluginRefused(
-                    f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
-            # GET is deliberate: a GET and a write on one handler tell a read from a change
-            # by the body being None. Any other bodiless verb is accepted here and dropped
-            # at bind, so the document agrees with the route and not with the manifest.
-            bodiless = [verb.upper() for verb in endpoint.methods
-                        if verb.upper() not in BODY_VERBS and verb.upper() != "GET"]
-            if bodiless:
-                raise PluginRefused(
-                    f"{endpoint.path or '/'} wants schema {endpoint.body_schema} on "
-                    f"{', '.join(bodiless)}, which takes no body")
+        # In the order an author meets them: each check raises on the first thing it
+        # finds, so this order is which refusal a manifest breaking two rules answers.
+        _check_verbs(endpoint)
+        _check_token_kind(endpoint)
+        _check_handler(endpoint)
+        _check_websocket(endpoint)
+        _check_minimum(endpoint)
+        _check_replicate(endpoint)
+        _check_render(endpoint)
+        _check_unguarded(endpoint)
+        _check_node_token(endpoint)
+        _check_schema(manifest, endpoint)
         _check_docs(endpoint)
-    for event, handler in manifest.hooks.items():
-        parts = str(event).split(".")
-        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
-            raise PluginRefused(f"{event} is not a hook event: name one as "
-                                f"<source>.<object>.<event>, such as luna.node.update")
-        if not handler or not isinstance(handler, str):
-            raise PluginRefused(f"{event} names no handler")
+    _check_hooks(manifest)
     return manifest
 
 
@@ -398,6 +259,254 @@ def duplicates(manifest: Manifest) -> list:
                              f"a path variable, so only {first} is ever matched")
             seen.setdefault(key, where)
     return twice
+
+
+def _check_verbs(endpoint: Endpoint) -> None:
+    """
+    Refuse a verb no route can be built for.
+    """
+    bad = [verb for verb in endpoint.methods if verb.upper() not in HTTP_VERBS]
+    if bad:
+        raise PluginRefused(f'{endpoint.path or "/"} declares unsupported verbs: {", ".join(bad)}')
+
+
+def _check_token_kind(endpoint: Endpoint) -> None:
+    """
+    Refuse a token kind the gate does not know.
+    """
+    if endpoint.token not in (TOKEN_KIND_USER, TOKEN_KIND_NODE):
+        raise PluginRefused(f'{endpoint.path or "/"} declares an unknown token kind')
+
+
+def _check_handler(endpoint: Endpoint) -> None:
+    """
+    Refuse an endpoint with nothing behind it; a render produces its own answer.
+    """
+    if endpoint.render is None and not endpoint.handler:
+        raise PluginRefused(f'{endpoint.path or "/"} names no handler')
+
+
+def _check_websocket(endpoint: Endpoint) -> None:
+    """
+    Refuse a socket declared as something a socket cannot be.
+    """
+    if not endpoint.websocket:
+        return
+    for refusal, blocked in (
+            ("is opened by a GET only",
+             [verb.upper() for verb in endpoint.methods] != ["GET"]),
+            ("cannot also be a render", endpoint.render is not None),
+            ("cannot also be forwarded", endpoint.forward),
+            ("cannot also be replicated", endpoint.replicate),
+            ("cannot also take a body schema", bool(endpoint.body_schema)),
+            # Never published: a socket is not in the API document.
+            ("documents no request example", endpoint.request_example is not None),
+            ("documents no response", endpoint.response is not None),
+            ("documents no errors", bool(endpoint.errors)),
+            ("is handed the socket as websocket, so cannot take that name",
+             "websocket" in (*endpoint.variables, *endpoint.query))):
+        if blocked:
+            raise PluginRefused(
+                f"{endpoint.path or '/'} is a websocket, which {refusal}")
+
+
+def _check_minimum(endpoint: Endpoint) -> None:
+    """
+    Refuse a guarded user-token route that names no role for the gate to read.
+    """
+    if (not endpoint.public and not endpoint.forward and endpoint.token == TOKEN_KIND_USER
+            and endpoint.minimum not in MINIMUMS):
+        raise PluginRefused(
+            f'{endpoint.path or "/"} must declare a minimum role from '
+            f'{", ".join(MINIMUMS)}, not {endpoint.minimum or "nothing"}')
+
+
+def _check_replicate(endpoint: Endpoint) -> None:
+    """
+    Refuse replication where there is nothing for the peer to be told.
+    """
+    if not endpoint.replicate:
+        return
+    # A read has nothing to carry; a render is already driven at both ends by the
+    # same source; a forwarded call is replicated by the service behind it; and a
+    # public one would let anyone make this controller call its peer.
+    reads = [verb.upper() for verb in endpoint.methods
+             if verb.upper() in ("GET", "HEAD")]
+    if len(reads) == len(endpoint.methods):
+        raise PluginRefused(f"{endpoint.path or '/'} reads, so there is nothing "
+                            f"to replicate")
+    for why, blocked in (("a render", endpoint.render is not None),
+                         ("forwarded", endpoint.forward),
+                         ("public", endpoint.public)):
+        if blocked:
+            raise PluginRefused(f"{endpoint.path or '/'} is {why} and cannot "
+                                f"also replicate")
+    if reads:
+        # Replicate is applied per verb, so a read sharing the endpoint replicates
+        # as well: it writes an outbox row and asks the peer on every call, and
+        # answers with a block no read is documented to carry.
+        raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
+                            f"serve {', '.join(reads)}: a read that replicated "
+                            f"would write an outbox row for every call")
+
+
+def _check_render(endpoint: Endpoint) -> None:
+    """
+    The rules a render alone is held to.
+    """
+    if endpoint.render is None:
+        return
+    _check_render_inputs(endpoint)
+    _check_render_arguments(endpoint)
+    _check_render_body(endpoint)
+    _check_render_job(endpoint)
+
+
+def _check_render_inputs(endpoint: Endpoint) -> None:
+    """
+    Refuse a render nothing would ever wake.
+    """
+    # Nothing wakes a render with no inputs, and nothing wakes one whose input has
+    # an empty segment: the engine matches an input against <source>.<object>, so
+    # `luna.` and `` match no change there is. Either way it produces once at
+    # start-up, serves that for ever and reports a healthy render while the files
+    # it writes drift from Luna. Refused rather than logged, because an author's
+    # only other signal is stale data at a customer.
+    if not endpoint.render.inputs:
+        raise PluginRefused(f"{endpoint.path or '/'} is a render and declares no "
+                            f"inputs, so nothing would ever wake it")
+    unusable = [str(item) for item in endpoint.render.inputs
+                if not all(part.strip() for part in str(item).split("."))]
+    if unusable:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} declares input {', '.join(unusable)}, which "
+            f"names no change: an input is <source>.<object>, such as luna.node, "
+            f"or one of this plugin's own declarations")
+
+
+def _check_render_arguments(endpoint: Endpoint) -> None:
+    """
+    Refuse a render that takes an argument its reader is never given.
+    """
+    if endpoint.variables or endpoint.query:
+        # A render is served by a reader that takes no arguments, so a variable or a
+        # query parameter is accepted and then ignored: one document answers for every
+        # value of it, the producer is never told which was asked for, and the author's
+        # only signal is wrong data at a customer.
+        unusable = "a path variable" if endpoint.variables else "a query parameter"
+        raise PluginRefused(f"{endpoint.path or '/'} is a render, so it cannot take "
+                            f"{unusable}: the reader is given none")
+
+
+def _check_render_body(endpoint: Endpoint) -> None:
+    """
+    Refuse a body or a write on a render, which the reader behind it is handed neither of.
+    """
+    # The reader behind a render is handed neither a body nor a verb of its own. A
+    # declared schema is built, documented and dropped on the way in, and any verb but a
+    # read reaches that same reader, which answers what was last rendered. Both are
+    # accepted today and ignored in silence.
+    if endpoint.body_schema:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is a render, so it cannot also declare schema "
+            f"{endpoint.body_schema}: a body is documented and checked, and then "
+            f"the reader is not handed it")
+    writes = [verb.upper() for verb in endpoint.methods
+              if verb.upper() not in ("GET", "HEAD")]
+    if writes:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is a render, so it cannot also serve "
+            f"{', '.join(writes)}: the reader answers what was last rendered, so "
+            f"the document would show a write that changes nothing")
+
+
+def _check_render_job(endpoint: Endpoint) -> None:
+    """
+    Refuse a render that neither writes anything nor serves what it produces.
+    """
+    # A render is one of two jobs and the manifest has to say which: a document
+    # built in memory and served, or a task that makes files on disk agree with the
+    # state and reloads whatever reads them. The two shapes below say neither.
+    if not endpoint.render.reconciles and not endpoint.render.serve:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is a render declaring reconcile: false and no "
+            f"serve, so it writes nothing and nothing reads what it produces: it "
+            f"would run on every wake for no effect an author could observe")
+    if endpoint.render.reloads and not endpoint.render.reconciles:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is a pure render, so it cannot declare that it "
+            f"reloads {', '.join(map(str, endpoint.render.reloads))}: only a "
+            f"reconcile reaches a service")
+
+
+def _check_unguarded(endpoint: Endpoint) -> None:
+    """
+    Refuse a route whose declaration reads as a guard that is not applied to it.
+    """
+    unguarded = "public" if endpoint.public else "forward" if endpoint.forward else ""
+    if unguarded and endpoint.token == TOKEN_KIND_NODE:
+        # Which half the author meant - the unguarded route or the node binding -
+        # cannot be derived from the declaration, so neither is assumed.
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is {unguarded} and takes a node token: such a "
+            f"route is served with no guard, so no token is asked for or bound")
+    ignores_role = unguarded or ("on a node token"
+                                 if endpoint.token == TOKEN_KIND_NODE else "")
+    if ignores_role and endpoint.minimum:
+        # The gate reads `minimum` on a guarded user-token route and nowhere else: a
+        # node token carries no principal, and an unguarded route is not asked. The
+        # manifest then reads as a restriction that is not applied anywhere.
+        raise PluginRefused(
+            f"{endpoint.path or '/'} is {ignores_role} and declares minimum "
+            f"{endpoint.minimum}: no role is checked on such a route, so the "
+            f"declaration admits everyone it reads as keeping out")
+
+
+def _check_node_token(endpoint: Endpoint) -> None:
+    """
+    Refuse a node-token route whose path gives the gate no node to bind the token to.
+    """
+    if endpoint.token == TOKEN_KIND_NODE and not any(
+            key in endpoint.variables for key in NODE_PATH_PARAMS):
+        # The gate binds a node token to the node its path names, and looks for it under
+        # one of these names only. With none of them there the binding is skipped in
+        # silence and one node's token is accepted for another node's data.
+        raise PluginRefused(
+            f"{endpoint.path or '/'} takes a node token, so its path has to carry one "
+            f"of {', '.join(NODE_PATH_PARAMS)} for the gate to bind it to")
+
+
+def _check_schema(manifest: Manifest, endpoint: Endpoint) -> None:
+    """
+    Refuse a body schema that is not declared, or declared on a verb that takes no body.
+    """
+    if not endpoint.body_schema:
+        return
+    if endpoint.body_schema not in manifest.schemas:
+        raise PluginRefused(
+            f"{endpoint.path} wants schema {endpoint.body_schema}, which is not declared")
+    # GET is deliberate: a GET and a write on one handler tell a read from a change
+    # by the body being None. Any other bodiless verb is accepted here and dropped
+    # at bind, so the document agrees with the route and not with the manifest.
+    bodiless = [verb.upper() for verb in endpoint.methods
+                if verb.upper() not in BODY_VERBS and verb.upper() != "GET"]
+    if bodiless:
+        raise PluginRefused(
+            f"{endpoint.path or '/'} wants schema {endpoint.body_schema} on "
+            f"{', '.join(bodiless)}, which takes no body")
+
+
+def _check_hooks(manifest: Manifest) -> None:
+    """
+    Refuse a hook that names no event or no handler.
+    """
+    for event, handler in manifest.hooks.items():
+        parts = str(event).split(".")
+        if len(parts) != HOOK_EVENT_PARTS or not all(parts):
+            raise PluginRefused(f"{event} is not a hook event: name one as "
+                                f"<source>.<object>.<event>, such as luna.node.update")
+        if not handler or not isinstance(handler, str):
+            raise PluginRefused(f"{event} names no handler")
 
 
 def _check_docs(endpoint: Endpoint) -> None:
@@ -468,4 +577,3 @@ def read_yaml(path: str) -> dict:
     if not isinstance(document, dict):
         raise PluginRefused(f"{path} is not a manifest document")
     return document
-

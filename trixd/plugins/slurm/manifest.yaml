@@ -17,9 +17,9 @@
 plugin: slurm
 backend: backend
 description: >
-  The managed blocks of the slurm node, partition and gres files, rendered from
-  Luna's nodes through the trinityx-config-slurm package, and the person's own
-  changes to them (drain, resume, save, restore, apply), run by helper.py as the
+  The managed blocks of the slurm node, partition and gres files, rendered here
+  from Luna's nodes and each file's own presets, and the person's own changes to
+  them (drain, resume, save, restore, apply), run by helper.py as the
   account trinityx-slurm. A person makes each change with their own trixd token,
   and Luna, asked as that person through the luna plugin, decides whether they
   may; rootus passes, as it passes the route to Luna.
@@ -180,6 +180,24 @@ endpoints:
     errors:
       502: The helper did not answer
       503: The helper's account, setpriv or prlimit is missing, or the files are not configured
+
+  - path: nodes
+    methods: [GET]
+    minimum: reader
+    handler: nodes
+    summary: The nodes and the group of each, as the render reads them from Luna
+    description: |
+      Every node Luna holds, by name and in name order, each with the group it is in. A node
+      Luna holds without a group is listed with `group` empty rather than left out: what to
+      do with such a node is each render's own decision, and the slurm render leaves it out
+      of the node file and names it in `renders/config`. This is the list the node,
+      partition and gres blocks are built from, so it is also what a name in a drain, a
+      resume or an edited node file is held against.
+    response:
+      description: Every node and its group
+      example: [{name: node001, group: compute}, {name: node002, group: ""}]
+    errors:
+      503: Luna did not answer, or answered in a shape this daemon cannot read
 
   - path: nodes/actions/drain
     methods: [POST]

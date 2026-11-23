@@ -30,7 +30,9 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import asyncio
 import os
+import ssl
 import stat
 
 import pytest
@@ -39,7 +41,7 @@ from trixd import server
 from trixd.common import logging as trixlog
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_VERSION
-from trixd.core import instance
+from trixd.core import instance, serving
 
 
 def _settings(**api) -> configuration.Settings:
@@ -144,7 +146,7 @@ def test_replication_follows_the_protocol_too(monkeypatch):
 
     seen = {}
     monkeypatch.setattr(replication, "settings", lambda: _settings(protocol="http"))
-    monkeypatch.setattr(replication, "_token", lambda peer, verify, renew=False: "t")
+    monkeypatch.setattr(replication, "peer_token", lambda peer, renew=False: "t")
     monkeypatch.setattr(replication.requests, "get", lambda url, **kwargs: (
         seen.setdefault("url", url), SimpleNamespace(status_code=200, json=lambda: {}))[1])
     replication.Sweep()._get("peer.cluster:7070", "hashes")
@@ -561,3 +563,60 @@ def test_the_lock_is_beside_the_ini_and_never_on_storage_a_pair_shares(tmp_path)
     link.parent.mkdir()
     os.symlink(real, link)
     assert instance.lock_path(configuration.Settings(config_file=str(link))) == f"{link}.lock"
+
+
+class _RecordingLoop:
+    """
+    Stands in for the loop, remembering what the handler would not deal with itself.
+    """
+
+    def __init__(self):
+        self.reported = []
+
+    def default_exception_handler(self, context: dict) -> None:
+        """
+        What asyncio would say out loud, as a traceback.
+        """
+        self.reported.append(context)
+
+
+def _ssl_error(reason: str) -> ssl.SSLError:
+    """
+    An SSLError as the ssl module raises one: the reason is the part that names the fault.
+    """
+    error = ssl.SSLError(1, f"[SSL: {reason}] (_ssl.c:2702)")
+    error.reason = reason
+    return error
+
+
+def _handler_the_daemon_serves_with():
+    """
+    What the loop trixd serves from carries, with hypercorn stood in for.
+    """
+    found = {}
+
+    async def instead_of_hypercorn(application, hypercorn_config) -> None:
+        """
+        Read the handler off the running loop and let serving finish.
+        """
+        found["handler"] = asyncio.get_running_loop().get_exception_handler()
+
+    asyncio.run(server._run(instead_of_hypercorn, object(), object()))
+    return found.get("handler")
+
+
+def test_the_close_notify_race_is_counted_and_every_other_fault_still_reported():
+    """
+    Hypercorn leaves this one race in a task nothing awaits, so the loop is where it is
+    caught. Matched by its reason alone: a failed handshake is a fault somebody must see.
+    """
+    handler = _handler_the_daemon_serves_with()
+    assert handler is not None, "nothing on the loop collects what hypercorn leaves behind"
+    loop = _RecordingLoop()
+    handler(loop, {"exception": _ssl_error("APPLICATION_DATA_AFTER_CLOSE_NOTIFY")})
+    assert serving.states()["closed_unanswered"] == 1
+    assert loop.reported == [], "the teardown race was reported as a fault"
+    handler(loop, {"exception": _ssl_error("SSLV3_ALERT_BAD_CERTIFICATE")})
+    handler(loop, {"exception": ValueError("something else entirely")})
+    assert serving.states()["closed_unanswered"] == 1, "something else was counted as the race"
+    assert len(loop.reported) == 2, "a fault was absorbed instead of being reported"

@@ -50,10 +50,10 @@ IMPORTED_AS = {"pyjwt": "jwt", "pyyaml": "yaml", "python-pam": "pam"}
 # Imported inside a try because a controller may not have them: the installer puts them
 # there per cluster, and trixd runs without them. Declaring them would make them
 # required, which is the opposite of what they are.
-# On a controller python-hostlist comes with luna2-daemon's pin and slurmlint with the trixd
-# role's slurm helper tasks (and the OOD Slurm app); CI installs both itself. The slurm
-# plugin's helper imports them inside a try and answers 503 without them.
-OPTIONAL = {"trinityx_config_slurm", "trinityx_config_genders", "hostlist", "slurmlint"}
+# On a controller slurmlint comes with the trixd role's slurm helper tasks (and the OOD Slurm
+# app); CI installs it itself. The slurm plugin's helper imports it inside a try and answers
+# 503 without it.
+OPTIONAL = {"slurmlint"}
 
 
 def test_everything_the_daemon_imports_is_in_requirements():
@@ -103,3 +103,64 @@ def test_everything_the_daemon_imports_is_in_requirements():
 
     assert missing == {}, (f"imported but not in requirements.txt: {missing}. Declare it, "
                            f"or import it inside a try and list it in OPTIONAL here.")
+
+
+# What a controller may not have: the optionals above, plus python-hostlist, which is a third
+# party's package and which nothing under trixd/ imports any more. A plugin needing any of them
+# to load does not degrade where it is absent, it disappears.
+ABSENT = sorted(OPTIONAL | {"hostlist"})
+
+_IMPORTS = """
+import importlib
+import sys
+
+absent = set(sys.argv[1].split(","))
+
+
+class Gone:
+    \"\"\"Whatever a controller does not have: the import fails as it would there.\"\"\"
+
+    def find_spec(self, name, path=None, target=None):
+        if name.split(".")[0] in absent:
+            raise ImportError("No module named %r" % name)
+        return None
+
+
+sys.meta_path.insert(0, Gone())
+for name in sorted(absent):
+    try:
+        importlib.import_module(name)
+    except ImportError:
+        continue
+    raise SystemExit("setup: %s imported although it is blocked" % name)
+for module in sys.argv[2].split(","):
+    importlib.import_module(module)
+print("imported")
+"""
+
+
+def test_every_shipped_plugin_imports_without_the_packages_a_controller_may_lack():
+    """
+    A plugin whose module scope needs one of those packages cannot be imported without it, and
+    a plugin that cannot be imported is not served at all - where importing it inside a try
+    costs one endpoint. Both sides are derived: the plugins from their manifests, the packages
+    from the list above, so a plugin added later is held to this without an edit here.
+
+    It runs in its own interpreter: blocking an import in this one would leave the rest of the
+    suite with a second copy of whatever was reimported.
+    """
+    import glob
+    import subprocess
+
+    root = os.path.dirname(trixd.__file__)
+    plugins = sorted(os.path.basename(os.path.dirname(path))
+                     for path in glob.glob(os.path.join(root, "plugins", "*", "manifest.yaml")))
+    assert plugins, "no shipped plugin was found, so this proves nothing"
+    modules = [f"trixd.plugins.{name}.backend" for name in plugins]
+
+    done = subprocess.run([sys.executable, "-c", _IMPORTS, ",".join(ABSENT), ",".join(modules)],
+                          cwd=os.path.dirname(root), capture_output=True, text=True,
+                          env={**os.environ, "PYTHONPATH": os.path.dirname(root)}, timeout=300)
+    assert done.returncode == 0 and done.stdout.strip() == "imported", (
+        f"without {', '.join(ABSENT)} a shipped plugin does not import:\n"
+        f"{done.stdout}{done.stderr}")

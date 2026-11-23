@@ -39,7 +39,7 @@ import sys
 from trixd.common import logging as trixlog
 from trixd.common import settings as configuration
 from trixd.common.constants import DAEMON_NAME, DAEMON_VERSION
-from trixd.core import instance
+from trixd.core import instance, serving
 
 LOGGER = trixlog.get("server")
 
@@ -76,6 +76,8 @@ def build_config(config):
     if not served.bind:
         raise SystemExit("neither BIND nor INSECURE_BIND is usable; check trixd.ini")
 
+    # Must stay 1: the plugin registry, the render engine and the outbox's breaker are
+    # process-local, so a second worker would halve the breaker and split the rest.
     served.workers = 1
     served.websocket_max_message_size = config.api.max_message
     # A proxy or a firewall drops a socket it sees nothing on, and a terminal is often idle.
@@ -130,8 +132,12 @@ def serve(config_file: str = "") -> int:
 
 async def _run(hypercorn_serve, application, hypercorn_config) -> None:
     """
-    Serve, with SIGHUP wired to a plugin reload so ExecReload does what it says.
+    Serve from a loop of our own, so what a closing socket raises is ours to deal with,
+    and with SIGHUP wired to a plugin reload so ExecReload does what it says.
     """
+    # Hypercorn installs a handler of its own in its multi-process entry point, which this
+    # does not use: serving the two binds from one loop means owning the loop as well.
+    asyncio.get_running_loop().set_exception_handler(serving.exception_handler)
     _on_hangup(application)
     await hypercorn_serve(application, hypercorn_config)
 
