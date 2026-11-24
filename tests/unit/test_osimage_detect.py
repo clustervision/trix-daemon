@@ -226,6 +226,16 @@ def test_the_mirrors_map_names_the_sources_of_a_record_and_the_arch_entry_wins()
             rules.check_mirrors(held)
 
 
+@pytest.mark.parametrize("key", [9.6, None, 9])
+def test_a_mirrors_key_that_is_not_a_string_is_refused_as_any_other_bad_key(key):
+    """
+    A YAML file gives keys a JSON body never could, a number or nothing at all; they are
+    refused with the key named, as a misspelt one is.
+    """
+    with pytest.raises(BadRequest, match=re.escape(f"mirrors key {key!r} is not")):
+        rules.check_mirrors({key: ["/isos/x.iso"]})
+
+
 def test_the_record_is_held_against_what_the_sources_are():
     """
     The distribution word has to be the family's and the major release the sources',

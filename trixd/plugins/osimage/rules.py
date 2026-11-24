@@ -55,7 +55,7 @@ MEDIA_ITEM_MOST: int = 2048
 MEDIA_USERINFO = re.compile(r"^[a-z]+://[^/?#]*@")
 MEDIA_NAMED = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*)=")
 # What a create's own sources are recorded as: the key of the mirrors entry takes the place
-# of this word when the settings gave them, and a key always holds a slash.
+# of this word when the mirrors file or setting gave them, and a key always holds a slash.
 GIVEN: str = "create"
 # A key of the mirrors map: the record's distribution and release as the create schema
 # takes them, and the architecture in any of its spellings when the entry is for one.
@@ -197,7 +197,7 @@ def check_mirrors(mirrors) -> None:
         raise BadRequest("mirrors must be a map of distribution/osrelease[/architecture] "
                          "to a list of sources")
     for key, media in mirrors.items():
-        found = MIRROR_KEY.match(key)
+        found = MIRROR_KEY.match(key) if isinstance(key, str) else None
         if not found or (found.group(3) and detect.norm_arch(found.group(3)) is None):
             raise BadRequest(f"mirrors key {key!r} is not <distribution>/<osrelease> or "
                              f"<distribution>/<osrelease>/<architecture>")
@@ -205,6 +205,46 @@ def check_mirrors(mirrors) -> None:
             check_media(media)
         except BadRequest as error:
             raise BadRequest(f"mirrors entry {key}: {error.message}") from None
+
+
+class _OnceLoader(yaml.SafeLoader):
+    """
+    A safe loader that refuses a mapping key written twice.
+    """
+
+    def construct_mapping(self, node, deep=False):
+        # PyYAML keeps the last of a repeated key and drops the first without a word.
+        mapping = super().construct_mapping(node, deep)
+        seen = set()
+        for key_node, _ in node.value:
+            key = self.construct_object(key_node, deep=True)
+            if key in seen:
+                raise yaml.constructor.ConstructorError(
+                    None, None, f"the key {key!r} is written twice", key_node.start_mark)
+            seen.add(key)
+        return mapping
+
+
+def read_mirrors(path: str) -> dict:
+    """
+    The mirrors map of the file at this path, checked whole: no file, or a file holding
+    nothing, is no entries, and a file that cannot be read or holds a fault is refused.
+    """
+    try:
+        with open(path, "rb") as handle:
+            mirrors = yaml.load(handle, Loader=_OnceLoader)
+    except FileNotFoundError:
+        return {}
+    except (OSError, yaml.YAMLError) as error:
+        raise BadRequest(f"the mirrors file {path} cannot be read: "
+                         f"{' '.join(str(error).split())}") from None
+    if mirrors is None:
+        return {}
+    try:
+        check_mirrors(mirrors)
+    except BadRequest as error:
+        raise BadRequest(f"{path}: {error.message}") from None
+    return mirrors
 
 
 def entry_for(mirrors: dict, distribution: str, osrelease: str, arch: str) -> tuple:
@@ -229,8 +269,8 @@ def sources_for(mirrors: dict, distribution: str, osrelease: str, arch: str):
 
 def rung(request: dict, verdict: dict) -> str:
     """
-    The line that says where a build's sources came from: the create, the mirrors setting's
-    entry for the record, or neither, in which case the books' own.
+    The line that says where a build's sources came from: the create, the entry for the
+    record in the mirrors file or the mirrors setting, or neither, in which case the books' own.
     """
     came = request["mirrors_from"]
     repositories = verdict.get("repositories") or []
@@ -239,7 +279,8 @@ def rung(request: dict, verdict: dict) -> str:
         count = f"{len(repositories)} repositories" if repositories else str(len(request["media"]))
         return f"mirrors: {count} given on the create" + (f": {ids}" if ids else "")
     if came:
-        return f"mirrors: from the builder's settings for {came}" + (
+        where = request.get("mirrors_file") or "the builder's settings"
+        return f"mirrors: from {where} for {came}" + (
             f": {len(repositories)} repositories: {ids}" if ids else "")
     return f"no mirrors: {verdict['where']}"
 

@@ -536,9 +536,9 @@ caller with a deadline hits does the least it can before answering: Luna's `crea
 checks the body, writes the job and starts the build inside the five seconds Luna waits,
 and leaves every slow step to the build, reading the sources and probing the controller
 included; a refusal found there is the reason the build failed, which the trigger tells
-the caller as it would any failed build. What the sources are is a setting too, a
-`mirrors` map keyed by the record's distribution, release and architecture, looked up at
-the accept when the body names none, so the body Luna sends needs no source of its own;
+the caller as it would any failed build. What the sources are is the controller's to say
+too, a `mirrors` map keyed by the record's distribution, release and architecture, held in
+the YAML file the `mirrors_file` setting names or else in the `mirrors` setting, looked up at the accept when the body names none, so the body Luna sends needs no source of its own;
 with no entry the build runs the books with no source named and they build from what
 they hold. What the build runs is a setting, so the chain around a build can be exercised
 with a `builder` that only says a few lines, or says them and fails, before any real

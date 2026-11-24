@@ -63,7 +63,7 @@ schemas:
         as the list to build from; a repository on this controller's own disk is bound
         read-only in the image for the build. The release and arch are the record's. A
         source may not carry a user name or password. Luna sends none unless the operator
-        names them, and the mirrors setting then names them.
+        names them, and the mirrors file, or the mirrors setting, then names them.
       example: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]
   settings:
     repo:
@@ -113,6 +113,15 @@ schemas:
         takes them. The entry for the architecture is taken before the one without; a
         record with neither is built from what the books hold.
       example: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"], "redhat/9.6/arm64": ["https://download.rockylinux.org/pub/rocky/9/"]}
+    mirrors_file:
+      type: string
+      optional: true
+      description: >
+        The YAML file holding the sources of a create that names none, a map of the shape
+        `mirrors` has. It is read at every such create and its entry is taken before the
+        one in `mirrors`; with no file there are no entries. The file is per controller and
+        is not replicated.
+      example: /trinity/local/trixd/daemon/config/osimage-mirrors.yaml
     concurrency:
       type: integer
       optional: true
@@ -165,12 +174,13 @@ endpoints:
       The checkout the books are taken from, the https address it is fetched from when it
       is not there, the cluster's answer file, where the tree and the job directories go, the Python
       the builds run under, where the collections are when ansible is not left to find them, the
-      mirrors a create without sources builds from, the concurrency cap, the limit in
+      mirrors a create without sources builds from and the file they are read from first,
+      the concurrency cap, the limit in
       seconds, how many days a finished build's directory is kept, and the builder: the
       books, or a stub for exercising the chain around a build.
     response:
       description: The settings as held
-      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {}, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {}, mirrors_file: /trinity/local/trixd/daemon/config/osimage-mirrors.yaml, concurrency: 2, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
 
   - path: settings
     methods: [PATCH]
@@ -189,7 +199,7 @@ endpoints:
     request_example: {concurrency: 1, mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}}
     response:
       description: The settings as now held
-      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
+      example: {repo: /trinity/trinityx-combined, repo_url: "", answers: /trinity/local/backup/group_vars/all.yml, images_root: /trinity/images, state_root: /trinity/local/trixd/var/osimage, python: /trinity/local/python, collections: "", mirrors: {"redhat/9.6": ["https://download.rockylinux.org/pub/rocky/9/"]}, mirrors_file: /trinity/local/trixd/daemon/config/osimage-mirrors.yaml, concurrency: 1, limit_seconds: 21600, keep_days: 14, builder: books, stub_gap_seconds: 3}
     errors:
       400: A path is not absolute, repo_url is not an https address, a count or a number of seconds is below one, the builder is not one offered, or a mirrors key or source is not of the shape above
 
@@ -205,8 +215,8 @@ endpoints:
       release and architecture. The job is written and the build started as a child
       process of the daemon, and the answer comes at once, because Luna waits five
       seconds for it: nothing is detected or probed first. The sources are
-      `media` when the body names them, else the `mirrors` setting's entry for the
-      record, else none, and the books then build from what they hold: a RedHat image
+      `media` when the body names them, else the entry for the record in the file the
+      `mirrors_file` setting names, else the `mirrors` setting's entry for it, else none, and the books then build from what they hold: a RedHat image
       from this controller's own repositories, so only the controller's own release, an
       Ubuntu or Leap image from the mirror the books name. The build fetches the books when
       they are not there, checks what they need on the controller, reads the sources and
@@ -228,7 +238,7 @@ endpoints:
       description: The build, now running
       example: {name: rocky9, state: running, pid: 41872, started: "2026-10-29T10:12:03+00:00"}
     errors:
-      400: The image name, the architecture, the path or a source is refused; the message names what
+      400: The image name, the architecture, the path, a source or the mirrors file is refused; the message names what
       409: A build of that name is running, or it is still being told to Luna, or the concurrency limit is reached; the message says which
       503: The build process could not be started
 

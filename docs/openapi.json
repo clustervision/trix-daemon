@@ -768,7 +768,7 @@
                 "type": "null"
               }
             ],
-            "description": "The sources, one to eight, from a caller that names them: http or https mirror URLs, file:// trees and local ISO files. One of them has to identify the distribution; the others are checked for agreement. For a Red Hat family record the sources may instead all be dnf repositories, directories holding repodata, taken as the list to build from; a repository on this controller's own disk is bound read-only in the image for the build. The release and arch are the record's. A source may not carry a user name or password. Luna sends none unless the operator names them, and the mirrors setting then names them.\n",
+            "description": "The sources, one to eight, from a caller that names them: http or https mirror URLs, file:// trees and local ISO files. One of them has to identify the distribution; the others are checked for agreement. For a Red Hat family record the sources may instead all be dnf repositories, directories holding repodata, taken as the list to build from; a repository on this controller's own disk is bound read-only in the image for the build. The release and arch are the record's. A source may not carry a user name or password. Luna sends none unless the operator names them, and the mirrors file, or the mirrors setting, then names them.\n",
             "examples": [
               [
                 "https://download.rockylinux.org/pub/rocky/9/",
@@ -944,6 +944,21 @@
               }
             ],
             "title": "Mirrors"
+          },
+          "mirrors_file": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The YAML file holding the sources of a create that names none, a map of the shape `mirrors` has. It is read at every such create and its entry is taken before the one in `mirrors`; with no file there are no entries. The file is per controller and is not replicated.\n",
+            "examples": [
+              "/trinity/local/trixd/daemon/config/osimage-mirrors.yaml"
+            ],
+            "title": "Mirrors File"
           },
           "python": {
             "anyOf": [
@@ -4618,7 +4633,7 @@
     },
     "/api/v1/osimage/create": {
       "post": {
-        "description": "What `luna osimage create` hands this daemon once the osimage record exists: the\nimage, Luna's own request id, the image directory and the record's distribution,\nrelease and architecture. The job is written and the build started as a child\nprocess of the daemon, and the answer comes at once, because Luna waits five\nseconds for it: nothing is detected or probed first. The sources are\n`media` when the body names them, else the `mirrors` setting's entry for the\nrecord, else none, and the books then build from what they hold: a RedHat image\nfrom this controller's own repositories, so only the controller's own release, an\nUbuntu or Leap image from the mirror the books name. The build fetches the books when\nthey are not there, checks what they need on the controller, reads the sources and\nholds the record's distribution and release against them, and builds with the\n`builder` of the settings; a refusal at any of these ends the stream with a line\nsaying the build failed and why. The daemon posts the build's lines to the status\nstream of `request_id`, and when the build is done it sets the kernel version on\nLuna's record and asks Luna to pack the image on that same stream, which Luna's pack\nchain then ends. A build that fails, or whose pack Luna refuses, is ended here with\na line saying so and EOF. `image` names the job, so it has to match\n`^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`\nhas to be `images_root/<image>`, the directory the books build, with no symlink\nleading out of `images_root`, because the build mounts, chroots and removes inside\nit and the result is read and packed from the path. `architecture` is taken in\nLuna's words or the kernel's; one no client is published for is refused. Luna calls\nunder the account trixd.ini names.\n\n**Access:** operator or above: operator, manager and rootus",
+        "description": "What `luna osimage create` hands this daemon once the osimage record exists: the\nimage, Luna's own request id, the image directory and the record's distribution,\nrelease and architecture. The job is written and the build started as a child\nprocess of the daemon, and the answer comes at once, because Luna waits five\nseconds for it: nothing is detected or probed first. The sources are\n`media` when the body names them, else the entry for the record in the file the\n`mirrors_file` setting names, else the `mirrors` setting's entry for it, else none, and the books then build from what they hold: a RedHat image\nfrom this controller's own repositories, so only the controller's own release, an\nUbuntu or Leap image from the mirror the books name. The build fetches the books when\nthey are not there, checks what they need on the controller, reads the sources and\nholds the record's distribution and release against them, and builds with the\n`builder` of the settings; a refusal at any of these ends the stream with a line\nsaying the build failed and why. The daemon posts the build's lines to the status\nstream of `request_id`, and when the build is done it sets the kernel version on\nLuna's record and asks Luna to pack the image on that same stream, which Luna's pack\nchain then ends. A build that fails, or whose pack Luna refuses, is ended here with\na line saying so and EOF. `image` names the job, so it has to match\n`^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`\nhas to be `images_root/<image>`, the directory the books build, with no symlink\nleading out of `images_root`, because the build mounts, chroots and removes inside\nit and the result is read and packed from the path. `architecture` is taken in\nLuna's words or the kernel's; one no client is published for is refused. Luna calls\nunder the account trixd.ini names.\n\n**Access:** operator or above: operator, manager and rootus",
         "operationId": "osimage_create_post_api_v1_osimage_create_post",
         "requestBody": {
           "content": {
@@ -4665,7 +4680,7 @@
                 }
               }
             },
-            "description": "The image name, the architecture, the path or a source is refused; the message names what"
+            "description": "The image name, the architecture, the path, a source or the mirrors file is refused; the message names what"
           },
           "401": {
             "content": {
@@ -4742,7 +4757,7 @@
     },
     "/api/v1/osimage/settings": {
       "get": {
-        "description": "The checkout the books are taken from, the https address it is fetched from when it\nis not there, the cluster's answer file, where the tree and the job directories go, the Python\nthe builds run under, where the collections are when ansible is not left to find them, the\nmirrors a create without sources builds from, the concurrency cap, the limit in\nseconds, how many days a finished build's directory is kept, and the builder: the\nbooks, or a stub for exercising the chain around a build.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The checkout the books are taken from, the https address it is fetched from when it\nis not there, the cluster's answer file, where the tree and the job directories go, the Python\nthe builds run under, where the collections are when ansible is not left to find them, the\nmirrors a create without sources builds from and the file they are read from first,\nthe concurrency cap, the limit in\nseconds, how many days a finished build's directory is kept, and the builder: the\nbooks, or a stub for exercising the chain around a build.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "osimage_settings_get_api_v1_osimage_settings_get",
         "responses": {
           "200": {
@@ -4757,6 +4772,7 @@
                   "keep_days": 14,
                   "limit_seconds": 21600,
                   "mirrors": {},
+                  "mirrors_file": "/trinity/local/trixd/daemon/config/osimage-mirrors.yaml",
                   "python": "/trinity/local/python",
                   "repo": "/trinity/trinityx-combined",
                   "repo_url": "",
@@ -4852,6 +4868,7 @@
                       "https://download.rockylinux.org/pub/rocky/9/"
                     ]
                   },
+                  "mirrors_file": "/trinity/local/trixd/daemon/config/osimage-mirrors.yaml",
                   "python": "/trinity/local/python",
                   "repo": "/trinity/trinityx-combined",
                   "repo_url": "",
