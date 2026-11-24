@@ -59,7 +59,7 @@ schemas:
       type: string
       optional: true
       pattern: "^[a-z_][a-z0-9_-]*$"
-      description: The group the Slurm files belong to with group write (config-slurm's admin group); a save and a restore run with it
+      description: The group the Slurm files belong to with group write (the installer's admin group); a save and a restore run with it
       example: admins
   drain:
     names: &names
@@ -108,6 +108,12 @@ schemas:
     stamp: *stamp
     judged: *states
     rules: *rules
+  init:
+    reset:
+      type: boolean
+      optional: true
+      description: Put the installer's files back whatever the three hold, instead of only giving a file without the managed block its blocks
+      example: false
 
 endpoints:
   - path: config
@@ -312,6 +318,37 @@ endpoints:
       409: As a save
       502: As a save
       503: A backup cannot be read, or as a save; or Luna did not answer
+
+  - path: files/actions/init
+    methods: [POST]
+    minimum: manager
+    handler: init
+    schema: init
+    summary: Give the node, partition and gres files their managed blocks, or put the default files back
+    request_example: {reset: false}
+    description: |
+      A file without the TrinityX managed block gains the Defaults block and the TrinityX
+      block at its end, everything it holds kept; this is what makes a file one the render
+      writes, and the installer calls it once the files are in place. Refused 409 when all
+      three carry the block already. With `reset`, each of the three becomes this plugin's
+      default file under both blocks empty, whatever it held. The daemon writes the files
+      itself, as the render does and under the lock the render and a save take: the files
+      as they were to each `.bkp` first, then the three, put back where a write fails;
+      judged by slurmlint where it is installed. Restore writes those backups back as it
+      writes any, held to a save's rules, so it refuses a set whose lines outside the blocks
+      differ; that one is copied back by hand. The render runs before the answer, so Luna's
+      nodes are in the files (`rendered`; where false, `renders/config` says why). Luna's w
+      on the cluster, asked as the person.
+    response:
+      description: The files written, and whether the render then wrote
+      example: {files: [/etc/slurm/gres.conf, /etc/slurm/slurm-nodes.conf, /etc/slurm/slurm-partitions.conf], rendered: true}
+    errors:
+      400: slurmlint's lines
+      401: As a save
+      403: The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words
+      409: All three files carry the managed block already (send `reset`); or another change holds the files
+      502: A file cannot be read or written, the lock cannot be taken, or a cut save is not put back yet
+      503: Luna did not answer
 
   - path: files/actions/apply
     methods: [POST]

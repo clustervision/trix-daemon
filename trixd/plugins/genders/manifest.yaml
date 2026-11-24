@@ -20,6 +20,14 @@ description: >
   The genders file, rendered here from the same node list the slurm blocks are
   built from.
 
+schemas:
+  init:
+    reset:
+      type: boolean
+      optional: true
+      description: Leave nothing in the file but an empty managed block, instead of only giving a file without the block one
+      example: false
+
 endpoints:
   - path: config
     methods: [GET]
@@ -53,3 +61,24 @@ endpoints:
       example: {nodes: 10, file: /etc/genders}
     errors:
       404: The render has not run yet, or its last run failed; the message says why
+
+  - path: files/actions/init
+    methods: [POST]
+    minimum: manager
+    handler: init
+    schema: init
+    summary: Give the genders file its managed block, or empty it down to the block
+    request_example: {reset: false}
+    description: |
+      A file without the TrinityX managed block gains it at its end, everything it holds
+      kept; this is what makes the file one the render writes, and the installer calls it
+      once the file is in place. Refused 409 when the file carries the block already. With
+      `reset`, the file is left holding the block alone, as the installer first leaves it,
+      and the file as it was is kept beside it as `.bkp`. The render runs before the answer,
+      so Luna's nodes are in the file (`rendered`; where false, `renders/genders` says why).
+    response:
+      description: The file, the backup a reset made, and whether the render then wrote
+      example: {file: /etc/genders, rendered: true}
+    errors:
+      409: The file carries the managed block already (send `reset`)
+      502: The file cannot be read or written

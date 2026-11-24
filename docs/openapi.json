@@ -693,6 +693,27 @@
         "title": "Error",
         "type": "object"
       },
+      "GendersInit": {
+        "properties": {
+          "reset": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Leave nothing in the file but an empty managed block, instead of only giving a file without the block one",
+            "examples": [
+              false
+            ],
+            "title": "Reset"
+          }
+        },
+        "title": "GendersInit",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1421,7 +1442,7 @@
                 "type": "null"
               }
             ],
-            "description": "The group the Slurm files belong to with group write (config-slurm's admin group); a save and a restore run with it",
+            "description": "The group the Slurm files belong to with group write (the installer's admin group); a save and a restore run with it",
             "examples": [
               "admins"
             ],
@@ -1540,6 +1561,27 @@
           "reason"
         ],
         "title": "SlurmDrain",
+        "type": "object"
+      },
+      "SlurmInit": {
+        "properties": {
+          "reset": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Put the installer's files back whatever the three hold, instead of only giving a file without the managed block its blocks",
+            "examples": [
+              false
+            ],
+            "title": "Reset"
+          }
+        },
+        "title": "SlurmInit",
         "type": "object"
       },
       "SlurmPreview": {
@@ -3891,6 +3933,113 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/genders/files/actions/init": {
+      "post": {
+        "description": "A file without the TrinityX managed block gains it at its end, everything it holds\nkept; this is what makes the file one the render writes, and the installer calls it\nonce the file is in place. Refused 409 when the file carries the block already. With\n`reset`, the file is left holding the block alone, as the installer first leaves it,\nand the file as it was is kept beside it as `.bkp`. The render runs before the answer,\nso Luna's nodes are in the file (`rendered`; where false, `renders/genders` says why).\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "genders_init_post_api_v1_genders_files_actions_init_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "reset": false
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/GendersInit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "file": "/etc/genders",
+                  "rendered": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The file, the backup a reset made, and whether the render then wrote"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The file carries the managed block already (send `reset`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The file cannot be read or written"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Give the genders file its managed block, or empty it down to the block",
+        "tags": [
+          "genders"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/genders/renders/genders": {
@@ -8348,6 +8497,131 @@
           }
         ],
         "summary": "Make slurm read its files again",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/slurm/files/actions/init": {
+      "post": {
+        "description": "A file without the TrinityX managed block gains the Defaults block and the TrinityX\nblock at its end, everything it holds kept; this is what makes a file one the render\nwrites, and the installer calls it once the files are in place. Refused 409 when all\nthree carry the block already. With `reset`, each of the three becomes this plugin's\ndefault file under both blocks empty, whatever it held. The daemon writes the files\nitself, as the render does and under the lock the render and a save take: the files\nas they were to each `.bkp` first, then the three, put back where a write fails;\njudged by slurmlint where it is installed. Restore writes those backups back as it\nwrites any, held to a save's rules, so it refuses a set whose lines outside the blocks\ndiffer; that one is copied back by hand. The render runs before the answer, so Luna's\nnodes are in the files (`rendered`; where false, `renders/config` says why). Luna's w\non the cluster, asked as the person.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_init_post_api_v1_slurm_files_actions_init_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "reset": false
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmInit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "files": [
+                    "/etc/slurm/gres.conf",
+                    "/etc/slurm/slurm-nodes.conf",
+                    "/etc/slurm/slurm-partitions.conf"
+                  ],
+                  "rendered": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The files written, and whether the render then wrote"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "slurmlint's lines"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "All three files carry the managed block already (send `reset`); or another change holds the files"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A file cannot be read or written, the lock cannot be taken, or a cut save is not put back yet"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Give the node, partition and gres files their managed blocks, or put the default files back",
         "tags": [
           "slurm"
         ],

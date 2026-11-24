@@ -38,10 +38,12 @@ __maintainer__  = "Antoine Schonewille"
 __email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
+import os
 import re
+import stat
 
 from trixd.common import logging as trixlog
-from trixd.common.errors import BackendFailure
+from trixd.common.errors import BackendFailure, Conflict
 from trixd.plugins.slurm.hostnames import fold_nodeset
 from trixd.utils import blocks
 
@@ -49,6 +51,28 @@ LOGGER = trixlog.get("slurm")
 
 # The block each file keeps its presets in, written by the administrator or by the Slurm app.
 PRESETS: str = "Defaults"
+# What the installer's roles wrote above the presets block they gave a file.
+_PRESETS_NOTES: tuple = (
+    "# Defaults blocks are for trinityx-config-slurm to read and append generated config.",
+    "# The settings and values can be altered and will not be overwritten.")
+# The three files as the installer's slurm role first places them; its templates are the
+# source. Only a reset writes these: an init keeps the file the installer placed.
+INSTALLED: dict = {
+    "nodes": ("NodeName=DEFAULT Boards=1 SocketsPerBoard=1 CoresPerSocket=1 ThreadsPerCore=1 "
+              "RealMemory=100 State=UNKNOWN\n"
+              "\n"
+              "# Below line is an example/placeholder and can be altered\n"
+              "# NodeName=dummynode\n"
+              "\n"
+              "\n"),
+    "partitions": ("PartitionName=defq   Nodes=ALL Shared=YES MaxTime=INFINITE State=UP "
+                   "Default=YES AllowAccounts=ALL\n"
+                   "\n"
+                   "\n"),
+    "gres": "# File to configure slurm gres for nodes\n",
+}
+# What gives a file its first block; the render's refusal names it.
+INIT: str = "POST /api/v1/slurm/files/actions/init"
 # A preset line's settings: the first is the key the node or group is looked up by, the rest
 # are what the node's line carries. Anything after a `#` is a note about the preset.
 _SETTING = re.compile(r"(\S+)=(\S+)")
@@ -148,6 +172,69 @@ BLOCKS: dict = {"nodes": (nodes_block, False), "partitions": (partitions_block, 
                 "gres": (gres_block, True)}
 
 
+def initial(configs: dict, manager: str, reset: bool) -> tuple:
+    """
+    (the texts an init writes, what each file holds now). A file with no block of ours
+    gains the presets block and ours at its end, as the installer's roles gave them; a reset
+    takes the installer's own file under both instead, whatever the file holds. All three
+    carrying our block already is a Conflict, since there is nothing to give.
+    """
+    held = {}
+    for kind, path in configs.items():
+        try:
+            with open(path, "rb") as handle:
+                held[kind] = handle.read()
+        except OSError as error:
+            raise BackendFailure(f"cannot read {path}: {error}") from None
+    try:
+        texts = dict(INSTALLED) if reset else {k: v.decode("utf-8") for k, v in held.items()}
+    except UnicodeDecodeError as error:
+        raise BackendFailure(f"the slurm files are not text: {error}") from None
+    if all(blocks.block(text, manager) is not None for text in texts.values()):
+        raise Conflict(f"{', '.join(sorted(configs.values()))} carry the {manager} managed "
+                       f"block already, so there is nothing to initialise; `reset` puts the "
+                       f"installer's files back, and the files as they are go to .bkp")
+    for kind, text in texts.items():
+        if blocks.block(text, manager) is None:
+            if blocks.block(text, PRESETS) is None:
+                text = blocks.append(text, PRESETS, _PRESETS_NOTES)
+            texts[kind] = blocks.append(text, manager)
+    return texts, held
+
+
+def _keep(path: str, data: bytes) -> None:
+    """
+    What the file held, in the `.bkp` a restore reads. One that is not there yet is made
+    with the file's owner, group and mode, which is what lets the helper write it later.
+    """
+    backup = f"{path}.bkp"
+    made = not os.path.lexists(backup)
+    handle = os.open(backup, os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW, 0o600)
+    with os.fdopen(handle, "wb") as target:
+        if made:
+            found = os.stat(path)
+            os.fchown(handle, found.st_uid, found.st_gid)
+            os.fchmod(handle, stat.S_IMODE(found.st_mode))
+        target.write(data)
+        target.flush()
+        os.fsync(handle)
+
+
+def write_initial(configs: dict, texts: dict, held: dict) -> list:
+    """
+    An init's texts into the three files, what each held into its `.bkp` first. Every
+    backup is written before the first file, so a write that fails leaves what was there.
+    """
+    for write, source in ((_keep, held), (blocks.put, texts)):
+        for kind, path in configs.items():
+            try:
+                write(path, source[kind])
+            except OSError as error:
+                raise BackendFailure(f"cannot write {path}"
+                                     f"{'.bkp' if write is _keep else ''}: {error}") from None
+    return sorted(configs.values())
+
+
 def write_all(nodes: list, configs: dict, manager: str) -> list:
     """
     The managed block of each file in `configs`, built from `nodes` and that file's own
@@ -168,8 +255,8 @@ def write_all(nodes: list, configs: dict, manager: str) -> list:
     if missing:
         raise BackendFailure(f"{', '.join(missing)} has no {manager} managed block, so the "
                              f"slurm files were left exactly as they are. Taking the block "
-                             f"out is how a site keeps a file of its own; put it back for "
-                             f"this daemon to write that file again")
+                             f"out is how a site keeps a file of its own; {INIT} puts it "
+                             f"back for this daemon to write that file again")
     for kind, text in held.items():
         build, multiple = BLOCKS[kind]
         wanted[kind] = blocks.replace(text, manager,

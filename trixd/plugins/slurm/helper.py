@@ -20,7 +20,7 @@
 """
 The slurm plugin's helper: drain, resume, save, restore and apply on slurm's files, run by the
 plugin's handlers as the account `trinityx-slurm` (slurm's AdminLevel Administrator), never as
-root; a save and a restore run with the files' group (root's files, group write, as config-slurm
+root; a save and a restore run with the files' group (root's files, group write, as the installer
 leaves them) and start no child process.
 
     setpriv --reuid trinityx-slurm ... -- python3 -I -B helper.py <verb>   < request.json
@@ -303,7 +303,7 @@ def granted(state: Path) -> str:
 
 def _not_ours(path: Path, group: int) -> str:
     """Why the helper may not write one of the six, "" when it may: a regular file, not a link,
-    root's, of the files' group with group read and write (config-slurm sets them so)."""
+    root's, of the files' group with group read and write (the installer sets them so)."""
     try:
         found = os.lstat(path)
     except FileNotFoundError:

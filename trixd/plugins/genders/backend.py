@@ -34,10 +34,13 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import os
+
 from trixd.common import logging as trixlog
-from trixd.common.errors import BackendFailure
+from trixd.common.errors import BackendFailure, Conflict
+from trixd.core.render.engine import current as renders
 from trixd.plugins.slurm.backend import node_set
-from trixd.utils import blocks
+from trixd.utils import blocks, files
 
 LOGGER = trixlog.get("genders")
 
@@ -47,6 +50,9 @@ WRITES: dict = {
     "genders_file": "/etc/genders",
     "managed_block": "TrinityX",
 }
+RENDER: str = "genders/renders/genders"
+# What gives the file its first block; the render's refusal names it.
+INIT: str = "POST /api/v1/genders/files/actions/init"
 
 
 def genders_block(nodes: list) -> str:
@@ -88,11 +94,42 @@ class Backend:
         wanted = blocks.replace(held, manager, genders_block(nodes))
         if wanted is None:
             raise BackendFailure(f"{path} has no {manager} managed block, so it was left "
-                                 "alone")
+                                 f"alone; {INIT} gives it one")
         try:
             blocks.put(path, wanted, follow=True)
         except OSError as error:
             raise BackendFailure(f"cannot write {path}: {error}") from None
+
+    def init(self, body: dict = None) -> dict:
+        """
+        Give the genders file its managed block at its end, as the installer's role gave
+        it, or with `reset` leave nothing but the block, the file as it was kept beside it
+        as .bkp; then render. Under the engine's lock, so no render writes in between.
+        """
+        where = self.config()
+        path, manager = where["genders_file"], where["managed_block"]
+        reset = bool((body or {}).get("reset"))
+        answer = {"file": path}
+        with renders().lock:
+            try:
+                with open(path, "r", encoding="utf-8") as handle:
+                    held = handle.read()
+            except OSError as error:
+                raise BackendFailure(f"cannot read {path}: {error}") from None
+            if not reset and blocks.block(held, manager) is not None:
+                raise Conflict(f"{path} carries the {manager} managed block already, so "
+                               f"there is nothing to initialise; `reset` leaves the block "
+                               f"alone in it, and the file as it is goes to .bkp")
+            try:
+                if reset:
+                    answer["backup"] = files.write(os.path.realpath(path) + ".bkp", held)
+                blocks.put(path, blocks.append("" if reset else held, manager), follow=True)
+            except OSError as error:
+                raise BackendFailure(f"cannot write {path}: {error}") from None
+            LOGGER.info("%s was %s its %s managed block", path,
+                        "reset to" if reset else "given", manager)
+            item = renders().renders.get(RENDER)
+            return {**answer, "rendered": item is not None and renders().run(item)}
 
     def render_genders(self) -> dict:
         """

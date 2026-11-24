@@ -71,7 +71,7 @@ DEFAULT_CONFIG: dict = {
 # A person calls these routes with their own trixd token, and Luna decides through the luna
 # plugin (persons.may), asked as that person. The handlers then run nothing but helper.py,
 # stepped down to ACCOUNT (slurm's AdminLevel Administrator), with the request on stdin. The six
-# files are root's and of the cluster's admin group with group write (config-slurm sets them so):
+# files are root's and of the cluster's admin group with group write (the installer sets them so):
 # only a save and a restore, which start no child process, run with that group, given to that
 # process alone.
 WRITERS = ("save", "restore")
@@ -299,6 +299,30 @@ def render_lock(settings: dict):
         os.close(fd)
 
 
+def _linted(texts: dict) -> None:
+    """
+    slurmlint over an init's texts, as a save's are judged. Where it is not installed
+    nothing judges them here, as nothing judges the render's but slurm itself.
+    """
+    try:
+        import trixd.plugins.slurm.lintcheck as lintcheck
+    except ImportError:
+        LOGGER.info("slurmlint is not installed, so the init's texts are written unjudged")
+        return
+    problems = lintcheck.lint(dict(texts))
+    if problems:
+        raise BadRequest("slurmlint: " + "; ".join(problems))
+
+
+def _rendered() -> bool:
+    """
+    The render run now, and whether it wrote: an init answers with Luna's nodes in the files.
+    Where it did not, `renders/config` says why, and the render runs again by itself.
+    """
+    item = renders().renders.get(RENDER)
+    return item is not None and renders().run(item)
+
+
 def _contents(paths) -> dict:
     """
     What each managed file holds now. A file that is not there yet holds nothing, so its
@@ -503,6 +527,38 @@ class Backend:
         Write the backups' texts back, the backups kept.
         """
         return self._write("restore", body, caller, request)
+
+    def init(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Give the three files their managed blocks, or with `reset` the installer's own text
+        under them, then render. Written here as the render writes, under the engine's lock
+        and the helper's, so neither a render nor a save writes in between.
+        """
+        name, person = _person(request, caller, "init")
+        _may(person, "init", "cluster", ["cluster"], "w")
+        settings = self.config()
+        reset = bool((body or {}).get("reset"))
+        files = {"nodes": settings["nodes_file"], "partitions": settings["partitions_file"],
+                 "gres": settings["gres_file"]}
+        with renders().lock:
+            try:
+                with render_lock(settings):
+                    texts, held = configfiles.initial(files, settings["manager"], reset)
+                    _linted(texts)
+                    try:
+                        wrote = configfiles.write_initial(files, texts, held)
+                    except BackendFailure as error:
+                        unrestored = _restore({files[kind]: held[kind] for kind in files})
+                        state = (f"{', '.join(unrestored)} could not be put back"
+                                 if unrestored else "the three files are as they were")
+                        raise BackendFailure(f"{error}; {state}") from None
+            except NotNow:
+                raise Conflict("another Slurm change holds the slurm files, so the init "
+                               "wrote nothing: try again") from None
+            done = "cluster, reset" if reset else "cluster"
+            audit.granted(name, "slurm init", done)
+            LOGGER.info("%s: slurm init %s", name, done)
+            return {"files": wrote, "rendered": _rendered()}
 
     def apply(self, caller=None, request=None) -> dict:
         """
