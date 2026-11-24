@@ -858,19 +858,17 @@ def _books_file(tmp_path, relative: str, text: str) -> str:
 
 @pytest.mark.parametrize("given, from_where, said", [
     (["a mirror"], "create", "mirrors: 1 given on the create"),
-    (["a mirror"], "held", "mirrors: 1 held from luna osimage create by alice"),
     (["a mirror"], "redhat/9.6", "mirrors: from the builder's settings for redhat/9.6"),
     (None, None, "no mirrors: this controller's own repositories"),
 ])
 def test_the_first_line_of_a_build_says_where_its_sources_came_from(tmp_path, monkeypatch,
                                                                     sigterm_restored, given, from_where, said):
     """
-    The sources of a create are the body's, else the ones held for its name, else the
-    mirrors map's entry for the record, else the books' own; the operator is told which,
-    and who held them, before what was built from them.
+    The sources of a create are the body's, else the mirrors map's entry for the record,
+    else the books' own; the operator is told which, before what was built from them.
     """
     jobdir, started, _ = _job(tmp_path, monkeypatch, media=MIRROR if given else None,
-                              mirrors_from=from_where, kernels=("5.14.0-503.el9",), held_by="alice")
+                              mirrors_from=from_where, kernels=("5.14.0-503.el9",))
     assert runner.Build(jobdir).run() == 0
     lines = _said(jobdir)
     assert lines[0] == said

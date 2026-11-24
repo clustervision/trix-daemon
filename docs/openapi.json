@@ -1024,29 +1024,6 @@
         "title": "OsimageSettings",
         "type": "object"
       },
-      "OsimageSources": {
-        "properties": {
-          "media": {
-            "description": "The sources the next create of this image builds from, one to eight, as the create's `media` takes them; a directory or an ISO has to be on this controller\n",
-            "examples": [
-              [
-                "https://download.rockylinux.org/pub/rocky/9/",
-                "/isos/Rocky-9.6-x86_64-dvd.iso"
-              ]
-            ],
-            "items": {
-              "type": "string"
-            },
-            "title": "Media",
-            "type": "array"
-          }
-        },
-        "required": [
-          "media"
-        ],
-        "title": "OsimageSources",
-        "type": "object"
-      },
       "PrometheusConfig": {
         "properties": {
           "exporters_file": {
@@ -4641,7 +4618,7 @@
     },
     "/api/v1/osimage/create": {
       "post": {
-        "description": "What `luna osimage create` hands this daemon once the osimage record exists: the\nimage, Luna's own request id, the image directory and the record's distribution,\nrelease and architecture. The job is written and the build started as a child\nprocess of the daemon, and the answer comes at once, because Luna waits five\nseconds for it: nothing is detected or probed first. The sources are\n`media` when the body names them, else what `<name>/sources` holds for the image,\nelse the `mirrors` setting's entry for the record, else none, and the books then\nbuild from what they hold: a RedHat image\nfrom this controller's own repositories, so only the controller's own release, an\nUbuntu or Leap image from the mirror the books name. The build fetches the books when\nthey are not there, checks what they need on the controller, reads the sources and\nholds the record's distribution and release against them, and builds with the\n`builder` of the settings; a refusal at any of these ends the stream with a line\nsaying the build failed and why. The daemon posts the build's lines to the status\nstream of `request_id`, and when the build is done it sets the kernel version on\nLuna's record and asks Luna to pack the image on that same stream, which Luna's pack\nchain then ends. A build that fails, or whose pack Luna refuses, is ended here with\na line saying so and EOF. `image` names the job, so it has to match\n`^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`\nhas to be `images_root/<image>`, the directory the books build, with no symlink\nleading out of `images_root`, because the build mounts, chroots and removes inside\nit and the result is read and packed from the path. `architecture` is taken in\nLuna's words or the kernel's; one no client is published for is refused. Luna calls\nunder the account trixd.ini names.\n\n**Access:** operator or above: operator, manager and rootus",
+        "description": "What `luna osimage create` hands this daemon once the osimage record exists: the\nimage, Luna's own request id, the image directory and the record's distribution,\nrelease and architecture. The job is written and the build started as a child\nprocess of the daemon, and the answer comes at once, because Luna waits five\nseconds for it: nothing is detected or probed first. The sources are\n`media` when the body names them, else the `mirrors` setting's entry for the\nrecord, else none, and the books then build from what they hold: a RedHat image\nfrom this controller's own repositories, so only the controller's own release, an\nUbuntu or Leap image from the mirror the books name. The build fetches the books when\nthey are not there, checks what they need on the controller, reads the sources and\nholds the record's distribution and release against them, and builds with the\n`builder` of the settings; a refusal at any of these ends the stream with a line\nsaying the build failed and why. The daemon posts the build's lines to the status\nstream of `request_id`, and when the build is done it sets the kernel version on\nLuna's record and asks Luna to pack the image on that same stream, which Luna's pack\nchain then ends. A build that fails, or whose pack Luna refuses, is ended here with\na line saying so and EOF. `image` names the job, so it has to match\n`^[a-z0-9][a-z0-9_.-]{0,63}$` and may be neither `settings` nor `create`. `path`\nhas to be `images_root/<image>`, the directory the books build, with no symlink\nleading out of `images_root`, because the build mounts, chroots and removes inside\nit and the result is read and packed from the path. `architecture` is taken in\nLuna's words or the kernel's; one no client is published for is refused. Luna calls\nunder the account trixd.ini names.\n\n**Access:** operator or above: operator, manager and rootus",
         "operationId": "osimage_create_post_api_v1_osimage_create_post",
         "requestBody": {
           "content": {
@@ -4688,7 +4665,7 @@
                 }
               }
             },
-            "description": "The image name, the architecture, the path or a source is refused, or the sources held for the image are more than an hour old; the message names what"
+            "description": "The image name, the architecture, the path or a source is refused; the message names what"
           },
           "401": {
             "content": {
@@ -5189,225 +5166,6 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "operator"
-      }
-    },
-    "/api/v1/osimage/{name}/sources": {
-      "delete": {
-        "description": "Forget what `<name>/sources` holds before any create took it: what `luna osimage\ncreate` does when the create it was about to ask Luna for was refused.\n\n**Access:** manager or above: manager and rootus",
-        "operationId": "osimage_sources_delete_api_v1_osimage__name__sources_delete",
-        "parameters": [
-          {
-            "description": "The image name the sources were held for",
-            "examples": {
-              "example": {
-                "value": "rocky9"
-              }
-            },
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "description": "The image name the sources were held for",
-              "title": "Name",
-              "type": "string"
-            }
-          }
-        ],
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "held": false,
-                  "name": "rocky9"
-                },
-                "schema": {}
-              }
-            },
-            "description": "Nothing is held for the name now"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "message": "a valid token is missing"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "No token, or one that is not valid"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "message": "this needs manager; you hold reader"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The caller's role is below this route's minimum"
-          },
-          "404": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "No sources are held for that name"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "token": []
-          },
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Drop the sources held for an image",
-        "tags": [
-          "osimage"
-        ],
-        "x-trixd-access": "role",
-        "x-trixd-minimum": "manager"
-      },
-      "post": {
-        "description": "What `luna osimage create --mirrors` hands this daemon before it asks Luna for the\ncreate: the sources the build of `name` takes, because the create Luna then sends\ncarries none. They are checked as `media` is, and a directory or an ISO has to be on\nthis controller; nothing is fetched or read until the build. The create of that name\narriving within an hour takes them, and they are forgotten with it; one arriving later\nis refused naming their age, and sources no create came for are forgotten after a day.\nA second hold for the name replaces the first. manager, because a path named here is\nread and an ISO mounted by the build, as root.\n\n**Access:** manager or above: manager and rootus",
-        "operationId": "osimage_sources_post_api_v1_osimage__name__sources_post",
-        "parameters": [
-          {
-            "description": "The image name the create will carry",
-            "examples": {
-              "example": {
-                "value": "rocky9"
-              }
-            },
-            "in": "path",
-            "name": "name",
-            "required": true,
-            "schema": {
-              "description": "The image name the create will carry",
-              "title": "Name",
-              "type": "string"
-            }
-          }
-        ],
-        "requestBody": {
-          "content": {
-            "application/json": {
-              "examples": {
-                "example": {
-                  "value": {
-                    "media": [
-                      "https://download.rockylinux.org/pub/rocky/9/",
-                      "/isos/Rocky-9.6-x86_64-dvd.iso"
-                    ]
-                  }
-                }
-              },
-              "schema": {
-                "$ref": "#/components/schemas/OsimageSources"
-              }
-            }
-          },
-          "required": true
-        },
-        "responses": {
-          "200": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "held_at": "2026-11-23T10:11:40+00:00",
-                  "held_by": "trixd",
-                  "media": [
-                    "https://download.rockylinux.org/pub/rocky/9/",
-                    "/isos/Rocky-9.6-x86_64-dvd.iso"
-                  ],
-                  "name": "rocky9"
-                },
-                "schema": {}
-              }
-            },
-            "description": "The sources now held, by whom and since when"
-          },
-          "400": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The name or a source is refused as a create's would be, or a directory or ISO is not on this controller; the message names which"
-          },
-          "401": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "message": "a valid token is missing"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "No token, or one that is not valid"
-          },
-          "403": {
-            "content": {
-              "application/json": {
-                "example": {
-                  "message": "this needs manager; you hold reader"
-                },
-                "schema": {
-                  "$ref": "#/components/schemas/Error"
-                }
-              }
-            },
-            "description": "The caller's role is below this route's minimum"
-          },
-          "422": {
-            "content": {
-              "application/json": {
-                "schema": {
-                  "$ref": "#/components/schemas/HTTPValidationError"
-                }
-              }
-            },
-            "description": "Validation Error"
-          }
-        },
-        "security": [
-          {
-            "token": []
-          },
-          {
-            "bearer": []
-          }
-        ],
-        "summary": "Hold the sources of an image's next create",
-        "tags": [
-          "osimage"
-        ],
-        "x-trixd-access": "role",
-        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/prometheus/config": {

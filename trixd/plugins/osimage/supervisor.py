@@ -34,7 +34,7 @@ import threading
 import time
 
 from trixd.common import logging as trixlog
-from trixd.plugins.osimage import backend, jobs, push, sources
+from trixd.plugins.osimage import backend, jobs, push
 
 LOGGER = trixlog.get("osimage.supervisor")
 
@@ -122,8 +122,6 @@ class Supervisor:
         forgotten = jobs.prune(state_root, settings["keep_days"])
         if forgotten:
             LOGGER.info("forgot %s", ", ".join(forgotten))
-        for name in sources.prune():
-            LOGGER.info("forgot the sources held for %s: no create came for them in a day", name)
 
     def _watch(self, jobdir: str, held: dict, settings: dict) -> None:
         """

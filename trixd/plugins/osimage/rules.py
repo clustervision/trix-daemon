@@ -57,8 +57,6 @@ MEDIA_NAMED = re.compile(r"^([A-Za-z][A-Za-z0-9_.-]*)=")
 # What a create's own sources are recorded as: the key of the mirrors entry takes the place
 # of this word when the settings gave them, and a key always holds a slash.
 GIVEN: str = "create"
-# What a create whose sources were held for its name beforehand records them as.
-HELD: str = "held"
 # A key of the mirrors map: the record's distribution and release as the create schema
 # takes them, and the architecture in any of its spellings when the entry is for one.
 MIRROR_KEY = re.compile(r"^([a-z0-9._-]{1,32})/([A-Za-z0-9._+-]{1,32})(?:/([a-z0-9_]{2,16}))?$")
@@ -231,18 +229,15 @@ def sources_for(mirrors: dict, distribution: str, osrelease: str, arch: str):
 
 def rung(request: dict, verdict: dict) -> str:
     """
-    The line that says where a build's sources came from: the create, the sources held for
-    the name, the mirrors setting's entry for the record, or neither, in which case the
-    books' own.
+    The line that says where a build's sources came from: the create, the mirrors setting's
+    entry for the record, or neither, in which case the books' own.
     """
     came = request["mirrors_from"]
     repositories = verdict.get("repositories") or []
     ids = ", ".join(repository["id"] for repository in repositories)
-    if came in (GIVEN, HELD):
+    if came == GIVEN:
         count = f"{len(repositories)} repositories" if repositories else str(len(request["media"]))
-        origin = ("given on the create" if came == GIVEN else
-                  f"held from luna osimage create by {request.get('held_by') or 'unknown'}")
-        return f"mirrors: {count} {origin}" + (f": {ids}" if ids else "")
+        return f"mirrors: {count} given on the create" + (f": {ids}" if ids else "")
     if came:
         return f"mirrors: from the builder's settings for {came}" + (
             f": {len(repositories)} repositories: {ids}" if ids else "")

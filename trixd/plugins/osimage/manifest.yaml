@@ -65,14 +65,6 @@ schemas:
         source may not carry a user name or password. Luna sends none unless the operator
         names them, and the mirrors setting then names them.
       example: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]
-  sources:
-    media:
-      type: array
-      items: string
-      description: >
-        The sources the next create of this image builds from, one to eight, as the
-        create's `media` takes them; a directory or an ISO has to be on this controller
-      example: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]
   settings:
     repo:
       type: string
@@ -213,9 +205,8 @@ endpoints:
       release and architecture. The job is written and the build started as a child
       process of the daemon, and the answer comes at once, because Luna waits five
       seconds for it: nothing is detected or probed first. The sources are
-      `media` when the body names them, else what `<name>/sources` holds for the image,
-      else the `mirrors` setting's entry for the record, else none, and the books then
-      build from what they hold: a RedHat image
+      `media` when the body names them, else the `mirrors` setting's entry for the
+      record, else none, and the books then build from what they hold: a RedHat image
       from this controller's own repositories, so only the controller's own release, an
       Ubuntu or Leap image from the mirror the books name. The build fetches the books when
       they are not there, checks what they need on the controller, reads the sources and
@@ -237,7 +228,7 @@ endpoints:
       description: The build, now running
       example: {name: rocky9, state: running, pid: 41872, started: "2026-10-29T10:12:03+00:00"}
     errors:
-      400: The image name, the architecture, the path or a source is refused, or the sources held for the image are more than an hour old; the message names what
+      400: The image name, the architecture, the path or a source is refused; the message names what
       409: A build of that name is running, or it is still being told to Luna, or the concurrency limit is reached; the message says which
       503: The build process could not be started
 
@@ -279,45 +270,3 @@ endpoints:
     errors:
       404: No build of that name is held
       409: The build has already ended; the message says how
-
-  - path: <name>/sources
-    methods: [POST]
-    # manager: a path named here is read, an ISO mounted and a repository bound into the
-    # image by the build, as root.
-    minimum: manager
-    handler: sources
-    schema: sources
-    summary: Hold the sources of an image's next create
-    description: |
-      What `luna osimage create --mirrors` hands this daemon before it asks Luna for the
-      create: the sources the build of `name` takes, because the create Luna then sends
-      carries none. They are checked as `media` is, and a directory or an ISO has to be on
-      this controller; nothing is fetched or read until the build. The create of that name
-      arriving within an hour takes them, and they are forgotten with it; one arriving later
-      is refused naming their age, and sources no create came for are forgotten after a day.
-      A second hold for the name replaces the first. manager, because a path named here is
-      read and an ISO mounted by the build, as root.
-    params:
-      name: {description: "The image name the create will carry", example: rocky9}
-    request_example: {media: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"]}
-    response:
-      description: The sources now held, by whom and since when
-      example: {name: rocky9, media: ["https://download.rockylinux.org/pub/rocky/9/", "/isos/Rocky-9.6-x86_64-dvd.iso"], held_by: trixd, held_at: "2026-11-23T10:11:40+00:00"}
-    errors:
-      400: The name or a source is refused as a create's would be, or a directory or ISO is not on this controller; the message names which
-
-  - path: <name>/sources
-    methods: [DELETE]
-    minimum: manager
-    handler: sources
-    summary: Drop the sources held for an image
-    description: |
-      Forget what `<name>/sources` holds before any create took it: what `luna osimage
-      create` does when the create it was about to ask Luna for was refused.
-    params:
-      name: {description: "The image name the sources were held for", example: rocky9}
-    response:
-      description: Nothing is held for the name now
-      example: {name: rocky9, held: false}
-    errors:
-      404: No sources are held for that name

@@ -37,7 +37,7 @@ import threading
 
 from trixd.common import logging as trixlog
 from trixd.common.errors import BadRequest, Conflict, NotFound, ServiceUnavailable
-from trixd.plugins.osimage import checkout, jobs, rules, runner, sources
+from trixd.plugins.osimage import checkout, jobs, rules, runner
 from trixd.utils import declarations
 
 LOGGER = trixlog.get("osimage")
@@ -171,29 +171,22 @@ class Backend:
         Luna's build of an image: the body checked, the job written and the build started,
         and nothing else, because Luna waits five seconds for the answer. The tree is the
         path Luna resolved and the stream is Luna's own request id, kept apart from any id
-        of this daemon's. The sources are the body's when it names them, else the sources
-        held for the name, else the mirrors map's entry for the record, else none; reading
-        them is left to the build.
+        of this daemon's. The sources are the body's when it names them, else the mirrors
+        map's entry for the record, else none; reading them is left to the build.
         """
         name = body["image"]
         arch = rules.check_create(body)
         settings = held_settings()
         tree = tree_under(body["path"], settings["images_root"], name)
         media = body.get("media")
-        # Taken once the cheap refusals have passed, whichever rung wins, so no later
-        # create of the name meets a promise made for this one.
-        held = sources.take(name)
         if media is not None:
             mirrors_from = rules.GIVEN
-        elif held:
-            media, mirrors_from = held["media"], rules.HELD
         else:
             mirrors_from, media = rules.entry_for(settings["mirrors"], body["distribution"],
                                                   body["osrelease"], arch)
         request = {"name": name, "request_id": body["request_id"], "path": tree,
                    "distribution": body["distribution"], "osrelease": body["osrelease"],
                    "architecture": arch, "media": media, "mirrors_from": mirrors_from,
-                   "held_by": held["held_by"] if mirrors_from == rules.HELD else None,
                    "settings": {key: settings[key] for key in RUNNER_SETTINGS}}
         with START_LOCK:
             self._below_cap(settings)
@@ -253,13 +246,3 @@ class Backend:
         else:
             ended = jobs.move(jobdir, "cancelled", f"cancelled by {who}")
         return {"name": name, "state": ended["state"]}
-
-    def sources(self, name: str, body: dict = None, caller=None) -> dict:
-        """
-        The sources an operator names before Luna's create of an image arrives: held for
-        the name, or dropped again when that create was never asked for.
-        """
-        if body is None:
-            sources.drop(name)
-            return {"name": name, "held": False}
-        return sources.hold(name, body["media"], getattr(caller, "name", "unknown"))
