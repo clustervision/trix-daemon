@@ -31,7 +31,6 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 import ast
-import datetime
 import glob
 import json
 import os
@@ -53,7 +52,7 @@ from trixd.common.constants import API_PREFIX
 from trixd.core.plugins import loader
 from trixd.core.render import triggers
 from trixd.plugins.osimage import backend, detect, jobs, push, rules, runner, supervisor
-from trixd.utils import declarations, shell
+from trixd.utils import shell
 
 from tests.unit.test_osimage_runner import (COLLECTIONS, GALAXY_ROLE, Commands,  # noqa: F401
                                             sigterm_restored)
@@ -104,7 +103,8 @@ def plugin(rig, tmp_path, monkeypatch, children):
     headers = {"x-access-tokens": token.json()["token"]}
     settings = {"repo": str(repo), "repo_url": "", "images_root": str(tmp_path / "images"),
                 "state_root": str(tmp_path / "state"), "python": str(tmp_path / "python"),
-                "collections": str(tmp_path / "collections")}
+                "collections": str(tmp_path / "collections"),
+                "mirrors_file": str(tmp_path / "osimage-mirrors.yaml")}
     changed = client.patch(f"{API_PREFIX}/osimage/settings", json=settings, headers=headers)
     assert changed.status_code == 200, changed.text
     return client, headers, commands
@@ -121,21 +121,6 @@ def _create(client, headers, tmp_path, name: str = "rocky9", **body):
     return client.post(f"{API_PREFIX}/osimage/create",
                        json={key: value for key, value in sent.items() if value is not None},
                        headers=headers)
-
-
-def _hold(client, headers, name: str, media: list):
-    """
-    What the Luna command line posts before it asks Luna for the create.
-    """
-    return client.post(f"{API_PREFIX}/osimage/{name}/sources", json={"media": media}, headers=headers)
-
-
-def _stamp(seconds_ago: int) -> str:
-    """
-    A held_at written that long ago, in the form the job states use.
-    """
-    then = datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(seconds=seconds_ago)
-    return then.isoformat(timespec="seconds")
 
 
 def _manifest() -> dict:
@@ -165,9 +150,7 @@ def test_the_fixed_routes_are_declared_before_any_name_route():
                         ("settings", ("PATCH",)): "rootus",
                         ("create", ("POST",)): "operator",
                         ("<name>", ("GET",)): "reader",
-                        ("<name>/actions/cancel", ("POST",)): "operator",
-                        ("<name>/sources", ("POST",)): "manager",
-                        ("<name>/sources", ("DELETE",)): "manager"}
+                        ("<name>/actions/cancel", ("POST",)): "operator"}
 
 
 def test_a_mirrors_key_is_the_create_fields_the_schema_takes():
@@ -257,7 +240,7 @@ def test_a_create_from_luna_is_taken_at_once_with_nothing_detected_or_asked(plug
     assert jobs.read_json(jobdir, jobs.REQUEST) == {
         "name": "rocky9", "request_id": REQUEST_ID, "path": str(tmp_path / "images" / "rocky9"),
         "distribution": "redhat", "osrelease": "9.6", "architecture": "x86_64", "media": None,
-        "mirrors_from": None, "held_by": None,
+        "mirrors_from": None, "mirrors_file": None,
         "settings": {"repo": str(tmp_path / "repo"), "repo_url": "",
                      "answers": backend.DEFAULT_SETTINGS["answers"],
                      "images_root": str(tmp_path / "images"), "python": python,
@@ -350,158 +333,140 @@ def test_the_sources_of_a_create_without_media_come_from_the_mirrors_map_by_reco
                                            jobs.REQUEST)["settings"]
 
 
-def test_sources_held_for_a_name_are_taken_by_the_create_of_that_name_and_forgotten_with_it(plugin,
-                                                                                             tmp_path):
+def _request_of(tmp_path, name: str) -> dict:
     """
-    The Luna command line holds the sources before Luna's create, which carries none; the
-    create of that name builds from them, records who held them, and leaves nothing held.
+    The request the create wrote for the build of this name.
+    """
+    return jobs.read_json(jobs.path(str(tmp_path / "state"), name), jobs.REQUEST)
+
+
+def test_the_sources_of_a_create_come_from_the_mirrors_file_by_record(plugin, tmp_path):
+    """
+    A create that names no sources takes the file's entry for the record, the one for its
+    architecture first, and the request says which entry of which file; a record the
+    file does not name gets none.
     """
     client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    os.makedirs(root)
-    held = _hold(client, headers, "rocky9", [root])
-    assert held.status_code == 200, held.text
-    assert held.json()["media"] == [root] and held.json()["held_by"] == "tester"
+    path = tmp_path / "osimage-mirrors.yaml"
+    path.write_text("# by distribution and release\n"
+                    "redhat/9.6/x86:\n  - https://mirror.invalid/rocky/9/x86/\n"
+                    "redhat/9.6:\n  - https://mirror.invalid/rocky/9/\n  - /isos/Rocky-9.6-dvd.iso\n"
+                    "ubuntu/24.04:\n  - https://mirror.invalid/ubuntu/\n")
+    assert client.patch(f"{API_PREFIX}/osimage/settings", json={"concurrency": 9},
+                        headers=headers).status_code == 200
+    cases = [("a-arch", {}, "redhat/9.6/x86", ["https://mirror.invalid/rocky/9/x86/"]),
+             ("b-plain", {"architecture": "arm64"}, "redhat/9.6",
+              ["https://mirror.invalid/rocky/9/", "/isos/Rocky-9.6-dvd.iso"]),
+             ("c-ubuntu", {"distribution": "ubuntu", "osrelease": "24.04"}, "ubuntu/24.04",
+              ["https://mirror.invalid/ubuntu/"]),
+             ("d-none", {"osrelease": "9.5"}, None, None)]
+    for name, body, key, media in cases:
+        answer = _create(client, headers, tmp_path, name, **body)
+        assert answer.status_code == 200, (name, answer.text)
+        request = _request_of(tmp_path, name)
+        assert request["media"] == media, name
+        assert request["mirrors_from"] == key, name
+        assert request.get("mirrors_file", "not recorded") == (str(path) if key else None), name
+
+
+def test_the_mirrors_file_is_read_at_every_create(plugin, tmp_path):
+    """
+    The file is the admin's to edit with the daemon running: the create after an edit
+    builds from the edited entry.
+    """
+    client, headers, commands = plugin
+    path = tmp_path / "osimage-mirrors.yaml"
+    path.write_text("redhat/9.6: [https://mirror.invalid/first/]\n")
+    assert _create(client, headers, tmp_path, "first").status_code == 200
+    assert _request_of(tmp_path, "first")["media"] == ["https://mirror.invalid/first/"]
+    path.write_text("redhat/9.6: [https://mirror.invalid/second/]\n")
+    assert _create(client, headers, tmp_path, "second").status_code == 200
+    assert _request_of(tmp_path, "second")["media"] == ["https://mirror.invalid/second/"]
+
+
+@pytest.mark.parametrize("text", [None, "", "# redhat/9.6:\n#   - https://mirror.invalid/rocky/9/\n"],
+                         ids=["missing", "empty", "comments"])
+def test_a_missing_empty_or_comment_only_mirrors_file_is_no_mirrors(plugin, tmp_path, text):
+    """
+    A site with no mirror is a valid site: the create is taken and the build is left to
+    the books' own sources.
+    """
+    client, headers, commands = plugin
+    if text is not None:
+        (tmp_path / "osimage-mirrors.yaml").write_text(text)
     answer = _create(client, headers, tmp_path)
     assert answer.status_code == 200, answer.text
-    request = jobs.read_json(jobs.path(str(tmp_path / "state"), "rocky9"), jobs.REQUEST)
-    assert (request["media"], request["mirrors_from"], request["held_by"]) == ([root], "held", "tester")
-    gone = client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers)
-    assert gone.status_code == 404 and "no sources are held for rocky9" in gone.text
+    request = _request_of(tmp_path, "rocky9")
+    assert (request["media"], request["mirrors_from"], request["mirrors_file"]) == (None, None, None)
 
 
-def test_the_media_of_a_create_beat_the_held_sources_and_the_held_beat_the_mirrors_setting(plugin,
-                                                                                            tmp_path):
+@pytest.mark.parametrize("text, said", [
+    ("redhat/9.6: [https://mirror.invalid/\n", "cannot be read: "),
+    ("- redhat/9.6\n", "mirrors must be a map"),
+    ("Rocky 9: [/isos/x.iso]\n", "mirrors key 'Rocky 9' is not"),
+    ("9.6: [/isos/x.iso]\n", "mirrors key 9.6 is not"),
+    ("ubuntu/24.04: [https://admin@mirror.invalid/ubuntu/]\n",
+     "mirrors entry ubuntu/24.04: media item 1 must not carry a user name or password"),
+    ("ubuntu/24.04: [" + ", ".join(f"/isos/{n}.iso" for n in range(9)) + "]\n",
+     "mirrors entry ubuntu/24.04: media must be a list of 1 to 8 sources"),
+    ("ubuntu/24.04: [/isos/a.iso]\nredhat/9.5: [/isos/b.iso]\nubuntu/24.04: [/isos/c.iso]\n",
+     "the key 'ubuntu/24.04' is written twice"),
+], ids=["yaml", "list", "key", "number-key", "user", "nine", "twice"])
+def test_a_mirrors_file_that_cannot_be_used_refuses_the_create_and_writes_no_job(plugin, tmp_path,
+                                                                                 text, said):
     """
-    A body that names sources is explicit for that create, a hold is a promise made
-    earlier, and the setting is the site's default; a hold the body beat is taken all the
-    same, so no later create of the name meets it.
-    """
-    client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    os.makedirs(root)
-    changed = client.patch(f"{API_PREFIX}/osimage/settings",
-                           json={"mirrors": {"redhat/9.6": ["https://mirror.invalid/rocky/9/"]},
-                                 "concurrency": 9}, headers=headers)
-    assert changed.status_code == 200, changed.text
-    for name in ("a-body", "b-held"):
-        assert _hold(client, headers, name, [root]).status_code == 200
-    assert _create(client, headers, tmp_path, "a-body", media=["/isos/a.iso"]).status_code == 200
-    request = jobs.read_json(jobs.path(str(tmp_path / "state"), "a-body"), jobs.REQUEST)
-    assert (request["media"], request["mirrors_from"]) == (["/isos/a.iso"], "create")
-    assert client.delete(f"{API_PREFIX}/osimage/a-body/sources", headers=headers).status_code == 404
-    for name, rung in (("b-held", "held"), ("c-setting", "redhat/9.6")):
-        assert _create(client, headers, tmp_path, name).status_code == 200, name
-        request = jobs.read_json(jobs.path(str(tmp_path / "state"), name), jobs.REQUEST)
-        assert request["mirrors_from"] == rung, name
-
-
-def test_a_create_the_rules_refuse_leaves_the_hold_and_a_create_that_starts_takes_it(plugin, tmp_path):
-    """
-    A create refused before it is worth anything does not spend the hold; the next one does.
+    The whole file is checked at every create, so a fault anywhere in it refuses the
+    create of any record, with the file and the fault named, before a job is written: a
+    file taken in part would build from sources nobody chose.
     """
     client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    os.makedirs(root)
-    assert _hold(client, headers, "rocky9", [root]).status_code == 200
-    assert _create(client, headers, tmp_path, architecture="riscv64").status_code == 400
-    dropped = client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers)
-    assert dropped.status_code == 200 and dropped.json()["held"] is False
-    assert _hold(client, headers, "rocky9", [root]).status_code == 200
-    assert _create(client, headers, tmp_path).status_code == 200
-    assert client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers).status_code == 404
+    path = tmp_path / "osimage-mirrors.yaml"
+    path.write_text(text)
+    answer = _create(client, headers, tmp_path)
+    assert answer.status_code == 400, answer.text
+    assert str(path) in answer.json()["message"] and said in answer.json()["message"], answer.text
+    assert "\n" not in answer.json()["message"]
+    assert not jobs.exists(str(tmp_path / "state"), "rocky9")
 
 
-def test_sources_held_for_more_than_an_hour_refuse_the_create_once_and_are_forgotten(plugin, tmp_path):
+def test_the_entry_of_the_mirrors_file_is_taken_before_the_mirrors_settings(plugin, tmp_path):
     """
-    A create arriving after the hour is not built from something the operator did not
-    ask for: it is refused naming who held what and when, and the next create is free.
+    While both places hold entries the file's wins, so a site moves entry by entry; an
+    entry only the setting holds is still taken, and the request names no file for it.
     """
     client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    declarations.write("osimage", "sources", "rocky9",
-                       {"media": [root], "held_by": "alice", "held_at": _stamp(7200)})
-    refused = _create(client, headers, tmp_path)
-    assert refused.status_code == 400, refused.text
-    assert "held for rocky9 by alice" in refused.text
-    assert "run luna osimage create again with --mirrors" in refused.text
-    assert jobs.names(str(tmp_path / "state")) == []
-    assert _create(client, headers, tmp_path).status_code == 200
-    request = jobs.read_json(jobs.path(str(tmp_path / "state"), "rocky9"), jobs.REQUEST)
-    assert (request["mirrors_from"], request["media"]) == (None, None)
+    path = tmp_path / "osimage-mirrors.yaml"
+    path.write_text("redhat/9.6: [https://mirror.invalid/file/]\n")
+    held = client.patch(f"{API_PREFIX}/osimage/settings", headers=headers,
+                        json={"mirrors": {"redhat/9.6": ["https://mirror.invalid/setting/"],
+                                          "redhat/9.5": ["https://mirror.invalid/setting/9.5/"]}})
+    assert held.status_code == 200, held.text
+    assert _create(client, headers, tmp_path, "both").status_code == 200
+    request = _request_of(tmp_path, "both")
+    assert request["media"] == ["https://mirror.invalid/file/"]
+    assert (request["mirrors_from"], request["mirrors_file"]) == ("redhat/9.6", str(path))
+    assert _create(client, headers, tmp_path, "setting", osrelease="9.5").status_code == 200
+    request = _request_of(tmp_path, "setting")
+    assert request["media"] == ["https://mirror.invalid/setting/9.5/"]
+    assert (request["mirrors_from"], request.get("mirrors_file", "not recorded")) == ("redhat/9.5", None)
 
 
-@pytest.mark.parametrize("media, said", [
-    (["ftp://mirror/rocky"], "media item 1 is not a URL"),
-    (["https://admin:secret@mirror.invalid/rocky/9/"], "user name or password"),
-    (["/nowhere/at/all"], "media item 1 is not on this controller: /nowhere/at/all"),
-    (["file:///nowhere/at/all"], "is not on this controller"),
-    ([f"https://mirror.invalid/{n}/" for n in range(9)], "1 to 8"),
-])
-def test_a_held_source_is_checked_as_media_is_and_a_local_one_has_to_be_on_this_controller(plugin, media,
-                                                                                            said):
+def test_the_media_of_a_create_are_taken_before_the_mirrors_file(plugin, tmp_path):
     """
-    The rules of a create's media, and one more the build would otherwise meet after the
-    record exists: a path it reads has to be here. A refused hold holds nothing.
+    A caller that names its own sources builds from them whatever the file holds, a
+    file that would refuse a create without sources included.
     """
     client, headers, commands = plugin
-    refused = _hold(client, headers, "rocky9", media)
-    assert refused.status_code == 400 and said in refused.text, refused.text
-    assert client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers).status_code == 404
-
-
-def test_a_dropped_hold_leaves_the_create_to_the_mirrors_setting(plugin, tmp_path):
-    """
-    What the command line does when Luna refused the create: the hold goes, and a later
-    create of the name builds as if it had never been made.
-    """
-    client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    os.makedirs(root)
-    changed = client.patch(f"{API_PREFIX}/osimage/settings",
-                           json={"mirrors": {"redhat/9.6": ["https://mirror.invalid/rocky/9/"]}},
-                           headers=headers)
-    assert changed.status_code == 200, changed.text
-    assert _hold(client, headers, "rocky9", [root]).status_code == 200
-    dropped = client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers)
-    assert dropped.status_code == 200 and dropped.json() == {"name": "rocky9", "held": False}
-    assert client.delete(f"{API_PREFIX}/osimage/rocky9/sources", headers=headers).status_code == 404
-    assert _create(client, headers, tmp_path).status_code == 200
-    request = jobs.read_json(jobs.path(str(tmp_path / "state"), "rocky9"), jobs.REQUEST)
-    assert request["mirrors_from"] == "redhat/9.6"
-
-
-def test_sources_nobody_came_for_are_forgotten_after_a_day_by_the_supervisor(plugin, tmp_path):
-    """
-    A hold whose create never came, the command line killed between the two calls or
-    Luna dropping the task, is forgotten by the supervisor's pass; a fresh one is kept.
-    """
-    root = str(tmp_path / "mirror")
-    declarations.write("osimage", "sources", "old",
-                       {"media": [root], "held_by": "alice", "held_at": _stamp(2 * 86400)})
-    declarations.write("osimage", "sources", "fresh",
-                       {"media": [root], "held_by": "bob", "held_at": _stamp(60)})
-    supervisor.current().once()
-    assert declarations.read("osimage", "sources", "old") is None
-    assert declarations.read("osimage", "sources", "fresh")["held_by"] == "bob"
-
-
-def test_a_hold_needs_a_manager(plugin, tmp_path):
-    """
-    The build reads a path named here and mounts an ISO as root, so an operator, who may
-    ask for a create, may not name what it is built from.
-    """
-    client, headers, commands = plugin
-    root = str(tmp_path / "mirror")
-    os.makedirs(root)
-    made = client.put(f"{API_PREFIX}/identity/users/op", headers=headers,
-                      json={"role": "operator", "password": "a long passphrase"})
-    assert made.status_code in (200, 201), made.text
-    token = client.post("/api/v1/auth/token", json={"username": "op", "password": "a long passphrase"})
-    assert token.status_code == 201, token.text
-    refused = _hold(client, {"x-access-tokens": token.json()["token"]}, "rocky9", [root])
-    assert refused.status_code == 403, refused.text
-    assert _hold(client, headers, "rocky9", [root]).status_code == 200
+    path = tmp_path / "osimage-mirrors.yaml"
+    path.write_text("redhat/9.6: [https://mirror.invalid/file/]\n")
+    assert _create(client, headers, tmp_path, "named", media=["/isos/rocky.iso"]).status_code == 200
+    request = _request_of(tmp_path, "named")
+    assert (request["media"], request["mirrors_from"]) == (["/isos/rocky.iso"], "create")
+    assert request.get("mirrors_file", "not recorded") is None
+    path.write_text("Rocky 9: [/isos/x.iso]\n")
+    answer = _create(client, headers, tmp_path, "broken", media=["/isos/rocky.iso"])
+    assert answer.status_code == 200, answer.text
+    assert _request_of(tmp_path, "broken")["media"] == ["/isos/rocky.iso"]
 
 
 @pytest.mark.parametrize("source", [
@@ -1039,6 +1004,7 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
     held = client.get(f"{API_PREFIX}/osimage/settings", headers=headers).json()
     assert held["repo"] == str(tmp_path / "repo") and held["concurrency"] == 2
     assert set(held) == set(backend.DEFAULT_SETTINGS) and held.get("mirrors") == {}
+    assert held.get("mirrors_file") == str(tmp_path / "osimage-mirrors.yaml")
     changed = client.patch(f"{API_PREFIX}/osimage/settings",
                            json={"limit_seconds": 1800, "keep_days": 3}, headers=headers)
     assert changed.status_code == 200 and changed.json()["limit_seconds"] == 1800
@@ -1054,6 +1020,8 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
     assert mirrored.json()["mirrors"] == {"redhat/9.6/arm64": ["/isos/Rocky-9.6-aarch64-dvd.iso"]}
     for body, said in (({"concurrency": 0}, "concurrency must be at least 1"),
                        ({"state_root": "var/osimage"}, "state_root must be an absolute path"),
+                       ({"mirrors_file": "osimage-mirrors.yaml"}, "mirrors_file must be an absolute path"),
+                       ({"mirrors_file": ""}, "mirrors_file must be an absolute path"),
                        ({"builder": "hand"}, "builder must be one of books, stub, stub-fail"),
                        ({"stub_gap_seconds": 0}, "stub_gap_seconds must be at least 1"),
                        ({"mirrors": {"Rocky 9": ["/isos/x.iso"]}},
@@ -1071,6 +1039,7 @@ def test_the_settings_round_trip_and_refuse_what_the_daemon_could_not_run_with(p
                         headers=headers).status_code == 422
     held = client.get(f"{API_PREFIX}/osimage/settings", headers=headers).json()
     assert held["concurrency"] == 2 and held["builder"] == "stub-fail"
+    assert held["mirrors_file"] == str(tmp_path / "osimage-mirrors.yaml")
     assert held["mirrors"] == {"redhat/9.6/arm64": ["/isos/Rocky-9.6-aarch64-dvd.iso"]}
     cleared = client.patch(f"{API_PREFIX}/osimage/settings", json={"mirrors": {}}, headers=headers)
     assert cleared.status_code == 200 and cleared.json()["mirrors"] == {}
