@@ -29,6 +29,8 @@ include:
       # Where the stack and its users have always found the daemon.
       RPM_LINKS: "/trinity/local/trixd/daemon=trixd"
       RPM_SERVICE: "trixd"
+      # The installation's answers: a machine without them gets the stack's package first.
+      RPM_SITE_ANSWERS: "/trinity/trinityx-combined/site/group_vars/all.yml"
       RPM_CHECK: "/trinity/local/python/bin/python3 -c 'import trixd.server'"
 
 # Tests run beside the build; nothing is published unless every one passes.
