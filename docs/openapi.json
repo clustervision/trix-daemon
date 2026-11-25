@@ -6446,6 +6446,74 @@
         "x-trixd-minimum": "manager"
       }
     },
+    "/api/v1/prometheus/hw-rules-held": {
+      "get": {
+        "description": "One entry per hardware rule file in `rules_directory`: the host its name carries and\na digest of its bytes. No file is parsed, so it answers for a large estate where\n`GET /api/v1/prometheus/hw-rules` reads every one, and two controllers can be\ncompared by it.\n\nIt is what the other controller of a pair reads. Where `[REPLICATION]` names peers\nand is enabled, each controller asks its peers for this list when it starts and every\nfive minutes after. A file a peer holds under the hostname of a node Luna holds\nhere, for which this controller holds none, is copied from the peer with the host\nand group Luna holds here, and Prometheus is reloaded once. It is copied rather than\ngenerated because a rule file records the parts a node had when it was made. A node\nLuna does not hold here is left out, so a file the peer has yet to retire brings\nnothing back.\n\nA file both controllers hold is never changed. Those whose digests differ are\ncounted as `differing` under `prometheus_hw_rules` in `GET /api/v1/system/health`,\nbeside `lacking`, the files a peer holds that are not held here. Each controller\ngenerates from its own Prometheus and the digest is of the bytes, so a difference\nis not a fault by itself.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "operationId": "prometheus_held_hw_rules_get_api_v1_prometheus_hw_rules_held_get",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "nodes": [
+                    {
+                      "digest": "9f2c1d0ab3e45678",
+                      "node": "node001.cluster"
+                    },
+                    {
+                      "digest": "1c0de5a7b2f34a90",
+                      "node": "node002.cluster"
+                    }
+                  ]
+                },
+                "schema": {}
+              }
+            },
+            "description": "One entry per rule file held"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Which hardware rule files this controller holds",
+        "tags": [
+          "prometheus"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "reader"
+      }
+    },
     "/api/v1/prometheus/hw-rules/{node}": {
       "delete": {
         "description": "For a node that no longer exists. Every rule file naming it is moved under\n`backup/` in the rules directory, out of the glob Prometheus loads, and Prometheus\nis reloaded once. Nothing is deleted, so a file retired by mistake can be put back\nby hand.\n\nA node that still exists keeps its rules: use this when the node has gone, and\n`POST /api/v1/prometheus/hw-rules/<node>/actions/repair` when it is still there and\nits file is wrong.\n\n**Access:** manager or above: manager and rootus",
@@ -9837,7 +9905,7 @@
     },
     "/api/v1/system/health": {
       "get": {
-        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never, with `not_converging` counting the peer and table pairs that have still differed after several passes - which means neither controller is taking the other's row. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where, and `oldest_pending` says in seconds how long the oldest waiting call has waited, which is what tells a busy queue from a stuck one. `connections.closed_unanswered` counts the TLS connections closed since start-up with nothing answered on them, which happens when a caller writes on one trixd had already begun closing; a caller sees that as its connection closing with no response, and retrying the call is the answer. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
+        "description": "For a monitor, with no token. `plugins` counts the loaded plugins. Each render says when it last ran, as Unix time, 0 before its first run since trixd or its plugin started, and whether that run worked. `triggers` carries one entry per loaded trigger: `luna_hashes` says whether Luna answers its table hashes, which it does on an HA master only, and `replication` when the last sweep ran, 0 for never, with `not_converging` counting the peer and table pairs that have still differed after several passes - which means neither controller is taking the other's row. A trigger that keeps counts publishes them beside those two: `prometheus_hw_rules` says whether the hardware rule files could last be compared with the other controller, with `lacking`, the files a peer holds and this controller does not, and `differing`, the files both hold whose bytes differ - which is ordinary, each controller writing its own, and so is a number to read rather than a fault. `owed` counts the replicated calls still waiting for a peer, the ones given up on, the peers configured and the peers not answering - counts only, and no peer is named, because this route takes no token: `GET /system/replication/owed` says where, and `oldest_pending` says in seconds how long the oldest waiting call has waited, which is what tells a busy queue from a stuck one. `connections.closed_unanswered` counts the TLS connections closed since start-up with nothing answered on them, which happens when a caller writes on one trixd had already begun closing; a caller sees that as its connection closing with no response, and retrying the call is the answer. States and times only: an error's text stays in the log.\n\n**Access:** public, no token",
         "operationId": "health_api_v1_system_health_get",
         "responses": {
           "200": {
@@ -9873,6 +9941,12 @@
                     "luna_hashes": {
                       "answering": false,
                       "last_pass": 1791545823.43
+                    },
+                    "prometheus_hw_rules": {
+                      "answering": true,
+                      "differing": 2,
+                      "lacking": 0,
+                      "last_pass": 1791545830.12
                     },
                     "replication": {
                       "at": 1791545526.87,

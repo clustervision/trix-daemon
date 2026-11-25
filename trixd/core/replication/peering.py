@@ -34,6 +34,7 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import json
 import os
 import threading
 import time
@@ -42,7 +43,7 @@ import jwt
 import requests
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import API_PREFIX
+from trixd.common.constants import API_PREFIX, TOKEN_HEADER
 from trixd.common.errors import Unauthenticated
 from trixd.common.settings import current as settings
 from trixd.utils import tls
@@ -129,3 +130,30 @@ def peer_token(peer: str, renew: bool = False) -> str:
             return _tokens[peer]
         _tokens[peer] = _sign_in(peer)
         return _tokens[peer]
+
+
+def read(peer: str, path: str, limit: int, params: dict = None):
+    """
+    One document read from a peer's API, or None where the peer serves no such route,
+    which is what a controller on an older build answers.
+
+    Bounded, because what comes back is held in memory: an answer longer than `limit`
+    bytes is refused part way rather than read to its end.
+    """
+    url = f"{settings().api.protocol}://{peer}{API_PREFIX}/{path}"
+    for attempt in (1, 2):
+        headers = {TOKEN_HEADER: peer_token(peer, renew=attempt == 2)}
+        with requests.get(url, params=params, headers=headers, timeout=TIMEOUT,
+                          verify=trust(), stream=True) as answer:
+            if answer.status_code in (401, 403) and attempt == 1:
+                continue
+            if answer.status_code == 404:
+                return None
+            if answer.status_code >= 400:
+                raise RuntimeError(f"{peer} answered {answer.status_code} for {path}")
+            body = b""
+            for chunk in answer.iter_content(65536):
+                body += chunk
+                if len(body) > limit:
+                    raise ValueError(f"{peer} answered more than {limit} bytes for {path}")
+            return json.loads(body)

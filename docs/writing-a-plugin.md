@@ -483,6 +483,16 @@ applied is a difference the pair then keeps until somebody acts on that object a
 the log line and the `owed` row are its only account. So prefer a declaration, or one
 shared file, wherever the choice is there to make.
 
+**A plugin whose files are a controller's own compares them itself.** The prometheus
+plugin does, for the hardware rule files: a background trigger asks each peer which
+files it holds (`GET /api/v1/prometheus/hw-rules-held`, names and digests, no file
+parsed), copies the ones this controller lacks for a node Luna holds here, and counts the
+ones that differ, which `/api/v1/system/health` publishes from the trigger's `counts`.
+`trixd.core.replication.peering.read` is the read it uses: the peer's own token, the
+cluster CA, a bound on the bytes taken, and `None` from a peer that does not serve the
+route, which is what an older build answers. A write made that way goes through no
+replicating route, so it is never sent back.
+
 **What a replicating handler has to be.** It is idempotent: delivery is at least once,
 and while a repeat is answered with what was answered the first time, that record is held
 in memory and a restart empties it. It is called with its path variables and `body`

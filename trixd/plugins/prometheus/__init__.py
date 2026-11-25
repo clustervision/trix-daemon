@@ -28,3 +28,19 @@ __version__     = "1.0"
 __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
+
+# By the canonical name: the loader also imports this directory under a module name of
+# its own, and a relative import here would give that copy a second comparison.
+from trixd.core.render import triggers
+from trixd.plugins.prometheus import peer
+
+
+def install() -> None:
+    """
+    Plug this plugin in. The loader calls it once the plugin has loaded; the trigger is
+    owned, so unplugging the plugin stops the comparison with it.
+    """
+    triggers.register("prometheus_hw_rules", peer.current(), owner="prometheus")
+
+
+__all__ = ["install"]
