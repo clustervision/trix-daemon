@@ -693,6 +693,42 @@
         "title": "Error",
         "type": "object"
       },
+      "GendersInit": {
+        "properties": {
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With reset, leave nothing in the file but the managed block; refused without reset",
+            "examples": [
+              false
+            ],
+            "title": "Force"
+          },
+          "reset": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Keep every line of the file and render the managed block afresh, instead of only giving a file without the block one",
+            "examples": [
+              false
+            ],
+            "title": "Reset"
+          }
+        },
+        "title": "GendersInit",
+        "type": "object"
+      },
       "HTTPValidationError": {
         "properties": {
           "detail": {
@@ -1421,7 +1457,7 @@
                 "type": "null"
               }
             ],
-            "description": "The group the Slurm files belong to with group write (config-slurm's admin group); a save and a restore run with it",
+            "description": "The group the Slurm files belong to with group write (the installer's admin group); a save and a restore run with it",
             "examples": [
               "admins"
             ],
@@ -1542,8 +1578,59 @@
         "title": "SlurmDrain",
         "type": "object"
       },
+      "SlurmInit": {
+        "properties": {
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With reset, put this plugin's default files back whatever the three hold, the lines outside the blocks included; refused without reset",
+            "examples": [
+              false
+            ],
+            "title": "Force"
+          },
+          "reset": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "Empty the Defaults block of all three files, keep every line outside the blocks and render the TrinityX block afresh, instead of only giving a file without the managed block its blocks",
+            "examples": [
+              false
+            ],
+            "title": "Reset"
+          }
+        },
+        "title": "SlurmInit",
+        "type": "object"
+      },
       "SlurmPreview": {
         "properties": {
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With mode restore, the restore whatever the backups' lines are, which a save's rules on changed lines would refuse; Luna's block is rendered afterwards rather than restored",
+            "examples": [
+              false
+            ],
+            "title": "Force"
+          },
           "mode": {
             "description": "save (the texts sent) or restore (the backups' texts)",
             "examples": [
@@ -1596,6 +1683,21 @@
       },
       "SlurmRestore": {
         "properties": {
+          "force": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "With mode restore, the restore whatever the backups' lines are, which a save's rules on changed lines would refuse; Luna's block is rendered afterwards rather than restored",
+            "examples": [
+              false
+            ],
+            "title": "Force"
+          },
           "judged": {
             "description": "The nodes whose State the texts change (preview's states); the person needs Luna's hardware right on each",
             "examples": [
@@ -3891,6 +3993,194 @@
         ],
         "x-trixd-access": "role",
         "x-trixd-minimum": "reader"
+      }
+    },
+    "/api/v1/genders/files/actions/init": {
+      "post": {
+        "description": "A file without the TrinityX managed block gains it at its end, everything it holds\nkept; this is what makes the file one the render writes, and the installer calls it\nonce the file is in place. Refused 409 when the file carries the block already. With\n`reset`, every line outside the block is kept; with `force` as well, the file is left\nholding the block alone. Either way the file as it was is kept beside it as `.bkp`,\nwhich `files/actions/restore` puts back, and the block stays as it is until the\nrender writes it afresh before the answer (`rendered`; where false, `renders/genders`\nsays why, the file keeps the nodes it had, and the render runs again on the next node\nor group change).\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "genders_init_post_api_v1_genders_files_actions_init_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "reset": false
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/GendersInit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "file": "/etc/genders",
+                  "rendered": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The file, the backup a reset made, and whether the render then wrote"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "`force` without `reset`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The file carries the managed block already (send `reset`)"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The file cannot be read or written"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Give the genders file its managed block, render it afresh, or empty the file down to it",
+        "tags": [
+          "genders"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
+    "/api/v1/genders/files/actions/restore": {
+      "post": {
+        "description": "The lines the `.bkp` beside the file holds outside the TrinityX managed block go back\ninto the file, the block as the file holds it now (added where the backup has none),\nand the file as it was becomes the `.bkp`, so a second restore undoes the first. The\nrender writes the block afresh before the answer (`rendered`; where false,\n`renders/genders` says why and the file keeps the nodes it had). The backup is read\nonly as a plain file of at most 4 MiB, never through a link; a write that fails puts\nthe file back and leaves the backup as it was.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "genders_restore_post_api_v1_genders_files_actions_restore_post",
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "backup": "/etc/genders.bkp",
+                  "file": "/etc/genders",
+                  "rendered": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The file, its backup, and whether the render then wrote"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "a valid token is missing"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "No token, or one that is not valid"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "message": "this needs manager; you hold reader"
+                },
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The file or its backup cannot be read or written; the message says what was put back"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Put the genders file's backup back",
+        "tags": [
+          "genders"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
       }
     },
     "/api/v1/genders/renders/genders": {
@@ -8255,7 +8545,7 @@
                 }
               }
             },
-            "description": "The helper's account, setpriv or prlimit is missing, or the files are not configured"
+            "description": "The helper's account, env, setpriv or prlimit is missing, or the files are not configured"
           }
         },
         "security": [
@@ -8355,9 +8645,134 @@
         "x-trixd-minimum": "manager"
       }
     },
+    "/api/v1/slurm/files/actions/init": {
+      "post": {
+        "description": "A file without the TrinityX managed block gains the Defaults block and the TrinityX\nblock at its end, everything it holds kept; this is what makes a file one the render\nwrites, and the installer calls it once the files are in place. Refused 409 when all\nthree carry the block already. With `reset`, the Defaults block of each of the three\nis emptied and every line outside the blocks is kept; with `force` as well, each\nbecomes this plugin's default file under an empty Defaults block, whatever it held.\nEither way the TrinityX block stays as it is until the render writes it afresh, so a\nrender that cannot run leaves the nodes that were there. The daemon writes the files\nitself, as the render does and under the lock the render and a save take: the files\nas they were to each `.bkp` first, then the three, put back where a write fails;\njudged by slurmlint where it is installed. Restore writes those backups back as it\nwrites any, held to a save's rules, so it refuses a set whose presets or lines\noutside the blocks a save could not have made; Restore with `force` puts that one\nback. The render runs before the answer, so Luna's nodes are in the files\n(`rendered`; where false, `renders/config` says why, and the render runs again on\nthe next node or group change). slurmctld reads a reset's lines where the render\nchanged a block, and otherwise on apply. Luna's w on the cluster, asked as the\nperson; with `reset` also the hardware right on each node whose State the reset\nchanges, as a save needs it.\n\n**Access:** manager or above: manager and rootus",
+        "operationId": "slurm_init_post_api_v1_slurm_files_actions_init_post",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "examples": {
+                "example": {
+                  "value": {
+                    "reset": false
+                  }
+                }
+              },
+              "schema": {
+                "$ref": "#/components/schemas/SlurmInit"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "example": {
+                  "files": [
+                    "/etc/slurm/gres.conf",
+                    "/etc/slurm/slurm-nodes.conf",
+                    "/etc/slurm/slurm-partitions.conf"
+                  ],
+                  "rendered": true
+                },
+                "schema": {}
+              }
+            },
+            "description": "The files written, and whether the render then wrote"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "slurmlint's lines, or `force` without `reset`"
+          },
+          "401": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "As a save"
+          },
+          "403": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words"
+          },
+          "409": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "All three files carry the managed block already (send `reset`); or another change holds the files, or they changed while Luna was asked"
+          },
+          "422": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/HTTPValidationError"
+                }
+              }
+            },
+            "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A file cannot be read or written, the lock cannot be taken, or a cut save is not put back yet"
+          },
+          "503": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Luna did not answer"
+          }
+        },
+        "security": [
+          {
+            "token": []
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "summary": "Give the node, partition and gres files their managed blocks, empty their presets, or put the default files back",
+        "tags": [
+          "slurm"
+        ],
+        "x-trixd-access": "role",
+        "x-trixd-minimum": "manager"
+      }
+    },
     "/api/v1/slurm/files/actions/preview": {
       "post": {
-        "description": "Judged as the write would be (the stamp, the TrinityX block, the lines the editor may\nchange, slurmlint), writing nothing; a refusal the write would meet comes back in\n`refused`, so the console can say it before the person saves.\n\n**Access:** manager or above: manager and rootus",
+        "description": "Judged as the write would be (the stamp, the TrinityX block, the lines the editor may\nchange, slurmlint), writing nothing; a refusal the write would meet comes back in\n`refused`, so the console can say it before the person saves. With `force` and mode\nrestore it answers for a forced restore, judged in the daemon as that is: the `states`\nto send as its `judged`.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "slurm_preview_post_api_v1_slurm_files_actions_preview_post",
         "requestBody": {
           "content": {
@@ -8473,7 +8888,7 @@
     },
     "/api/v1/slurm/files/actions/restore": {
       "post": {
-        "description": "As a save of the `.bkp` texts, the backups kept. There is one `.bkp` per file, which\nevery save rewrites, and the OOD Slurm configurator writes the same names: Restore puts\nback the set before the latest save by either, not necessarily before the person's own.\n`judged` is held to 4096 nodes as a save's is.\n\n**Access:** manager or above: manager and rootus",
+        "description": "As a save of the `.bkp` texts, the backups kept. There is one `.bkp` per file, which\nevery save rewrites, and the OOD Slurm configurator writes the same names: Restore puts\nback the set before the latest save by either, not necessarily before the person's own.\n`judged` is held to 4096 nodes as a save's is. With `force` the rules on changed lines\nare not applied, so a set whose lines outside the blocks differ goes back as well, as\nthe backups an init's `reset` leaves do. The daemon then writes the files itself, as\nan init does and under the same lock: each backup's lines and its Defaults block, the\nTrinityX block as the file holds it now (added where the backup has none), the files\nas they were to each `.bkp`, so a second forced restore undoes the first; then the\nrender writes Luna's nodes afresh (`rendered`; where false, `renders/config` says why,\nthe files keep the nodes they had, and the render runs again on the next node or\ngroup change). slurmctld reads the restored lines where the render changed a block,\nand otherwise on apply. Still held to the stamp, `rules`, slurmlint where it is\ninstalled, and Luna's rights; a node's State set outside the blocks that differs\ncounts every node in `judged` (preview with `force` answers them). A backup is read\nonly as a plain file of at most 4 MiB, never through a link.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "slurm_restore_post_api_v1_slurm_files_actions_restore_post",
         "requestBody": {
           "content": {
@@ -8512,7 +8927,7 @@
                 "schema": {}
               }
             },
-            "description": "The files' new stamp"
+            "description": "The files' new stamp, and for a forced restore whether the render then wrote"
           },
           "400": {
             "content": {
@@ -8572,7 +8987,7 @@
                 }
               }
             },
-            "description": "As a save"
+            "description": "As a save; a forced restore that could not write says which of the six are not put back"
           },
           "503": {
             "content": {

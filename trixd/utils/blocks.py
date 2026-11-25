@@ -31,6 +31,10 @@ trixd/utils/files.py writes a managed block of its own in a different pair of ma
 creates one where a file has none. Both are deliberate and neither belongs here: a file
 these markers reach carries this pair, and an administrator who takes the block out has
 turned the file into their own, which is a refusal rather than a block to put back.
+
+The one block made here is the first, and only when asked for: a plugin's init or restore
+gives a file without one the block the installer's roles used to give it, through `append`. A
+render never does.
 """
 
 __author__      = "Antoine Schonewille"
@@ -41,14 +45,21 @@ __maintainer__  = "Antoine Schonewille"
 __email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
+import errno
 import os
 import re
+import stat
 
 # Three spaces before the end marker's hashes, and a block is found by them alone.
 BLOCK_START: str = "#### {manager} Managed block start ####"
 BLOCK_END: str = "#### {manager} Managed block end   ####"
 _START = re.compile(r"^#### (?P<manager>.+) Managed block start ####")
 _END = re.compile(r"^#### (?P<manager>.+) Managed block end   ####")
+# What the installer's roles wrote above a block they gave a file.
+NOTES: tuple = ("# {manager} will only manage inside '{manager} Managed block'.",
+                "# If manual override is desired, the '{manager} Managed block' can be removed.")
+# The most of a backup that is read: what the slurm helper lets a save's texts be together.
+KEPT_MAX: int = 4 * 1024 * 1024
 
 
 def _blocks(text: str) -> list:
@@ -103,6 +114,17 @@ def block(text: str, manager: str) -> str:
     return None
 
 
+def append(text: str, manager: str, notes: tuple = NOTES) -> str:
+    """
+    The file with an empty block of the manager's at its end, under its notes and over the
+    two blank lines the installer's roles left there, so a file given its block here is
+    the file they left.
+    """
+    lines = [*notes, BLOCK_START, BLOCK_END, "", "", ""]
+    head = text if not text or text.endswith("\n") else text + "\n"
+    return head + "\n".join(lines).format(manager=manager)
+
+
 def replace(text: str, manager: str, content: str) -> str:
     """
     The file with the manager's block holding `content`, or None where it has no such block.
@@ -113,6 +135,22 @@ def replace(text: str, manager: str, content: str) -> str:
             found[1] = content.splitlines()
             return _dump(blocks)
     return None
+
+
+def kept(path: str) -> bytes:
+    """
+    What a backup holds, read as root where others may write it: a plain file with one
+    link, never through a link, and no more of it than KEPT_MAX.
+    """
+    handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+    with os.fdopen(handle, "rb") as source:
+        found = os.fstat(handle)
+        if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
+            raise OSError(errno.EINVAL, "not a plain file with one link", path)
+        data = source.read(KEPT_MAX + 1)
+    if len(data) > KEPT_MAX:
+        raise OSError(errno.EFBIG, os.strerror(errno.EFBIG), path)
+    return data
 
 
 def put(path: str, text: str, follow: bool = False) -> None:

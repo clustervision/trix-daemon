@@ -52,7 +52,7 @@ from trixd.core.security import audit
 from trixd.plugins.luna import persons
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.slurm import configfiles, rules
-from trixd.utils import declarations, shell
+from trixd.utils import blocks, declarations, shell
 
 LOGGER = trixlog.get("slurm")
 
@@ -71,9 +71,9 @@ DEFAULT_CONFIG: dict = {
 # A person calls these routes with their own trixd token, and Luna decides through the luna
 # plugin (persons.may), asked as that person. The handlers then run nothing but helper.py,
 # stepped down to ACCOUNT (slurm's AdminLevel Administrator), with the request on stdin. The six
-# files are root's and of the cluster's admin group with group write (config-slurm sets them so):
+# files are root's and of the cluster's admin group with group write (the installer sets them so):
 # only a save and a restore, which start no child process, run with that group, given to that
-# process alone.
+# process alone. An init and a forced restore are the daemon's own writes, as the render's are.
 WRITERS = ("save", "restore")
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -81,6 +81,10 @@ HELPER = os.path.join(HERE, "helper.py")
 ACCOUNT = "trinityx-slurm"
 STATE_DIR = "/var/lib/trixd/slurm"   # this controller's: the grant answer
 SHARE = ".trinityx-slurm"            # beside the files, one per cluster: the lock and the mark
+# The helper inherits nothing of the daemon's environment: env -i gives it SEARCH as PATH and no
+# more, where setpriv --reset-env is an option the oldest setpriv a controller carries lacks.
+ENV = "/usr/bin/env"
+SEARCH = "/usr/local/bin:/bin:/usr/bin"
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
 MEMORY = 512 * 1024 * 1024
@@ -94,6 +98,8 @@ RESOLVE_WAIT = 60.0    # seconds from the first wait before the files are writte
 RESOLVE_BUDGET = 2.0   # seconds one pass's lookups take together, all under the engine lock
 RESOLVERS = 16         # lookups at once
 NODE_NAME = re.compile(r"^NodeName=(\S+)", re.MULTILINE)
+# The entries slurm sets a State on in a node file, and the State itself.
+_SETS = re.compile(r"\b(NodeName|DownNodes|PartitionName|State)=(\S*)", re.IGNORECASE)
 _deferred_since: float = 0.0  # when the render began waiting on names; 0.0 when it is not
 _resolved: set = set()         # names that resolved since the wait began, not asked again in it
 # One pool for every pass: a lookup that hangs keeps its thread, so the threads stay RESOLVERS
@@ -183,14 +189,14 @@ def _whose_state(judged: list) -> str:
     return said
 
 
-def _run(name: str, verb: str, what, settings: dict, body: dict) -> dict:
+def _run(name: str, verb: str, what, settings: dict, body: dict, act=None) -> dict:
     """
-    The helper run for the person, recorded in trixd's audit with what they changed: granted
-    when it answered, refused when the helper refused before acting, and unknown when it did not
-    finish or Slurm refused, since the change may have landed.
+    The helper run for the person, or `act` in its place, recorded in trixd's audit with what
+    they changed: granted when it answered, refused when the helper refused before acting, and
+    unknown when it did not finish or Slurm refused, since the change may have landed.
     """
     try:
-        answer = helper(verb, settings, body)
+        answer = (act or helper)(verb, settings, body)
     except BackendFailure as error:
         audit.record(name, f"slurm {verb}", str(what(None))[:200],
                      outcome=audit.UNKNOWN, detail=str(error)[:500])
@@ -214,9 +220,9 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
     except KeyError:
         raise ServiceUnavailable(f"there is no account {ACCOUNT} on this controller: the slurm "
                                  f"plugin's setup creates it") from None
-    for tool in (SETPRIV, PRLIMIT):
+    for tool, package in ((ENV, "coreutils"), (SETPRIV, "util-linux"), (PRLIMIT, "util-linux")):
         if not os.access(tool, os.X_OK):
-            raise ServiceUnavailable(f"{tool} is not here: util-linux carries it")
+            raise ServiceUnavailable(f"{tool} is not here: {package} carries it")
     try:
         group = grp.getgrnam(settings["admin_group"]).gr_gid
     except KeyError:
@@ -229,8 +235,9 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
                          "gres": settings["gres_file"]},
                "share_dir": _share(settings), "state_dir": STATE_DIR, "group": group}
     groups = ["--groups", str(group)] if verb in WRITERS else ["--clear-groups"]
-    argv = [SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
-            "--no-new-privs", "--reset-env", PRLIMIT, f"--as={MEMORY}", "--",
+    argv = [ENV, "-i", f"PATH={SEARCH}",
+            SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
+            "--no-new-privs", PRLIMIT, f"--as={MEMORY}", "--",
             sys.executable, "-I", "-B", "-X", "utf8", HELPER, verb]
     try:
         result = shell.run(argv, timeout=TIMEOUTS[verb], secret_input=json.dumps(request))
@@ -297,6 +304,66 @@ def render_lock(settings: dict):
         yield
     finally:
         os.close(fd)
+
+
+def _linted(texts: dict, what: str = "init") -> None:
+    """
+    slurmlint over the texts the daemon writes itself, as a save's are judged. Where it is
+    not installed nothing judges them here, as nothing judges the render's but slurm itself:
+    an init has to run on such a controller, and so has the restore that undoes it.
+    """
+    try:
+        import trixd.plugins.slurm.lintcheck as lintcheck
+    except ImportError:
+        LOGGER.info("slurmlint is not installed, so the %s's texts are written unjudged", what)
+        return
+    problems = lintcheck.lint(dict(texts))
+    if problems:
+        raise BadRequest("slurmlint: " + "; ".join(problems))
+
+
+def _outside(text: str, manager: str) -> list:
+    """
+    Each State a node line outside the blocks sets, in order, and where our block sits
+    among them, since a DEFAULT reaches the lines after it. A State belongs to the entry
+    named last before it, which holds across a continued line; a partition's is left out.
+    A comment's tail is read as well, so nothing slurm reads is missed.
+    """
+    found, entry = [], ""
+    for line in rules.split(text)[0]:
+        if line.rstrip() == blocks.BLOCK_START.format(manager=manager):
+            found.append(manager)
+        if line.lstrip().startswith("#"):
+            continue
+        for key, value in _SETS.findall(line):
+            if key.lower() != "state":
+                entry = f"{key.lower()}={value}"
+            elif not entry.startswith("partitionname="):
+                found.append((entry, value.lower()))
+    return found
+
+
+def _states(held: str, wrote: str, manager: str) -> list:
+    """
+    The nodes whose State the daemon's own write of the node file changes, judged by a
+    save's rule over the presets, Luna's block being carried over. Those rules read nothing
+    outside the blocks, so a State set there that differs counts every node.
+    """
+    states = rules.states_changed(held, wrote)
+    if _outside(held, manager) != _outside(wrote, manager):
+        states |= rules.rendered_nodes(held)
+    return sorted(states)
+
+
+def _rendered() -> bool:
+    """
+    The render run now, and whether it wrote: an init answers with Luna's nodes in the files.
+    Where it did not, `renders/config` says why. A held lock or a name that does not resolve
+    yet is tried again in seconds; any other failure waits for the next node or group
+    change, or the luna plugin's next poll.
+    """
+    item = renders().renders.get(RENDER)
+    return item is not None and renders().run(item)
 
 
 def _contents(paths) -> dict:
@@ -474,6 +541,13 @@ class Backend:
         The nodes whose State a save or a restore would change.
         """
         _person(request, caller, "preview")
+        if body.get("force"):
+            if body.get("mode") != "restore":
+                raise BadRequest("force: goes with mode restore; a save is never forced")
+            try:
+                return self._forced("preview", self.config(), body)
+            except (BadRequest, Conflict) as refusal:
+                return {"states": [], "refused": str(refusal)}
         return helper("preview", self.config(), {k: v for k, v in body.items() if v is not None})
 
     def _write(self, verb: str, body: dict, caller, request) -> dict:
@@ -489,6 +563,9 @@ class Backend:
         _may(person, verb, "cluster", ["cluster"], "w")
         if judged:
             _may(person, verb, "node", judged, "h")
+        if verb == "restore" and body.get("force"):
+            return _run(name, verb, lambda said: "forced, " + _whose_state(judged),
+                        self.config(), body, act=self._forced)
         return _run(name, verb, lambda said: _whose_state(judged), self.config(),
                     {k: v for k, v in body.items() if v is not None})
 
@@ -500,9 +577,114 @@ class Backend:
 
     def restore(self, body: dict = None, caller=None, request=None) -> dict:
         """
-        Write the backups' texts back, the backups kept.
+        Write the backups' texts back, the backups kept; with `force`, whatever their lines.
         """
         return self._write("restore", body, caller, request)
+
+    def _forced(self, verb: str, settings: dict, body: dict) -> dict:
+        """
+        A forced restore, or as `preview` what it would judge: the backups' lines and presets
+        back whatever the editor's rules say of them, Luna's block as it is, the files as
+        they were to each `.bkp`, then the render. Written here as an init is, under the
+        engine's lock and the helper's, so the helper's own rules stay as they are; the files
+        go before the backups, and are put back after them, so the backups' texts are on
+        disk throughout. slurmlint judges the texts without Luna's block, which is not theirs.
+        """
+        files = {"nodes": settings["nodes_file"], "partitions": settings["partitions_file"],
+                 "gres": settings["gres_file"]}
+        with renders().lock:
+            try:
+                with render_lock(settings):
+                    texts, held, kept = configfiles.restored(files, settings["manager"])
+                    loaded = body.get("stamp") or {}
+                    stale = [files[kind] for kind in files
+                             if loaded.get(kind) != hashlib.sha256(held[kind]).hexdigest()]
+                    if stale:
+                        raise Conflict(rules.STALE % ", ".join(stale))
+                    _linted(texts, "restore")
+                    wrote = configfiles.carried(texts, held, settings["manager"])
+                    states = _states(held["nodes"].decode("utf-8", "replace"), wrote["nodes"],
+                                     settings["manager"])
+                    if verb == "preview":
+                        return {"states": states, "refused": ""}
+                    if sorted(body.get("judged") or []) != states:
+                        raise Conflict("the State changes judged are not the ones this text "
+                                       "makes: reload")
+                    try:
+                        configfiles.write_initial(files, wrote, held, files_first=True)
+                    except BackendFailure as error:
+                        unrestored = configfiles.keep_back(files, kept) + _restore(
+                            {files[kind]: held[kind] for kind in files})
+                        state = (f"{', '.join(unrestored)} could not be put back" if unrestored
+                                 else "the three files and their backups are as they were")
+                        raise BackendFailure(f"{error}; {state}") from None
+            except NotNow:
+                raise Conflict("another Slurm change holds the slurm files, so the restore "
+                               "wrote nothing: try again") from None
+            rendered = _rendered()
+            now = _contents(files.values())
+            return {"stamp": {kind: hashlib.sha256(now[path] or b"").hexdigest()
+                              for kind, path in files.items()}, "rendered": rendered}
+
+    def init(self, body: dict = None, caller=None, request=None) -> dict:
+        """
+        Give the three files their managed blocks, with `reset` empty the presets as well,
+        or with `force` too put the installer's own text under them, then render. Written
+        here as the render writes, under the engine's lock and the helper's, so neither a
+        render nor a save writes in between. A reset can take a State away, so a person
+        needs the hardware right on those nodes: Luna is asked before the locks, and files
+        that moved since are a conflict.
+        """
+        name, person = _person(request, caller, "init")
+        reset, force = (bool((body or {}).get(key)) for key in ("reset", "force"))
+        if force and not reset:
+            raise BadRequest("force: goes with reset, where it puts the installer's files "
+                             "back; alone it asks for nothing")
+        _may(person, "init", "cluster", ["cluster"], "w")
+        settings = self.config()
+        files = {"nodes": settings["nodes_file"], "partitions": settings["partitions_file"],
+                 "gres": settings["gres_file"]}
+        judged = reset and person is not None
+        asked = self._initial(files, settings, reset, force)[2] if judged else []
+        if asked:
+            _may(person, "init", "node", asked, "h")
+        with renders().lock:
+            try:
+                with render_lock(settings):
+                    texts, held, states = self._initial(files, settings, reset, force)
+                    if judged and states != asked:
+                        raise Conflict("the slurm files changed while Luna was asked about "
+                                       "the State changes, so the init wrote nothing: try "
+                                       "again")
+                    try:
+                        wrote = configfiles.write_initial(files, texts, held)
+                    except BackendFailure as error:
+                        unrestored = _restore({files[kind]: held[kind] for kind in files})
+                        state = (f"{', '.join(unrestored)} could not be put back"
+                                 if unrestored else "the three files are as they were")
+                        raise BackendFailure(f"{error}; {state}") from None
+            except NotNow:
+                raise Conflict("another Slurm change holds the slurm files, so the init "
+                               "wrote nothing: try again") from None
+            done = "cluster" + ", reset" * reset + ", forced" * force
+            audit.granted(name, "slurm init", done)
+            LOGGER.info("%s: slurm init %s", name, done)
+            return {"files": wrote, "rendered": _rendered()}
+
+    def _initial(self, files: dict, settings: dict, reset: bool, force: bool) -> tuple:
+        """
+        (the texts an init writes, what each file holds now, the nodes whose State they
+        change): judged by slurmlint as an init's are, and a reset's with Luna's block
+        carried over, where an init alone changes no State.
+        """
+        manager = settings["manager"]
+        texts, held = configfiles.initial(files, manager, reset, force)
+        _linted(texts)
+        if not reset:
+            return texts, held, []
+        wrote = configfiles.carried(texts, held, manager)
+        return wrote, held, _states(held["nodes"].decode("utf-8", "replace"),
+                                    wrote["nodes"], manager)
 
     def apply(self, caller=None, request=None) -> dict:
         """

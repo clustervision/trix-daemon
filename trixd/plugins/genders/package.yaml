@@ -37,8 +37,8 @@ runs_as:
 creates:
   - >-
     nothing of its own. The installer's pdsh role makes /etc/genders a symlink into the shared
-    tree and puts the file and its managed block there; a file with no block of ours is left
-    exactly as it is
+    tree and puts the file there, empty, and the installer's call to files/actions/init gives
+    it its managed block; a file with no block of ours is left exactly as it is by a render
 
 preflight:
   - [/usr/bin/test, -f, /etc/genders]
@@ -60,3 +60,7 @@ checklist:
     test: tests/unit/test_integrations.py::test_genders_says_why_it_wrote_nothing
   - text: the shared file is written through the symlink the installer makes, not over it
     test: tests/unit/test_integrations.py::test_the_genders_render_writes_through_the_installers_symlink
+  - text: an init leaves the installer's file as config-genders left it
+    test: tests/unit/test_files_init.py::test_a_genders_init_leaves_the_file_the_installers_role_left
+  - text: a reset keeps a site's own lines, and a restore puts the file before it back
+    test: tests/unit/test_files_init.py::test_a_genders_restore_undoes_a_reset_and_is_undone_by_a_second_one
