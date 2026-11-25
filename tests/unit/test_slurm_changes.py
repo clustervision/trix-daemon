@@ -37,6 +37,7 @@ import json
 import logging
 import multiprocessing
 import os
+import re
 import subprocess
 import sys
 import time
@@ -135,6 +136,7 @@ def slurm(rig, monkeypatch, tmp_path):
         return SimpleNamespace(gr_gid=groups[name])
 
     monkeypatch.setattr(backend, "grp", SimpleNamespace(getgrnam=getgrnam))
+    tools = (backend.SETPRIV, backend.PRLIMIT)
     monkeypatch.setattr(backend, "SETPRIV", sys.executable)
     monkeypatch.setattr(backend, "PRLIMIT", sys.executable)
     luna = {"refused": {}, "raise": None, "asked": []}
@@ -164,7 +166,8 @@ def slurm(rig, monkeypatch, tmp_path):
                                                      "outcome": outcome, "detail": detail}))
     plugin = backend.Backend()
     return SimpleNamespace(backend=backend, plugin=_AsPerson(plugin, _request), bare=plugin,
-                           ran=ran, said=said, folder=folder, luna=luna, audited=audited)
+                           ran=ran, said=said, folder=folder, luna=luna, audited=audited,
+                           tools=tools)
 
 
 def _drain(**extra) -> dict:
@@ -298,18 +301,19 @@ def test_a_refusal_names_the_first_twenty_nodes_and_counts_the_rest(slurm):
 
 def test_the_helper_runs_stepped_down_with_the_request_on_stdin(slurm):
     """
-    The helper runs through setpriv as the helper's account with cleared groups, no new
-    privileges, a reset environment and an address-space limit, with the request on standard
-    input and the verb's timeout.
+    The helper runs through env and setpriv as the helper's account with an environment of
+    PATH alone, cleared groups, no new privileges and an address-space limit, with the request
+    on standard input and the verb's timeout. No option is one only a newer setpriv knows.
     """
     said = _outcome(slurm.plugin.drain, body=_drain())
     assert not isinstance(said, TrixdError), said
     run = slurm.ran[-1]
     argv = run["argv"]
-    assert argv[:9] == [sys.executable, "--reuid", "trinityx-slurm", "--regid", "trinityx-slurm",
-                        "--clear-groups", "--no-new-privs", "--reset-env", sys.executable]
-    assert argv[9:] == [f"--as={512 * 1024 * 1024}", "--", sys.executable, "-I", "-B", "-X",
-                        "utf8", slurm.backend.HELPER, "drain"]
+    assert argv[:3] == ["/usr/bin/env", "-i", "PATH=/usr/local/bin:/bin:/usr/bin"]
+    assert argv[3:11] == [sys.executable, "--reuid", "trinityx-slurm", "--regid",
+                          "trinityx-slurm", "--clear-groups", "--no-new-privs", sys.executable]
+    assert argv[11:] == [f"--as={512 * 1024 * 1024}", "--", sys.executable, "-I", "-B", "-X",
+                         "utf8", slurm.backend.HELPER, "drain"]
     assert run["timeout"] == slurm.backend.TIMEOUTS["drain"]
     assert run["request"] == {
         "files": {"nodes": str(slurm.folder / "slurm-nodes.conf"),
@@ -340,6 +344,44 @@ def test_the_helper_answers_over_the_argv_and_stdin_the_plugin_gives_it(slurm, m
     assert f"the helper's account may change {os.path.realpath(slurm.folder)}:" in str(refused)
 
 
+def test_the_real_launch_empties_the_environment_with_options_this_setpriv_knows(
+        slurm, monkeypatch):
+    """
+    The launch the plugin builds, with the system's own env, setpriv and prlimit: every setpriv
+    option of every verb is one this setpriv lists, and the launch less the account switch (which
+    takes root and the account) runs a python that sees PATH and nothing of the caller's
+    environment.
+    """
+    setpriv, prlimit = slurm.tools
+    if not (os.access(setpriv, os.X_OK) and os.access(prlimit, os.X_OK)):
+        pytest.skip(f"{setpriv} or {prlimit} is not on this machine")
+    monkeypatch.setattr(slurm.backend, "SETPRIV", setpriv)
+    monkeypatch.setattr(slurm.backend, "PRLIMIT", prlimit)
+    for call in _calls(slurm).values():
+        call(_request())
+    slurm.plugin.files()
+    known = set(re.findall(r"--[a-z-]+", subprocess.run(
+        [setpriv, "--help"], capture_output=True, text=True, check=True).stdout))
+    used = {word for run in slurm.ran
+            for word in run["argv"][run["argv"].index(setpriv) + 1:run["argv"].index(prlimit)]
+            if word.startswith("--")}
+    assert "--reuid" in used and used <= known, sorted(used - known)
+    argv = next(run["argv"] for run in slurm.ran if run["argv"][-1] == "drain")
+    start, end = argv.index("--reuid"), argv.index("--no-new-privs")
+    assert argv[start:end] == ["--reuid", "trinityx-slurm", "--regid", "trinityx-slurm",
+                               "--clear-groups"]
+    launch = argv[:start] + argv[end:-2] + [
+        "-c", "import json, os; print(json.dumps(dict(os.environ)))"]
+    if not os.access(launch[0], os.X_OK):
+        pytest.skip(f"{launch[0]} is not on this machine")
+    done = subprocess.run(launch, capture_output=True, text=True, timeout=30, check=False,
+                          env={**os.environ, "TRIXD_PLANTED": "reaches the helper"})
+    assert done.returncode == 0, done.stderr
+    seen = json.loads(done.stdout)
+    seen.pop("LC_CTYPE", None)  # python's own, set when it starts without a locale
+    assert seen == {"PATH": "/usr/local/bin:/bin:/usr/bin"}
+
+
 def test_no_body_key_overrides_the_plugins_own_values(slurm):
     """The schema drops unknown keys today; the plugin's own values going last is what holds if a
     schema ever names one of them."""
@@ -360,14 +402,14 @@ def test_only_a_save_and_a_restore_run_with_the_files_group(slurm, monkeypatch):
     for verb, call in _calls(slurm).items():
         call(_request())
     slurm.plugin.files()
-    given = {run["argv"][-1]: run["argv"][5:7] for run in slurm.ran}
+    given = {run["argv"][-1]: run["argv"][8:10] for run in slurm.ran}
     assert given == {"save": ["--groups", "4242"], "restore": ["--groups", "4242"],
                      "drain": ["--clear-groups", "--no-new-privs"],
                      "resume": ["--clear-groups", "--no-new-privs"],
                      "preview": ["--clear-groups", "--no-new-privs"],
                      "apply": ["--clear-groups", "--no-new-privs"],
                      "files": ["--clear-groups", "--no-new-privs"]}
-    assert all(run["argv"][7 if run["argv"][5] == "--groups" else 6] == "--no-new-privs"
+    assert all(run["argv"][10 if run["argv"][8] == "--groups" else 9] == "--no-new-privs"
                for run in slurm.ran)
     from trixd.utils import declarations
 
@@ -452,6 +494,11 @@ def test_without_the_account_or_the_tools_nothing_runs(slurm, monkeypatch):
     monkeypatch.setattr(slurm.backend, "PRLIMIT", "/nonexistent/prlimit")
     with pytest.raises(ServiceUnavailable):
         slurm.plugin.files()
+    monkeypatch.setattr(slurm.backend, "PRLIMIT", sys.executable)
+    monkeypatch.setattr(slurm.backend, "ENV", "/nonexistent/env", raising=False)
+    with pytest.raises(ServiceUnavailable) as refused:
+        slurm.plugin.files()
+    assert "/nonexistent/env is not here" in str(refused.value)
     assert slurm.ran == []
 
 

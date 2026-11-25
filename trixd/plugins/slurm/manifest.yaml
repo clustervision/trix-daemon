@@ -185,7 +185,7 @@ endpoints:
       example: {why: [], granted: "", stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, rules: 66e57fbc..., account: trinityx-slurm}
     errors:
       502: The helper did not answer
-      503: The helper's account, setpriv or prlimit is missing, or the files are not configured
+      503: The helper's account, env, setpriv or prlimit is missing, or the files are not configured
 
   - path: nodes
     methods: [GET]

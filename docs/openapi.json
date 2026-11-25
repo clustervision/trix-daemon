@@ -8404,7 +8404,7 @@
                 }
               }
             },
-            "description": "The helper's account, setpriv or prlimit is missing, or the files are not configured"
+            "description": "The helper's account, env, setpriv or prlimit is missing, or the files are not configured"
           }
         },
         "security": [

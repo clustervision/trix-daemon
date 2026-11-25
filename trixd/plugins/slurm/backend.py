@@ -81,6 +81,10 @@ HELPER = os.path.join(HERE, "helper.py")
 ACCOUNT = "trinityx-slurm"
 STATE_DIR = "/var/lib/trixd/slurm"   # this controller's: the grant answer
 SHARE = ".trinityx-slurm"            # beside the files, one per cluster: the lock and the mark
+# The helper inherits nothing of the daemon's environment: env -i gives it SEARCH as PATH and no
+# more, where setpriv --reset-env is an option the oldest setpriv a controller carries lacks.
+ENV = "/usr/bin/env"
+SEARCH = "/usr/local/bin:/bin:/usr/bin"
 SETPRIV = "/usr/bin/setpriv"
 PRLIMIT = "/usr/bin/prlimit"
 MEMORY = 512 * 1024 * 1024
@@ -214,9 +218,9 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
     except KeyError:
         raise ServiceUnavailable(f"there is no account {ACCOUNT} on this controller: the slurm "
                                  f"plugin's setup creates it") from None
-    for tool in (SETPRIV, PRLIMIT):
+    for tool, package in ((ENV, "coreutils"), (SETPRIV, "util-linux"), (PRLIMIT, "util-linux")):
         if not os.access(tool, os.X_OK):
-            raise ServiceUnavailable(f"{tool} is not here: util-linux carries it")
+            raise ServiceUnavailable(f"{tool} is not here: {package} carries it")
     try:
         group = grp.getgrnam(settings["admin_group"]).gr_gid
     except KeyError:
@@ -229,8 +233,9 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
                          "gres": settings["gres_file"]},
                "share_dir": _share(settings), "state_dir": STATE_DIR, "group": group}
     groups = ["--groups", str(group)] if verb in WRITERS else ["--clear-groups"]
-    argv = [SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
-            "--no-new-privs", "--reset-env", PRLIMIT, f"--as={MEMORY}", "--",
+    argv = [ENV, "-i", f"PATH={SEARCH}",
+            SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
+            "--no-new-privs", PRLIMIT, f"--as={MEMORY}", "--",
             sys.executable, "-I", "-B", "-X", "utf8", HELPER, verb]
     try:
         result = shell.run(argv, timeout=TIMEOUTS[verb], secret_input=json.dumps(request))

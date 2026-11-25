@@ -23,7 +23,7 @@ plugin's handlers as the account `trinityx-slurm` (slurm's AdminLevel Administra
 root; a save and a restore run with the files' group (root's files, group write, as the installer
 leaves them) and start no child process.
 
-    setpriv --reuid trinityx-slurm ... -- python3 -I -B helper.py <verb>   < request.json
+    env -i PATH=... setpriv --reuid trinityx-slurm ... -- python3 -I -B helper.py <verb>   < request.json
 
 The request is one JSON object on stdin: `files` (nodes, partitions, gres: the plugin's
 declaration), `share_dir` (beside the files: the lock and the mark, one per cluster),
