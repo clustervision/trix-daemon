@@ -62,3 +62,5 @@ checklist:
     test: tests/unit/test_integrations.py::test_the_genders_render_writes_through_the_installers_symlink
   - text: an init leaves the installer's file as config-genders left it
     test: tests/unit/test_files_init.py::test_a_genders_init_leaves_the_file_the_installers_role_left
+  - text: a reset keeps a site's own lines, and a restore puts the file before it back
+    test: tests/unit/test_files_init.py::test_a_genders_restore_undoes_a_reset_and_is_undone_by_a_second_one

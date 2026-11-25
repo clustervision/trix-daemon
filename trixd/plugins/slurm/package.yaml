@@ -83,3 +83,9 @@ checklist:
     test: tests/unit/test_slurm_changes.py::test_a_held_lock_turns_the_render_away_and_it_runs_again
   - text: an init leaves the installer's files as config-slurm left them, and a render gives no file its first block
     test: tests/unit/test_files_init.py::test_a_slurm_init_leaves_the_files_the_installers_roles_left
+  - text: a reset empties the presets and keeps a site's own lines outside the blocks
+    test: tests/unit/test_files_init.py::test_a_slurm_reset_empties_the_presets_and_keeps_the_lines_outside_the_blocks
+  - text: a reset or a forced restore Luna does not answer leaves slurm the nodes it had
+    test: tests/unit/test_files_init.py::test_a_render_that_cannot_run_leaves_slurm_the_nodes_it_had
+  - text: a forced restore puts a backup back whatever its lines, and is undone by a second
+    test: tests/unit/test_files_init.py::test_a_forced_restore_is_undone_by_a_second_one

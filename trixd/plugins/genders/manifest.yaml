@@ -25,7 +25,12 @@ schemas:
     reset:
       type: boolean
       optional: true
-      description: Leave nothing in the file but an empty managed block, instead of only giving a file without the block one
+      description: Keep every line of the file and render the managed block afresh, instead of only giving a file without the block one
+      example: false
+    force:
+      type: boolean
+      optional: true
+      description: With reset, leave nothing in the file but the managed block; refused without reset
       example: false
 
 endpoints:
@@ -67,18 +72,41 @@ endpoints:
     minimum: manager
     handler: init
     schema: init
-    summary: Give the genders file its managed block, or empty it down to the block
+    summary: Give the genders file its managed block, render it afresh, or empty the file down to it
     request_example: {reset: false}
     description: |
       A file without the TrinityX managed block gains it at its end, everything it holds
       kept; this is what makes the file one the render writes, and the installer calls it
       once the file is in place. Refused 409 when the file carries the block already. With
-      `reset`, the file is left holding the block alone, as the installer first leaves it,
-      and the file as it was is kept beside it as `.bkp`. The render runs before the answer,
-      so Luna's nodes are in the file (`rendered`; where false, `renders/genders` says why).
+      `reset`, every line outside the block is kept; with `force` as well, the file is left
+      holding the block alone. Either way the file as it was is kept beside it as `.bkp`,
+      which `files/actions/restore` puts back, and the block stays as it is until the
+      render writes it afresh before the answer (`rendered`; where false, `renders/genders`
+      says why, the file keeps the nodes it had, and the render runs again on the next node
+      or group change).
     response:
       description: The file, the backup a reset made, and whether the render then wrote
       example: {file: /etc/genders, rendered: true}
     errors:
+      400: '`force` without `reset`'
       409: The file carries the managed block already (send `reset`)
       502: The file cannot be read or written
+
+  - path: files/actions/restore
+    methods: [POST]
+    minimum: manager
+    handler: restore
+    summary: Put the genders file's backup back
+    description: |
+      The lines the `.bkp` beside the file holds outside the TrinityX managed block go back
+      into the file, the block as the file holds it now (added where the backup has none),
+      and the file as it was becomes the `.bkp`, so a second restore undoes the first. The
+      render writes the block afresh before the answer (`rendered`; where false,
+      `renders/genders` says why and the file keeps the nodes it had). The backup is read
+      only as a plain file of at most 4 MiB, never through a link; a write that fails puts
+      the file back and leaves the backup as it was.
+    response:
+      description: The file, its backup, and whether the render then wrote
+      example: {file: /etc/genders, backup: /etc/genders.bkp, rendered: true}
+    errors:
+      502: The file or its backup cannot be read or written; the message says what was put back

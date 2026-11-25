@@ -48,7 +48,8 @@ import pytest
 from tests.unit.test_plugins import Ran
 from tests.unit.test_slurm_changes import _hold
 from tests.unit.test_slurm_ops import helper
-from trixd.common.errors import BackendFailure, Conflict
+from trixd.common.errors import (BackendFailure, BadRequest, Conflict, Forbidden,
+                                 ServiceUnavailable, TrixdError)
 from trixd.utils import blocks
 
 KINDS: tuple = ("nodes", "partitions", "gres")
@@ -89,6 +90,8 @@ ROLE_BLOCK: str = (
 
 NODES: dict = {"node001": {"group": "compute"}, "node002": {"group": "compute"}}
 ROOTUS = SimpleNamespace(rootus=True, name="trixd")
+# A line of a site's own, outside the blocks: no save writes there.
+SITE_LINE: str = "# the site's own note above the blocks\n"
 SLURM_INIT: str = "POST /api/v1/slurm/files/actions/init"
 GENDERS_INIT: str = "POST /api/v1/genders/files/actions/init"
 
@@ -99,7 +102,7 @@ def _refusal(call) -> str:
     """
     try:
         call()
-    except (BackendFailure, Conflict) as error:
+    except TrixdError as error:
         return str(error)
     return ""
 
@@ -109,6 +112,19 @@ def _emptied(text: str) -> str:
     The file with our block holding nothing, which is the file as an init alone leaves it.
     """
     return blocks.replace(text, "TrinityX", "")
+
+
+@pytest.fixture(autouse=True)
+def _levels_forgotten():
+    """
+    A render run for real makes the engine's logger remember which levels were off, and
+    that outlives the test. Setting its level again forgets it, so a later test that
+    listens to that logger hears what it asks for.
+    """
+    yield
+    from trixd.core.render import engine
+
+    engine.LOGGER.setLevel(engine.LOGGER.level)
 
 
 def _engine(monkeypatch, plugin: str, path: str, producer) -> None:
@@ -214,6 +230,55 @@ def _init(slurm, **body) -> dict:
     return slurm.plugin.init(body=body, caller=ROOTUS, request=None)
 
 
+def _with_a_line_of_its_own(slurm) -> dict:
+    """
+    The three files with a preset in the node file and a line of a site's own above the
+    blocks, which no save could have written, and what each then holds.
+    """
+    _with_a_preset(slurm)
+    nodes = slurm.files["nodes"]
+    nodes.write_text(SITE_LINE + nodes.read_text(encoding="utf-8"), encoding="utf-8")
+    return _texts(slurm)
+
+
+def _bare(text: str) -> str:
+    """
+    The file with both blocks holding nothing: what it carries outside them.
+    """
+    return blocks.replace(_emptied(text), "Defaults", "")
+
+
+def _body(slurm, judged=(), force=True) -> dict:
+    """
+    What a restore is asked with: the files' stamp as they are, the rules, the State changes.
+    """
+    stamp = {kind: helper.sha(path.read_bytes()) for kind, path in slurm.files.items()}
+    return {"stamp": stamp, "judged": list(judged), "rules": slurm.backend.rules_digest(),
+            "force": force or None}
+
+
+def _restore(slurm, judged=(), force=True, caller=ROOTUS, request=None) -> dict:
+    """
+    The restore route, forced unless told otherwise, as rootus calls it.
+    """
+    return slurm.plugin.restore(body=_body(slurm, judged, force), caller=caller,
+                                request=request)
+
+
+def _person(slurm, monkeypatch, refused: dict) -> dict:
+    """
+    A person behind the request, and Luna refusing them what `refused` names per table.
+    """
+    from trixd.plugins.luna import persons
+
+    monkeypatch.setattr(slurm.backend.persons, "caller",
+                        lambda headers: persons.Person("alice", None))
+    monkeypatch.setattr(slurm.backend.persons, "may", lambda person, table, names, bit: {
+        name: why for name, why in refused.get(table, {}).items() if name in names})
+    return {"caller": SimpleNamespace(rootus=False, name="alice"),
+            "request": SimpleNamespace(headers={})}
+
+
 @pytest.fixture()
 def genders(rig, monkeypatch, tmp_path):
     """
@@ -299,17 +364,43 @@ def test_a_slurm_init_gives_only_a_file_without_a_block_its_blocks(slurm):
         kind: before[kind] for kind in ("nodes", "partitions")}
 
 
-def test_a_slurm_reset_puts_the_installers_files_back_and_keeps_what_was_there(slurm):
+def test_a_slurm_reset_empties_the_presets_and_keeps_the_lines_outside_the_blocks(slurm):
     """
-    A reset leaves the three files as an init over a fresh installation does, whatever they
-    held, and what they held is in the backups. Without `reset` the same files are refused.
+    A reset leaves every line outside the two blocks as it was and the presets empty, with
+    Luna's nodes rendered into ours and what the files held in the backups. Without `reset`
+    the same files are refused.
     """
     _init(slurm)
-    held = _with_a_preset(slurm)
+    held = _with_a_line_of_its_own(slurm)
     assert _refusal(lambda: _init(slurm)), "an init over initialised files was not refused"
     assert _texts(slurm) == held
 
     said = _init(slurm, reset=True)
+    assert said["rendered"] is True, said
+    wrote = _texts(slurm)
+    assert wrote["nodes"].startswith(SITE_LINE), wrote["nodes"]
+    assert {kind: _bare(text) for kind, text in wrote.items()} == {
+        kind: _bare(text) for kind, text in held.items()}
+    assert blocks.block(wrote["nodes"], "Defaults") == "", wrote["nodes"]
+    assert "NodeName=node001" in (blocks.block(wrote["nodes"], "TrinityX") or "")
+    assert _backups(slurm) == held, "a reset did not keep the files it replaced"
+
+
+def test_a_forced_slurm_reset_puts_the_installers_files_back_and_keeps_what_was_there(slurm):
+    """
+    A forced reset leaves the three files as an init over a fresh installation does,
+    whatever they held, and what they held is in the backups. `force` alone asks for
+    nothing, so it is refused as a bad request and no file moves.
+    """
+    _init(slurm)
+    held = _with_a_line_of_its_own(slurm)
+    backups = _backups(slurm)
+    with pytest.raises((BadRequest, Conflict)) as refused:
+        _init(slurm, force=True)
+    assert isinstance(refused.value, BadRequest), refused.value
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+    said = _init(slurm, reset=True, force=True)
     assert said["rendered"] is True, said
     wrote = _texts(slurm)
     assert {kind: _emptied(text) for kind, text in wrote.items()} == {
@@ -320,8 +411,8 @@ def test_a_slurm_reset_puts_the_installers_files_back_and_keeps_what_was_there(s
 
 def test_a_restore_undoes_a_slurm_reset(slurm):
     """
-    The backups a reset leaves are the ones Restore writes back, so a reset of files whose
-    lines outside the blocks are the installer's is undone by the route that already exists.
+    The backups a reset leaves are the ones Restore writes back, so a reset that emptied
+    only what the editor writes is undone by the unforced route, held to a save's rules.
     """
     _init(slurm)
     held = _with_a_preset(slurm)
@@ -469,14 +560,37 @@ def test_a_genders_init_keeps_what_a_file_without_a_block_holds(genders):
     assert _emptied(genders.real.read_text(encoding="utf-8")) == theirs + ROLE_BLOCK
 
 
-def test_a_genders_reset_leaves_the_block_alone_and_keeps_what_was_there(genders):
+def test_a_genders_reset_renders_the_block_afresh_and_keeps_the_lines_outside_it(genders):
     """
-    A reset leaves the file an init over the installer's leaves, whatever it held, and what
-    it held is kept beside the file the link points at.
+    A reset keeps every line outside our block and renders the block afresh, and what the
+    file held is kept beside the file the link points at.
     """
     held = "login01 all,login\n" + ROLE_BLOCK
     genders.real.write_text(held, encoding="utf-8")
     said = genders.plugin.init(body={"reset": True})
+    backup = str(genders.real) + ".bkp"
+    assert said == {"file": str(genders.file), "backup": backup, "rendered": True}
+    with open(backup, "r", encoding="utf-8") as handle:
+        assert handle.read() == held
+    wrote = genders.real.read_text(encoding="utf-8")
+    assert genders.file.is_symlink()
+    assert _emptied(wrote) == held, wrote
+    assert "node001 all,compute" in wrote
+
+
+def test_a_forced_genders_reset_leaves_the_block_alone_and_keeps_what_was_there(genders):
+    """
+    A forced reset leaves the file an init over the installer's leaves, whatever it held,
+    and what it held is kept beside the file the link points at. `force` alone is refused.
+    """
+    held = "login01 all,login\n" + ROLE_BLOCK
+    genders.real.write_text(held, encoding="utf-8")
+    with pytest.raises((BadRequest, Conflict)) as refused:
+        genders.plugin.init(body={"force": True})
+    assert isinstance(refused.value, BadRequest), refused.value
+    assert genders.real.read_text(encoding="utf-8") == held
+
+    said = genders.plugin.init(body={"reset": True, "force": True})
     backup = str(genders.real) + ".bkp"
     assert said == {"file": str(genders.file), "backup": backup, "rendered": True}
     with open(backup, "r", encoding="utf-8") as handle:
@@ -495,3 +609,575 @@ def test_a_genders_init_is_refused_where_the_file_is_not_there(genders):
     genders.real.unlink()
     assert "cannot read" in _refusal(lambda: genders.plugin.init(body={}))
     assert not genders.real.exists()
+
+
+@pytest.mark.parametrize("force", (False, True))
+def test_a_forced_restore_undoes_a_slurm_reset_whatever_the_lines(slurm, force):
+    """
+    A site's own line outside the blocks is in the backups either reset leaves, and no
+    unforced restore writes a set a save could not have made. Forced, the three come back as
+    they were, Luna's nodes rendered, and the files the reset left are the backups.
+    """
+    _init(slurm)
+    held = _with_a_line_of_its_own(slurm)
+    _init(slurm, reset=True, force=force)
+    left = _texts(slurm)
+    assert _backups(slurm) == held
+
+    refused = _refusal(lambda: _restore(slurm))
+    assert not refused, refused
+    assert _texts(slurm) == held
+    assert _backups(slurm) == left, "a forced restore did not keep the files it replaced"
+
+
+def test_a_forced_restore_of_the_installers_backup_still_holds_lunas_nodes(slurm):
+    """
+    The backup an init leaves is the installer's file, with no block at all. Forced back it
+    gains the blocks an init gives, and the render writes Luna's nodes before the answer:
+    restored to the letter, slurm would have no nodes.
+    """
+    _init(slurm)
+    left = _texts(slurm)
+    said = {}
+    refused = _refusal(lambda: said.update(_restore(slurm)))
+    assert not refused, refused
+    assert said["rendered"] is True, said
+    wrote = _texts(slurm)
+    assert {kind: _emptied(text) for kind, text in wrote.items()} == {
+        kind: INSTALLED[kind] + ROLE_PRESETS + ROLE_BLOCK for kind in KINDS}
+    assert "NodeName=node002" in (blocks.block(wrote["nodes"], "TrinityX") or "")
+    assert said["stamp"] == {kind: helper.sha(path.read_bytes())
+                             for kind, path in slurm.files.items()}
+    assert _backups(slurm) == left
+
+
+def test_a_forced_restore_is_undone_by_a_second_one(slurm):
+    """
+    The files as they were become the backups, so the same route asked again swaps them
+    back, as often as it is asked.
+    """
+    _init(slurm)
+    held = _with_a_line_of_its_own(slurm)
+    _init(slurm, reset=True)
+    left = _texts(slurm)
+    for files, backups in ((held, left), (left, held), (held, left)):
+        refused = _refusal(lambda: _restore(slurm))
+        assert not refused, refused
+        assert (_texts(slurm), _backups(slurm)) == (files, backups)
+
+
+def _with_a_state_to_lose(slurm) -> dict:
+    """
+    Files whose backups lack a preset that sets node001's State, and a site's own line: a
+    forced restore takes that State away again. What the files then hold.
+    """
+    _init(slurm)
+    _init(slurm, reset=True)
+    nodes = slurm.files["nodes"]
+    nodes.write_text(SITE_LINE + nodes.read_text(encoding="utf-8").replace(
+        "#### Defaults Managed block start ####\n",
+        "#### Defaults Managed block start ####\n# NodeName=node001 State=DOWN\n"),
+        encoding="utf-8")
+    return _texts(slurm)
+
+
+def test_a_forced_restore_is_held_to_the_state_changes_it_makes(slurm):
+    """
+    A State on a preset reaches the node the render next writes, so the node is judged as a
+    save's is: the forced preview names it, a restore that does not is refused with nothing
+    written, and one that does goes through.
+    """
+    held = _with_a_state_to_lose(slurm)
+    backups = _backups(slurm)
+    said = slurm.plugin.preview(body={**_body(slurm), "mode": "restore", "texts": None},
+                                caller=ROOTUS, request=None)
+    assert said == {"states": ["node001"], "refused": ""}
+
+    with pytest.raises(Conflict) as refused:
+        _restore(slurm)
+    assert "the State changes judged are not the ones this text makes" in str(refused.value)
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+    refused = _refusal(lambda: _restore(slurm, judged=["node001"]))
+    assert not refused, refused
+    assert _backups(slurm) == held
+
+
+def test_a_state_set_outside_the_blocks_counts_every_node(slurm):
+    """
+    The save rules read the blocks alone. A line slurm reads outside them that sets a State
+    reaches any node, so where the backups and the files differ in one, every node is judged.
+    """
+    _init(slurm)
+    _init(slurm, reset=True)
+    nodes = slurm.files["nodes"]
+    nodes.write_text(nodes.read_text(encoding="utf-8").replace("State=UNKNOWN", "State=DOWN"),
+                     encoding="utf-8")
+    said = slurm.plugin.preview(body={**_body(slurm), "mode": "restore", "texts": None},
+                                caller=ROOTUS, request=None)
+    assert said == {"states": ["node001", "node002"], "refused": ""}
+
+
+def test_a_forced_restore_of_files_that_moved_is_refused(slurm):
+    """
+    The stamp is held as a save's is: files that changed since they were read are not
+    swapped away unseen.
+    """
+    _init(slurm)
+    _with_a_line_of_its_own(slurm)
+    _init(slurm, reset=True, force=True)
+    body = _body(slurm)
+    nodes = slurm.files["nodes"]
+    nodes.write_text(nodes.read_text(encoding="utf-8") + "# written meanwhile\n",
+                     encoding="utf-8")
+    held, backups = _texts(slurm), _backups(slurm)
+    with pytest.raises(Conflict, match="changed since this page loaded it"):
+        slurm.plugin.restore(body=body, caller=ROOTUS, request=None)
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+
+def test_a_forced_restore_needs_the_rights_a_save_needs(slurm, monkeypatch):
+    """
+    Force lifts the rule on changed lines and nothing else: Luna's w on the cluster, and the
+    hardware right on each node whose State changes, asked as the person.
+    """
+    held = _with_a_state_to_lose(slurm)
+    backups = _backups(slurm)
+    for refused in ({"cluster": {"cluster": "changing cluster cluster is not permitted"}},
+                    {"node": {"node001": "node001: no hardware right"}}):
+        who = _person(slurm, monkeypatch, refused)
+        with pytest.raises(Forbidden):
+            _restore(slurm, judged=["node001"], **who)
+        assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+    who = _person(slurm, monkeypatch, {})
+    refused = _refusal(lambda: _restore(slurm, judged=["node001"], **who))
+    assert not refused, refused
+
+
+def test_slurmlint_judges_what_a_forced_restore_writes(slurm, monkeypatch):
+    """
+    A backup's line slurm cannot load is refused with slurmlint's words and nothing written.
+    Where slurmlint is not installed the restore goes ahead, as the init it undoes does.
+    """
+    pytest.importorskip("slurmlint")
+    _init(slurm)
+    backup = helper.backup(slurm.files["nodes"])
+    backup.write_text(INSTALLED["nodes"] + "NodeName=login01 RealMemory=lots\n",
+                      encoding="utf-8")
+    held, backups = _texts(slurm), _backups(slurm)
+    with pytest.raises((BadRequest, Conflict)) as refused:
+        _restore(slurm)
+    assert isinstance(refused.value, BadRequest), refused.value
+    assert "slurmlint: " in str(refused.value) and "RealMemory=lots" in str(refused.value)
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+    monkeypatch.setitem(sys.modules, "trixd.plugins.slurm.lintcheck", None)
+    refused = _refusal(lambda: _restore(slurm))
+    assert not refused, refused
+    assert "NodeName=login01 RealMemory=lots\n" in _texts(slurm)["nodes"]
+
+
+def test_a_forced_restore_writes_nothing_while_another_change_holds_the_files(slurm):
+    """
+    The forced restore takes the lock an init takes and does not wait for it: held by
+    another process, it is a conflict to ask again, and none of the six moves.
+    """
+    _init(slurm)
+    held, backups = _texts(slurm), _backups(slurm)
+    ctx = multiprocessing.get_context("fork")
+    ready, done = ctx.Event(), ctx.Event()
+    holder = ctx.Process(target=_hold, args=(str(slurm.share / "lock"), ready, done))
+    holder.start()
+    try:
+        assert ready.wait(10)
+        with pytest.raises(Conflict, match="so the restore wrote nothing"):
+            _restore(slurm)
+        assert (_texts(slurm), _backups(slurm)) == (held, backups)
+    finally:
+        done.set()
+        holder.join(10)
+
+
+@pytest.mark.parametrize("failing", ("slurm-partitions.conf", "slurm-partitions.conf.bkp"))
+def test_a_forced_restore_that_cannot_write_puts_all_six_back(slurm, monkeypatch, failing):
+    """
+    A write failing part-way, on a file or on a backup, leaves the three files and the three
+    backups holding what they held, and the failure says so.
+    """
+    from trixd.plugins.slurm import configfiles
+
+    _init(slurm)
+    _with_a_line_of_its_own(slurm)
+    _init(slurm, reset=True, force=True)
+    held, backups = _texts(slurm), _backups(slurm)
+    real_put, real_keep = blocks.put, configfiles._keep
+
+    def put(path, text, follow=False):
+        """blocks.put, failing on the file named as a full disk would."""
+        if os.path.basename(path) == failing:
+            raise OSError(28, "No space left on device")
+        real_put(path, text, follow)
+
+    def keep(path, data):
+        """configfiles._keep, failing on the backup named as a full disk would."""
+        if os.path.basename(path) + ".bkp" == failing:
+            raise OSError(28, "No space left on device")
+        real_keep(path, data)
+
+    monkeypatch.setattr(blocks, "put", put)
+    monkeypatch.setattr(configfiles, "_keep", keep)
+    refused = _refusal(lambda: _restore(slurm))
+    assert f"cannot write {slurm.files['partitions'].parent / failing}" in refused, refused
+    assert "the three files and their backups are as they were" in refused, refused
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+
+def test_a_forced_restore_names_the_backup_it_could_not_put_back(slurm, monkeypatch):
+    """
+    Where a backup was cut short and will not be written again, the failure names it rather
+    than saying all is as it was; the files still go back.
+    """
+    from trixd.plugins.slurm import configfiles
+
+    _init(slurm)
+    held = _texts(slurm)
+    backup = helper.backup(slurm.files["partitions"])
+    real_keep = configfiles._keep
+
+    def keep(path, data):
+        """configfiles._keep, cutting the partition file's backup short and failing."""
+        if path == str(slurm.files["partitions"]):
+            backup.write_text("", encoding="utf-8")
+            raise OSError(28, "No space left on device")
+        real_keep(path, data)
+
+    monkeypatch.setattr(configfiles, "_keep", keep)
+    refused = _refusal(lambda: _restore(slurm))
+    assert f"{backup} could not be put back" in refused, refused
+    assert _texts(slurm) == held
+
+
+def test_a_forced_restore_reads_a_backup_only_as_a_plain_file_of_its_own(slurm, monkeypatch):
+    """
+    The backups are written by the admin group and read here as root, so one that is a link,
+    has a second name or is larger than a save's texts is refused, and nothing is written -
+    not through the link either.
+    """
+    _init(slurm)
+    held, backups = _texts(slurm), _backups(slurm)
+    backup = helper.backup(slurm.files["gres"])
+    elsewhere = backup.parent / "elsewhere"
+    elsewhere.write_text(INSTALLED["gres"], encoding="utf-8")
+    for plant in (backup.symlink_to, lambda target: os.link(target, backup)):
+        backup.unlink()
+        plant(elsewhere)
+        refused = _refusal(lambda: _restore(slurm))
+        assert "the backups cannot be read" in refused, refused
+        assert _texts(slurm) == held
+        assert elsewhere.read_text(encoding="utf-8") == INSTALLED["gres"]
+    backup.unlink()
+    backup.write_text(backups["gres"], encoding="utf-8")
+
+    monkeypatch.setattr(blocks, "KEPT_MAX", 16, raising=False)
+    refused = _refusal(lambda: _restore(slurm))
+    assert "the backups cannot be read" in refused and "File too large" in refused, refused
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+
+def test_a_genders_restore_undoes_a_reset_and_is_undone_by_a_second_one(genders):
+    """
+    The backup either reset leaves goes back with Luna's nodes rendered into our block, and
+    the file as it was becomes the backup, so the same route asked again swaps them back.
+    """
+    genders.real.write_text("login01 all,login\n" + ROLE_BLOCK, encoding="utf-8")
+    genders.plugin.render_genders()
+    held = genders.real.read_text(encoding="utf-8")
+    backup = genders.real.parent / "genders.bkp"
+    genders.plugin.init(body={"reset": True, "force": True})
+    left = genders.real.read_text(encoding="utf-8")
+    assert "login01" not in left and backup.read_text(encoding="utf-8") == held
+
+    for file, kept in ((held, left), (left, held)):
+        said = genders.plugin.restore()
+        assert said == {"file": str(genders.file), "backup": str(backup), "rendered": True}
+        assert genders.file.is_symlink()
+        assert genders.real.read_text(encoding="utf-8") == file
+        assert backup.read_text(encoding="utf-8") == kept
+
+
+def test_a_genders_restore_gives_a_backup_without_a_block_one(genders):
+    """
+    A backup holding a site's own file with no block of ours comes back with the block at
+    its end and Luna's nodes in it: restored to the letter, the render would refuse the file.
+    """
+    genders.plugin.init(body={})
+    backup = genders.real.parent / "genders.bkp"
+    backup.write_text("login01 all,login\n", encoding="utf-8")
+    assert genders.plugin.restore()["rendered"] is True
+    wrote = genders.real.read_text(encoding="utf-8")
+    assert _emptied(wrote) == "login01 all,login\n" + ROLE_BLOCK, wrote
+    assert "node001 all,compute" in wrote
+
+
+def test_a_genders_restore_is_refused_without_a_backup_of_its_own(genders):
+    """
+    No backup, or one that is a link, is refused and the file does not move.
+    """
+    genders.plugin.init(body={})
+    held = genders.real.read_text(encoding="utf-8")
+    backup = genders.real.parent / "genders.bkp"
+    assert "cannot read" in _refusal(genders.plugin.restore)
+    elsewhere = genders.real.parent / "elsewhere"
+    elsewhere.write_text("login01 all,login\n", encoding="utf-8")
+    backup.symlink_to(elsewhere)
+    assert "cannot read" in _refusal(genders.plugin.restore)
+    assert genders.real.read_text(encoding="utf-8") == held
+    assert elsewhere.read_text(encoding="utf-8") == "login01 all,login\n"
+
+
+def test_a_genders_restore_that_cannot_keep_the_file_puts_it_back(genders, monkeypatch):
+    """
+    Where the file as it was cannot be kept, it is put back and the backup stays, so nothing
+    is lost to a restore that failed.
+    """
+    from trixd.plugins.genders import backend
+
+    genders.real.write_text("login01 all,login\n" + ROLE_BLOCK, encoding="utf-8")
+    genders.plugin.init(body={"reset": True, "force": True})
+    held = genders.real.read_text(encoding="utf-8")
+    backup = genders.real.parent / "genders.bkp"
+    kept = backup.read_text(encoding="utf-8")
+
+    def write(path, content, mode=0o644):
+        """files.write, failing as a full disk would."""
+        raise BackendFailure(f"cannot write {path}: No space left on device")
+
+    monkeypatch.setattr(backend.files, "write", write)
+    refused = _refusal(genders.plugin.restore)
+    assert "the file is as it was" in refused, refused
+    assert genders.real.read_text(encoding="utf-8") == held
+    assert backup.read_text(encoding="utf-8") == kept
+
+
+def _silent():
+    """
+    Luna as it is while it is away: every read of its nodes fails.
+    """
+    raise BackendFailure("Luna is not answering")
+
+
+@pytest.mark.parametrize("asked", ("reset", "forced reset", "forced restore"))
+def test_a_render_that_cannot_run_leaves_slurm_the_nodes_it_had(slurm, monkeypatch, asked):
+    """
+    Luna's block is carried over until the render writes it afresh, so a reset or a forced
+    restore made while Luna is away answers `rendered` false with the nodes still in the
+    files: emptied, a slurmctld started then would have none.
+    """
+    _init(slurm)
+    _with_a_line_of_its_own(slurm)
+    monkeypatch.setattr(slurm.backend, "luna", lambda: SimpleNamespace(nodes=_silent))
+    said = {"reset": lambda: _init(slurm, reset=True),
+            "forced reset": lambda: _init(slurm, reset=True, force=True),
+            "forced restore": lambda: _restore(slurm)}[asked]()
+    assert said["rendered"] is False, said
+    wrote = _texts(slurm)
+    assert (blocks.block(wrote["nodes"], "TrinityX") or "").splitlines() == [
+        "", "NodeName=node001 # GroupName=compute", "NodeName=node002 # GroupName=compute",
+        "", "# Nodesets", "NodeSet=compute Nodes=node[001-002]"], wrote["nodes"]
+    assert "PartitionName=compute" in (blocks.block(wrote["partitions"], "TrinityX") or "")
+    assert SITE_LINE not in wrote["nodes"] or asked == "reset"
+
+
+def test_a_broken_block_of_lunas_does_not_stop_a_forced_restore(slurm):
+    """
+    slurmlint judges what a forced restore brings back, not Luna's block, which the render
+    rewrites: a block slurm cannot load is no reason to refuse the way out of it.
+    """
+    pytest.importorskip("slurmlint")
+    _init(slurm)
+    nodes = slurm.files["nodes"]
+    nodes.write_text(blocks.replace(nodes.read_text(encoding="utf-8"), "TrinityX",
+                                    "\nNodeName=node001 RealMemory=lots"), encoding="utf-8")
+    refused = _refusal(lambda: _restore(slurm))
+    assert not refused, refused
+    assert "RealMemory=lots" not in _texts(slurm)["nodes"]
+
+
+def _a_node_file(above: str = "", below: str = "") -> str:
+    """
+    A node file with Luna's two nodes in our block, and lines of a site's own around it.
+    """
+    return blocks.replace(above + ROLE_PRESETS + ROLE_BLOCK, "TrinityX",
+                          "\nNodeName=node001 # GroupName=compute\n"
+                          "NodeName=node002 # GroupName=compute") + below
+
+
+@pytest.mark.parametrize("held, wrote, judged", (
+    ("NodeName=DEFAULT RealMemory=4000 State=UNKNOWN\n",
+     "NodeName=DEFAULT RealMemory=100 State=UNKNOWN\n", False),
+    ("NodeName=DEFAULT RealMemory=100 State=UNKNOWN\n",
+     "nodename=DEFAULT state=unknown RealMemory=100\n", False),
+    ("PartitionName=defq Nodes=ALL State=UP\n",
+     "PartitionName=defq Nodes=ALL State=DOWN\n", False),
+    ("NodeName=DEFAULT RealMemory=100 State=UNKNOWN\n",
+     "NodeName=DEFAULT RealMemory=100 State=DOWN\n", True),
+    ("NodeName=DEFAULT RealMemory=100 \\\n  State=UNKNOWN\n",
+     "NodeName=DEFAULT RealMemory=100 \\\n  State=DOWN\n", True),
+    ("NodeName=DEFAULT State=UNKNOWN\nNodeName=login01 State=DOWN\n",
+     "NodeName=login01 State=UNKNOWN\nNodeName=DEFAULT State=DOWN\n", True),
+    ("NodeName=DEFAULT State=UNKNOWN\n", "DownNodes=node001 State=DOWN\n", True),
+), ids=("another setting", "case and order in a line", "a partition's", "the state",
+        "on a continued line", "moved between entries", "down nodes"))
+def test_only_a_node_state_that_differs_outside_the_blocks_is_judged(slurm, held, wrote,
+                                                                     judged):
+    """
+    Outside the blocks it is the State each node entry sets that is compared, not its line:
+    the installer's DEFAULT with another RealMemory judges nobody, a partition's State is
+    not a node's, and a State that differs on any node entry judges every node.
+    """
+    states = slurm.backend._states(_a_node_file(held), _a_node_file(wrote), "TrinityX")
+    assert states == (["node001", "node002"] if judged else []), states
+
+
+def test_a_default_state_moved_past_our_block_is_judged(slurm):
+    """
+    A DEFAULT reaches the lines after it, so the same line above our block and below it
+    are not the same State for Luna's nodes.
+    """
+    line = "NodeName=DEFAULT State=DOWN\n"
+    states = slurm.backend._states(_a_node_file(above=line), _a_node_file(below=line),
+                                   "TrinityX")
+    assert states == ["node001", "node002"], states
+
+
+@pytest.mark.parametrize("force", (False, True))
+def test_a_reset_that_changes_a_state_needs_the_hardware_right(slurm, monkeypatch, force):
+    """
+    A reset takes a preset's State away, which a save may only do with the hardware right
+    on the node: a person holding w on the cluster alone is refused and nothing is written,
+    and rootus resets as before.
+    """
+    held = _with_a_state_to_lose(slurm)
+    backups = _backups(slurm)
+    who = _person(slurm, monkeypatch, {"node": {"node001": "node001: no hardware right"}})
+    refused = _refusal(lambda: slurm.plugin.init(body={"reset": True, "force": force}, **who))
+    assert "no hardware right" in refused, refused
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+    assert _init(slurm, reset=True, force=force)["rendered"] is True
+    assert _backups(slurm) == held
+
+
+def test_an_init_alone_asks_luna_about_no_node(slurm, monkeypatch):
+    """
+    An init without `reset` gives blocks and changes no State, so a person is asked about
+    the cluster and nothing else, as the installer's call is.
+    """
+    asked = []
+    who = _person(slurm, monkeypatch, {})
+    monkeypatch.setattr(slurm.backend.persons, "may",
+                        lambda person, table, names, bit: asked.append((table, bit)) or {})
+    assert slurm.plugin.init(body={}, **who)["rendered"] is True
+    assert asked == [("cluster", "w")], asked
+
+
+def test_a_reset_of_files_that_moved_while_luna_was_asked_is_refused(slurm, monkeypatch):
+    """
+    Luna is asked before the lock is taken, about the State changes the files then made.
+    Files that make others once the lock is held are a conflict, and nothing is written.
+    """
+    _with_a_state_to_lose(slurm)
+    who = _person(slurm, monkeypatch, {})
+    nodes = slurm.files["nodes"]
+
+    def may(person, table, names, bit):
+        """persons.may, with a save landing a second State while Luna answers."""
+        if table == "node":
+            nodes.write_text(nodes.read_text(encoding="utf-8").replace(
+                "# NodeName=node001 State=DOWN\n",
+                "# NodeName=node001 State=DOWN\n# NodeName=node002 State=DOWN\n"),
+                encoding="utf-8")
+        return {}
+
+    monkeypatch.setattr(slurm.backend.persons, "may", may)
+    backups = _backups(slurm)
+    refused = _refusal(lambda: slurm.plugin.init(body={"reset": True}, **who))
+    assert "changed while Luna was asked" in refused, refused
+    assert "# NodeName=node002 State=DOWN" in _texts(slurm)["nodes"]
+    assert _backups(slurm) == backups
+
+
+def test_a_forced_restore_is_refused_while_a_cut_save_is_not_put_back(slurm):
+    """
+    A save cut short leaves its mark, and the files are then not ones to swap: the forced
+    restore writes nothing until a save or an unforced restore has put them back.
+    """
+    _init(slurm)
+    held, backups = _texts(slurm), _backups(slurm)
+    (slurm.share / "pending").mkdir()
+    (slurm.share / "pending" / "paths.json").write_text("[]", encoding="utf-8")
+    refused = _refusal(lambda: _restore(slurm))
+    assert "a save was cut short" in refused, refused
+    assert (_texts(slurm), _backups(slurm)) == (held, backups)
+
+
+def test_a_forced_preview_is_of_a_restore_only(slurm):
+    """
+    A save is never forced, so a preview asking for one is a bad request.
+    """
+    _init(slurm)
+    with pytest.raises(BadRequest, match="force: goes with mode restore"):
+        slurm.plugin.preview(body={**_body(slurm), "mode": "save", "texts": _texts(slurm)},
+                             caller=ROOTUS, request=None)
+
+
+def test_the_daemons_own_writes_are_in_the_audit(slurm, monkeypatch):
+    """
+    A reset and a forced restore are recorded under whoever asked, with what was asked: a
+    forced restore names itself and the nodes whose State it changed, and one refused is
+    recorded as refused.
+    """
+    audited = []
+    for outcome in ("granted", "refused"):
+        monkeypatch.setattr(slurm.backend.audit, outcome, lambda who, action, what="",
+                            detail="", outcome=outcome: audited.append(
+                                (who, action, what, outcome)))
+    _with_a_state_to_lose(slurm)
+    assert _refusal(lambda: _restore(slurm))
+    _restore(slurm, judged=["node001"])
+    _init(slurm, reset=True, force=True)
+    assert audited == [("trixd", "slurm init", "cluster", "granted"),
+                       ("trixd", "slurm init", "cluster, reset", "granted"),
+                       ("trixd", "slurm restore", "forced, cluster", "refused"),
+                       ("trixd", "slurm restore", "forced, cluster; State: node001", "granted"),
+                       ("trixd", "slurm init", "cluster, reset, forced", "granted")], audited
+
+
+def _genders_silent(monkeypatch) -> None:
+    """
+    Luna away for the genders render, which reads its nodes through the slurm plugin.
+    """
+    monkeypatch.setattr("trixd.plugins.slurm.backend.luna",
+                        lambda: SimpleNamespace(nodes=_silent))
+
+
+@pytest.mark.parametrize("asked", ("reset", "forced reset", "restore"))
+def test_a_render_that_cannot_run_leaves_the_genders_file_its_nodes(genders, monkeypatch,
+                                                                    asked):
+    """
+    Our block is carried over until the render writes it afresh, so a reset or a restore
+    made while Luna is away leaves pdsh the nodes it had.
+    """
+    genders.real.write_text("login01 all,login\n" + ROLE_BLOCK, encoding="utf-8")
+    genders.plugin.render_genders()
+    genders.plugin.init(body={"reset": True})
+    _genders_silent(monkeypatch)
+    said = {"reset": lambda: genders.plugin.init(body={"reset": True}),
+            "forced reset": lambda: genders.plugin.init(body={"reset": True, "force": True}),
+            "restore": genders.plugin.restore}[asked]()
+    assert said["rendered"] is False, said
+    wrote = genders.real.read_text(encoding="utf-8")
+    assert (blocks.block(wrote, "TrinityX") or "").splitlines() == [
+        "", "node001 all,compute", "node002 all,compute"], wrote
+    assert ("login01" in wrote) is (asked != "forced reset")

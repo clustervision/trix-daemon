@@ -88,6 +88,11 @@ schemas:
       optional: true
       description: The new text of nodes, partitions and gres
       example: {nodes: "...", partitions: "...", gres: "..."}
+    force: &force
+      type: boolean
+      optional: true
+      description: With mode restore, the restore whatever the backups' lines are, which a save's rules on changed lines would refuse; Luna's block is rendered afterwards rather than restored
+      example: false
   save:
     texts:
       type: object
@@ -108,11 +113,17 @@ schemas:
     stamp: *stamp
     judged: *states
     rules: *rules
+    force: *force
   init:
     reset:
       type: boolean
       optional: true
-      description: Put the installer's files back whatever the three hold, instead of only giving a file without the managed block its blocks
+      description: Empty the Defaults block of all three files, keep every line outside the blocks and render the TrinityX block afresh, instead of only giving a file without the managed block its blocks
+      example: false
+    force:
+      type: boolean
+      optional: true
+      description: With reset, put this plugin's default files back whatever the three hold, the lines outside the blocks included; refused without reset
       example: false
 
 endpoints:
@@ -257,7 +268,9 @@ endpoints:
     description: |
       Judged as the write would be (the stamp, the TrinityX block, the lines the editor may
       change, slurmlint), writing nothing; a refusal the write would meet comes back in
-      `refused`, so the console can say it before the person saves.
+      `refused`, so the console can say it before the person saves. With `force` and mode
+      restore it answers for a forced restore, judged in the daemon as that is: the `states`
+      to send as its `judged`.
     request_example: {mode: save, stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}, texts: {nodes: "...", partitions: "...", gres: "..."}}
     response:
       description: The State changes, or why the write would be refused
@@ -307,16 +320,28 @@ endpoints:
       As a save of the `.bkp` texts, the backups kept. There is one `.bkp` per file, which
       every save rewrites, and the OOD Slurm configurator writes the same names: Restore puts
       back the set before the latest save by either, not necessarily before the person's own.
-      `judged` is held to 4096 nodes as a save's is.
+      `judged` is held to 4096 nodes as a save's is. With `force` the rules on changed lines
+      are not applied, so a set whose lines outside the blocks differ goes back as well, as
+      the backups an init's `reset` leaves do. The daemon then writes the files itself, as
+      an init does and under the same lock: each backup's lines and its Defaults block, the
+      TrinityX block as the file holds it now (added where the backup has none), the files
+      as they were to each `.bkp`, so a second forced restore undoes the first; then the
+      render writes Luna's nodes afresh (`rendered`; where false, `renders/config` says why,
+      the files keep the nodes they had, and the render runs again on the next node or
+      group change). slurmctld reads the restored lines where the render changed a block,
+      and otherwise on apply. Still held to the stamp, `rules`, slurmlint where it is
+      installed, and Luna's rights; a node's State set outside the blocks that differs
+      counts every node in `judged` (preview with `force` answers them). A backup is read
+      only as a plain file of at most 4 MiB, never through a link.
     response:
-      description: The files' new stamp
+      description: The files' new stamp, and for a forced restore whether the render then wrote
       example: {stamp: {nodes: 9f86d08..., partitions: 60303ae..., gres: fd61a03...}}
     errors:
       400: '`judged` (at most 4096 nodes), or slurmlint''s lines'
       401: As a save
       403: As a save
       409: As a save
-      502: As a save
+      502: As a save; a forced restore that could not write says which of the six are not put back
       503: A backup cannot be read, or as a save; or Luna did not answer
 
   - path: files/actions/init
@@ -324,29 +349,36 @@ endpoints:
     minimum: manager
     handler: init
     schema: init
-    summary: Give the node, partition and gres files their managed blocks, or put the default files back
+    summary: Give the node, partition and gres files their managed blocks, empty their presets, or put the default files back
     request_example: {reset: false}
     description: |
       A file without the TrinityX managed block gains the Defaults block and the TrinityX
       block at its end, everything it holds kept; this is what makes a file one the render
       writes, and the installer calls it once the files are in place. Refused 409 when all
-      three carry the block already. With `reset`, each of the three becomes this plugin's
-      default file under both blocks empty, whatever it held. The daemon writes the files
+      three carry the block already. With `reset`, the Defaults block of each of the three
+      is emptied and every line outside the blocks is kept; with `force` as well, each
+      becomes this plugin's default file under an empty Defaults block, whatever it held.
+      Either way the TrinityX block stays as it is until the render writes it afresh, so a
+      render that cannot run leaves the nodes that were there. The daemon writes the files
       itself, as the render does and under the lock the render and a save take: the files
       as they were to each `.bkp` first, then the three, put back where a write fails;
       judged by slurmlint where it is installed. Restore writes those backups back as it
-      writes any, held to a save's rules, so it refuses a set whose lines outside the blocks
-      differ; that one is copied back by hand. The render runs before the answer, so Luna's
-      nodes are in the files (`rendered`; where false, `renders/config` says why). Luna's w
-      on the cluster, asked as the person.
+      writes any, held to a save's rules, so it refuses a set whose presets or lines
+      outside the blocks a save could not have made; Restore with `force` puts that one
+      back. The render runs before the answer, so Luna's nodes are in the files
+      (`rendered`; where false, `renders/config` says why, and the render runs again on
+      the next node or group change). slurmctld reads a reset's lines where the render
+      changed a block, and otherwise on apply. Luna's w on the cluster, asked as the
+      person; with `reset` also the hardware right on each node whose State the reset
+      changes, as a save needs it.
     response:
       description: The files written, and whether the render then wrote
       example: {files: [/etc/slurm/gres.conf, /etc/slurm/slurm-nodes.conf, /etc/slurm/slurm-partitions.conf], rendered: true}
     errors:
-      400: slurmlint's lines
+      400: slurmlint's lines, or `force` without `reset`
       401: As a save
       403: The caller is neither a person nor rootus, or Luna refuses the person, in Luna's words
-      409: All three files carry the managed block already (send `reset`); or another change holds the files
+      409: All three files carry the managed block already (send `reset`); or another change holds the files, or they changed while Luna was asked
       502: A file cannot be read or written, the lock cannot be taken, or a cut save is not put back yet
       503: Luna did not answer
 
