@@ -31,6 +31,13 @@ depends:
   commands: [/usr/bin/scontrol, /usr/bin/sacctmgr, /usr/bin/env, /usr/bin/setpriv, /usr/bin/prlimit]
   python: [slurmlint]
   slurm: accounting answers (sacctmgr), the node, partition and gres files exist
+  pair: >-
+    the three files on the shared tree, where the installer puts them: both controllers reach one
+    file, so no write of either is sent to the other. A change at Luna reaches each controller's
+    trixd from its own Luna, and each renders; a call to one controller (system/bulk, system/notify,
+    the active Luna's whole set) renders there alone, and one file needs no more. Files kept per
+    controller are not supported and no setting changes that: a save, a restore, each .bkp and
+    the lock stay on the controller that was asked
 
 runs_as:
   handlers: root, inside trixd; they run nothing but helper.py
@@ -74,6 +81,8 @@ steps:
     - [/usr/bin/rm, -rf, /var/lib/trixd/slurm]
 
 checklist:
+  - text: no route sends its write to the other controller
+    test: tests/unit/test_plugins.py::test_the_slurm_and_genders_plugins_send_no_write_to_the_other_controller
   - text: only a person or rootus asks for a change; a service and a Luna-minted token are refused
     test: tests/unit/test_slurm_changes.py::test_only_a_person_asks_for_a_change
   - text: Luna decides, asked as the person, before the helper runs

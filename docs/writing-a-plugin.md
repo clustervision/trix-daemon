@@ -474,7 +474,10 @@ has owed the row for long enough; and a 4xx that is not 401 or 403 - a peer that
 serve this endpoint, say - is terminal at once. `GET /system/replication/owed` lists what
 is still owed, and `/api/v1/system/health` counts it under `owed` for a monitor. Where
 `[REPLICATION]` names no peers, or is switched off, nothing is written down and the
-answer says so.
+answer says so. The flag is the author's, read from the manifest alone: no setting gives it
+to a route that does not declare it. It carries a plugin's own writing endpoint and nothing
+else: not a render, nor what a hook's handler does, nor `/system/notify` and `/system/bulk`,
+which act on the controller that was called and tell no peer.
 
 **The outbox carries intents, and nothing compares afterwards.** Once a row has been
 sent, refused or let go of, nothing asks again what the peer holds, because the sweep

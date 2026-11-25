@@ -1679,6 +1679,26 @@ def test_every_shipped_package_file_declares_what_its_plugin_needs(rig):
                 assert f"def {name}(" in handle.read(), item["test"]
 
 
+def test_the_slurm_and_genders_plugins_send_no_write_to_the_other_controller():
+    """
+    Both write files the installer puts on the shared tree, which the two controllers reach
+    as one file, so a route of theirs declaring `replicate` would only have the peer write
+    the same bytes again. Read from the manifests, so a route added later is asked too.
+
+    This pins the default: nothing here is new, and it passes on the code it was written for.
+    """
+    import trixd
+    from trixd.core.plugins import manifest as manifests
+
+    for plugin in ("slurm", "genders"):
+        path = os.path.join(os.path.dirname(trixd.__file__), "plugins", plugin, "manifest.yaml")
+        endpoints = manifests.parse(manifests.read_yaml(path)).endpoints
+        assert any(one.render for one in endpoints) and any(
+            not one.render and "POST" in one.methods for one in endpoints), \
+            f"{plugin} declares no render or no write, so this proves nothing"
+        assert [one.path for one in endpoints if one.replicate] == [], plugin
+
+
 def test_a_read_of_a_render_never_runs_the_producer_that_writes_its_files(rig, tmp_path):
     """
     The half of the split that is structural rather than declared: the route behind a
