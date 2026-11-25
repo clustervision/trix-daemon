@@ -179,7 +179,12 @@ endpoints:
       The generic and service alert rules as one document, in Prometheus' own rule-file
       format: `groups`, each with a `name` and its `rules`. trixd writes the groups whose
       name starts with `service` to `trix.service.rules` and the others to
-      `trix.generic.rules`, both in the rules directory. Empty until a manager sets it.
+      `trix.generic.rules`, both in the rules directory. Until a manager sets it, the
+      answer is what those two files hold on the controller asked, read and not stored, so
+      sending it back with a change keeps the rules already there. A group of the service
+      file whose name does not start with `service` is answered as `service_<name>`, with
+      `_` appended while another group has that name, so it is written to that file again.
+      A file that is absent counts as empty.
     response:
       description: The rules document as held
       example:
@@ -191,6 +196,8 @@ endpoints:
                 for: 5m
                 labels: {severity: critical}
                 annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    errors:
+      502: Nothing is set yet and a rule file cannot be read or is not a rules document; the message names the file
 
   - path: rules
     methods: [PATCH]
@@ -223,6 +230,7 @@ endpoints:
                 labels: {severity: critical}
                 annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
     errors:
+      400: A group name is sent more than once; the message says which
       502: The rule files are written, but Prometheus did not take the reload
 
   - path: settings

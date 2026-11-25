@@ -1018,6 +1018,247 @@ def test_an_emptied_rule_group_empties_its_file(rig, tmp_path, monkeypatch):
     assert "service-a" not in open(service, encoding="utf-8").read()
 
 
+RULE_FILES: str = os.path.join(os.path.dirname(__file__), "rule_files")
+
+
+def _rules_in(source) -> list:
+    """
+    Every rule of a rules document, or of the file at a path, in order.
+    """
+    import yaml
+
+    if not isinstance(source, dict):
+        source = yaml.safe_load(open(str(source), encoding="utf-8").read()) or {}
+    return [rule for group in source.get("groups") or [] for rule in group.get("rules") or []]
+
+
+def _nothing_stored_and_no_file_touched(directory, before: dict) -> None:
+    """
+    No rules declaration is held, and the rules directory is byte for byte as it was.
+    """
+    from trixd.utils import declarations
+
+    assert declarations.read("prometheus", "rules", "", None) is None, "a GET stored the rules"
+    assert _held_files(directory) == before, "a GET changed the rules directory"
+
+
+def _held_files(directory) -> dict:
+    """
+    The rule files of a directory by name, as bytes, and the copies kept under backup/.
+    The rig keeps its database in the same directory, so only these are compared.
+    """
+    held = {name: (directory / name).read_bytes() for name in sorted(os.listdir(directory))
+            if name.endswith(".rules")}
+    if os.path.isdir(directory / "backup"):
+        held["backup/"] = sorted(os.listdir(directory / "backup"))
+    return held
+
+
+def test_the_rules_answer_what_the_installer_wrote_until_something_is_stored(rig, tmp_path,
+                                                                           monkeypatch):
+    """
+    With nothing stored, the document is what the installer's two files hold, the service
+    file's group renamed so it is written there again; sent back, both files hold the rules
+    they held, and from then on what is stored answers.
+    """
+    import shutil
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    generic, service = tmp_path / "trix.generic.rules", tmp_path / "trix.service.rules"
+    shutil.copy(os.path.join(RULE_FILES, "installer.generic.rules"), generic)
+    shutil.copy(os.path.join(RULE_FILES, "installer.service.rules"), service)
+    were = _rules_in(generic), _rules_in(service)
+    assert len(were[0]) == 32 and len(were[1]) == 7, "the fixtures are not the installer's"
+    before = _held_files(tmp_path)
+
+    answer = backend.rules()
+
+    assert [group["name"] for group in answer["groups"]] == ["trinityx", "service_trinityx"]
+    assert _rules_in(answer) == were[0] + were[1]
+    _nothing_stored_and_no_file_touched(tmp_path, before)
+    # A render with nothing stored still leaves both files as they are.
+    assert backend.render_rule_files()["written"] == []
+    _nothing_stored_and_no_file_touched(tmp_path, before)
+
+    assert backend.rules(body=answer) == answer
+    assert (_rules_in(generic), _rules_in(service)) == were
+    # The generic file already said the same, so it is not even rewritten.
+    assert generic.read_bytes() == before["trix.generic.rules"]
+    # Stored wins: the file changing underneath no longer changes the answer.
+    service.write_text("groups: []\n", encoding="utf-8")
+    assert backend.rules() == answer
+
+
+def test_the_rules_answer_what_luna_wrote_with_every_kind_of_rule(rig, tmp_path, monkeypatch):
+    """
+    Luna writes one group called trinityx to each file, between document markers. A record
+    rule and a rule of the hardware category in there come through and go back unchanged.
+    """
+    import yaml
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    held = {
+        "trix.generic.rules": [
+            {"alert": "ExporterDown", "expr": "up == 0", "for": "5m",
+             "labels": {"severity": "info", "category": "generic", "nhc": False},
+             "annotations": {"description": "Exporter {{$labels.exporter}} down"}},
+            {"record": "node:load:avg5m", "expr": "avg by (hostname) (node_load5)"},
+            {"alert": "DiskGone", "expr": 'absent(lshw_device{class="disk"})',
+             "labels": {"severity": "warning", "category": "hardware", "disabled": True}}],
+        "trix.service.rules": [
+            {"alert": "SlurmDown", "expr": 'up{exporter="slurm"} == 0',
+             "labels": {"severity": "critical", "category": "service"}}]}
+    for name, rules in held.items():
+        with open(tmp_path / name, "w", encoding="utf-8") as handle:
+            yaml.safe_dump({"groups": [{"name": "trinityx", "rules": rules}]}, handle,
+                           explicit_start=True, explicit_end=True)
+    before = _held_files(tmp_path)
+
+    answer = backend.rules()
+
+    assert answer == {"groups": [
+        {"name": "trinityx", "rules": held["trix.generic.rules"]},
+        {"name": "service_trinityx", "rules": held["trix.service.rules"]}]}
+    _nothing_stored_and_no_file_touched(tmp_path, before)
+    backend.rules(body=answer)
+    for name, rules in held.items():
+        assert _rules_in(tmp_path / name) == rules, name
+
+
+def test_several_groups_in_the_rule_files_keep_their_file_and_no_name_repeats(rig, tmp_path,
+                                                                             monkeypatch):
+    """
+    Every group stays a group. One of the service file already named for it keeps its name,
+    the others take the prefix, and a name that is taken is lengthened rather than repeated.
+    """
+    import yaml
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+
+    def group(name: str) -> dict:
+        """
+        A group holding one rule that carries the file and the name it came from.
+        """
+        return {"name": name[1:], "rules": [{"alert": f"From{name}", "expr": "up == 0"}]}
+
+    generic = [group("gsite"), group("gtrinityx")]
+    service = [group("strinityx"), group("sservice_trinityx"), group("sservices-extra"),
+               group("sother")]
+    (tmp_path / "trix.generic.rules").write_text(yaml.safe_dump({"groups": generic}), "utf-8")
+    (tmp_path / "trix.service.rules").write_text(yaml.safe_dump({"groups": service}), "utf-8")
+
+    answer = backend.rules()
+
+    assert [(one["name"], one["rules"][0]["alert"]) for one in answer["groups"]] == [
+        ("site", "Fromgsite"), ("trinityx", "Fromgtrinityx"),
+        ("service_trinityx_", "Fromstrinityx"), ("service_trinityx", "Fromsservice_trinityx"),
+        ("services-extra", "Fromsservices-extra"), ("service_other", "Fromsother")]
+    assert backend.rules() == answer, "the names differ from one reading to the next"
+    backend.rules(body=answer)
+    for name, groups in (("trix.generic.rules", generic), ("trix.service.rules", service)):
+        written = yaml.safe_load((tmp_path / name).read_text(encoding="utf-8"))["groups"]
+        assert [one["rules"] for one in written] == [one["rules"] for one in groups], name
+
+
+def test_a_rule_file_that_is_absent_counts_as_empty(rig, tmp_path, monkeypatch):
+    """
+    Neither file gives the empty document, one file gives its own groups, and reading
+    creates neither.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    assert backend.rules() == {"groups": []}
+    assert _held_files(tmp_path) == {}
+
+    (tmp_path / "trix.service.rules").write_text(
+        "groups:\n- name: trinityx\n  rules:\n  - alert: A\n    expr: up == 0\n", "utf-8")
+    assert backend.rules() == {"groups": [
+        {"name": "service_trinityx", "rules": [{"alert": "A", "expr": "up == 0"}]}]}
+    assert sorted(_held_files(tmp_path)) == ["trix.service.rules"]
+
+
+@pytest.mark.parametrize("content", ["", "\n\n", "# nothing but a comment\n", "---\n",
+                                     "---\n...\n", "#\n# Ansible managed\n#\n---\n",
+                                     "groups:\n"],
+                         ids=["empty", "blank-lines", "comments", "marker", "both-markers",
+                              "comments-and-marker", "groups-with-nothing"])
+def test_a_rule_file_that_holds_nothing_counts_as_empty(rig, tmp_path, monkeypatch, content):
+    """
+    A file with no document in it is one Prometheus loads as no groups, so it is answered
+    as empty and the other file's groups are still answered, rather than being refused.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    (tmp_path / "trix.generic.rules").write_text(content, "utf-8")
+    (tmp_path / "trix.service.rules").write_text(
+        "groups:\n- name: trinityx\n  rules:\n  - alert: A\n    expr: up == 0\n", "utf-8")
+    before = _held_files(tmp_path)
+
+    assert backend.rules() == {"groups": [
+        {"name": "service_trinityx", "rules": [{"alert": "A", "expr": "up == 0"}]}]}
+    _nothing_stored_and_no_file_touched(tmp_path, before)
+
+
+@pytest.mark.parametrize("name", ["trix.generic.rules", "trix.service.rules"])
+@pytest.mark.parametrize("content", [
+    None,
+    b"\xff\xfe not text",
+    b"groups: [\n",
+    b"- name: trinityx\n",
+    b"alerts: []\n",
+    b"groups: {trinityx: []}\n",
+    b"groups:\n- rules: []\n",
+    b"groups:\n- name: trinityx\n  rules: up == 0\n",
+], ids=["unreadable", "not-text", "not-yaml", "a-list", "no-groups", "groups-not-a-list",
+        "a-group-without-a-name", "rules-not-a-list"])
+def test_a_rule_file_that_cannot_be_taken_is_refused_by_name(rig, tmp_path, monkeypatch,
+                                                           name, content):
+    """
+    A file that cannot be read, is not YAML or is not a rules document is refused with its
+    name, and the other file's rules are not answered as if they were all there are.
+    """
+    from trixd.common.errors import BackendFailure
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    for each in ("trix.generic.rules", "trix.service.rules"):
+        (tmp_path / each).write_text(
+            "groups:\n- name: trinityx\n  rules:\n  - alert: A\n    expr: up == 0\n", "utf-8")
+    faulty = tmp_path / name
+    faulty.unlink()
+    if content is None:
+        # Root reads any file whatever its mode, so a directory stands in for one it cannot.
+        faulty.mkdir()
+    else:
+        faulty.write_bytes(content)
+
+    with pytest.raises(BackendFailure) as refused:
+        backend.rules()
+
+    assert str(faulty) in str(refused.value), refused.value
+    assert refused.value.status_code == 502
+    from trixd.utils import declarations
+    assert declarations.read("prometheus", "rules", "", None) is None
+
+
+def test_a_group_name_sent_twice_is_refused_before_it_is_stored(rig, tmp_path, monkeypatch):
+    """
+    Prometheus refuses a file that names a group twice, so a document that does would be
+    stored, replicated and written, and then refused at every reload.
+    """
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    kept = {"groups": [{"name": "generic", "rules": [{"alert": "A", "expr": "up == 0"}]}]}
+    backend.rules(body=kept)
+    before = _held_files(tmp_path)
+
+    with pytest.raises(BadRequest) as refused:
+        backend.rules(body={"groups": [
+            {"name": "service_a", "rules": [{"alert": "B", "expr": "up == 0"}]},
+            {"name": "generic", "rules": []},
+            {"name": "service_a", "rules": [{"alert": "C", "expr": "up == 1"}]}]})
+
+    assert "service_a" in str(refused.value), refused.value
+    assert backend.rules() == kept, "the refused document was stored"
+    assert _held_files(tmp_path) == before, "the refused document was written"
+
+
 def test_a_directory_change_names_the_user_in_the_path_only(rig, client, headers, monkeypatch):
     """
     Changing a shell needs no username in the body: the path already names the user.

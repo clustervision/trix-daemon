@@ -7286,7 +7286,7 @@
     },
     "/api/v1/prometheus/rules": {
       "get": {
-        "description": "The generic and service alert rules as one document, in Prometheus' own rule-file\nformat: `groups`, each with a `name` and its `rules`. trixd writes the groups whose\nname starts with `service` to `trix.service.rules` and the others to\n`trix.generic.rules`, both in the rules directory. Empty until a manager sets it.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "The generic and service alert rules as one document, in Prometheus' own rule-file\nformat: `groups`, each with a `name` and its `rules`. trixd writes the groups whose\nname starts with `service` to `trix.service.rules` and the others to\n`trix.generic.rules`, both in the rules directory. Until a manager sets it, the\nanswer is what those two files hold on the controller asked, read and not stored, so\nsending it back with a change keeps the rules already there. A group of the service\nfile whose name does not start with `service` is answered as `service_<name>`, with\n`_` appended while another group has that name, so it is written to that file again.\nA file that is absent counts as empty.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "prometheus_rules_get_api_v1_prometheus_rules_get",
         "responses": {
           "200": {
@@ -7342,6 +7342,16 @@
               }
             },
             "description": "The caller's role is below this route's minimum"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "Nothing is set yet and a rule file cannot be read or is not a rules document; the message names the file"
           }
         },
         "security": [
@@ -7424,6 +7434,16 @@
               }
             },
             "description": "The rules document as now held"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "A group name is sent more than once; the message says which"
           },
           "401": {
             "content": {

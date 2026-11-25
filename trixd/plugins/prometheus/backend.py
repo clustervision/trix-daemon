@@ -502,11 +502,53 @@ class Backend:
             # hardware reconcile below it - on both controllers, until someone sends this
             # again.
             _refuse_unparsable(body, "the rules sent")
+            names = Counter(str(group.get("name")) for group in body.get("groups") or [])
+            repeated = sorted(name for name, count in names.items() if count > 1)
+            if repeated:
+                raise BadRequest(f"the rules sent name the group {', '.join(repeated)} more "
+                                 f"than once, and Prometheus refuses a file that does")
             stored = declarations.write(PLUGIN, "rules", "", body)
             self._write_rule_documents(stored)
             self.reload_or_fail("rules written")
             return stored
-        return declarations.read(PLUGIN, "rules", "", {"groups": []})
+        held = declarations.read(PLUGIN, "rules", "", None)
+        return held if held is not None else self._read_rule_files()
+
+    def _read_rule_files(self) -> dict:
+        """
+        What the two files hold as one document, so the first PATCH builds on them.
+        """
+        found = []
+        for filename in (GENERIC_RULES, SERVICE_RULES):
+            path = os.path.join(self._rules_dir(), filename)
+            try:
+                document = _read_yaml(path)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, yaml.YAMLError) as error:
+                raise BackendFailure(f"the rule file {path} cannot be read, so the rules "
+                                     f"are not answered: {error}") from None
+            groups = document.get("groups", "") if isinstance(document, dict) else ""
+            groups = [] if groups is None else groups
+            if not (isinstance(groups, list) and all(
+                    isinstance(group, dict) and isinstance(group.get("name"), str)
+                    and isinstance(group.get("rules") or [], list) for group in groups)):
+                raise BackendFailure(f"the rule file {path} is not a rules document, so "
+                                     f"the rules are not answered")
+            found.extend((filename, group) for group in groups)
+        taken = {group["name"] for _, group in found}
+        answer = []
+        for filename, group in found:
+            name = group["name"]
+            # Luna and the installer name the group alike in both files, and the name is
+            # what sends a group back to the service file.
+            if filename == SERVICE_RULES and not name.startswith("service"):
+                name = f"service_{name}"
+                while name in taken:
+                    name += "_"
+                taken.add(name)
+            answer.append({**group, "name": name})
+        return {"groups": answer}
 
     def settings(self, body: dict = None) -> dict:
         """
