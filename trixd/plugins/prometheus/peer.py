@@ -45,6 +45,9 @@ PLUGIN: str = "prometheus"
 # agrees pays for two lists of names, so there is nothing here worth configuring. 0
 # switches it off, which is what a test wants.
 INTERVAL: int = 300
+# How soon a pass that found no backend is tried again: a plugin plugged into a running
+# daemon is offered its trigger before the loader holds its backend.
+RETRY: int = 5
 
 
 class PeerRules:
@@ -87,10 +90,13 @@ class PeerRules:
         """
         if halted is not None and halted():
             return self.counts
-        self.last_pass = time.time()
         backend = getattr(registry().get(PLUGIN), "backend", None)
+        if backend is None:
+            # Nothing was compared, so nothing is published as if it had been.
+            return None
+        self.last_pass = time.time()
         counts, failing = {"lacking": 0, "differing": 0}, False
-        for peer in outbox.peers() if backend is not None else []:
+        for peer in outbox.peers():
             try:
                 found = backend.hw_rules_from(peer, halted)
                 if found is not None:
@@ -120,12 +126,12 @@ class PeerRules:
 
     def _loop(self, stop) -> None:
         """
-        One pass at once, then one per interval until this thread is asked to stop.
+        One pass at once, then one per interval until this thread is asked to stop; one
+        that found no backend to compare with is tried again sooner.
         """
         wait = 0
         while not stop.wait(wait):
-            self.once(stop)
-            wait = INTERVAL
+            wait = RETRY if self.once(stop) is None else INTERVAL
 
     def start(self) -> bool:
         """

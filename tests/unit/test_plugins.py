@@ -6686,6 +6686,62 @@ def test_a_plugin_unplugged_mid_pass_and_plugged_again_goes_on_comparing(
         trigger.thread.join(20)
 
 
+def test_a_plugin_plugged_into_a_running_daemon_compares_within_seconds(
+        rig, tmp_path, monkeypatch):
+    """
+    A plugin plugged into a running daemon is offered its trigger before the loader holds
+    its backend, so the first pass has nothing to compare with. Health must not publish
+    that pass as a comparison, and the first comparison follows in seconds rather than an
+    interval later.
+    """
+    from trixd.core.plugins import loader
+    from trixd.core.plugins.registry import current as registry
+    from trixd.plugins.prometheus import peer
+
+    pair = _Pair(rig, tmp_path, monkeypatch, NODE1)
+    trigger = triggers_module()._triggers["prometheus_hw_rules"]
+    loader.unload(rig, "prometheus")
+    before = trigger.state()["last_pass"]
+    # Tolerant, so a build without the shorter wait still reaches the assertions.
+    monkeypatch.setattr(peer, "RETRY", 0.05, raising=False)
+    early, passed = [], threading.Event()
+    real_pass, real_register = trigger._pass, loader._register_renders
+
+    def passing(halted):
+        """
+        One pass, and what health says after one the loader held no backend for.
+        """
+        unheld = getattr(registry().get("prometheus"), "backend", None) is None
+        try:
+            return real_pass(halted)
+        finally:
+            if unheld:
+                early.append(trigger.state())
+            passed.set()
+
+    def registering(*args, **kwargs):
+        """
+        The loader, kept from holding the backend until the trigger's first pass has run.
+        """
+        assert passed.wait(20), "the trigger was not started by the plug, so nothing is proven"
+        return real_register(*args, **kwargs)
+
+    monkeypatch.setattr(trigger, "_pass", passing)
+    monkeypatch.setattr(loader, "_register_renders", registering)
+    try:
+        loader.load(rig, "prometheus")
+        assert early, "no pass ran before the loader held the backend, so nothing is proven"
+        assert pair.calls == [] and early[0]["last_pass"] == before, \
+            f"health says a comparison ran before the peer was asked anything: {early[0]}"
+        _wait_until(lambda: pair.calls, "plugged in, and the peer was not asked within seconds",
+                    seconds=10)
+        assert pair.calls[0][0] == "prometheus/hw-rules-held", pair.calls
+        assert trigger.state()["last_pass"] > before, "the comparison ran and health does not say so"
+    finally:
+        trigger.shutdown()
+        trigger.thread.join(20)
+
+
 def _bad_for(pair, host: str):
     """
     Make what the peer answers for one host no hardware rule document.
