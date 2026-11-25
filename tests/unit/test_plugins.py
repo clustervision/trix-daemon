@@ -6558,3 +6558,313 @@ def test_a_pass_over_four_thousand_files_at_rest_reads_names_and_nothing_else(
     print(f"\n4000 files at rest: the peer lists them in {serving * 1000:.0f} ms, "
           f"the whole pass takes {took * 1000:.0f} ms")
     assert took < 10, f"a pass at rest over 4000 files took {took:.1f} s"
+
+
+def _held_mid_pass(pair, hosts):
+    """
+    A peer holding `hosts`, whose answer for the first file asked for waits until released:
+    a pass caught in flight, as one is for as long as a peer is slow to answer.
+    """
+    for host in hosts:
+        _hw_file(pair.there_dir, host, "compute")
+    entered, release, asking = threading.Event(), threading.Event(), []
+
+    def answer(real, params):
+        """
+        The first file waits; every one notes which thread asked for it.
+        """
+        asking.append(threading.current_thread())
+        if len(asking) == 1:
+            entered.set()
+            assert release.wait(30), "the pass was never released"
+        return real
+
+    pair.tamper["prometheus/hw-rules"] = answer
+    return entered, release, asking
+
+
+def _wait_until(condition, what: str, seconds: float = 20.0) -> None:
+    """
+    Wait for something another thread does, and say what never happened.
+    """
+    import time
+
+    deadline = time.monotonic() + seconds
+    while not condition():
+        assert time.monotonic() < deadline, what
+        time.sleep(0.01)
+
+
+THREE_NODES = {f"node00{index}": {"hostname": f"node00{index}.cluster", "group": "compute"}
+               for index in (1, 2, 3)}
+THREE_HOSTS = [record["hostname"] for record in THREE_NODES.values()]
+
+
+def test_a_comparison_stopped_mid_pass_and_started_again_goes_on_comparing(
+        rig, tmp_path, monkeypatch):
+    """
+    Stopped and started again while a pass is in flight, the comparison has to be running
+    afterwards: the thread that was asked to stop ends between two files, the one that
+    replaces it waits for that pass instead of running beside it, and it is the new one
+    that brings the rest.
+    """
+    pair = _Pair(rig, tmp_path, monkeypatch, THREE_NODES)
+    entered, release, asking = _held_mid_pass(pair, THREE_HOSTS)
+    trigger = triggers_module()._triggers["prometheus_hw_rules"]
+    inside, most = [], []
+    real = pair.here.hw_rules_from
+
+    def counted(*args, **kwargs):
+        """
+        How many threads are in a pass over the peer at once.
+        """
+        inside.append(1)
+        most.append(len(inside))
+        try:
+            return real(*args, **kwargs)
+        finally:
+            inside.pop()
+
+    pair.here.hw_rules_from = counted
+    try:
+        assert trigger.start() is True, "the comparison did not start, so nothing is in flight"
+        first = trigger.thread
+        assert entered.wait(20), "no pass got as far as asking for a file"
+
+        trigger.shutdown()
+        again = trigger.start()
+        release.set()
+        first.join(20)
+        assert not first.is_alive(), "the thread asked to stop went on"
+        assert again is True and trigger.thread.is_alive() and not trigger.stop.is_set(), \
+            "stopped and started again mid-pass, nothing is comparing until the daemon restarts"
+        _wait_until(lambda: len(pair.held(pair.here_dir)) == 3, "the rest of the files never arrived")
+        assert [thread is first for thread in asking] == [True, False, False], \
+            "the thread asked to stop went on to the end of its pass before it ended"
+        assert max(most) == 1, f"{max(most)} passes over the peer at once"
+        assert trigger.start() is False, "a second thread was started beside a running one"
+    finally:
+        release.set()
+        trigger.shutdown()
+        trigger.thread.join(20)
+
+
+def test_a_plugin_unplugged_mid_pass_and_plugged_again_goes_on_comparing(
+        rig, tmp_path, monkeypatch):
+    """
+    The same through the loader. A reload leaves the comparison running as it is, because
+    the trigger is offered again as the same object; an unplug stops it and the plug that
+    follows starts it, also while the pass the unplug interrupted is still in flight.
+    """
+    from trixd.core.plugins import loader
+
+    pair = _Pair(rig, tmp_path, monkeypatch, THREE_NODES)
+    entered, release, _ = _held_mid_pass(pair, THREE_HOSTS)
+    trigger = triggers_module()._triggers["prometheus_hw_rules"]
+    try:
+        assert trigger.start() is True, "the comparison did not start, so nothing is in flight"
+        first = trigger.thread
+        assert entered.wait(20), "no pass got as far as asking for a file"
+
+        loader.load(rig, "prometheus")
+        assert trigger.thread is first and first.is_alive() and not trigger.stop.is_set(), \
+            "a reload stopped or replaced a comparison that was running"
+
+        loader.unload(rig, "prometheus")
+        assert trigger.stop.is_set() and "prometheus_hw_rules" not in triggers_module().states()
+        loader.load(rig, "prometheus")
+        release.set()
+        first.join(20)
+        assert not first.is_alive(), "the thread the unplug stopped went on"
+        assert triggers_module()._triggers.get("prometheus_hw_rules") is trigger
+        assert trigger.thread.is_alive() and not trigger.stop.is_set(), \
+            "unplugged and plugged again mid-pass, nothing is comparing until the daemon restarts"
+        _wait_until(lambda: len(pair.held(pair.here_dir)) == 3, "the rest of the files never arrived")
+    finally:
+        release.set()
+        trigger.shutdown()
+        trigger.thread.join(20)
+
+
+def _bad_for(pair, host: str):
+    """
+    Make what the peer answers for one host no hardware rule document.
+    """
+    def answer(real, params):
+        """
+        That host's document replaced.
+        """
+        if params.get("nodes") == host:
+            real["nodes"][0]["document"] = {"groups": []}
+        return real
+
+    pair.tamper["prometheus/hw-rules"] = answer
+
+
+def test_a_file_that_cannot_be_copied_is_said_once_and_not_asked_for_again(
+        rig, tmp_path, monkeypatch, said_by):
+    """
+    A file refused for what it says is the same file at the next pass: said once, counted
+    as lacking throughout, and not fetched again until the peer lists another digest for
+    it. Changed, it is looked at and said again; taken, it is forgotten, so a file that
+    comes back refused later is news.
+    """
+    pair = _Pair(rig, tmp_path, monkeypatch, {
+        **NODE1, "node002": {"hostname": "node002.cluster", "group": "compute"}})
+    _hw_file(pair.there_dir, "node001.cluster", "compute")
+    bad = _hw_file(pair.there_dir, "node002.cluster", "compute")
+    _bad_for(pair, "node002.cluster")
+    said = said_by("prometheus")
+
+    def lines():
+        """
+        The summary lines so far, as (level, text).
+        """
+        return [(record.levelname, record.getMessage()) for record in said
+                if "hardware rules from" in record.getMessage()]
+
+    def fetched():
+        """
+        How often the refused file has been asked for.
+        """
+        return [params.get("nodes") for path, params in pair.calls
+                if path == "prometheus/hw-rules"].count("node002.cluster")
+
+    counts = [pair.compare() for _ in range(4)]
+    assert pair.held(pair.here_dir) == ["trix.hw.node001.cluster.rules"], \
+        "the file beside it did not arrive, so nothing here was a refusal among copies"
+    assert [one["lacking"] for one in counts] == [1, 1, 1, 1], counts
+    assert [level for level, _ in lines()] == ["WARNING"], \
+        f"one file refused over four passes was said {len(lines())} times: {lines()}"
+    assert "1 copied, 1 not taken" in lines()[0][1], lines()
+    assert fetched() == 1, f"an unchanged file already refused was asked for {fetched()} times"
+
+    # The peer's file changes and is still no good: looked at again, said again.
+    _hw_file(pair.there_dir, "node002.cluster", "compute", parts=("memory",))
+    for _ in range(2):
+        pair.compare()
+    assert fetched() == 2 and len(lines()) == 2, (fetched(), lines())
+
+    # Sound now, under another digest again: taken, with its own summary line.
+    del pair.tamper["prometheus/hw-rules"]
+    bad.write_bytes(bad.read_bytes() + b"\n")
+    pair.compare()
+    assert len(pair.held(pair.here_dir)) == 2, "a file that became sound was not taken"
+    assert lines()[-1][0] == "INFO" and "1 copied, 0 not taken" in lines()[-1][1], lines()
+    assert getattr(pair.here, "peer_refused", {}).get(pair.PEER) == {}, \
+        "what is no longer lacking is still remembered"
+
+    # Gone here and refused again, under the digest it was taken with: news.
+    os.remove(pair.here_dir / "trix.hw.node002.cluster.rules")
+    _bad_for(pair, "node002.cluster")
+    for _ in range(2):
+        pair.compare()
+    assert [level for level, _ in lines()] == ["WARNING", "WARNING", "INFO", "WARNING"], lines()
+
+
+def test_a_file_the_peer_could_not_hand_over_is_asked_for_again_and_said_once(
+        rig, tmp_path, monkeypatch, said_by):
+    """
+    A failure that is not the file's own doing - the peer erring, the disk refusing the
+    write - may be gone at the next pass, so the file is asked for every time; what is said
+    once is that it failed, not each time it does.
+    """
+    pair = _Pair(rig, tmp_path, monkeypatch, NODE1)
+    _hw_file(pair.there_dir, "node001.cluster", "compute")
+    said = said_by("prometheus")
+    pair.status["prometheus/hw-rules"] = 500
+
+    counts = [pair.compare() for _ in range(3)]
+    fetched = [path for path, _ in pair.calls].count("prometheus/hw-rules")
+    assert fetched == 3, f"a file the peer erred on was asked for {fetched} times in three passes"
+    assert [one["lacking"] for one in counts] == [1, 1, 1], counts
+    warned = [record.getMessage() for record in said
+              if "hardware rules from" in record.getMessage()]
+    assert len(warned) == 1, f"said {len(warned)} times in three passes: {warned}"
+
+    del pair.status["prometheus/hw-rules"]
+    pair.compare()
+    assert pair.held(pair.here_dir) == ["trix.hw.node001.cluster.rules"], \
+        "a file the peer can hand over now was not taken"
+
+
+def _answers_that_are_not_the_file() -> dict:
+    """
+    What a peer may answer for a file it listed that says nothing about the file itself.
+    """
+    other = {"groups": [{"name": "trinityx_hw", "rules": [{
+        "alert": "MissingHardwareComponent",
+        "expr": 'absent(lshw_device{hostname="node003.cluster",luna_group="gpu",class="gpu"})',
+        "labels": {"nhc": True, "disabled": False}}]}]}
+    return {
+        "not JSON": lambda real: b"<html>502 Bad Gateway</html>",
+        "cut short": lambda real: b'{"nodes": [{"node": "node001.cluster", "exists": true, "docu',
+        "no entry": lambda real: {"nodes": []},
+        "two entries": lambda real: {"nodes": real["nodes"] * 2},
+        "no longer held": lambda real: {"nodes": [{"node": "node001.cluster", "exists": False}]},
+        "no document": lambda real: {"nodes": [{"node": "node001.cluster", "exists": True,
+                                                "rules": 2}]},
+        "another host's entry": lambda real: {"nodes": [{"node": "node003.cluster",
+                                                         "exists": True, "document": other}]},
+        "no host named": lambda real: {"nodes": [{"exists": True, "document": other}]},
+        "another shape": lambda real: ["nodes"],
+        "too long": None,
+    }
+
+
+@pytest.mark.parametrize("what", sorted(_answers_that_are_not_the_file()))
+def test_an_answer_that_is_not_the_file_does_not_keep_the_file_away(rig, tmp_path, monkeypatch,
+                                                                    said_by, what):
+    """
+    Only a document that arrived whole and fails the check is the file's own doing. A
+    garbled answer, one with no document because the peer let go of the file in between,
+    or one for another host says nothing about the file: nothing is written from it, it is
+    asked for again at every pass, said once, and taken as soon as the peer hands it over -
+    under the digest it had all along.
+    """
+    pair = _Pair(rig, tmp_path, monkeypatch, NODE1)
+    source = _hw_file(pair.there_dir, "node001.cluster", "compute")
+    listed = pair.there.held_hw_rules() if hasattr(pair.there, "held_hw_rules") else None
+    said = said_by("prometheus")
+    answer = _answers_that_are_not_the_file()[what]
+    if answer is None:
+        monkeypatch.setattr(pair.loaded, "PEER_FILE_LIMIT", 64, raising=False)
+    else:
+        pair.tamper["prometheus/hw-rules"] = lambda real, params: answer(real)
+
+    for _ in range(3):
+        pair.compare()
+    assert pair.held(pair.here_dir) == [], f"{what}: something was written from it"
+    fetched = [path for path, _ in pair.calls].count("prometheus/hw-rules")
+    warned = [record.getMessage() for record in said
+              if "hardware rules from" in record.getMessage()]
+    assert len(warned) == 1, f"{what}: said {len(warned)} times in three passes: {warned}"
+
+    pair.tamper.pop("prometheus/hw-rules", None)
+    monkeypatch.setattr(pair.loaded, "PEER_FILE_LIMIT", 1 << 20, raising=False)
+    pair.compare()
+    assert pair.there.held_hw_rules() == listed, "the peer's file moved, so this proves nothing"
+    assert pair.held(pair.here_dir) == ["trix.hw.node001.cluster.rules"], \
+        f"{what}: the peer hands the same file over now, and it is still kept away"
+    assert fetched == 3, f"{what}: asked for {fetched} times in three passes"
+    assert source.is_file()
+
+
+def test_a_refusal_is_not_held_against_a_file_listed_without_a_digest(rig, tmp_path,
+                                                                      monkeypatch):
+    """
+    A refusal stands while the digest stands, so a list that carries none for a file has
+    nothing for it to stand on: that file is looked at every pass.
+    """
+    pair = _Pair(rig, tmp_path, monkeypatch, NODE1)
+    _hw_file(pair.there_dir, "node001.cluster", "compute")
+    _bad_for(pair, "node001.cluster")
+    for digest in ("", None):
+        pair.calls.clear()
+        pair.tamper["prometheus/hw-rules-held"] = lambda real, params: {
+            "nodes": [{**entry, "digest": digest} for entry in real["nodes"]]}
+        for _ in range(3):
+            pair.compare()
+        fetched = [path for path, _ in pair.calls].count("prometheus/hw-rules")
+        assert fetched == 3, f"listed with digest {digest!r}, asked for {fetched} times in three"
+    assert pair.held(pair.here_dir) == []

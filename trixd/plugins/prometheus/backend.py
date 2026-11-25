@@ -288,6 +288,29 @@ def _refuse_unparsable(document, what: str) -> None:
                     f"leaves behind")
 
 
+class NotHwRules(BackendFailure):
+    """
+    A peer's file is refused for what it says, which asking for it again does not change.
+    """
+
+
+def _peer_document(held, host: str):
+    """
+    The document a peer's answer carries for the host asked for.
+
+    An answer that carries none is refused as a failure of that answer, never of the file:
+    the peer may have let go of the file since it listed it, and holds it again later
+    under the digest it listed. Only a document that is there can be refused for what it
+    says.
+    """
+    found = held.get("nodes") if isinstance(held, dict) else None
+    entry = found[0] if isinstance(found, list) and len(found) == 1 else None
+    if not isinstance(entry, dict) or entry.get("node") != host or entry.get("document") is None:
+        raise BackendFailure("the peer did not answer with the file asked for, so it is "
+                             "asked again at the next pass")
+    return entry["document"]
+
+
 def _plain(held) -> bool:
     """
     Whether this is nothing, or names with plain values, as a rule's labels and
@@ -327,8 +350,8 @@ def _refuse_not_hw_rules(document) -> None:
                  and isinstance(group["name"], str) and isinstance(group["rules"], list)
                  and bool(group["rules"]) and all(_hw_rule(rule) for rule in group["rules"]))
     if not sound:
-        raise BackendFailure("what the peer holds is not a hardware rule file as this "
-                             "daemon writes one, so it is not copied")
+        raise NotHwRules("what the peer holds is not a hardware rule file as this "
+                         "daemon writes one, so it is not copied")
 
 
 def _refuse_untargetable(document) -> None:
@@ -433,6 +456,11 @@ class Backend:
         # The last host asked of a peer by a pass that could not take every file it found,
         # so the next one carries on behind it rather than meeting the same files first.
         self.peer_resume: str = ""
+        # By peer, the files not taken at the last pass: host -> (the digest the peer
+        # listed, why). Said once each, and one refused for what it says is not asked for
+        # again until its digest moves. Replaced every pass, so it holds only what is
+        # still lacking; in memory, so an upgraded check looks at every file afresh.
+        self.peer_refused: dict = {}
         # Where Prometheus really answered, when that differs from the configured scheme.
         self.prometheus_url: str = ""
         # When the loopback last failed to verify, so that it is asked unverified until the
@@ -622,7 +650,7 @@ class Backend:
         return {"nodes": [{"node": host, "digest": digest}
                           for host, digest in sorted(self._hw_digests().items())]}
 
-    def hw_rules_from(self, peer: str) -> dict:
+    def hw_rules_from(self, peer: str, halted=None) -> dict:
         """
         Write the rule files a peer holds and this controller lacks, and count the ones
         both hold that differ. None where the peer does not serve its list of them.
@@ -631,6 +659,9 @@ class Backend:
         one generated now would carry no alert for a part that has failed since. A file
         both hold is never touched: each controller generates from its own Prometheus, so
         differing is ordinary and is only counted.
+
+        `halted` answers whether to stop, and is asked between files: a daemon shutting
+        down is not kept waiting for the rest of a pass.
         """
         listed = peering.read(peer, f"{PLUGIN}/hw-rules-held", PEER_LIST_LIMIT)
         if listed is None:
@@ -645,45 +676,58 @@ class Backend:
         ours = self._hw_digests()
         lacking = set(theirs) - set(ours)
         takable = self._takable(lacking, ours)
-        ordered = ([host for host in sorted(takable) if host > self.peer_resume]
-                   + [host for host in sorted(takable) if host <= self.peer_resume])
-        batch = ordered[:PEER_FILES_PER_PASS]
-        copied, refused, why = 0, 0, ""
-        for host in batch:
+        # What was not taken before and is still lacking. A file refused for what it says
+        # stays refused while the peer lists the same digest for it, and is not asked for.
+        before = {host: held for host, held in self.peer_refused.get(peer, {}).items()
+                  if host in takable}
+        refused = {host: held for host, held in before.items()
+                   if theirs[host] and held == (theirs[host], NotHwRules.__name__)}
+        asked = sorted(set(takable) - set(refused))
+        ordered = ([host for host in asked if host > self.peer_resume]
+                   + [host for host in asked if host <= self.peer_resume])
+        copied, tried, said, why = 0, 0, 0, ""
+        for host in ordered[:PEER_FILES_PER_PASS]:
+            if halted is not None and halted():
+                break
+            tried += 1
             target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
             try:
-                held = peering.read(peer, f"{PLUGIN}/hw-rules", PEER_FILE_LIMIT, {"nodes": host})
-                found = held.get("nodes") if isinstance(held, dict) else None
-                document = found[0].get("document") if isinstance(found, list) and len(
-                    found) == 1 and isinstance(found[0], dict) else None
+                document = _peer_document(peering.read(
+                    peer, f"{PLUGIN}/hw-rules", PEER_FILE_LIMIT, {"nodes": host}), host)
                 _refuse_not_hw_rules(document)
                 _relabel_document(document, takable[host])
                 self._write_rules(target, document, fresh=True)
             except requests.RequestException as error:
                 # The peer stopped answering part way: what is left waits for the next
                 # pass rather than costing a timeout each.
-                refused, why = refused + 1, str(error)
+                said, why = said + 1, str(error)
                 break
             except Exception as error:
                 # One file that cannot be taken must not keep the others from arriving. A
                 # file that is there now is the node having asked for its own meanwhile,
                 # and that one stands.
                 if not os.path.isfile(target):
-                    refused, why = refused + 1, getattr(error, "message", str(error))
+                    refused[host] = (theirs[host], type(error).__name__)
+                    if before.get(host) != refused[host]:
+                        said, why = said + 1, getattr(error, "message", str(error))
                 continue
             self.seen[target] = _stamp(target, takable[host])
             copied += 1
-        self.peer_resume = batch[-1] if len(ordered) > len(batch) else ""
-        answer = {"copied": copied, "refused": refused, "lacking": len(lacking) - copied,
+        waiting = ordered[tried:]
+        self.peer_resume = ordered[tried - 1] if waiting and tried else ""
+        # One not reached this pass keeps what was said of it, so it is not said again.
+        self.peer_refused[peer] = {**{host: before[host] for host in waiting if host in before},
+                                   **refused}
+        answer = {"copied": copied, "refused": len(self.peer_refused[peer]),
+                  "lacking": len(lacking) - copied,
                   "differing": len([host for host in ours
                                     if host in theirs and theirs[host] != ours[host]])}
         if copied:
             answer["reloaded"] = self.reload_reported()
-        if copied or refused:
-            say = LOGGER.warning if refused else LOGGER.info
+        if copied or said:
+            say = LOGGER.warning if said else LOGGER.info
             say("hardware rules from %s: %d copied, %d not taken%s, %d left for a later pass",
-                peer, copied, refused, f" ({why[:200]})" if why else "",
-                len(ordered) - len(batch))
+                peer, copied, said, f" ({why[:200]})" if why else "", len(waiting))
         return answer
 
     def _takable(self, lacking: set, ours: dict) -> dict:

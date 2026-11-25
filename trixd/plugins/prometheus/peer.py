@@ -22,12 +22,12 @@ The hardware rule files, compared with the other controller: what a peer holds a
 controller lacks is copied, and what differs is counted.
 """
 
-__author__      = "Sumit Sharma"
+__author__      = "Antoine Schonewille"
 __copyright__   = "Copyright 2026, TrinityX [TRIX Daemon]"
 __license__     = "GPL"
 __version__     = "1.0"
-__maintainer__  = "Sumit Sharma"
-__email__       = "sumit.sharma@clustervision.com"
+__maintainer__  = "Antoine Schonewille"
+__email__       = "antoine.schonewille@clustervision.com"
 __status__      = "Production"
 
 import threading
@@ -58,25 +58,41 @@ class PeerRules:
         """
         The comparison, not yet running.
         """
+        # One per thread: this object outlives an unplug, and a thread asked to stop in
+        # the middle of a pass must not keep the next one from starting, nor be revived
+        # by it.
         self.stop = threading.Event()
         self.thread = None
+        # Held for a pass, so the thread finishing one and the thread replacing it never
+        # compare at once: the backend's own record of a pass is not made for two.
+        self.passing = threading.Lock()
         self.last_pass: float = 0.0
         self.failing: bool = False
         self.counts: dict = {"lacking": 0, "differing": 0}
         # Peers already said to be away or not to serve the list: once each, not per pass.
         self.said: set = set()
 
-    def once(self) -> dict:
+    def once(self, stop=None) -> dict:
         """
         Compare with every peer the outbox replicates to, which is none when replication
         is switched off. A peer that cannot be read is said once and the others still run.
+        `stop` is the event of the thread running this pass, which ends early once it is set.
         """
+        with self.passing:
+            return self._pass(stop.is_set if stop is not None else None)
+
+    def _pass(self, halted) -> dict:
+        """
+        One pass, with nobody else in one.
+        """
+        if halted is not None and halted():
+            return self.counts
         self.last_pass = time.time()
         backend = getattr(registry().get(PLUGIN), "backend", None)
         counts, failing = {"lacking": 0, "differing": 0}, False
         for peer in outbox.peers() if backend is not None else []:
             try:
-                found = backend.hw_rules_from(peer)
+                found = backend.hw_rules_from(peer, halted)
                 if found is not None:
                     counts = {key: counts[key] + found[key] for key in counts}
             except Exception as error:
@@ -102,13 +118,13 @@ class PeerRules:
         Nothing to read before the reconcile: the first pass follows it.
         """
 
-    def _loop(self) -> None:
+    def _loop(self, stop) -> None:
         """
-        One pass at once, then one per interval until the daemon stops.
+        One pass at once, then one per interval until this thread is asked to stop.
         """
         wait = 0
-        while not self.stop.wait(wait):
-            self.once()
+        while not stop.wait(wait):
+            self.once(stop)
             wait = INTERVAL
 
     def start(self) -> bool:
@@ -117,10 +133,13 @@ class PeerRules:
         """
         if INTERVAL <= 0 or not outbox.peers():
             return False
-        if self.thread is not None and self.thread.is_alive():
+        if self.thread is not None and self.thread.is_alive() and not self.stop.is_set():
             return False
-        self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-hw-rules", daemon=True)
+        # A thread asked to stop keeps its own event and ends by it, however long the
+        # pass it is in still takes; this one starts beside it and waits for that pass.
+        self.stop = threading.Event()
+        self.thread = threading.Thread(target=self._loop, args=(self.stop,),
+                                       name="trixd-hw-rules", daemon=True)
         self.thread.start()
         LOGGER.info("comparing the hardware rule files with %s every %ss",
                     ", ".join(outbox.peers()), INTERVAL)
@@ -128,7 +147,7 @@ class PeerRules:
 
     def shutdown(self) -> None:
         """
-        Ask the comparison to stop; it ends at its next wake-up.
+        Ask the comparison to stop; it ends at its next wake-up, or between two files.
         """
         self.stop.set()
 
