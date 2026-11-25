@@ -1917,6 +1917,128 @@ def test_a_peer_that_answers_no_hashes_does_not_clear_the_count(rig):
     assert walking.stalled() == 1, "the count went when the hashes could not be compared"
 
 
+def _timed_sweep(monkeypatch, interval: int = 300):
+    """
+    A sweep whose timer waits `interval`, a clock to move by hand, the standstill lines it
+    says, and one pass that still differs with neither side moved.
+    """
+    from types import SimpleNamespace
+
+    from trixd.core.replication import sweep as replication
+
+    clock, said = [1000.0], []
+    monkeypatch.setattr(replication, "time", SimpleNamespace(monotonic=lambda: clock[0]))
+    monkeypatch.setattr(replication.LOGGER, "error", lambda *line: said.append(line))
+    walking = replication.Sweep()
+    walking.interval = interval
+
+    def differs(ours: str = "bbb") -> int:
+        """One differing pass, answering how many have been counted."""
+        walking._converged("peer1", ["principal"], ["principal"],
+                           {"principal": "aaa"}, {"principal": ours})
+        return walking.stubborn["peer1/principal"][0]
+
+    return walking, clock, said, differs
+
+
+def test_the_count_goes_by_the_interval_the_timer_runs_at(rig, monkeypatch):
+    """
+    The interval is the one the running timer waits, taken when it starts: without it
+    every pass counts, which is right only where no timer runs.
+    """
+    from trixd.common import settings as configuration
+    from trixd.core.replication import sweep as replication
+
+    monkeypatch.setattr(replication.Sweep, "_trust", lambda self: None)
+    monkeypatch.setattr(configuration.current().replication, "peers", ["peer.cluster:7070"])
+    monkeypatch.setattr(configuration.current().replication, "interval", 3600)
+    walking = replication.Sweep()
+    assert walking.start() is True
+    walking.shutdown()
+    walking.thread.join(timeout=5)
+    assert getattr(walking, "interval", None) == 3600
+
+
+def test_passes_asked_for_at_once_count_as_one(rig, monkeypatch):
+    """
+    The count is of intervals, not of passes. A pass asked for by hand runs at once, so
+    three of them on the controller holding the newer row all end before the peer has had
+    a pass in which to take it, and that is no standstill.
+    """
+    from trixd.core.replication.sweep import STUBBORN
+
+    walking, clock, said, differs = _timed_sweep(monkeypatch)
+    for _ in range(STUBBORN):
+        counted = differs()
+        clock[0] += 0.3
+    assert counted == 1, "passes within one interval were each counted"
+    assert walking.stalled() == 0 and said == [], said
+
+
+def test_a_standstill_is_still_said_after_as_many_timed_passes(rig, monkeypatch):
+    """
+    A pass an interval after the last still counts, each of them, so a real standstill is
+    said at the same pass it always was and no later.
+    """
+    from trixd.core.replication.sweep import STUBBORN
+
+    walking, clock, said, differs = _timed_sweep(monkeypatch)
+    for passed in range(1, STUBBORN + 1):
+        assert said == [], f"said after {passed - 1} passes"
+        assert differs() == passed
+        clock[0] += walking.interval
+    assert walking.stalled() == 1
+    assert len(said) == 1 and "will not resolve on its own" in said[0][0], said
+
+
+def test_a_timed_pass_that_comes_a_little_early_still_counts(rig, monkeypatch):
+    """
+    The timer is not exact, and a pass it made that went uncounted would put the
+    standstill one interval later for each.
+    """
+    from trixd.core.replication.sweep import STUBBORN
+
+    walking, clock, said, differs = _timed_sweep(monkeypatch)
+    for passed in range(1, STUBBORN + 1):
+        assert differs() == passed
+        clock[0] += walking.interval * 0.95
+    assert walking.stalled() == 1 and len(said) == 1, said
+
+
+def test_passes_asked_for_between_timed_ones_change_nothing(rig, monkeypatch):
+    """
+    Neither forward nor back: the count the timed passes reached stands, and the next
+    timed pass adds its one.
+    """
+    walking, clock, said, differs = _timed_sweep(monkeypatch)
+    assert differs() == 1
+    clock[0] += walking.interval
+    assert differs() == 2
+    for _ in range(5):
+        clock[0] += 1
+        assert differs() == 2, "a pass asked for by hand moved the count"
+    assert walking.stalled() == 0 and said == [], said
+    clock[0] += walking.interval - 5
+    assert differs() == 3
+    assert walking.stalled() == 1 and len(said) == 1, said
+
+
+def test_a_hash_that_moved_starts_the_count_again_whenever_it_is_seen(rig, monkeypatch):
+    """
+    A side that moved is not standing still, and that holds for a pass asked for by hand
+    as much as for a timed one.
+    """
+    walking, clock, said, differs = _timed_sweep(monkeypatch)
+    assert differs() == 1
+    clock[0] += walking.interval
+    assert differs() == 2
+    clock[0] += 1
+    assert differs("ccc") == 1, "the count stood although our hash had moved"
+    clock[0] += walking.interval
+    assert differs("ccc") == 2
+    assert walking.stalled() == 0 and said == [], said
+
+
 def test_a_tie_that_taking_would_not_settle_keeps_the_local_row(rig, tmp_path):
     """
     The merge writes columns, not the document: a role this daemon would not grant is

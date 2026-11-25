@@ -47,6 +47,9 @@ LOGGER = trixlog.get("sweep")
 # One is ordinary: our row was the newer one, and the peer takes it on its own next pass.
 # Several in a row is not, and means neither side will take the other's.
 STUBBORN: int = 3
+# A pass counts towards that only this share of an interval after the last one that did: the
+# peer needs a pass of its own to take our row, and a timed pass may come a little early.
+EARLY: float = 0.9
 
 
 class Sweep:
@@ -64,6 +67,8 @@ class Sweep:
         self.last: dict = {}
         # Consecutive passes one table has still differed from one peer after merging.
         self.stubborn: dict = {}
+        # What the timer waits between passes; 0 until it runs, and every pass then counts.
+        self.interval: int = 0
 
     def _get(self, peer: str, path: str):
         """
@@ -104,7 +109,8 @@ class Sweep:
         look at. And the count only grows while *neither* side has moved - a table differing
         at the end of a pass is ordinary, because our row may simply be the newer one and
         the peer takes it on its own next pass, so counting passes alone called a healthy
-        pair with a trickle of writes unconverged after three of them.
+        pair with a trickle of writes unconverged after three of them. For the same reason
+        a pass asked for between two timed ones is not counted: the peer has had no pass.
         """
         for table in comparable:
             key = f"{peer}/{table}"
@@ -112,9 +118,12 @@ class Sweep:
                 self.stubborn.pop(key, None)
                 continue
             seen = (theirs.get(table), ours.get(table))
-            count, before = self.stubborn.get(key, (0, None))
+            count, before, at = self.stubborn.get(key, (0, None, 0))
+            now = time.monotonic()
+            if before == seen and now - at < self.interval * EARLY:
+                continue
             count = count + 1 if before == seen else 1
-            self.stubborn[key] = (count, seen)
+            self.stubborn[key] = (count, seen, now)
             if count >= STUBBORN:
                 LOGGER.error("%s has differed from %s for %d passes with neither side "
                              "moving: neither controller is taking the other's row, so "
@@ -133,7 +142,7 @@ class Sweep:
         How many peer and table pairs have not converged for long enough to be said. For
         health, which carries counts only.
         """
-        return len([1 for count, _ in self.stubborn.values() if count >= STUBBORN])
+        return len([1 for count, *_ in self.stubborn.values() if count >= STUBBORN])
 
     def pass_over(self, peer: str) -> dict:
         """
@@ -205,8 +214,8 @@ class Sweep:
         """
         One pass per interval until the daemon stops.
         """
-        interval = settings().replication.interval
-        while not self.stop.wait(interval):
+        self.interval = settings().replication.interval
+        while not self.stop.wait(self.interval):
             self.once()
 
     def start(self) -> bool:
