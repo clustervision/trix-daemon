@@ -1191,7 +1191,7 @@ def test_a_save_writes_its_backup_whatever_the_backups_mode(slurm, monkeypatch, 
     held = _texts(slurm)
     _save(slurm)
     assert _backups(slurm) == held and _texts(slurm) == held
-    assert stat.S_IMODE(os.stat(backup).st_mode) == mode | 0o060
+    assert stat.S_IMODE(os.stat(backup).st_mode) == 0o664
     changed = []
     monkeypatch.setattr(os, "fchmod", lambda fd, to: changed.append(to))
     _save(slurm)
@@ -1211,7 +1211,78 @@ def test_a_save_makes_the_backup_that_is_missing(slurm):
     held = _texts(slurm)
     _save(slurm)
     assert _backups(slurm) == held
-    assert stat.S_IMODE(os.stat(backup).st_mode) == 0o660
+    assert stat.S_IMODE(os.stat(backup).st_mode) == 0o664
+
+
+def _read_by_another(folder, name: str) -> bool:
+    """
+    Whether an account outside the files' group opens the file to read, tried for real in a
+    child that gives up root, its groups and its uid; None where the suite is not root.
+    """
+    if os.geteuid() != 0:
+        return None
+    where = os.open(folder, os.O_RDONLY | os.O_DIRECTORY)
+    child = os.fork()
+    if child == 0:
+        try:
+            os.setgroups([])
+            os.setgid(65534)
+            os.setuid(65534)
+            os.close(os.open(name, os.O_RDONLY, dir_fd=where))
+            os._exit(0)
+        except OSError:
+            os._exit(1)
+    os.close(where)
+    return os.waitstatus_to_exitcode(os.waitpid(child, 0)[1]) == 0
+
+
+@pytest.mark.parametrize("verb", ("save", "restore"))
+@pytest.mark.parametrize("file, backup, left", (
+    (0o664, 0o600, 0o664), (0o664, 0o660, 0o664), (0o664, None, 0o664), (0o664, 0o666, 0o664),
+    (0o664, 0o775, 0o664), (0o660, 0o664, 0o660), (0o660, 0o600, 0o660), (0o660, None, 0o660),
+    (0o775, 0o600, 0o664), (0o666, 0o600, 0o664)))
+def test_a_backup_is_read_by_whoever_reads_its_file(slurm, verb, file, backup, left):
+    """
+    A preview runs the helper without the files' group, so it reads a backup only as others
+    do. Before a save or a restore a backup gets its file's own read bits with group read
+    and write: read by others exactly when the file is, never written or run by them.
+    """
+    path = slurm.files["nodes"]
+    kept = helper.backup(path)
+    os.chmod(path, file)
+    if backup is None:
+        kept.unlink()
+    else:
+        os.chmod(kept, backup)
+    slurm.backend._backups({kind: str(each) for kind, each in slurm.files.items()},
+                           os.getgid(), verb)
+    if backup is None and verb == "restore":
+        assert not kept.exists()
+        return
+    mode = stat.S_IMODE(os.stat(kept).st_mode)
+    assert bool(mode & stat.S_IROTH) is bool(file & stat.S_IROTH)
+    assert mode == left
+    assert _read_by_another(path.parent, kept.name) in (None, bool(file & stat.S_IROTH))
+
+
+def test_a_file_that_is_not_the_installers_opens_no_backup(slurm, monkeypatch, tmp_path):
+    """
+    Slurm's account can put a file of its own, or a link, where one of the three is: only a
+    regular file that is root's and of the files' group gives its backup its read bits.
+    """
+    path, files = slurm.files["nodes"], {k: str(p) for k, p in slurm.files.items()}
+    kept = helper.backup(path)
+    os.chmod(path, 0o666)
+    monkeypatch.setattr(os, "fchown", lambda fd, owner, group: None)  # not root's to do here
+    slurm.backend._backups(files, os.getgid() + 1, "restore")
+    assert stat.S_IMODE(os.stat(kept).st_mode) == 0o660
+    (tmp_path / "elsewhere").write_text("another's\n", encoding="utf-8")
+    os.chmod(tmp_path / "elsewhere", 0o666)
+    path.unlink()
+    path.symlink_to(tmp_path / "elsewhere")
+    os.chmod(kept, 0o600)
+    slurm.backend._backups(files, os.getgid(), "restore")
+    assert stat.S_IMODE(os.stat(kept).st_mode) == 0o660
 
 
 def test_a_restore_reads_backups_of_any_mode_and_makes_none(slurm):

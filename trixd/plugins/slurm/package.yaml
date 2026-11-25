@@ -47,7 +47,7 @@ creates:
   - its AdminLevel Administrator in Slurm's accounting
   - a .bkp beside each of the three files where none is
   - nothing on the three files: the installer leaves them root's, of the admin group, group write
-  - on each .bkp, before a save or a restore, the same owner, group and group write; a save makes a missing one
+  - on each .bkp, before a save or a restore, the same owner and group, its file's mode and group write; a save makes a missing one
   - the managed blocks of the three files, by the installer's call to files/actions/init
   - /var/lib/trixd/slurm, 0700, the account's
   - <slurm dir>/.trinityx-slurm, 0700, the account's, beside the files on the share

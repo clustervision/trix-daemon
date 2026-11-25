@@ -270,13 +270,17 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
 def _backups(files: dict, group: int, verb: str) -> None:
     """
     Each `.bkp` made the helper's to write before a save or a restore: root's, of the files'
-    group, with group read and write; a save makes a missing one from its file. Done on the
-    open file and only to a regular file of one name, since slurm owns the directory and can
-    put a link there. No lock: every step lands the same from either controller.
+    group, with group read and write and its file's own read bits, so whoever reads the file
+    reads its backup, as a preview does; a save makes a missing one from its file. Done on
+    the open file and only to a regular file of one name, since slurm owns the directory and
+    can put a link there. No lock: every step lands the same from either controller.
     """
     for path in files.values():
         backup = f"{path}.bkp"
         try:
+            file = os.lstat(path)
+            ours = stat.S_ISREG(file.st_mode) and (file.st_uid, file.st_gid) == (OWNER, group)
+            mode = file.st_mode & 0o664 | 0o060 if ours else 0o660  # only our file opens it
             if verb == "save" and not os.path.lexists(backup):
                 held = blocks.kept(path)
                 with contextlib.suppress(FileExistsError), open(os.open(
@@ -287,9 +291,10 @@ def _backups(files: dict, group: int, verb: str) -> None:
                 found = os.fstat(fd)
                 if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
                     raise OSError(errno.EINVAL, "not a plain file with one link")
-                if (found.st_uid, found.st_gid, found.st_mode & 0o060) != (OWNER, group, 0o060):
+                if (found.st_uid, found.st_gid, stat.S_IMODE(found.st_mode)) != (OWNER, group,
+                                                                                 mode):
                     os.fchown(fd, OWNER, group)
-                    os.fchmod(fd, found.st_mode & 0o777 | 0o060)
+                    os.fchmod(fd, mode)
             finally:
                 os.close(fd)
         except FileNotFoundError:

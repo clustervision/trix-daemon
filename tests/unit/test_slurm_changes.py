@@ -456,7 +456,7 @@ def test_a_backup_is_made_the_helpers_to_write_before_a_save_or_a_restore(slurm,
     assert given == [] and all(os.stat(b).st_mode & 0o777 == 0o644 for b in backups)
     _calls(slurm)[verb](_request())
     assert given == [(owner, 4242)] * 3
-    assert all(os.stat(backup).st_mode & 0o777 == 0o664 for backup in backups)
+    assert all(os.stat(backup).st_mode & 0o777 == 0o660 for backup in backups)
     assert [backup.read_bytes() for backup in backups] == held
     assert slurm.ran[-1]["argv"][-1] == verb
 
