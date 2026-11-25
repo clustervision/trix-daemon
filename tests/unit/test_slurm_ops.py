@@ -319,18 +319,26 @@ def test_the_grant_is_asked_once_a_minute(slurm, monkeypatch):
 def test_files_says_each_gap_and_the_stamp(slurm):
     """
     The files verb answers the account, the grant, the stamp and the rules digest, and names each
-    gap (a missing backup, a wrong mode) as a sentence.
+    gap (a file's wrong mode, a backup that is a link) as a sentence; what the plugin puts right
+    on a backup before a save (its mode, its absence) is no gap.
     """
     said = slurm.ask("files")
     assert said["why"] == [] and said["granted"] == "" and said["account"] == "trinityx-slurm"
     assert said["stamp"] == _stamp(slurm)
     assert said["rules"] == _sha((PLUGIN / "rules.py").read_bytes())
-    gone = helper.backup(slurm.files["gres"])
-    gone.unlink()
+    helper.backup(slurm.files["gres"]).unlink()
+    os.chmod(helper.backup(slurm.files["partitions"]), 0o600)
+    assert slurm.ask("files")["why"] == []
     os.chmod(slurm.files["nodes"], 0o644)
+    linked = helper.backup(slurm.files["nodes"])
+    os.link(linked, linked.with_name("another-name"))
     why = slurm.ask("files")["why"]
-    assert f"there is no {gone}" in why
-    assert any(w.startswith(f"{slurm.files['nodes']} is not the files' group's to write") for w in why)
+    assert len(why) == 2, why
+    assert why[0].startswith(f"{slurm.files['nodes']} is not the files' group's to write")
+    assert why[1] == f"{linked} is not a regular file: the helper writes no link"
+    linked.unlink()
+    linked.symlink_to(linked.with_name("another-name"))
+    assert slurm.ask("files")["why"] == why
 
 
 def test_the_helper_writes_only_root_files_of_the_group_never_a_link(slurm, monkeypatch):

@@ -187,7 +187,8 @@ endpoints:
     summary: Whether the person's Slurm changes can be written, and the files as they are
     description: |
       Every gap that stops a save, a restore, a drain or a resume, as a sentence (`why`):
-      a file or its `.bkp` missing or not writable by the helper's account, slurm not
+      a file missing or not writable by the helper's account, a `.bkp` that is a link (a
+      save puts a backup's owner, group and mode right and makes a missing one), slurm not
       granting the account AdminLevel Administrator (`granted`, asked once a minute). The
       sha256 of each file (`stamp`, sent back with a save), the sha256 of the save rules
       (`rules`) and the account the helper runs as.

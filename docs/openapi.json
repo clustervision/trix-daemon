@@ -8547,7 +8547,7 @@
     },
     "/api/v1/slurm/files": {
       "get": {
-        "description": "Every gap that stops a save, a restore, a drain or a resume, as a sentence (`why`):\na file or its `.bkp` missing or not writable by the helper's account, slurm not\ngranting the account AdminLevel Administrator (`granted`, asked once a minute). The\nsha256 of each file (`stamp`, sent back with a save), the sha256 of the save rules\n(`rules`) and the account the helper runs as.\n\n**Access:** reader or above: reader, operator, manager and rootus",
+        "description": "Every gap that stops a save, a restore, a drain or a resume, as a sentence (`why`):\na file missing or not writable by the helper's account, a `.bkp` that is a link (a\nsave puts a backup's owner, group and mode right and makes a missing one), slurm not\ngranting the account AdminLevel Administrator (`granted`, asked once a minute). The\nsha256 of each file (`stamp`, sent back with a save), the sha256 of the save rules\n(`rules`) and the account the helper runs as.\n\n**Access:** reader or above: reader, operator, manager and rootus",
         "operationId": "slurm_files_get_api_v1_slurm_files_get",
         "responses": {
           "200": {

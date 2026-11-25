@@ -32,6 +32,7 @@ __version__     = "1.0"
 __maintainer__  = "Alex Ninaber"
 __status__      = "Development"
 
+import errno
 import fcntl
 import json
 import logging
@@ -419,6 +420,92 @@ def test_only_a_save_and_a_restore_run_with_the_files_group(slurm, monkeypatch):
         slurm.plugin.files()
     assert "there is no group wheel" in str(refused.value)
     assert len(slurm.ran) == 7
+
+
+def _six(slurm, monkeypatch) -> tuple:
+    """
+    The three files and their backups in the fixture's folder, and each (owner, group) the
+    plugin then gives an open file: recorded, not done, so the test runs as any uid.
+    """
+    given = []
+    monkeypatch.setattr(os, "fchown", lambda fd, owner, group: given.append((owner, group)))
+    backups = []
+    for name in ("slurm-nodes.conf", "slurm-partitions.conf", "gres.conf"):
+        (slurm.folder / name).write_text(f"# {name}\n")
+        backups.append(slurm.folder / f"{name}.bkp")
+        backups[-1].write_text(f"# {name} before the last save\n")
+        os.chmod(backups[-1], 0o644)
+    return backups, given
+
+
+@pytest.mark.parametrize("verb", ("save", "restore"))
+def test_a_backup_is_made_the_helpers_to_write_before_a_save_or_a_restore(slurm, monkeypatch,
+                                                                          verb):
+    """
+    Before the helper runs a save or a restore each backup becomes root's, of the group the
+    admin_group setting names now, with group read and write, whoever owned it and whatever its
+    mode; its text is not touched, and no other route changes a backup.
+    """
+    backups, given = _six(slurm, monkeypatch)
+    owner = os.getuid() + 1
+    monkeypatch.setattr(slurm.backend, "OWNER", owner, raising=False)
+    held = [backup.read_bytes() for backup in backups]
+    slurm.plugin.files()
+    slurm.plugin.preview(body={"mode": verb})
+    slurm.plugin.drain(body=_drain())
+    assert given == [] and all(os.stat(b).st_mode & 0o777 == 0o644 for b in backups)
+    _calls(slurm)[verb](_request())
+    assert given == [(owner, 4242)] * 3
+    assert all(os.stat(backup).st_mode & 0o777 == 0o664 for backup in backups)
+    assert [backup.read_bytes() for backup in backups] == held
+    assert slurm.ran[-1]["argv"][-1] == verb
+
+
+@pytest.mark.parametrize("what", ("a link", "a second name", "a pipe"))
+def test_a_backup_that_is_not_a_plain_file_of_one_name_stops_a_save(slurm, monkeypatch, what):
+    """
+    A backup that is a link, has a second name or is not a regular file is refused by name
+    before the helper runs, and neither it nor what it leads to is changed; a drain goes on.
+    """
+    backups, given = _six(slurm, monkeypatch)
+    backup, target = backups[1], slurm.folder.parent / "elsewhere"
+    target.write_text("not a backup\n")
+    os.chmod(target, 0o600)
+    backup.unlink()
+    if what == "a link":
+        backup.symlink_to(target)
+    elif what == "a second name":
+        os.link(target, backup)
+    else:
+        os.mkfifo(backup)
+    before = (os.lstat(backup), os.stat(target), target.read_bytes())
+    slurm.plugin.drain(body=_drain())
+    for verb in ("save", "restore"):
+        refused = _outcome(_calls(slurm)[verb], _request())
+        assert isinstance(refused, ServiceUnavailable), refused
+        assert f"root cannot make {backup} ready for the {verb}" in str(refused)
+    assert [run["argv"][-1] for run in slurm.ran] == ["drain"]
+    assert (os.lstat(backup), os.stat(target), target.read_bytes()) == before
+    assert given == [(0, 4242)] * 2  # each verb's own try at the backup before it, no other
+
+
+def test_a_backup_root_cannot_change_is_named_and_nothing_runs(slurm, monkeypatch):
+    """
+    Where root may not change a backup (a read-only file system, a share that squashes root)
+    the save is refused with the file and the reason, and the helper does not run.
+    """
+    backups, _given = _six(slurm, monkeypatch)
+
+    def fchown(fd, owner, group):
+        """os.fchown as a read-only file system answers it."""
+        raise OSError(errno.EROFS, os.strerror(errno.EROFS))
+
+    monkeypatch.setattr(os, "fchown", fchown)
+    refused = _outcome(_calls(slurm)["save"], _request())
+    assert isinstance(refused, ServiceUnavailable), refused
+    assert f"root cannot make {backups[0]} ready for the save" in str(refused)
+    assert "Read-only file system" in str(refused)
+    assert slurm.ran == [] and os.stat(backups[0]).st_mode & 0o777 == 0o644
 
 
 def test_each_verbs_helper_waits_longer_than_the_work_inside_it():

@@ -168,6 +168,7 @@ def slurm(rig, monkeypatch, tmp_path):
         (0o40755, 0, 0, 2, 0, 0, 0, 0, 0, 0)) if str(path) in above
         else real_stat(path, *args, **kwargs))
     monkeypatch.setattr(helper, "OWNER", os.getuid())
+    monkeypatch.setattr(backend, "OWNER", os.getuid(), raising=False)
     ran = []
 
     def run(argv, timeout=None, check=False, secret_input=""):
@@ -877,9 +878,10 @@ def test_a_forced_restore_reads_a_backup_only_as_a_plain_file_of_its_own(slurm, 
         assert _texts(slurm) == held
         assert elsewhere.read_text(encoding="utf-8") == INSTALLED["gres"]
     backup.unlink()
+    backups["gres"] += "#" * 4096
     backup.write_text(backups["gres"], encoding="utf-8")
 
-    monkeypatch.setattr(blocks, "KEPT_MAX", 16, raising=False)
+    monkeypatch.setattr(blocks, "KEPT_MAX", 4096, raising=False)  # above each file, as it is
     refused = _refusal(lambda: _restore(slurm))
     assert "the backups cannot be read" in refused and "File too large" in refused, refused
     assert (_texts(slurm), _backups(slurm)) == (held, backups)
@@ -1152,6 +1154,201 @@ def test_the_daemons_own_writes_are_in_the_audit(slurm, monkeypatch):
                        ("trixd", "slurm restore", "forced, cluster", "refused"),
                        ("trixd", "slurm restore", "forced, cluster; State: node001", "granted"),
                        ("trixd", "slurm init", "cluster, reset, forced", "granted")], audited
+
+
+def _backup_gaps(slurm) -> list:
+    """
+    The sentences about a backup among the gaps the files route answers.
+    """
+    return [why for why in slurm.plugin.files()["why"] if ".bkp" in why]
+
+
+def _save(slurm) -> dict:
+    """
+    A save of the three files' own texts, as rootus asks it: the backups are what it writes.
+    """
+    return slurm.plugin.save(body={**_body(slurm, force=False), "texts": _texts(slurm)},
+                             caller=ROOTUS, request=None)
+
+
+@pytest.mark.parametrize("mode", (0o644, 0o640, 0o600))
+def test_a_save_writes_its_backup_whatever_the_backups_mode(slurm, monkeypatch, mode):
+    """
+    A backup without group write does not stop a save: asking whether a save can run and a
+    preview say nothing of it and change nothing, the save gives the backup group read and
+    write and puts what the file held in it, and a second save finds nothing left to change.
+    """
+    _init(slurm)
+    backup = helper.backup(slurm.files["nodes"])
+    backup.write_text("# an older set\n", encoding="utf-8")
+    os.chmod(backup, mode)
+    before = (os.stat(backup), backup.read_bytes())
+    assert _backup_gaps(slurm) == []
+    previewed = slurm.plugin.preview(body={**_body(slurm, force=False), "mode": "save",
+                                           "texts": _texts(slurm)}, caller=ROOTUS, request=None)
+    assert previewed == {"states": [], "refused": ""}
+    assert (os.stat(backup), backup.read_bytes()) == before
+    held = _texts(slurm)
+    _save(slurm)
+    assert _backups(slurm) == held and _texts(slurm) == held
+    assert stat.S_IMODE(os.stat(backup).st_mode) == mode | 0o060
+    changed = []
+    monkeypatch.setattr(os, "fchmod", lambda fd, to: changed.append(to))
+    _save(slurm)
+    assert changed == []
+
+
+def test_a_save_makes_the_backup_that_is_missing(slurm):
+    """
+    A file with no backup beside it stops no save: the save makes one, the helper's to write,
+    holding what the file held.
+    """
+    _init(slurm)
+    backup = helper.backup(slurm.files["gres"])
+    backup.unlink()
+    assert _backup_gaps(slurm) == []
+    assert not backup.exists()
+    held = _texts(slurm)
+    _save(slurm)
+    assert _backups(slurm) == held
+    assert stat.S_IMODE(os.stat(backup).st_mode) == 0o660
+
+
+def test_a_restore_reads_backups_of_any_mode_and_makes_none(slurm):
+    """
+    A restore puts the backups' texts back whatever the backups' mode; one that is missing is
+    refused by name and not made, since the file as it is now is no set to go back to.
+    """
+    _init(slurm)
+    for path in slurm.files.values():
+        helper.backup(path).write_bytes(path.read_bytes())
+        os.chmod(helper.backup(path), 0o644)
+    held = _backups(slurm)
+    assert _with_a_preset(slurm) != held
+    assert _backup_gaps(slurm) == []
+    _restore(slurm, force=False)
+    assert _texts(slurm) == held and _backups(slurm) == held
+    gone = helper.backup(slurm.files["gres"])
+    gone.unlink()
+    with pytest.raises(ServiceUnavailable, match="the backups cannot be read"):
+        _restore(slurm, force=False)
+    assert _texts(slurm) == held and not gone.exists()
+
+
+SECRET: str = "# a line only root reads\n"
+# What the daemon writes itself, as root: each reads the three files into a backup.
+AS_ROOT: tuple = ("a forced reset", "a forced restore", "a reset", "a save with no backup")
+
+
+def _swapped(slurm, tmp_path, asked: str, pipe: bool = False):
+    """
+    The gres file swapped, as slurm's account can in its own directory, for a link to a file
+    of another's or for a pipe, with no backup beside it where a save is asked: the path,
+    the file linked to, and the call that asks, its body read before the swap.
+    """
+    _init(slurm)
+    save = {**_body(slurm, force=False), "texts": _texts(slurm)}
+    restore = _body(slurm)
+    ask = {"a save with no backup": lambda: slurm.plugin.save(body=save, caller=ROOTUS,
+                                                              request=None),
+           "a reset": lambda: _init(slurm, reset=True),
+           "a forced reset": lambda: _init(slurm, reset=True, force=True),
+           "a forced restore": lambda: slurm.plugin.restore(body=restore, caller=ROOTUS,
+                                                            request=None)}[asked]
+    path, target = slurm.files["gres"], tmp_path / "elsewhere"
+    target.write_text(SECRET, encoding="utf-8")
+    os.chmod(target, 0o600)
+    path.unlink()
+    if pipe:
+        os.mkfifo(path)
+    else:
+        path.symlink_to(target)
+    if asked == "a save with no backup":
+        helper.backup(path).unlink()
+    return path, target, ask
+
+
+@pytest.mark.parametrize("asked", AS_ROOT)
+def test_a_file_that_is_a_link_is_never_read_into_a_backup(slurm, monkeypatch, tmp_path, asked):
+    """
+    Slurm's account owns the directory and can make one of the three a link to a file only
+    root reads. What the daemon reads as root goes into a backup the admin group reads, so
+    it reads no link: the change is refused naming the file, no backup holds the other
+    file's text or is left behind, that file is as it was and the helper does not run.
+    """
+    path, target, ask = _swapped(slurm, tmp_path, asked)
+    ran = []
+    monkeypatch.setattr(helper, "answer", lambda verb, request: ran.append(verb))
+    before = (os.stat(target), sorted(os.listdir(path.parent)))
+    try:
+        refused = ask()
+    except TrixdError as error:
+        refused = error
+    backups = [helper.backup(each) for each in slurm.files.values()]
+    assert SECRET not in "".join(each.read_text() for each in backups if each.exists())
+    assert isinstance(refused, TrixdError) and str(path) in str(refused), refused
+    assert (os.stat(target), sorted(os.listdir(path.parent))) == before
+    assert target.read_text(encoding="utf-8") == SECRET and ran == []
+
+
+@pytest.mark.parametrize("asked", AS_ROOT)
+def test_a_file_that_is_a_pipe_is_refused_without_waiting(slurm, tmp_path, asked):
+    """
+    A pipe in place of one of the three is refused by name at once: opened as a file is, it
+    would hold the daemon, and the render behind it, until somebody wrote to it.
+    """
+    import signal
+
+    path, _target, ask = _swapped(slurm, tmp_path, asked, pipe=True)
+    signal.signal(signal.SIGALRM, lambda *_: pytest.fail(f"{asked} waited on the pipe"))
+    signal.alarm(5)
+    try:
+        with pytest.raises(TrixdError, match=str(path)):
+            ask()
+    finally:
+        signal.alarm(0)
+        signal.signal(signal.SIGALRM, signal.SIG_DFL)
+    assert not helper.backup(path).exists() or asked != "a save with no backup"
+
+
+def test_the_render_reads_and_puts_back_no_link(slurm, tmp_path):
+    """
+    What the render holds to put back after a reconfigure slurm refuses is read from no link
+    and written through none: a file swapped for a link in between is named as not put back,
+    and the file it leads to is as it was.
+    """
+    path, target = str(slurm.files["gres"]), tmp_path / "elsewhere"
+    target.write_text(SECRET, encoding="utf-8")
+    slurm.files["gres"].unlink()
+    slurm.files["gres"].symlink_to(target)
+    assert slurm.backend._contents([path]) == {path: None}
+    assert slurm.backend._restore({path: b"# the block as it was\n"}) == [path]
+    assert target.read_text(encoding="utf-8") == SECRET
+
+
+def test_the_files_behind_a_linked_directory_are_read_and_written(slurm, tmp_path):
+    """
+    Only a link in place of a file is refused: the directory the files are in is a link to
+    the shared tree on a controller, and a reset, a save that makes its backup and a forced
+    restore go through it.
+    """
+    from trixd.utils import declarations
+
+    folder = slurm.files["nodes"].parent
+    (tmp_path / "etc-slurm").symlink_to(folder, target_is_directory=True)
+    declarations.merge("slurm", "config", "", {
+        f"{kind}_file": str(tmp_path / "etc-slurm" / path.name)
+        for kind, path in slurm.files.items()}, slurm.backend.DEFAULT_CONFIG)
+    _init(slurm)
+    held = _with_a_preset(slurm)
+    _init(slurm, reset=True)
+    assert _backups(slurm) == held
+    helper.backup(slurm.files["gres"]).unlink()
+    held = _texts(slurm)
+    _save(slurm)
+    assert _backups(slurm) == held
+    _restore(slurm)
+    assert _backups(slurm) == held
 
 
 def _genders_silent(monkeypatch) -> None:
