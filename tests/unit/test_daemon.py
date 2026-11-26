@@ -2931,6 +2931,137 @@ def test_a_refused_body_leaves_no_audit_row_to_grow(rig, client, monkeypatch):
     assert len(widest.object) == columns["object"].type.length, len(widest.object)
 
 
+def test_an_answer_given_before_the_body_was_read_waits_for_that_body(rig, monkeypatch):
+    """
+    A route that takes no body, or a refusal made before one is read, answers while the
+    request body is still on its way, and the server closes a connection whose request it
+    has not read to the end without saying so. So what the application left unread is read
+    before the last response message goes out: all of it, or as far as the ceiling.
+    """
+    import asyncio
+
+    from trixd.api.limits import BodyLimit
+    from trixd.common.settings import current as settings
+
+    async def answers_unread(scope, receive, send) -> None:
+        """
+        An application that never asks for the body.
+        """
+        await send({"type": "http.response.start", "status": 401, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    def exchange(chunks: int, headers: list) -> list:
+        """
+        What happened, in order: a read per body message taken, the type per message sent.
+        """
+        order = []
+        left = [b"z" * 512] * chunks
+
+        async def receive() -> dict:
+            """
+            The next 512 bytes, then a caller with nothing more to say.
+            """
+            order.append("read")
+            if not left:
+                return {"type": "http.disconnect"}
+            return {"type": "http.request", "body": left.pop(), "more_body": bool(left)}
+
+        async def send(message) -> None:
+            """
+            Remembered, not sent.
+            """
+            order.append(message["type"])
+
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": headers}
+        asyncio.run(BodyLimit(answers_unread)(scope, receive, send))
+        return order
+
+    monkeypatch.setattr(settings().api, "max_body", 2048)
+    order = exchange(3, [(b"content-length", b"1536")])
+    assert order == ["http.response.start", "read", "read", "read", "http.response.body"], (
+        f"the answer was completed with the body unread: {order}")
+
+    # A body that declares no length is read as far as the ceiling and the answer still
+    # goes out: an unread body must not become a way to make the daemon read without end.
+    order = exchange(8, [])
+    assert order.count("read") == 5 and order[-1] == "http.response.body", order
+
+    monkeypatch.setattr(settings().api, "max_body", 0)
+    order = exchange(8, [])
+    assert order.count("read") == 8 and order[-1] == "http.response.body", order
+
+
+def test_a_connection_survives_an_answer_given_before_its_body_arrived(rig):
+    """
+    The same through the real server and a socket, because the close is the server's and
+    only the server can show it gone: the headers, the start of the answer, the body late,
+    and then a second request on the same connection, which has to be answered.
+    """
+    import asyncio
+    import socket
+
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+
+    from trixd.api.limits import BodyLimit
+
+    async def answers_unread(scope, receive, send) -> None:
+        """
+        An application that never asks for the body.
+        """
+        if scope["type"] != "http":
+            return
+        await send({"type": "http.response.start", "status": 401,
+                    "headers": [(b"content-length", b"2")]})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    async def two_requests(port: int) -> tuple:
+        """
+        What came back for each, with a connection the server dropped read as no answer.
+        """
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        first = second = b""
+        try:
+            writer.write(b"POST / HTTP/1.1\r\nHost: trixd\r\nContent-Length: 2\r\n\r\n")
+            first = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+            writer.write(b"{}")
+            await asyncio.wait_for(reader.readexactly(2), 10)
+            writer.write(b"GET / HTTP/1.1\r\nHost: trixd\r\n\r\n")
+            second = await asyncio.wait_for(reader.read(1024), 10)
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        finally:
+            writer.close()
+        return first, second
+
+    async def served() -> tuple:
+        """
+        The server on a socket of its own for as long as the two requests take.
+        """
+        listening = socket.socket()
+        listening.bind(("127.0.0.1", 0))
+        listening.listen()
+        port = listening.getsockname()[1]
+        config = Config()
+        # Handed over: the server closes the socket it serves from.
+        config.bind = [f"fd://{listening.detach()}"]
+        config.accesslog = config.errorlog = None
+        stop = asyncio.Event()
+        server = asyncio.ensure_future(
+            serve(BodyLimit(answers_unread), config, shutdown_trigger=stop.wait))
+        try:
+            return await two_requests(port)
+        finally:
+            stop.set()
+            await server
+
+    first, second = asyncio.run(served())
+    assert first.startswith(b"HTTP/1.1 401"), first
+    assert second.startswith(b"HTTP/1.1 401"), (
+        f"the connection was closed under the caller after an answer that did not say it "
+        f"would be: the second request got {second!r}")
+
+
 def test_one_failed_task_does_not_end_the_task_worker(rig, monkeypatch):
     """
     One worker, nothing starts a second, and the loop had nothing to catch an exception. So
