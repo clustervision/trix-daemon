@@ -2058,6 +2058,71 @@ def test_the_ini_account_signs_in_from_trixd_ini_alone(rig, client, monkeypatch)
         handle.close()
 
 
+def _aliasing_pam(monkeypatch) -> list:
+    """
+    A PAM source whose name service spells two aliases back as the ini account's name, and
+    what principals warned about.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    from trixd.core.security import principals
+    from trixd.core.security.sources import pam as pam_source
+
+    def getpwnam(name):
+        """
+        The entry for an alias, under the canonical name, or KeyError as pwd raises.
+        """
+        if name not in ("TESTER", "tester@domain"):
+            raise KeyError(name)
+        return SimpleNamespace(pw_name="tester", pw_uid=1500, pw_gid=100, pw_shell="/bin/bash")
+
+    conversation = SimpleNamespace(authenticate=lambda *args, **kwargs: True, reason="")
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwnam=getpwnam))
+    monkeypatch.setitem(sys.modules, "pam", SimpleNamespace(pam=lambda: conversation))
+    monkeypatch.setattr(pam_source.Source, "_uid_min", lambda self: 1000)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["pam"])
+    warned = []
+    monkeypatch.setattr(principals.LOGGER, "warning",
+                        lambda message, *args: warned.append(message % args))
+    return warned
+
+
+@pytest.mark.parametrize("alias", ["TESTER", "tester@domain"])
+def test_a_source_cannot_answer_an_alias_with_the_ini_account(rig, client, monkeypatch, alias):
+    """
+    Only trixd.ini's password is the ini account: a name a source spells back as it is
+    refused like a wrong password, and the exact name still signs in as rootus.
+    """
+    warned = _aliasing_pam(monkeypatch)
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": alias, "password": "the alias's own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
+    assert "username or password is incorrect" in answer.text
+    assert [line for line in warned if "pam" in line and alias in line], warned
+    assert not [line for line in warned if "the alias's own" in line], warned
+
+    own = client.post(f"{API_PREFIX}/auth/token",
+                      json={"username": "tester", "password": "secret"})
+    assert own.status_code == 201, own.text
+    said = client.get(f"{API_PREFIX}/auth/whoami",
+                      headers={"x-access-tokens": own.json()["token"]}).json()
+    assert said["rootus"] is True and said["source"] == "ini"
+
+
+def test_a_token_for_an_alias_of_the_ini_account_is_not_rootus(rig, client, monkeypatch):
+    """
+    A token whose subject a source resolves to the ini account's name passes no minimum.
+    """
+    from trixd.core.security import tokens
+
+    warned = _aliasing_pam(monkeypatch)
+    held = {"x-access-tokens": tokens.mint("tester@domain", source="pam")}
+    answer = client.get(f"{API_PREFIX}/identity/users", headers=held)
+    assert answer.status_code == 401, answer.text
+    assert [line for line in warned if "pam" in line and "tester@domain" in line], warned
+
+
 def test_a_deleted_user_comes_back_fresh(rig, client, headers):
     """
     Deleting takes the role and the password; setting the user again starts from none.

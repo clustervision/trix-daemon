@@ -186,7 +186,7 @@ def resolve(handle: Session, name: str) -> Resolved:
     if cached is not None:
         return cached
     identity, source = chain.resolve(handle, name)
-    if identity is None:
+    if identity is None or _borrowed(identity, source, name):
         return None
     row = row_for(handle, name)
     if row is not None and not row.enabled:
@@ -211,9 +211,21 @@ def authenticate(handle: Session, name: str, password: str) -> Resolved:
             return _ini_account(name)
         return None
     identity, source = chain.authenticate(handle, name, password)
-    if identity is None:
+    if identity is None or _borrowed(identity, source, name):
         return None
     return _adopt(handle, identity, source)
+
+
+def _borrowed(identity: dict, source: str, asked: str) -> bool:
+    """
+    Whether a source answered another name with the ini account's. That account is
+    trixd.ini's password alone, so an alias a source spells back as it is refused.
+    """
+    if not access.is_rootus(identity.get("name") or ""):
+        return False
+    LOGGER.warning("source %s answered %s with the name of the ini account; refused",
+                   source, asked)
+    return True
 
 
 def _adopt(handle: Session, identity: dict, source: str) -> Resolved:
