@@ -301,15 +301,18 @@ def granted(state: Path) -> str:
     return why
 
 
-def _not_ours(path: Path, group: int) -> str:
+def _not_ours(path: Path, group: int, whole: bool = True) -> str:
     """Why the helper may not write one of the six, "" when it may: a regular file, not a link,
-    root's, of the files' group with group read and write (the installer sets them so)."""
+    root's, of the files' group with group read and write (the installer sets them so). Not
+    `whole`, only what the plugin does not put right on a backup before a save: a link."""
     try:
         found = os.lstat(path)
     except FileNotFoundError:
-        return f"there is no {path}"
-    if not stat.S_ISREG(found.st_mode):
+        return f"there is no {path}" if whole else ""
+    if not stat.S_ISREG(found.st_mode) or (found.st_nlink != 1 and not whole):
         return f"{path} is not a regular file: the helper writes no link"
+    if not whole:
+        return ""
     if found.st_uid != OWNER or found.st_gid != group or found.st_mode & 0o060 != 0o060:
         return (f"{path} is not the files' group's to write (owner {found.st_uid}, group "
                 f"{found.st_gid}, mode {stat.filemode(found.st_mode)}): the helper writes root's "
@@ -317,20 +320,22 @@ def _not_ours(path: Path, group: int) -> str:
     return ""
 
 
-def unready(files: dict, group) -> list:
-    """Each gap that stops a write, as a sentence."""
+def unready(files: dict, group, prepared: bool = False) -> list:
+    """Each gap that stops a write, as a sentence; a backup's owner, group, mode and absence
+    count only once `prepared`, as the plugin has them before a save or a restore runs."""
     if not isinstance(group, int) or isinstance(group, bool):
         return ["the plugin names no group for the files"]
-    paths = [q for p in files.values() for q in (p, backup(p))]
-    return [why for why in (_not_ours(p, group) for p in paths) if why]
+    paths = [(q, prepared or q is p) for p in files.values() for q in (p, backup(p))]
+    return [why for why in (_not_ours(q, group, whole) for q, whole in paths) if why]
 
 
-def ready(files: dict, group) -> None:
+def ready(files: dict, group, prepared: bool = False) -> None:
     """
-    Takes the resolved files and the group that must own them; returns nothing when a write may
-    go ahead and raises Refused 503 with every gap unready() finds, joined in one sentence.
+    Takes the resolved files, the group that must own them and whether the backups are prepared;
+    returns nothing when a write may go ahead and raises Refused 503 with every gap unready()
+    finds, joined in one sentence.
     """
-    why = unready(files, group)
+    why = unready(files, group, prepared)
     if why:
         raise Refused(503, "; ".join(why))
 
@@ -483,6 +488,7 @@ def write(request: dict, files: dict, share: Path, state: Path) -> dict:
             return {"ok": False, "code": 409, "put_back": back,
                     "message": "a save was cut short and its files are put back: reload and redo "
                                "the change"}
+        ready(files, request.get("group"), prepared=True)
         old, states = _judged(files, request, texts)
         if sorted(request.get("judged") or []) != states:
             raise Refused(409, "the State changes judged are not the ones this text makes: reload")

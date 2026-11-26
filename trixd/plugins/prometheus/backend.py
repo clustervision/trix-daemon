@@ -47,6 +47,7 @@ from trixd.common import logging as trixlog
 from trixd.common.errors import (BackendFailure, BadRequest, NotFound, ServiceUnavailable,
                                  TrixdError)
 from trixd.core.render.engine import current as renders
+from trixd.core.replication import peering
 from trixd.core.replication.applied import KEPT
 from trixd.plugins.luna.client import current as luna
 from trixd.plugins.prometheus import exporters
@@ -116,12 +117,21 @@ SETTINGS_FILE: str = "rules_settings.yaml"
 # the filesystem; what a rollback reaches for is the last few.
 KEEP_COPIES: int = 10
 
+# What one pass takes from a peer, in bytes and in files. A rule file is a few kilobytes
+# and its line in the list of names a few dozen bytes, so neither bound is met by a real
+# estate; an estate found missing as a whole arrives over several passes.
+PEER_FILE_LIMIT: int = 1 << 20
+PEER_LIST_LIMIT: int = 16 << 20
+PEER_FILES_PER_PASS: int = 200
+
 # The hardware rules take the shape Luna's generator gave them, so a file written by
 # either daemon reads the same: this metric, these labels, this alert and group.
 HW_METRIC: str = "lshw_device"
 HW_GROUP: str = "trinityx_hw"
 HW_ALERT: str = "MissingHardwareComponent"
 HW_CLASSES: str = "processor|memory|disk|network|display"
+# What a hardware rule carries, as this daemon and Luna's generator write one.
+HW_RULE_KEYS: frozenset = frozenset(("alert", "expr", "for", "labels", "annotations"))
 HW_DESCRIPTION: str = ("Hardware component {{ $labels.class }} with {{ $labels.product }} "
                        "{{ $labels.vendor }} {{ $labels.serial }} is missing.")
 COMPONENT_LABELS: tuple = ("hostname", "luna_group", "class", "description", "product",
@@ -278,6 +288,72 @@ def _refuse_unparsable(document, what: str) -> None:
                     f"leaves behind")
 
 
+class NotHwRules(BackendFailure):
+    """
+    A peer's file is refused for what it says, which asking for it again does not change.
+    """
+
+
+def _peer_document(held, host: str):
+    """
+    The document a peer's answer carries for the host asked for.
+
+    An answer that carries none is refused as a failure of that answer, never of the file:
+    the peer may have let go of the file since it listed it, and holds it again later
+    under the digest it listed. Only a document that is there can be refused for what it
+    says.
+    """
+    found = held.get("nodes") if isinstance(held, dict) else None
+    entry = found[0] if isinstance(found, list) and len(found) == 1 else None
+    if not isinstance(entry, dict) or entry.get("node") != host or entry.get("document") is None:
+        raise BackendFailure("the peer did not answer with the file asked for, so it is "
+                             "asked again at the next pass")
+    return entry["document"]
+
+
+def _plain(held) -> bool:
+    """
+    Whether this is nothing, or names with plain values, as a rule's labels and
+    annotations are.
+    """
+    return held is None or (isinstance(held, dict) and all(
+        isinstance(key, str) and isinstance(value, (str, bool, int, float))
+        for key, value in held.items()))
+
+
+def _hw_rule(rule) -> bool:
+    """
+    Whether this is one hardware rule as either daemon writes it: this alert, on this
+    metric alone, selecting a host by name, and no field Prometheus would refuse.
+    """
+    opening = f"absent({HW_METRIC}{{"
+    expr = rule.get("expr") if isinstance(rule, dict) else None
+    return (isinstance(expr, str) and set(rule) <= HW_RULE_KEYS
+            and rule.get("alert") == HW_ALERT and isinstance(rule.get("for", ""), str)
+            and _plain(rule.get("labels")) and _plain(rule.get("annotations"))
+            and expr.startswith(opening) and expr.endswith(")")
+            and _selector(expr, len(opening)) == ("", len(expr) - 1)
+            and any(found.group(1) == "hostname" and found.group(2) == "="
+                    for found in MATCHER.finditer(expr)))
+
+
+def _refuse_not_hw_rules(document) -> None:
+    """
+    Refuse a document that is not one node's hardware rules. It comes from another
+    controller and Prometheus loads what is written here as it stands, where one file it
+    will not take costs every later reload.
+    """
+    groups = document.get("groups") if isinstance(document, dict) else None
+    sound = isinstance(groups, list) and bool(groups) and set(document) == {"groups"}
+    for group in groups if sound else []:
+        sound = (sound and isinstance(group, dict) and set(group) == {"name", "rules"}
+                 and isinstance(group["name"], str) and isinstance(group["rules"], list)
+                 and bool(group["rules"]) and all(_hw_rule(rule) for rule in group["rules"]))
+    if not sound:
+        raise NotHwRules("what the peer holds is not a hardware rule file as this "
+                         "daemon writes one, so it is not copied")
+
+
 def _refuse_untargetable(document) -> None:
     """
     Refuse a target document Prometheus would not take, before it is stored.
@@ -377,6 +453,14 @@ class Backend:
         # Rule files the reconcile retired because Luna did not name their node. A rename
         # can be undone at Luna before its hook has run, and that hook needs the file back.
         self.reconciled_away: set = set()
+        # The last host asked of a peer by a pass that could not take every file it found,
+        # so the next one carries on behind it rather than meeting the same files first.
+        self.peer_resume: str = ""
+        # By peer, the files not taken at the last pass: host -> (the digest the peer
+        # listed, why). Said once each, and one refused for what it says is not asked for
+        # again until its digest moves. Replaced every pass, so it holds only what is
+        # still lacking; in memory, so an upgraded check looks at every file afresh.
+        self.peer_refused: dict = {}
         # Where Prometheus really answered, when that differs from the configured scheme.
         self.prometheus_url: str = ""
         # When the loopback last failed to verify, so that it is asked unverified until the
@@ -418,11 +502,53 @@ class Backend:
             # hardware reconcile below it - on both controllers, until someone sends this
             # again.
             _refuse_unparsable(body, "the rules sent")
+            names = Counter(str(group.get("name")) for group in body.get("groups") or [])
+            repeated = sorted(name for name, count in names.items() if count > 1)
+            if repeated:
+                raise BadRequest(f"the rules sent name the group {', '.join(repeated)} more "
+                                 f"than once, and Prometheus refuses a file that does")
             stored = declarations.write(PLUGIN, "rules", "", body)
             self._write_rule_documents(stored)
             self.reload_or_fail("rules written")
             return stored
-        return declarations.read(PLUGIN, "rules", "", {"groups": []})
+        held = declarations.read(PLUGIN, "rules", "", None)
+        return held if held is not None else self._read_rule_files()
+
+    def _read_rule_files(self) -> dict:
+        """
+        What the two files hold as one document, so the first PATCH builds on them.
+        """
+        found = []
+        for filename in (GENERIC_RULES, SERVICE_RULES):
+            path = os.path.join(self._rules_dir(), filename)
+            try:
+                document = _read_yaml(path)
+            except FileNotFoundError:
+                continue
+            except (OSError, ValueError, yaml.YAMLError) as error:
+                raise BackendFailure(f"the rule file {path} cannot be read, so the rules "
+                                     f"are not answered: {error}") from None
+            groups = document.get("groups", "") if isinstance(document, dict) else ""
+            groups = [] if groups is None else groups
+            if not (isinstance(groups, list) and all(
+                    isinstance(group, dict) and isinstance(group.get("name"), str)
+                    and isinstance(group.get("rules") or [], list) for group in groups)):
+                raise BackendFailure(f"the rule file {path} is not a rules document, so "
+                                     f"the rules are not answered")
+            found.extend((filename, group) for group in groups)
+        taken = {group["name"] for _, group in found}
+        answer = []
+        for filename, group in found:
+            name = group["name"]
+            # Luna and the installer name the group alike in both files, and the name is
+            # what sends a group back to the service file.
+            if filename == SERVICE_RULES and not name.startswith("service"):
+                name = f"service_{name}"
+                while name in taken:
+                    name += "_"
+                taken.add(name)
+            answer.append({**group, "name": name})
+        return {"groups": answer}
 
     def settings(self, body: dict = None) -> dict:
         """
@@ -551,6 +677,122 @@ class Backend:
             answer.append(entry)
         return {"nodes": answer}
 
+    def _hw_digests(self) -> dict:
+        """
+        A digest of each hardware rule file's bytes, by the host its name carries. No
+        file is parsed, which is what lets a pass over the whole estate stay cheap.
+        """
+        pattern = os.path.join(self._rules_dir(), HW_RULES.format(host="*"))
+        return {_hw_host(path): exporters.digest(path) for path in glob.glob(pattern)}
+
+    def held_hw_rules(self) -> dict:
+        """
+        Which hardware rule files are held here, for a peer comparing its own against them.
+        """
+        return {"nodes": [{"node": host, "digest": digest}
+                          for host, digest in sorted(self._hw_digests().items())]}
+
+    def hw_rules_from(self, peer: str, halted=None) -> dict:
+        """
+        Write the rule files a peer holds and this controller lacks, and count the ones
+        both hold that differ. None where the peer does not serve its list of them.
+
+        Copied, never generated: a file records the parts a node had when it was made, so
+        one generated now would carry no alert for a part that has failed since. A file
+        both hold is never touched: each controller generates from its own Prometheus, so
+        differing is ordinary and is only counted.
+
+        `halted` answers whether to stop, and is asked between files: a daemon shutting
+        down is not kept waiting for the rest of a pass.
+        """
+        listed = peering.read(peer, f"{PLUGIN}/hw-rules-held", PEER_LIST_LIMIT)
+        if listed is None:
+            return None
+        entries = listed.get("nodes") if isinstance(listed, dict) else None
+        if not isinstance(entries, list):
+            raise BackendFailure(f"{peer} answered its hardware rule files in a shape this "
+                                 f"controller cannot read")
+        theirs = {entry["node"]: entry.get("digest") for entry in entries
+                  if isinstance(entry, dict) and isinstance(entry.get("node"), str)
+                  and NODE_NAME.match(entry["node"])}
+        ours = self._hw_digests()
+        lacking = set(theirs) - set(ours)
+        takable = self._takable(lacking, ours)
+        # What was not taken before and is still lacking. A file refused for what it says
+        # stays refused while the peer lists the same digest for it, and is not asked for.
+        before = {host: held for host, held in self.peer_refused.get(peer, {}).items()
+                  if host in takable}
+        refused = {host: held for host, held in before.items()
+                   if theirs[host] and held == (theirs[host], NotHwRules.__name__)}
+        asked = sorted(set(takable) - set(refused))
+        ordered = ([host for host in asked if host > self.peer_resume]
+                   + [host for host in asked if host <= self.peer_resume])
+        copied, tried, said, why = 0, 0, 0, ""
+        for host in ordered[:PEER_FILES_PER_PASS]:
+            if halted is not None and halted():
+                break
+            tried += 1
+            target = os.path.join(self._rules_dir(), HW_RULES.format(host=host))
+            try:
+                document = _peer_document(peering.read(
+                    peer, f"{PLUGIN}/hw-rules", PEER_FILE_LIMIT, {"nodes": host}), host)
+                _refuse_not_hw_rules(document)
+                _relabel_document(document, takable[host])
+                self._write_rules(target, document, fresh=True)
+            except requests.RequestException as error:
+                # The peer stopped answering part way: what is left waits for the next
+                # pass rather than costing a timeout each.
+                said, why = said + 1, str(error)
+                break
+            except Exception as error:
+                # One file that cannot be taken must not keep the others from arriving. A
+                # file that is there now is the node having asked for its own meanwhile,
+                # and that one stands.
+                if not os.path.isfile(target):
+                    refused[host] = (theirs[host], type(error).__name__)
+                    if before.get(host) != refused[host]:
+                        said, why = said + 1, getattr(error, "message", str(error))
+                continue
+            self.seen[target] = _stamp(target, takable[host])
+            copied += 1
+        waiting = ordered[tried:]
+        self.peer_resume = ordered[tried - 1] if waiting and tried else ""
+        # One not reached this pass keeps what was said of it, so it is not said again.
+        self.peer_refused[peer] = {**{host: before[host] for host in waiting if host in before},
+                                   **refused}
+        answer = {"copied": copied, "refused": len(self.peer_refused[peer]),
+                  "lacking": len(lacking) - copied,
+                  "differing": len([host for host in ours
+                                    if host in theirs and theirs[host] != ours[host]])}
+        if copied:
+            answer["reloaded"] = self.reload_reported()
+        if copied or said:
+            say = LOGGER.warning if said else LOGGER.info
+            say("hardware rules from %s: %d copied, %d not taken%s, %d left for a later pass",
+                peer, copied, said, f" ({why[:200]})" if why else "", len(waiting))
+        return answer
+
+    def _takable(self, lacking: set, ours: dict) -> dict:
+        """
+        Which of the files a peer holds may be written here, each with the host and group
+        its rules are to carry.
+
+        Only for a node Luna holds here, under the hostname Luna gives it, with nothing
+        held under either of that node's names, which is what _hw_paths answers by. So a
+        node that is gone does not come back because a peer has yet to retire its file,
+        and a name two nodes answer to takes nothing. Luna is asked only when there is
+        something to take: a pair that agrees costs the two lists and nothing else.
+        """
+        nodes = luna().nodes() if lacking else {}
+        by_host, _ = _by_host(nodes)
+        takable = {}
+        for host in lacking & set(by_host):
+            names = _file_hosts(by_host[host], nodes[by_host[host]])
+            if names[0] == host and not set(names) & set(ours):
+                takable[host] = {"hostname": host,
+                                 "luna_group": nodes[by_host[host]].get("group") or ""}
+        return takable
+
     def _write_hw_rules(self, node: str, body: dict) -> dict:
         """
         Write one node's rule file, generated afresh when asked or when there is none.
@@ -608,9 +850,10 @@ class Backend:
         _prune_copies(backup, os.path.basename(path))
         return kept
 
-    def _write_rules(self, path: str, document) -> str:
+    def _write_rules(self, path: str, document, fresh: bool = False) -> str:
         """
-        Write a rule file, refusing one whose selectors do not hold together.
+        Write a rule file, refusing one whose selectors do not hold together, and with
+        `fresh` one whose name is taken.
 
         Every rule file this plugin writes goes through here, and the check is in-process on
         purpose. This runs once per node: a fork of promtool and a second durable write
@@ -620,7 +863,7 @@ class Backend:
         every node, so it is paid once per reload instead - see _reload_now.
         """
         _refuse_unparsable(document, f"the rules for {os.path.basename(path)}")
-        written = files.write_yaml(path, document)
+        written = files.write_yaml(path, document, fresh=fresh)
         with self.pending_lock:
             self.pending_check.add(path)
         return written
@@ -798,9 +1041,9 @@ class Backend:
         if record is not None:
             # The hostname first: that is the name a file is written under, and the node's
             # own name is what a file written before a rename still carries.
-            names = dict.fromkeys([record.get("hostname") or node, node.split(".")[0]])
             return [path for path in (os.path.join(directory, HW_RULES.format(host=name))
-                                      for name in names) if os.path.isfile(path)]
+                                      for name in _file_hosts(node, record))
+                    if os.path.isfile(path)]
         pattern = os.path.join(directory, HW_RULES.format(host="*"))
         found = sorted(path for path in glob.glob(pattern)
                        if _names_node(_hw_host(path), node))
@@ -1206,21 +1449,7 @@ class Backend:
         repaired, retired, superseded = [], [], []
         if not nodes:
             return {"repaired": repaired, "retired": retired, "superseded": superseded}
-        # Which node a file's host name belongs to, and the names that cannot say. Two
-        # nodes whose names differ only past the first dot share a short name, and taking
-        # the first of them relabelled one node's file to the other and discarded the
-        # loser's - two genuinely different nodes merged onto one file.
-        by_host, ambiguous = {}, set()
-        for name, record in nodes.items():
-            for key in (name.split(".")[0], record.get("hostname") or name):
-                if by_host.get(key, name) != name:
-                    ambiguous.add(key)
-                by_host.setdefault(key, name)
-        # A name more than one node answers to is dropped rather than left pointing at
-        # whichever node was seen first: the lookup below then finds nothing, which is the
-        # honest answer, instead of a guess that reads like a fact.
-        for key in ambiguous:
-            by_host.pop(key, None)
+        by_host, ambiguous = _by_host(nodes)
         # Read once: the setting lives in the database, and this loop runs per node.
         directory = self._rules_dir()
         for path in sorted(glob.glob(os.path.join(directory, HW_RULES.format(host="*")))):
@@ -1436,6 +1665,35 @@ def _hw_host(path: str) -> str:
     if name.startswith(prefix) and name.endswith(suffix):
         return name[len(prefix):-len(suffix)]
     return ""
+
+
+def _file_hosts(node: str, record: dict) -> list:
+    """
+    The hosts a node's rule files may be named for, as Luna holds the node.
+    """
+    return list(dict.fromkeys([record.get("hostname") or node, node.split(".")[0]]))
+
+
+def _by_host(nodes: dict) -> tuple:
+    """
+    Which node a file's host name belongs to, and the names that cannot say.
+
+    Two nodes whose names differ only past the first dot share a short name, and taking
+    the first of them relabelled one node's file to the other and discarded the loser's -
+    two genuinely different nodes merged onto one file. A name more than one node answers
+    to is dropped rather than left pointing at whichever node was seen first: a lookup
+    then finds nothing, which is the honest answer, instead of a guess that reads like a
+    fact.
+    """
+    by_host, ambiguous = {}, set()
+    for name, record in nodes.items():
+        for key in (name.split(".")[0], record.get("hostname") or name):
+            if by_host.get(key, name) != name:
+                ambiguous.add(key)
+            by_host.setdefault(key, name)
+    for key in ambiguous:
+        by_host.pop(key, None)
+    return by_host, ambiguous
 
 
 def _names_node(host: str, node: str) -> bool:

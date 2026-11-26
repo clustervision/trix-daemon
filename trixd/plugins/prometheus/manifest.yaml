@@ -179,7 +179,12 @@ endpoints:
       The generic and service alert rules as one document, in Prometheus' own rule-file
       format: `groups`, each with a `name` and its `rules`. trixd writes the groups whose
       name starts with `service` to `trix.service.rules` and the others to
-      `trix.generic.rules`, both in the rules directory. Empty until a manager sets it.
+      `trix.generic.rules`, both in the rules directory. Until a manager sets it, the
+      answer is what those two files hold on the controller asked, read and not stored, so
+      sending it back with a change keeps the rules already there. A group of the service
+      file whose name does not start with `service` is answered as `service_<name>`, with
+      `_` appended while another group has that name, so it is written to that file again.
+      A file that is absent counts as empty.
     response:
       description: The rules document as held
       example:
@@ -191,6 +196,8 @@ endpoints:
                 for: 5m
                 labels: {severity: critical}
                 annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
+    errors:
+      502: Nothing is set yet and a rule file cannot be read or is not a rules document; the message names the file
 
   - path: rules
     methods: [PATCH]
@@ -223,6 +230,7 @@ endpoints:
                 labels: {severity: critical}
                 annotations: {description: "{{ $labels.hostname }} has not answered for five minutes"}
     errors:
+      400: A group name is sent more than once; the message says which
       502: The rule files are written, but Prometheus did not take the reload
 
   - path: settings
@@ -442,6 +450,38 @@ endpoints:
         nodes:
           - {node: node001.cluster, exists: true, rules: 8}
           - {node: node999, exists: false}
+
+  - path: hw-rules-held
+    methods: [GET]
+    minimum: reader
+    handler: held_hw_rules
+    summary: Which hardware rule files this controller holds
+    description: |
+      One entry per hardware rule file in `rules_directory`: the host its name carries and
+      a digest of its bytes. No file is parsed, so it answers for a large estate where
+      `GET /api/v1/prometheus/hw-rules` reads every one, and two controllers can be
+      compared by it.
+
+      It is what the other controller of a pair reads. Where `[REPLICATION]` names peers
+      and is enabled, each controller asks its peers for this list when it starts and every
+      five minutes after. A file a peer holds under the hostname of a node Luna holds
+      here, for which this controller holds none, is copied from the peer with the host
+      and group Luna holds here, and Prometheus is reloaded once. It is copied rather than
+      generated because a rule file records the parts a node had when it was made. A node
+      Luna does not hold here is left out, so a file the peer has yet to retire brings
+      nothing back.
+
+      A file both controllers hold is never changed. Those whose digests differ are
+      counted as `differing` under `prometheus_hw_rules` in `GET /api/v1/system/health`,
+      beside `lacking`, the files a peer holds that are not held here. Each controller
+      generates from its own Prometheus and the digest is of the bytes, so a difference
+      is not a fault by itself.
+    response:
+      description: One entry per rule file held
+      example:
+        nodes:
+          - {node: node001.cluster, digest: 9f2c1d0ab3e45678}
+          - {node: node002.cluster, digest: 1c0de5a7b2f34a90}
 
   - path: hw-rules
     methods: [PATCH]

@@ -174,13 +174,13 @@ BLOCKS: dict = {"nodes": (nodes_block, False), "partitions": (partitions_block, 
 
 def _held(configs: dict) -> dict:
     """
-    What each of the files holds now.
+    What each of the files holds now, read as a backup is: it goes into one, and slurm owns
+    the directory and can put a link there.
     """
     held = {}
     for kind, path in configs.items():
         try:
-            with open(path, "rb") as handle:
-                held[kind] = handle.read()
+            held[kind] = blocks.kept(path)
         except OSError as error:
             raise BackendFailure(f"cannot read {path}: {error}") from None
     return held

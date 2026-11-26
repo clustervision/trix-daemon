@@ -207,7 +207,8 @@ class Stack:
 
     def _remove_created(self) -> list:
         """
-        Every principal the suite named, removed; whatever would not go, named back.
+        Every principal and exporter the suite named, removed; whatever would not go,
+        named back.
 
         The name goes into the path quoted, because a name is whatever the store hands
         back and a DELETE built by interpolation removes a different principal: unquoted,
@@ -228,6 +229,32 @@ class Stack:
             gone = self.call("DELETE", f"/identity/users/{quote(name, safe='')}", self.rootus())
             if gone.status_code != 200:
                 left.append(f"{name}: {gone.status_code}")
+        return left + self._remove_exporters()
+
+    def _remove_exporters(self) -> list:
+        """
+        Every exporter the suite defined, removed the same way; whatever would not go,
+        named back.
+
+        The fuzz defines one for each odd path value: it walks the verbs of a route in
+        order, so its DELETE of a name runs before the PATCH that makes it. Taken from
+        what the daemon lists rather than from what this run sent, so one an earlier run
+        left behind goes too.
+        """
+        listed = self.call("GET", "/prometheus/exporters", self.rootus())
+        if listed.status_code == 404:
+            # The plugin is not plugged in here, so nothing could define one through it.
+            return []
+        if listed.status_code != 200:
+            return [f"the exporters would not list: {listed.status_code}"]
+        left = []
+        for name in listed.json().get("defined") or {}:
+            if not name.startswith(MARK):
+                continue
+            gone = self.call("DELETE", f"/prometheus/exporters/{quote(name, safe='')}",
+                             self.rootus())
+            if gone.status_code != 200:
+                left.append(f"exporter {name}: {gone.status_code}")
         return left
 
     def stop(self) -> None:
@@ -235,7 +262,7 @@ class Stack:
         Remove what the suite created, then stop what it started, and say what would not go.
 
         Both halves run whatever the other does: the process is stopped even when the
-        cleanup fails, and a principal left behind on a controller is said rather than
+        cleanup fails, and a name left behind on a controller is said rather than
         swallowed. Nothing is removed when start() never finished, so a setup failure is
         reported as itself.
         """
@@ -255,7 +282,7 @@ class Stack:
             self.log.close()
         if self.luna is not None:
             self.luna.stop()
-        assert not leftover, (f"the suite left these principals at {self.base}: {leftover}")
+        assert not leftover, (f"the suite left these at {self.base}: {leftover}")
 
     # ------------------------------------------------------------------ calls
 

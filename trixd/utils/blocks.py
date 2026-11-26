@@ -139,8 +139,8 @@ def replace(text: str, manager: str, content: str) -> str:
 
 def kept(path: str) -> bytes:
     """
-    What a backup holds, read as root where others may write it: a plain file with one
-    link, never through a link, and no more of it than KEPT_MAX.
+    What a backup, or a file that goes into one, holds, read as root where others may write
+    it: a plain file with one link, never through a link, and no more of it than KEPT_MAX.
     """
     handle = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     with os.fdopen(handle, "rb") as source:

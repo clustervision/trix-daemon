@@ -474,7 +474,10 @@ has owed the row for long enough; and a 4xx that is not 401 or 403 - a peer that
 serve this endpoint, say - is terminal at once. `GET /system/replication/owed` lists what
 is still owed, and `/api/v1/system/health` counts it under `owed` for a monitor. Where
 `[REPLICATION]` names no peers, or is switched off, nothing is written down and the
-answer says so.
+answer says so. The flag is the author's, read from the manifest alone: no setting gives it
+to a route that does not declare it. It carries a plugin's own writing endpoint and nothing
+else: not a render, nor what a hook's handler does, nor `/system/notify` and `/system/bulk`,
+which act on the controller that was called and tell no peer.
 
 **The outbox carries intents, and nothing compares afterwards.** Once a row has been
 sent, refused or let go of, nothing asks again what the peer holds, because the sweep
@@ -482,6 +485,16 @@ compares `principal` and `declaration` and no plugin's files. A call the peer ne
 applied is a difference the pair then keeps until somebody acts on that object again, and
 the log line and the `owed` row are its only account. So prefer a declaration, or one
 shared file, wherever the choice is there to make.
+
+**A plugin whose files are a controller's own compares them itself.** The prometheus
+plugin does, for the hardware rule files: a background trigger asks each peer which
+files it holds (`GET /api/v1/prometheus/hw-rules-held`, names and digests, no file
+parsed), copies the ones this controller lacks for a node Luna holds here, and counts the
+ones that differ, which `/api/v1/system/health` publishes from the trigger's `counts`.
+`trixd.core.replication.peering.read` is the read it uses: the peer's own token, the
+cluster CA, a bound on the bytes taken, and `None` from a peer that does not serve the
+route, which is what an older build answers. A write made that way goes through no
+replicating route, so it is never sent back.
 
 **What a replicating handler has to be.** It is idempotent: delivery is at least once,
 and while a repeat is answered with what was answered the first time, that record is held

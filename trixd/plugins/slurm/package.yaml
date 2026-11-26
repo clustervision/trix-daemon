@@ -31,6 +31,13 @@ depends:
   commands: [/usr/bin/scontrol, /usr/bin/sacctmgr, /usr/bin/env, /usr/bin/setpriv, /usr/bin/prlimit]
   python: [slurmlint]
   slurm: accounting answers (sacctmgr), the node, partition and gres files exist
+  pair: >-
+    the three files on the shared tree, where the installer puts them: both controllers reach one
+    file, so no write of either is sent to the other. A change at Luna reaches each controller's
+    trixd from its own Luna, and each renders; a call to one controller (system/bulk, system/notify,
+    the active Luna's whole set) renders there alone, and one file needs no more. Files kept per
+    controller are not supported and no setting changes that: a save, a restore, each .bkp and
+    the lock stay on the controller that was asked
 
 runs_as:
   handlers: root, inside trixd; they run nothing but helper.py
@@ -46,7 +53,8 @@ creates:
   - the account trinityx-slurm, uid and gid 1049 on every controller of a pair, no shell, no home
   - its AdminLevel Administrator in Slurm's accounting
   - a .bkp beside each of the three files where none is
-  - nothing on the three files and their .bkp: the installer leaves them root's, of the admin group, group write
+  - nothing on the three files: the installer leaves them root's, of the admin group, group write
+  - on each .bkp, before a save or a restore, the same owner and group, its file's mode and group write; a save makes a missing one
   - the managed blocks of the three files, by the installer's call to files/actions/init
   - /var/lib/trixd/slurm, 0700, the account's
   - <slurm dir>/.trinityx-slurm, 0700, the account's, beside the files on the share
@@ -73,6 +81,8 @@ steps:
     - [/usr/bin/rm, -rf, /var/lib/trixd/slurm]
 
 checklist:
+  - text: no route sends its write to the other controller
+    test: tests/unit/test_plugins.py::test_the_slurm_and_genders_plugins_send_no_write_to_the_other_controller
   - text: only a person or rootus asks for a change; a service and a Luna-minted token are refused
     test: tests/unit/test_slurm_changes.py::test_only_a_person_asks_for_a_change
   - text: Luna decides, asked as the person, before the helper runs

@@ -28,8 +28,14 @@ description: >
 
 depends:
   daemon: trixd with the luna plugin enabled (the node list is Luna's)
-  files: /etc/genders, carrying a TrinityX managed block; on a pair it is the shared file both
-    controllers write
+  files: /etc/genders, carrying a TrinityX managed block
+  pair: >-
+    the file on the shared tree, where the installer puts it: both controllers reach one file, so
+    no write of either is sent to the other. A change at Luna reaches each controller's trixd
+    from its own Luna, and each renders; a call to one controller (system/bulk, system/notify,
+    the active Luna's whole set) renders there alone, and one file needs no more. A file kept per
+    controller is not supported and no setting changes that: an init, a restore and the .bkp
+    stay on the controller that was asked
 
 runs_as:
   handlers: root, inside trixd; the render writes one file and starts no process
@@ -52,6 +58,8 @@ steps:
   remove: []
 
 checklist:
+  - text: no route sends its write to the other controller
+    test: tests/unit/test_plugins.py::test_the_slurm_and_genders_plugins_send_no_write_to_the_other_controller
   - text: the file the render leaves is the file the packaged generator leaves, byte for byte
     test: tests/unit/test_golden_files.py::test_the_genders_render_writes_what_the_generators_wrote
   - text: a second pass leaves one block, in the markers the other writers find

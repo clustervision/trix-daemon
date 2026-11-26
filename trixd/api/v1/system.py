@@ -99,6 +99,14 @@ class Action(BaseModel):
     request_id: str = ""
 
 
+def _counts(state: dict) -> dict:
+    """
+    The counts a trigger keeps, for health: numbers and nothing else, as the rest of it is.
+    """
+    return {key: value for key, value in (state.get("counts") or {}).items()
+            if isinstance(value, int)}
+
+
 @router.get("/health", summary="Whether this daemon is serving, its renders and triggers",
             description=(
                 "For a monitor, with no token. `plugins` counts the loaded plugins. Each "
@@ -108,7 +116,12 @@ class Action(BaseModel):
                 "hashes, which it does on an HA master only, and `replication` when the last "
                 "sweep ran, 0 for never, with `not_converging` counting the peer and table "
                 "pairs that have still differed after several passes - which means neither "
-                "controller is taking the other's row. `owed` counts the replicated calls still "
+                "controller is taking the other's row. A trigger that keeps counts publishes "
+                "them beside those two: `prometheus_hw_rules` says whether the hardware rule "
+                "files could last be compared with the other controller, with `lacking`, the "
+                "files a peer holds and this controller does not, and `differing`, the files "
+                "both hold whose bytes differ - which is ordinary, each controller writing "
+                "its own, and so is a number to read rather than a fault. `owed` counts the replicated calls still "
                 "waiting for a peer, the ones given up on, the peers configured and the "
                 "peers not answering - counts only, and no peer is named, because this "
                 "route takes no token: `GET /system/replication/owed` says where, and "
@@ -126,6 +139,9 @@ class Action(BaseModel):
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
                 "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
+                             "prometheus_hw_rules": {"lacking": 0, "differing": 2,
+                                                     "answering": True,
+                                                     "last_pass": 1791545830.12},
                              "replication": {"at": 1791545526.87, "not_converging": 0}},
                 "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0,
                          "oldest_pending": 0},
@@ -141,7 +157,8 @@ def health() -> dict:
     return {"status": "ok", "daemon": DAEMON_NAME, "plugins": len(loaded),
             "renders": [{"render": item["render"], "rendered_at": item["rendered_at"],
                          "ok": not item["error"]} for item in renders().listing()],
-            "triggers": {**{name: {"answering": state.get("answering", False),
+            "triggers": {**{name: {**_counts(state),
+                                   "answering": state.get("answering", False),
                                    "last_pass": state.get("last_pass", 0)}
                             for name, state in triggers.states().items()},
                          "replication": {"at": (sweep().last or {}).get("at", 0),

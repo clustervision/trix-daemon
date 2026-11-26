@@ -57,9 +57,12 @@ NO_FOLLOW: int = getattr(os, "O_NOFOLLOW", 0)
 DIRECTORY: int = getattr(os, "O_DIRECTORY", 0)
 
 
-def write(path: str, content: str, mode: int = 0o644) -> str:
+def write(path: str, content: str, mode: int = 0o644, fresh: bool = False) -> str:
     """
     Write through a temporary file and rename, so a reader never sees a partial one.
+
+    `fresh` is for a file that must not be there yet: a name taken meanwhile is refused
+    rather than replaced, and the file under it is left as it was.
 
     The contents reach the disk before the rename is asked for. Without that, the rename
     can survive a power loss while the data does not, and what is left under the real name
@@ -82,7 +85,12 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
             target.flush()
             os.fsync(target.fileno())
         os.chmod(temporary, mode)
-        os.replace(temporary, path)
+        if fresh:
+            # A link refuses a name that is taken, where a rename replaces it.
+            os.link(temporary, path)
+            os.unlink(temporary)
+        else:
+            os.replace(temporary, path)
     except OSError as error:
         # The name is unpredictable, so a failed write leaves one nothing will ever find
         # again - and a disk that is full fails every pass, leaving another each time.
@@ -96,12 +104,12 @@ def write(path: str, content: str, mode: int = 0o644) -> str:
     return path
 
 
-def write_yaml(path: str, document, mode: int = 0o644) -> str:
+def write_yaml(path: str, document, mode: int = 0o644, fresh: bool = False) -> str:
     """
     The same, for a document.
     """
     return write(path, yaml.dump(document, Dumper=SAFE_DUMPER, default_flow_style=False,
-                                 sort_keys=False, explicit_start=True), mode)
+                                 sort_keys=False, explicit_start=True), mode, fresh)
 
 
 def read_text(path: str, fallback: str = "") -> str:

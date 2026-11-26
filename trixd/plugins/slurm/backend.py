@@ -40,6 +40,7 @@ import os
 import pwd
 import re
 import socket
+import stat
 import sys
 import threading
 import time
@@ -75,6 +76,7 @@ DEFAULT_CONFIG: dict = {
 # only a save and a restore, which start no child process, run with that group, given to that
 # process alone. An init and a forced restore are the daemon's own writes, as the render's are.
 WRITERS = ("save", "restore")
+OWNER = 0            # the six files are root's, as the helper holds them to
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 HELPER = os.path.join(HERE, "helper.py")
@@ -234,6 +236,8 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
                          "partitions": settings["partitions_file"],
                          "gres": settings["gres_file"]},
                "share_dir": _share(settings), "state_dir": STATE_DIR, "group": group}
+    if verb in WRITERS:
+        _backups(request["files"], group, verb)
     groups = ["--groups", str(group)] if verb in WRITERS else ["--clear-groups"]
     argv = [ENV, "-i", f"PATH={SEARCH}",
             SETPRIV, "--reuid", ACCOUNT, "--regid", ACCOUNT, *groups,
@@ -261,6 +265,44 @@ def helper(verb: str, settings: dict, body: dict) -> dict:
             renders().again(RENDER, 0)  # the render refused while the mark stood: nothing else asks
         raise ANSWERED.get(said.get("code"), BackendFailure)(message)
     return {k: v for k, v in said.items() if k not in ("ok", "code")}
+
+
+def _backups(files: dict, group: int, verb: str) -> None:
+    """
+    Each `.bkp` made the helper's to write before a save or a restore: root's, of the files'
+    group, with group read and write and its file's own read bits, so whoever reads the file
+    reads its backup, as a preview does; a save makes a missing one from its file. Done on
+    the open file and only to a regular file of one name, since slurm owns the directory and
+    can put a link there. No lock: every step lands the same from either controller.
+    """
+    for path in files.values():
+        backup = f"{path}.bkp"
+        try:
+            file = os.lstat(path)
+            ours = stat.S_ISREG(file.st_mode) and (file.st_uid, file.st_gid) == (OWNER, group)
+            mode = file.st_mode & 0o664 | 0o060 if ours else 0o660  # only our file opens it
+            if verb == "save" and not os.path.lexists(backup):
+                held = blocks.kept(path)
+                with contextlib.suppress(FileExistsError), open(os.open(
+                        backup, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600), "wb") as made:
+                    made.write(held)
+            fd = os.open(backup, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
+            try:
+                found = os.fstat(fd)
+                if not stat.S_ISREG(found.st_mode) or found.st_nlink != 1:
+                    raise OSError(errno.EINVAL, "not a plain file with one link")
+                if (found.st_uid, found.st_gid, stat.S_IMODE(found.st_mode)) != (OWNER, group,
+                                                                                 mode):
+                    os.fchown(fd, OWNER, group)
+                    os.fchmod(fd, mode)
+            finally:
+                os.close(fd)
+        except FileNotFoundError:
+            continue  # the helper names the file or the backup that is not there
+        except OSError as error:
+            why = "it is a link" if error.errno == errno.ELOOP else error.strerror
+            raise ServiceUnavailable(f"root cannot make {error.filename or backup} ready for "
+                                     f"the {verb} ({why}), so nothing was written") from None
 
 
 @contextlib.contextmanager
@@ -374,7 +416,7 @@ def _contents(paths) -> dict:
     found = {}
     for path in paths:
         try:
-            with open(path, "rb") as handle:
+            with open(os.open(path, os.O_RDONLY | os.O_NOFOLLOW), "rb") as handle:
                 found[path] = handle.read()
         except OSError:
             found[path] = None
@@ -394,7 +436,8 @@ def _restore(before: dict) -> list:
                 if os.path.exists(path):
                     os.remove(path)
             else:
-                with open(path, "wb") as handle:
+                flags = os.O_WRONLY | os.O_CREAT | os.O_TRUNC | os.O_NOFOLLOW
+                with open(os.open(path, flags, 0o666), "wb") as handle:
                     handle.write(content)
         except OSError as error:
             unrestored.append(path)
