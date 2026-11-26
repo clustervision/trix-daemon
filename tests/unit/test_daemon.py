@@ -3089,8 +3089,10 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     # test_a_pass_that_cannot_run_is_said_once_and_the_next_one_still_runs.
     # trixd-hw-rules: each peer is compared inside a guard of its own, pinned by
     # test_a_dark_peer_costs_one_call_a_pass_and_is_said_once.
+    # trixd-watch: its look is guarded in the loop, pinned by
+    # test_a_look_that_fails_is_said_once_and_the_next_one_still_runs.
     assert workers == {"trixd-tasks", "trixd-audit", "trixd-sweep", "trixd-hashes",
-                       "trixd-osimage", "trixd-hw-rules"}, \
+                       "trixd-osimage", "trixd-hw-rules", "trixd-watch"}, \
         (f"the set of long-lived threads changed: {sorted(workers)}. Each runs with nothing "
          f"to restart it, so decide whether the new one's loop survives a failure, then "
          f"update this set")

@@ -59,6 +59,13 @@ Two things to know before you rely on it:
 - **A restart loads only the plugins `[PLUGINS] ENABLED` lists.** Add yours there, or a
   plugin plugged in by hand is gone after the next restart.
 
+While you are writing one, `[PLUGINS] AUTO_RELOAD = yes` in `trixd.ini` saves the reload
+call: after a restart of the daemon, a plugin in `SITE_DIRECTORY` is loaded again a few
+seconds after you save its `.py` or `.yaml` files. A save that does not load is refused
+once, with the reason in the log and in the plugin list, and the version that was serving
+keeps serving. A new plugin is still plugged in only where `ENABLED` lists it or lists
+nothing, and one you unplugged stays unplugged. It is off by default.
+
 ## The two files
 
 `docs/manifest.schema.json` is the manifest format as a JSON Schema. An editor with a

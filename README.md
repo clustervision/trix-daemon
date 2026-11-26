@@ -68,6 +68,8 @@ lowest role it admits.
 
 - **Reload without a restart.** `POST /api/v1/system/plugins/<name>/reload`, or
   `systemctl reload trixd` for all of them, loads plugins from disk while the daemon runs.
+  With `[PLUGINS] AUTO_RELOAD = yes` a site plugin is loaded again by itself a few
+  seconds after its files change; it is off by default.
 - **A site's plugins survive an upgrade.** They live in `[PLUGINS] SITE_DIRECTORY`, which
   an upgrade leaves alone.
 - **A broken plugin is contained.** One that cannot load is refused, with the reason in
@@ -294,6 +296,12 @@ upgrade leaves alone and which cannot take a shipped plugin's name. A restart lo
 what `ENABLED` lists, by default all six. An `ENABLED` that names nothing at all is the
 exception: it loads every plugin found rather than none, which is what an installed site
 already runs on, so the count it enabled is logged at startup.
+
+`[PLUGINS] AUTO_RELOAD = yes` watches `SITE_DIRECTORY`, and only that one, and loads a
+plugin again once its `.py` and `.yaml` files have changed and stood still for a few
+seconds. A plugin that is serving is reloaded; a new one is plugged in only where a
+restart would load it; one that was unplugged stays unplugged. A plugin that does not
+load is refused once, with the reason in the log, and what was serving keeps serving.
 
 Clients get a `trixd.ini` of their own beside the `luna.ini` the installer writes for
 the alertx CLI, the On Demand apps and the node image. The Luna CLI and the luna2

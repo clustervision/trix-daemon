@@ -170,6 +170,8 @@ class PluginSettings(BaseModel):
     # A site's own plugins: outside the package, so an upgrade leaves them alone.
     site_directory: str = "/trinity/local/trixd/plugins"
     enabled: list = Field(default_factory=list)
+    # Off unless asked for: a site plugin is then loaded again when its files change.
+    auto_reload: bool = False
 
 
 class Settings(BaseModel):
@@ -446,7 +448,8 @@ def load(path: str = "", found: list = None) -> Settings:
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
         site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),
-        enabled=_csv(get("PLUGINS", "ENABLED", "")))
+        enabled=_csv(get("PLUGINS", "ENABLED", "")),
+        auto_reload=flag("PLUGINS", "AUTO_RELOAD", False))
     _unknown(parser, asked, path, found)
     data.warnings = found
     return data
