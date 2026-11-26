@@ -531,7 +531,9 @@ identifier = tasks.submit(PLUGIN, action, param, caller.name)
 ```
 
 The caller polls whatever route you declare for it; the services plugin uses
-`status/<request_id>`.
+`status/<request_id>`. Register under the plugin's own name, as above: that is the queue
+a reload replaces and an unplug takes back, and a plugin's handler is refused under any
+other name.
 
 Work that runs for hours does not go on the queue: the queue is one worker, a task
 holds it for as long as it runs, and a restart of trixd kills the task with the

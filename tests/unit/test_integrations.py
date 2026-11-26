@@ -2103,10 +2103,10 @@ def test_a_listing_asks_systemd_once_and_maps_each_record_by_name(rig, monkeypat
 
 def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
     """
-    `act` checks both before it queues, but the worker is reachable without going through
-    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
-    catalogue can be rewritten between an action being queued and the worker reaching it.
-    So the checks are in the worker, beside the command they are protecting.
+    `act` checks both before it queues, but the worker runs what the queue holds, whoever
+    wrote it there, and a catalogue can be rewritten between an action being queued and
+    the worker reaching it. So the checks are in the worker, beside the command they are
+    protecting.
     """
     from trixd.plugins.services import backend as services
 

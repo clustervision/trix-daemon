@@ -44,7 +44,7 @@ from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
                                    ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused, ServiceUnavailable
-from trixd.core import serving, tasks
+from trixd.core import hooks, serving, tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import applied, outbox, tables
@@ -342,8 +342,8 @@ def notify(body: Change = Body(openapi_examples=docs.example(
                {"event": "luna.node.update", "payload": {"name": "node001"}})),
            caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
     """
-    Hand the change to whatever publishes that kind of event, which runs the plugins
-    that declared it and wakes the renders. With no event, wake every render.
+    Hand the change to the hook dispatcher, which runs the plugins that declared it and
+    wakes the renders. With no event, wake every render.
     """
     if not body.event:
         woken = renders().notify("")
@@ -355,7 +355,8 @@ def notify(body: Change = Body(openapi_examples=docs.example(
         raise BadRequest(f"{body.event} is not an event: name one as "
                          f"<source>.<object>.<event>, such as luna.node.update")
     dispatch = tasks.handler(parts[0])
-    if dispatch is None:
+    # The hook dispatcher alone: a plugin's own queue worker under that name is not rung.
+    if dispatch is not hooks.run:
         raise BadRequest(f"nothing here publishes {parts[0]} events")
     said = dispatch(body.event, json.dumps(body.payload or {}))
     LOGGER.info("notified of %s: %s", body.event, said)
@@ -399,7 +400,7 @@ def bulk(body: Changes = Body(openapi_examples=docs.example(
         if len(parts) != HOOK_EVENT_PARTS or not all(parts):
             raise BadRequest(f"{change.event} is not an event: name one as "
                              f"<source>.<object>.<event>, such as luna.node.update")
-        if tasks.handler(parts[0]) is None:
+        if tasks.handler(parts[0]) is not hooks.run:
             raise BadRequest(f"nothing here publishes {parts[0]} events")
 
     queued = [tasks.submit(change.event.split(".")[0], change.event,
