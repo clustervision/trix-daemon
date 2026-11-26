@@ -59,3 +59,7 @@ platform-el10:
 
 publish-job:
   needs: ["build-job", "unit-and-e2e", "platform-el8", "platform-el9", "platform-el10"]
+
+# The package waits for the same tests as the wheel; a local needs replaces the pipeline's own.
+rpm-publish-job:
+  needs: ["rpm-job", "rpm-check", "unit-and-e2e", "platform-el8", "platform-el9", "platform-el10"]
