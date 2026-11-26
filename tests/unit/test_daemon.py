@@ -244,7 +244,7 @@ def test_every_user_endpoint_declares_a_minimum_role():
 def test_every_hook_a_shipped_plugin_wants_is_published_by_one():
     """
     The daemon holds no list of which events exist, so a plugin may subscribe to one
-    nobody publishes and simply never run. That is right for a site's own plugin and
+    nobody publishes and simply never run. That is right for a custom plugin and
     wrong for a shipped one, where it would be a typo nothing reports. Read from every
     manifest and every publisher, so a new plugin on either side is covered.
     """
@@ -317,17 +317,17 @@ def test_a_plugin_route_on_a_daemon_path_is_refused(rig, tmp_path, monkeypatch):
     """
     Defence in depth: even without the reserved list, a route the daemon serves is taken.
     """
-    site = tmp_path / "site-plugins" / "system"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "system"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def health(self):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: system\nbackend: backend\nendpoints:\n  - path: health\n"
         "    methods: [GET]\n    minimum: none\n    handler: health\n", encoding="utf-8")
     monkeypatch.setattr(loader, "RESERVED_PLUGINS", ())
     with pytest.raises(PluginRefused, match="already served by the daemon itself"):
-        loader.load(rig, "system", str(site))
+        loader.load(rig, "system", str(custom))
 
 
 def test_a_manifest_without_a_minimum_role_is_refused():
@@ -2533,16 +2533,16 @@ def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tm
     """
     Refused when it is plugged in, with the reason, rather than a 500 at the first call.
     """
-    site = tmp_path / "site-plugins" / "mismatch"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "mismatch"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def show(self, name):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: mismatch\nbackend: backend\nendpoints:\n  - path: item/<node>\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
     with pytest.raises(PluginRefused, match="does not take the path variable node"):
-        loader.load(rig, "mismatch", str(site))
+        loader.load(rig, "mismatch", str(custom))
 
 
 def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig, tmp_path):
@@ -2553,10 +2553,10 @@ def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig,
     """
     from trixd.core.plugins.check import check
 
-    site = tmp_path / "site-plugins" / "strict"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    custom = tmp_path / "custom-plugins" / "strict"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "manifest.yaml").write_text(
         "plugin: strict\nbackend: backend\nendpoints:\n  - path: item/<name>\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
 
@@ -2564,21 +2564,21 @@ def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig,
         """
         A backend whose handler takes its path variable exactly this way.
         """
-        (site / "backend.py").write_text(
+        (custom / "backend.py").write_text(
             f"class Backend:\n    def show(self, {signature}):\n        return {{}}\n",
             encoding="utf-8")
 
     backend("name, /")
-    assert [problem for problem in check(str(site)) if "positionally" in problem], \
-        f"the check passed a handler the route cannot call: {check(str(site))}"
+    assert [problem for problem in check(str(custom)) if "positionally" in problem], \
+        f"the check passed a handler the route cannot call: {check(str(custom))}"
     with pytest.raises(PluginRefused, match="positionally"):
-        loader.load(rig, "strict", str(site))
+        loader.load(rig, "strict", str(custom))
 
     # Not a blanket refusal. The same variable taken by keyword loads, and so does the
     # extra parameter with a default that lets one handler serve an in-process caller too.
     backend('name, was=""')
-    assert check(str(site)) == [], "a handler the route can call has to pass the check"
-    assert loader.load(rig, "strict", str(site)).state == "loaded"
+    assert check(str(custom)) == [], "a handler the route can call has to pass the check"
+    assert loader.load(rig, "strict", str(custom)).state == "loaded"
     loader.unload(rig, "strict")
 
 
@@ -2590,17 +2590,17 @@ def test_a_handler_serving_a_read_and_a_write_is_handed_a_body_on_both(rig, clie
     None, so a handler declaring `body` without a default answered 500 on the read while
     the write answered 200 - and the signature check calls `body` supplied either way.
     """
-    site = tmp_path / "site-plugins" / "both"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "both"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def setting(self, body):\n        return {'body': body}\n",
         encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: both\nbackend: backend\nschemas:\n  value:\n    held: {type: string}\n"
         "endpoints:\n  - path: setting\n    methods: [GET, PATCH]\n    minimum: manager\n"
         "    handler: setting\n    schema: value\n", encoding="utf-8")
-    assert loader.load(rig, "both", str(site)).state == "loaded"
+    assert loader.load(rig, "both", str(custom)).state == "loaded"
     try:
         read = client.get(f"{API_PREFIX}/both/setting", headers=headers)
         assert read.status_code == 200, read.text
@@ -3325,22 +3325,22 @@ def test_a_directory_cannot_take_a_reserved_prefix_through_its_manifest(rig, tmp
     manifest, so the two have to be made to agree: a plugin directory under any name at
     all would otherwise serve /api/v1/system by saying so in its manifest.
     """
-    site = tmp_path / "site-plugins" / "impostor"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "impostor"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def show(self):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: system\nbackend: backend\nendpoints:\n  - path: shadow\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
 
     # The route table first, so the proof is the prefix and not only the wording.
     with contextlib.suppress(PluginRefused):
-        loader.load(rig, "impostor", str(site))
+        loader.load(rig, "impostor", str(custom))
     assert not _serves(rig, f"{API_PREFIX}/system/shadow"), \
         "a plugin built a route under the prefix the daemon reserves for itself"
     with pytest.raises(PluginRefused, match="calls itself system but sits at impostor"):
-        loader.load(rig, "impostor", str(site))
+        loader.load(rig, "impostor", str(custom))
 
 
 def test_a_manifest_cannot_take_a_service_token():

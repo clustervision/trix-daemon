@@ -562,7 +562,7 @@ def test_the_peer_will_not_be_talked_into_work_its_manifest_does_not_declare(cli
 
 def _crossing_plugin(rig) -> None:
     """
-    A site plugin whose one endpoint declares replicate, takes a node and requires a field.
+    A custom plugin whose one endpoint declares replicate, takes a node and requires a field.
 
     Written here rather than borrowed from a shipped plugin: the only shipped one that
     declares replicate is not in the test rig's ENABLED list, and a test of what apply
@@ -573,9 +573,9 @@ def _crossing_plugin(rig) -> None:
     from trixd.common.settings import current as settings
     from trixd.core.plugins import loader
 
-    site = os.path.join(settings().plugins.site_directory, "crossing")
-    os.makedirs(site, exist_ok=True)
-    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+    custom = os.path.join(settings().plugins.custom_directory, "crossing")
+    os.makedirs(custom, exist_ok=True)
+    with open(os.path.join(custom, "manifest.yaml"), "w", encoding="utf-8") as handle:
         handle.write(
             "plugin: crossing\n"
             "backend: backend\n"
@@ -593,11 +593,11 @@ def _crossing_plugin(rig) -> None:
             "    schema: shape\n"
             "    replicate: true\n"
             "    summary: A replicating node endpoint\n")
-    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(custom, "backend.py"), "w", encoding="utf-8") as handle:
         handle.write("class Backend:\n"
                      "    def thing(self, node: str, body: dict = None) -> dict:\n"
                      '        return {"node": node, "count": (body or {}).get("count")}\n')
-    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(custom, "__init__.py"), "w", encoding="utf-8") as handle:
         handle.write("")
     assert loader.load(rig, "crossing").state == "loaded"
 
@@ -799,7 +799,7 @@ def test_applying_a_node_endpoint_leaves_a_trail(rig, client, headers):
 
 def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "") -> None:
     """
-    A site plugin with one replicating endpoint, taking its node under a chosen path
+    A custom plugin with one replicating endpoint, taking its node under a chosen path
     variable and gated either by a node token or by a role.
     """
     import os
@@ -807,9 +807,9 @@ def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "
     from trixd.common.settings import current as settings
     from trixd.core.plugins import loader
 
-    site = os.path.join(settings().plugins.site_directory, name)
-    os.makedirs(site, exist_ok=True)
-    with open(os.path.join(site, "manifest.yaml"), "w", encoding="utf-8") as handle:
+    custom = os.path.join(settings().plugins.custom_directory, name)
+    os.makedirs(custom, exist_ok=True)
+    with open(os.path.join(custom, "manifest.yaml"), "w", encoding="utf-8") as handle:
         handle.write(
             f"plugin: {name}\n"
             "backend: backend\n"
@@ -822,11 +822,11 @@ def _applying_plugin(rig, name: str, variable: str, token: str, minimum: str = "
             + "    handler: thing\n"
             "    replicate: true\n"
             "    summary: A replicating endpoint\n")
-    with open(os.path.join(site, "backend.py"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(custom, "backend.py"), "w", encoding="utf-8") as handle:
         handle.write("class Backend:\n"
                      f"    def thing(self, {variable}: str) -> dict:\n"
                      f'        return {{"retired": {variable}}}\n')
-    with open(os.path.join(site, "__init__.py"), "w", encoding="utf-8") as handle:
+    with open(os.path.join(custom, "__init__.py"), "w", encoding="utf-8") as handle:
         handle.write("")
     assert loader.load(rig, name).state == "loaded"
 

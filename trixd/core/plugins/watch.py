@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-Load a site plugin again when its files change, where [PLUGINS] AUTO_RELOAD asks for it.
+Load a custom plugin again when its files change, where [PLUGINS] AUTO_RELOAD asks for it.
 """
 
 __author__      = "Antoine Schonewille"
@@ -43,7 +43,7 @@ from trixd.core.plugins.registry import current as registry
 
 LOGGER = trixlog.get("watch")
 
-# Seconds between two looks at the site's plugins. A change is acted on at the look after
+# Seconds between two looks at the custom plugins. A change is acted on at the look after
 # the one that first saw it, so a plugin still being written is not loaded half-saved.
 INTERVAL: int = 5
 
@@ -65,7 +65,7 @@ def fingerprint(path: str) -> tuple:
 
 class Watch:
     """
-    One thread, one look per interval at the site's plugins. Only that directory: the
+    One thread, one look per interval at the custom plugins. Only that directory: the
     shipped one is rewritten by an upgrade under a running daemon.
     """
 
@@ -83,9 +83,9 @@ class Watch:
 
     def _look(self) -> dict:
         """
-        Everything in the site directory by plugin name, as its path and fingerprint.
+        Everything in the custom directory by plugin name, as its path and fingerprint.
         """
-        directory = settings().plugins.site_directory
+        directory = settings().plugins.custom_directory
         found = {}
         for item in sorted(os.listdir(directory)) if os.path.isdir(directory) else []:
             path = os.path.join(directory, item)
@@ -165,7 +165,7 @@ class Watch:
         self.thread = threading.Thread(target=self._loop, name="trixd-watch", daemon=True)
         self.thread.start()
         LOGGER.info("[PLUGINS] AUTO_RELOAD is on: a changed plugin in %s is loaded again "
-                    "within %ss", settings().plugins.site_directory, 2 * INTERVAL)
+                    "within %ss", settings().plugins.custom_directory, 2 * INTERVAL)
         return True
 
     def shutdown(self) -> None:

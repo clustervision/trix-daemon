@@ -18,7 +18,7 @@
 # along with this program.  If not, see <https://www.gnu.org/licenses/>
 
 """
-[PLUGINS] AUTO_RELOAD: a site plugin whose files changed is loaded again without a
+[PLUGINS] AUTO_RELOAD: a custom plugin whose files changed is loaded again without a
 restart, and nothing else is.
 """
 
@@ -51,12 +51,12 @@ SECOND: str = '"plugin": "the second version"'
 
 def _backend(name: str = "hello") -> str:
     """
-    A scaffolded site plugin's backend file, written if it is not there yet.
+    A scaffolded custom plugin's backend file, written if it is not there yet.
     """
-    site = settings().plugins.site_directory
-    if not os.path.isdir(os.path.join(site, name)):
-        scaffold.new(name, site)
-    return os.path.join(site, name, "backend.py")
+    custom = settings().plugins.custom_directory
+    if not os.path.isdir(os.path.join(custom, name)):
+        scaffold.new(name, custom)
+    return os.path.join(custom, name, "backend.py")
 
 
 def _edit(path: str, old: str, new: str) -> None:
@@ -192,7 +192,7 @@ def test_a_look_that_finds_nothing_changed_does_nothing(rig, monkeypatch):
         raise AssertionError("an unchanged look reached the loader")
 
     watching = watch.Watch()
-    assert not os.path.isdir(settings().plugins.site_directory)
+    assert not os.path.isdir(settings().plugins.custom_directory)
     watching.baseline(rig)
     monkeypatch.setattr(loader, "load", never)
     monkeypatch.setattr(loader, "discover", never)
@@ -276,10 +276,10 @@ def test_a_plugin_plugged_in_by_hand_is_reloaded(rig, client, headers):
     assert client.get(HELLO, headers=headers).json()["plugin"] == "the second version"
 
 
-def test_a_site_directory_under_a_shipped_name_reloads_nothing(rig, loads):
+def test_a_custom_directory_under_a_shipped_name_reloads_nothing(rig, loads):
     """
-    A site plugin cannot take a shipped plugin's name, so a change under that name in the
-    site directory is not a reason to load the shipped one again.
+    A custom plugin cannot take a shipped plugin's name, so a change under that name in the
+    custom directory is not a reason to load the shipped one again.
     """
     backend = _backend("services")
     assert registry().get("services").state == "loaded"
@@ -310,7 +310,7 @@ def test_a_look_that_fails_is_said_once_and_the_next_one_still_runs(monkeypatch)
         looks.append(1)
         if len(looks) == 3:
             watching.stop.set()
-        raise OSError("the site directory cannot be read")
+        raise OSError("the custom directory cannot be read")
 
     handler = Said()
     watch.LOGGER.addHandler(handler)

@@ -29,7 +29,7 @@ or plugin is covered when it is published:
     test_e2e_inputs.py   odd path values, bodies of the wrong shape, queries out of range:
                          never a 500
     test_e2e_plugins.py  every plugin unplugged and plugged back three times, reloads at
-                         once, reserved names, a site plugin dropped in live
+                         once, reserved names, a custom plugin dropped in live
     test_e2e_flows.py    a user's role over its life, the audit trail, a queued service
                          action, a node's hardware rules after boot, a rename through Luna
     test_e2e_stress.py   sustained reads and a boot storm; only with -m stress, scaled by

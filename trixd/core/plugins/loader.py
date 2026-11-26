@@ -81,17 +81,17 @@ def _serialised(function):
 
 def discover(directory: str = "") -> dict:
     """
-    Every plugin on disk: the shipped ones, then the site's own. A site plugin cannot take
+    Every plugin on disk: the shipped ones, then the custom ones. A custom plugin cannot take
     a shipped plugin's name, or it would replace shipped code without anyone seeing it.
     """
     if directory:
         return _scan(directory)
     config = settings().plugins
     found = _scan(config.directory)
-    if config.site_directory and os.path.isdir(config.site_directory):
-        for name, path in _scan(config.site_directory).items():
+    if config.custom_directory and os.path.isdir(config.custom_directory):
+        for name, path in _scan(config.custom_directory).items():
             if name in found:
-                LOGGER.warning("site plugin %s ignored: a shipped plugin has that name", path)
+                LOGGER.warning("custom plugin %s ignored: a shipped plugin has that name", path)
                 continue
             found[name] = path
     return found

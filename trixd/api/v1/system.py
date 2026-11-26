@@ -275,8 +275,8 @@ def task_list(subsystem: str = Query("", description="Only this subsystem's task
              description=(
                  "Reads the plugin from disk again and swaps its routes in, with no restart: "
                  "a request already running finishes on the old code, the next one sees the "
-                 "new. It also plugs in a plugin that is not loaded yet, such as a site's "
-                 "new one. When the plugin is refused, nothing changes and the answer is 409 "
+                 "new. It also plugs in a plugin that is not loaded yet, such as a new "
+                 "custom one. When the plugin is refused, nothing changes and the answer is 409 "
                  "with the reason."),
              responses=docs.answers({"plugin": PLUGIN_EXAMPLE}, "The plugin as now loaded",
                                     errors={404: "No plugin has that name",

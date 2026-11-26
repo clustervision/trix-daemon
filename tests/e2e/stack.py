@@ -157,7 +157,7 @@ class Stack:
                 f"[AUTH]\nCHAIN = local\nCACHE = 0s\n"
                 f"[SERVICES]\nCOMMAND = {sys.executable}\n"
                 f"[PLUGINS]\nDIRECTORY = {os.path.join(ROOT, 'trixd', 'plugins')}\n"
-                f"SITE_DIRECTORY = {os.path.join(self.scratch, 'site')}\nENABLED =\n")
+                f"CUSTOM_DIRECTORY = {os.path.join(self.scratch, 'custom')}\nENABLED =\n")
         environment = dict(os.environ, TRIXD_LUNA_INI=luna_ini, PYTHONPATH=ROOT)
         self.log = open(os.path.join(self.scratch, "stdout.log"), "w", encoding="utf-8")
         self.process = subprocess.Popen(

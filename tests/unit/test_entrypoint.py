@@ -200,7 +200,7 @@ def _ini_that_starts_up(tmp_path, extra: str = "", insecure_bind: str = "127.0.0
     """
     from tests.conftest import SHARED_SECRET
 
-    for name in ("plugins", "site-plugins"):
+    for name in ("plugins", "custom-plugins"):
         (tmp_path / name).mkdir()
     logfile = tmp_path / "log" / "trixd.log"
     ini = tmp_path / "trixd.ini"
@@ -210,7 +210,7 @@ def _ini_that_starts_up(tmp_path, extra: str = "", insecure_bind: str = "127.0.0
         f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {SHARED_SECRET}\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         f'[PLUGINS]\nDIRECTORY = {tmp_path / "plugins"}\n'
-        f'SITE_DIRECTORY = {tmp_path / "site-plugins"}\nENABLED =\n{extra}',
+        f'CUSTOM_DIRECTORY = {tmp_path / "custom-plugins"}\nENABLED =\n{extra}',
         encoding="utf-8")
     return str(ini), logfile
 
@@ -333,14 +333,14 @@ def test_every_command_that_reads_the_ini_says_what_reading_it_found(tmp_path, c
     nothing: an unknown key, an empty account, a file it could not read at all - every
     finding on the branch an author uses to ask why their plugin will not load.
     """
-    for name in ("plugins", "site"):
+    for name in ("plugins", "custom"):
         (tmp_path / name).mkdir()
     shipped = os.path.join(os.path.dirname(server.__file__), "plugins")
     ini = tmp_path / "trixd.ini"
     ini.write_text(
         f"[LOGGER]\nLEVEL = warning\nLOGFILE =\n"
         f"[TOKENS]\nALGORITHM = EdDSA\nPRIVATE_KEY = {tmp_path / 'keys' / 'trixd.key'}\n"
-        f"[PLUGINS]\nDIRECTORY = {shipped}\nSITE_DIRECTORY = {tmp_path / 'site'}\n"
+        f"[PLUGINS]\nDIRECTORY = {shipped}\nCUSTOM_DIRECTORY = {tmp_path / 'custom'}\n"
         f"[AUDIT]\nKEEPP = 10d\n", encoding="utf-8")
     try:
         for command in (["keygen"], ["plugin", "new", "asked"],
@@ -430,7 +430,7 @@ def _serving_ini(tmp_path) -> str:
     """
     from tests.conftest import SHARED_SECRET
 
-    for name in ("plugins", "site-plugins"):
+    for name in ("plugins", "custom-plugins"):
         (tmp_path / name).mkdir()
     ini = tmp_path / "trixd.ini"
     ini.write_text(
@@ -439,7 +439,7 @@ def _serving_ini(tmp_path) -> str:
         f"[TOKENS]\nALGORITHM = HS256\nSECRET_KEY = {SHARED_SECRET}\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         f'[PLUGINS]\nDIRECTORY = {tmp_path / "plugins"}\n'
-        f'SITE_DIRECTORY = {tmp_path / "site-plugins"}\nENABLED =\n',
+        f'CUSTOM_DIRECTORY = {tmp_path / "custom-plugins"}\nENABLED =\n',
         encoding="utf-8")
     return str(ini)
 

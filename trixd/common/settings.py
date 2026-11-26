@@ -167,10 +167,10 @@ class PluginSettings(BaseModel):
     Where plugins live, and which of them to load.
     """
     directory: str = "/trinity/local/trixd/daemon/plugins"
-    # A site's own plugins: outside the package, so an upgrade leaves them alone.
-    site_directory: str = "/trinity/local/trixd/plugins"
+    # Custom plugins: outside the package, so an upgrade leaves them alone.
+    custom_directory: str = "/trinity/local/trixd/custom_plugins"
     enabled: list = Field(default_factory=list)
-    # Off unless asked for: a site plugin is then loaded again when its files change.
+    # Off unless asked for: a custom plugin is then loaded again when its files change.
     auto_reload: bool = False
 
 
@@ -447,7 +447,7 @@ def load(path: str = "", found: list = None) -> Settings:
     data.audit = AuditSettings(keep=duration("AUDIT", "KEEP", "90d"))
     data.plugins = PluginSettings(
         directory=get("PLUGINS", "DIRECTORY", data.plugins.directory),
-        site_directory=get("PLUGINS", "SITE_DIRECTORY", data.plugins.site_directory),
+        custom_directory=get("PLUGINS", "CUSTOM_DIRECTORY", data.plugins.custom_directory),
         enabled=_csv(get("PLUGINS", "ENABLED", "")),
         auto_reload=flag("PLUGINS", "AUTO_RELOAD", False))
     _unknown(parser, asked, path, found)

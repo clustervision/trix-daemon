@@ -19,7 +19,7 @@
 
 """
 Plugging and unplugging with the daemon running: every shipped plugin, again and again,
-at the same time as other reloads, and a site plugin dropped in live.
+at the same time as other reloads, and a custom plugin dropped in live.
 """
 
 __author__      = "Sumit Sharma"
@@ -155,14 +155,14 @@ def test_an_unknown_plugin_is_a_404(stack):
                       stack.rootus()).status_code == 404
 
 
-def test_a_site_plugin_dropped_in_is_served_without_a_restart(stack):
+def test_a_custom_plugin_dropped_in_is_served_without_a_restart(stack):
     """
-    Written into SITE_DIRECTORY, reloaded by name, served, then unplugged. Local only: it
+    Written into CUSTOM_DIRECTORY, reloaded by name, served, then unplugged. Local only: it
     writes on the daemon's own disk.
     """
     if not stack.local:
-        pytest.skip("writes into the daemon's site directory")
-    root = os.path.join(stack.scratch, "site", "e2e-hello")
+        pytest.skip("writes into the daemon's custom directory")
+    root = os.path.join(stack.scratch, "custom", "e2e-hello")
     os.makedirs(root, exist_ok=True)
     with open(os.path.join(root, "__init__.py"), "w", encoding="utf-8") as handle:
         handle.write("")

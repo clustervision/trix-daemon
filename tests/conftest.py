@@ -95,7 +95,7 @@ def build(tmp_path, algorithm: str = "HS256", monkeypatch=None):
         f"TRUST = {trust}\nISSUER = trixd\n"
         f'[DATABASE]\nURL = sqlite:///{tmp_path / "trixd.db"}\n'
         "[AUTH]\nCHAIN = local\nCACHE = 0s\n"
-        f"[PLUGINS]\nDIRECTORY = {plugins}\nSITE_DIRECTORY = {tmp_path / 'site-plugins'}\n"
+        f"[PLUGINS]\nDIRECTORY = {plugins}\nCUSTOM_DIRECTORY = {tmp_path / 'custom-plugins'}\n"
         "ENABLED = luna, directory, services\n",
         encoding="utf-8")
 
