@@ -164,6 +164,25 @@ HEALTH=$(curl -sk $PLAIN/api/v1/system/health)
 check "health reports the renders"     "$(echo "$HEALTH" | jq_ "len(d['renders']) > 0")" True
 check "health reports the triggers"    "$(echo "$HEALTH" | jq_ "'luna_hashes' in d['triggers']")" True
 
+echo "=== 12b. obol takes every flag the directory plugin sends ==="
+# Read from the plugin's own tables, so a flag added there is asked of obol here. A flag
+# the installed obol does not list is a 502 on the first write that sends it.
+sent() { $PY -c 'import sys
+from trixd.plugins.directory import backend
+print(" ".join(list(getattr(backend, sys.argv[1]).values()) + sys.argv[2:]))' "$@" 2>/dev/null; }
+unlisted() {
+  HELP=$(obol "$1" "$2" --help 2>&1); shift 2
+  for FLAG in "$@"; do echo "$HELP" | grep -qw -e "$FLAG" || printf '%s ' "$FLAG"; done
+}
+USER_SENT=$(sent USER_FLAGS --prompt-password)
+GROUP_SENT=$(sent GROUP_FLAGS)
+# Without this, flags that could not be read are no flags, and none of them is unlisted.
+[ -n "$USER_SENT" ] && [ -n "$GROUP_SENT" ] && say PASS "the plugin's flags were read" || say FAIL "the plugin's flags could not be read"
+check "obol user add takes them"       "$(unlisted user add $USER_SENT)" ""
+check "obol user modify takes them"    "$(unlisted user modify $USER_SENT)" ""
+check "obol group add takes them"      "$(unlisted group add $GROUP_SENT)" ""
+check "obol group modify takes them"   "$(unlisted group modify $GROUP_SENT)" ""
+
 echo "=== 13. tidy up ==="
 # This is a destructive step on a live controller and e2eop was promoted to manager above,
 # so each removal is read back: a refused DELETE used to print PASS and leave it standing.

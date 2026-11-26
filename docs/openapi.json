@@ -2955,7 +2955,7 @@
                 }
               }
             },
-            "description": "The group exists already, or no groupname was given"
+            "description": "The group exists already, no groupname was given, or a value is one obol would misread"
           },
           "401": {
             "content": {
@@ -3001,7 +3001,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3053,6 +3053,16 @@
               }
             },
             "description": "What was done"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not one the directory takes"
           },
           "401": {
             "content": {
@@ -3108,7 +3118,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3164,6 +3174,16 @@
             },
             "description": "The group"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not one the directory takes"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -3209,6 +3229,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3292,7 +3322,7 @@
                 }
               }
             },
-            "description": "Nothing to change was sent"
+            "description": "Nothing to change was sent, or a name or value is one obol would misread"
           },
           "401": {
             "content": {
@@ -3348,7 +3378,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3502,7 +3532,7 @@
                 }
               }
             },
-            "description": "The user exists already, or no username was given"
+            "description": "The user exists already, no username was given, or a value is one obol would misread"
           },
           "401": {
             "content": {
@@ -3548,7 +3578,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3600,6 +3630,16 @@
               }
             },
             "description": "What was done"
+          },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not one the directory takes"
           },
           "401": {
             "content": {
@@ -3655,7 +3695,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3721,6 +3761,16 @@
             },
             "description": "The user"
           },
+          "400": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "The name is not one the directory takes"
+          },
           "401": {
             "content": {
               "application/json": {
@@ -3766,6 +3816,16 @@
               }
             },
             "description": "Validation Error"
+          },
+          "502": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Error"
+                }
+              }
+            },
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [
@@ -3860,7 +3920,7 @@
                 }
               }
             },
-            "description": "Nothing to change was sent"
+            "description": "Nothing to change was sent, or a name or value is one obol would misread"
           },
           "401": {
             "content": {
@@ -3916,7 +3976,7 @@
                 }
               }
             },
-            "description": "obol failed; the message carries what it said"
+            "description": "obol failed; the reason is in the journal"
           }
         },
         "security": [

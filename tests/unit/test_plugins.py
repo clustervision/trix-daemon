@@ -90,18 +90,19 @@ def test_the_directory_shape_the_ood_application_will_meet(rig, monkeypatch):
 
 def test_a_missing_directory_user_is_a_404(rig, monkeypatch):
     """
-    obol answering non-zero is a missing user, not an empty one.
+    obol naming the user as one that does not exist is a missing user, not an empty one.
     """
     from trixd.plugins.directory import backend as directory
 
-    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran("", 1, "no such"))
+    monkeypatch.setattr(directory.shell, "run", lambda *a, **k: Ran(
+        "", 1, "[LookupError] User 'nobody' does not exist"))
     with pytest.raises(NotFound):
         directory.Backend().get_user("nobody")
 
 
 def test_obol_is_never_given_a_shell_string(rig, monkeypatch):
     """
-    Every call is an argument list, so a name with a space cannot become a command.
+    Every call is an argument list, so a value with a space cannot become a command.
     """
     from trixd.plugins.directory import backend as directory
 
@@ -110,13 +111,13 @@ def test_obol_is_never_given_a_shell_string(rig, monkeypatch):
                         lambda argv, *a, **k: (seen.append(argv), Ran("{}"))[1])
     monkeypatch.setattr(directory.shell, "run_json",
                         lambda argv, *a, **k: (seen.append(argv), {})[1])
-    directory.Backend().get_user("carol; rm -rf /")
+    directory.Backend().update_user("carol", {"surname": "carol; rm -rf /"})
 
     assert seen, "nothing ran"
     for argv in seen:
         assert isinstance(argv, list), argv
         assert argv[0] == "obol"
-        assert "carol; rm -rf /" in argv, "the name is one argument, not parsed"
+    assert "carol; rm -rf /" in seen[1], "the value is one argument, not parsed"
 
 
 def test_a_service_outside_the_catalogue_is_refused(rig):

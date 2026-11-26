@@ -1434,10 +1434,16 @@ def test_ldap_without_a_uri_or_base_refuses_to_start(rig):
         ldap_source.Source()
 
 
-def _obol(monkeypatch, existing: set) -> list:
+OBOL_MISSES: dict = {"user": "[LookupError] User '{name}' does not exist",
+                     "group": "[LookupError] Group {name} does not exist"}
+
+
+def _obol(monkeypatch, existing: set, broken: str = "") -> list:
     """
-    obol, standing in: show answers for the names in existing, add and delete change
-    it, and every call is recorded.
+    obol, standing in: show answers for the names in existing and misses the rest in
+    obol's own words, add and delete change it, and every call is recorded. With broken,
+    every show fails with that on standard error instead, as obol does off a directory
+    that is not answering.
     """
     from trixd.plugins.directory import backend as directory
 
@@ -1448,10 +1454,11 @@ def _obol(monkeypatch, existing: set) -> list:
         Record the call; show fails for a name that does not exist.
         """
         calls.append(list(argv))
-        verb = argv[2] if argv[1] != "-J" else argv[3]
-        name = argv[3] if argv[1] != "-J" else argv[4]
+        kind, verb, name = argv[2:5] if argv[1] == "-J" else argv[1:4]
+        if verb == "show" and broken:
+            return Ran("", 1, broken)
         if verb == "show" and name not in existing:
-            return Ran("", 1, "not found")
+            return Ran("", 1, OBOL_MISSES[kind].format(name=name))
         if verb == "add":
             existing.add(name)
         if verb == "delete":
@@ -1500,7 +1507,7 @@ def test_a_password_does_not_reach_obol_as_an_argument(rig, monkeypatch):
         verb = argv[2] if argv[1] != "-J" else argv[3]
         name = argv[3] if argv[1] != "-J" else argv[4]
         if verb == "show" and name not in existing:
-            return Ran("", 1, "not found")
+            return Ran("", 1, OBOL_MISSES["user"].format(name=name))
         if verb == "add":
             existing.add(name)
         return Ran("{}")
@@ -1562,6 +1569,98 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
         ["obol", "group", "modify", "hpc", "--gid", "5000"],
         ["obol", "group", "delete", "hpc"],
     ]
+
+
+def _written(calls: list) -> list:
+    """
+    The calls that would have changed the directory.
+    """
+    return [call for call in calls if call[2] in ("add", "modify", "delete")]
+
+
+def test_the_directory_hands_obol_no_name_it_would_misread(rig, monkeypatch):
+    """
+    obol puts a name into an LDAP filter as it stands and reads a leading dash as an
+    option, so a name outside the login-name rule is refused before obol is run at all.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol", "hpc"})
+    handlers = (
+        Backend().get_user, Backend().delete_user,
+        lambda name: Backend().update_user(name, {"shell": "/bin/zsh"}),
+        lambda name: Backend().create_user({"username": name}),
+        Backend().get_group, Backend().delete_group,
+        lambda name: Backend().update_group(name, {"members": ["carol"]}),
+        lambda name: Backend().create_group({"groupname": name}),
+    )
+    for name in ("*", "car*", "carol)(uid=*", "caro\\6c", "-J", "carol,hpc", "carol\n"):
+        for handler in handlers:
+            with pytest.raises(TrixdError) as refused:
+                handler(name)
+            assert not calls, f"obol was run with the name {name!r}: {calls}"
+            assert isinstance(refused.value, BadRequest), refused.value
+
+
+def test_the_directory_hands_obol_no_list_it_would_misread(rig, monkeypatch):
+    """
+    A list goes to obol joined with commas and each group named in it reaches a filter, so
+    an item that is not a name is refused: with a comma it would arrive as two.
+    """
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol", "hpc"})
+    for change in (
+            lambda: Backend().create_user({"username": "dave", "groups": ["hpc", "*"]}),
+            lambda: Backend().update_user("carol", {"groups": ["hpc,wheel"]}),
+            lambda: Backend().create_group({"groupname": "gpu", "members": ["carol,dave"]}),
+            lambda: Backend().update_group("hpc", {"members": ["carol", "*"]})):
+        with pytest.raises(BadRequest, match="not a name"):
+            change()
+    assert not _written(calls), f"a refused list still reached obol: {_written(calls)}"
+
+
+def test_the_directory_refuses_an_empty_password(rig, monkeypatch):
+    """
+    An empty password is not a way to send none: the user would be made, or changed,
+    with the password silently left out.
+    """
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol"})
+    with pytest.raises(BadRequest, match="password"):
+        Backend().create_user({"username": "dave", "password": ""})
+    with pytest.raises(BadRequest, match="password"):
+        Backend().update_user("carol", {"password": "", "shell": "/bin/zsh"})
+    assert not _written(calls), f"a refused password still reached obol: {_written(calls)}"
+
+
+def test_only_obols_own_miss_is_a_missing_record(rig, monkeypatch):
+    """
+    A show that fails for any other reason is the directory not answering: a 502 whose
+    message carries none of obol's output, never a 404, and never a write on the strength
+    of it.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.plugins.directory.backend import Backend
+
+    said = "[SERVER_DOWN] {'desc': \"Can't contact LDAP server\"} bind-pass hunter2"
+    calls = _obol(monkeypatch, {"carol", "hpc"}, broken=said)
+    for handler in (
+            lambda: Backend().get_user("carol"),
+            lambda: Backend().update_user("carol", {"shell": "/bin/zsh"}),
+            lambda: Backend().delete_user("carol"),
+            lambda: Backend().create_user({"username": "dave"}),
+            lambda: Backend().get_group("hpc"),
+            lambda: Backend().update_group("hpc", {"members": ["carol"]}),
+            lambda: Backend().delete_group("hpc"),
+            lambda: Backend().create_group({"groupname": "gpu"})):
+        with pytest.raises(TrixdError) as refused:
+            handler()
+        assert isinstance(refused.value, BackendFailure), refused.value
+        assert "hunter2" not in str(refused.value), "obol's own output left in the answer"
+    assert not _written(calls), f"written to a directory that did not answer: {_written(calls)}"
 
 
 def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
