@@ -43,6 +43,8 @@ LEVELS: dict = {
     "error": logging.ERROR,
     "critical": logging.CRITICAL,
 }
+# How many of a list one log line names; the rest are counted.
+NAMED: int = 10
 
 
 def setup(level: str = "info", logfile: str = "") -> logging.Logger:
@@ -69,6 +71,15 @@ def setup(level: str = "info", logfile: str = "") -> logging.Logger:
             # missing rather than failing a start over a log path.
             logger.warning("cannot write %s: %s", logfile, error)
     return logger
+
+
+def named(names: list) -> str:
+    """
+    A list for one log line: the first few by name and the rest as a count, because a
+    line that names every node of a large cluster is not one anybody reads.
+    """
+    more = f" and {len(names) - NAMED} more" if len(names) > NAMED else ""
+    return ", ".join(names[:NAMED]) + more
 
 
 def get(name: str = "") -> logging.Logger:

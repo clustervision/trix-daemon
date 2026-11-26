@@ -7185,3 +7185,61 @@ def test_a_refusal_is_not_held_against_a_file_listed_without_a_digest(rig, tmp_p
         fetched = [path for path, _ in pair.calls].count("prometheus/hw-rules")
         assert fetched == 3, f"listed with digest {digest!r}, asked for {fetched} times in three"
     assert pair.held(pair.here_dir) == []
+
+
+def test_a_reconcile_counts_the_files_it_retired_rather_than_naming_them_all(
+        rig, tmp_path, monkeypatch):
+    """
+    A reconcile retires a file per node gone from Luna. Its log line names the first of
+    them and counts the rest, so it stays readable when a whole rack goes.
+    """
+    from trixd.plugins.prometheus import backend as prometheus
+
+    backend = _prometheus_rig(tmp_path, monkeypatch, {})
+    for number in range(1, 16):
+        files.write_yaml(os.path.join(str(tmp_path),
+                                      prometheus.HW_RULES.format(host=f"gone{number:02d}")),
+                         {"groups": []})
+    records = []
+    handler = logging.Handler()
+    handler.emit = records.append
+    level = prometheus.LOGGER.level
+    prometheus.LOGGER.addHandler(handler)
+    prometheus.LOGGER.setLevel(logging.DEBUG)
+    try:
+        outcome = backend._reconcile_hw_rules(
+            {"node001": {"hostname": "node001.cluster", "group": "compute"}})
+    finally:
+        prometheus.LOGGER.removeHandler(handler)
+        prometheus.LOGGER.setLevel(level)
+
+    said = [record.getMessage() for record in records if "reconciled" in record.getMessage()]
+    assert len(outcome["retired"]) == 15 and len(said) == 1, (outcome, said)
+    assert "gone01" in said[0] and "gone15" not in said[0] and "5 more" in said[0], \
+        f"the line names every file retired: {said[0]}"
+
+
+def test_two_controllers_generating_one_node_write_the_same_bytes(rig, tmp_path, monkeypatch):
+    """
+    Prometheus answers a node's parts in no particular order, and each controller asks its
+    own. The file does not follow that order, so the same parts give the same digest and
+    `differing` in health counts only nodes that differ.
+    """
+    from trixd.plugins.prometheus import exporters
+    from trixd.plugins.prometheus.backend import COMPONENT_LABELS, Backend
+
+    parts = [{**{label: "x" for label in COMPONENT_LABELS}, "description": description}
+             for description in ("System Memory", "NVMe disk", "Ethernet interface")]
+    backend = Backend()
+    monkeypatch.setattr(backend, "settings", lambda: {})
+    digests = []
+    for controller, answered in (("one", parts), ("two", parts[::-1])):
+        monkeypatch.setattr(backend, "_components", lambda host, answered=answered: answered)
+        path = str(tmp_path / controller)
+        files.write_yaml(path, backend._generate_hw_rules("node001"))
+        digests.append(exporters.digest(path))
+
+    assert len({rule["expr"] for rule in _read_yaml_file(str(tmp_path / "one"))
+                ["groups"][0]["rules"]}) == 3, "the three parts did not each get a rule"
+    assert digests[0] == digests[1], \
+        "the same parts answered in another order made a file the peer counts as differing"

@@ -41,6 +41,7 @@ from sqlalchemy import delete, or_, select
 from trixd.common import logging as trixlog
 from trixd.db import engine as database
 from trixd.db import models
+from trixd.utils import threads
 
 LOGGER = trixlog.get("tasks")
 
@@ -256,7 +257,7 @@ def start() -> None:
         return
     _requeue()
     _prune()
-    _worker = threading.Thread(target=_loop, name="trixd-tasks", daemon=True)
+    _worker = threads.Thread(target=_loop, name="trixd-tasks", daemon=True)
     _worker.start()
     LOGGER.info("task worker started")
 

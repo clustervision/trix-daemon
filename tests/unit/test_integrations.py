@@ -3453,3 +3453,67 @@ def test_delegate_sections_are_read_alike_and_are_not_unknown(tmp_path):
     assert delegates == {"LUNA": (DELEGATE, DELEGATE_PASSWORD, "luna-float.test:7050"),
                          "OTHER": ("them", "theirs", "")}
     assert [said for said in found if "[DELEGATE:OTHER] TOKEN" in said], found
+
+
+def test_health_tells_a_standby_luna_from_one_that_cannot_be_read(client, monkeypatch):
+    """
+    `answering` is false both on the standby of a pair, where Luna sends no table hashes by
+    design, and for a Luna that errors on every pass. `inert` in health tells them apart.
+    """
+    from trixd.core.render import triggers
+
+    def said() -> dict:
+        """
+        What health publishes for the poller now.
+        """
+        return client.get("/api/v1/system/health").json()["triggers"]["luna_hashes"]
+
+    poller, _ = _hashes(monkeypatch, {}, requests.ConnectionError("away"), {}, {"node": "1"})
+    monkeypatch.setitem(triggers._triggers, "luna_hashes", poller)
+
+    poller.once()
+    assert said()["answering"] is False
+    assert said().get("inert") == 1, f"a standby reads as a Luna that is broken: {said()}"
+
+    poller.once()
+    assert said()["answering"] is False
+    assert said().get("inert") == 0, f"a Luna that cannot be read reads as a standby: {said()}"
+
+    poller.once()
+    assert said().get("inert") == 1
+    poller.once()
+    assert (said()["answering"], said().get("inert")) == (True, 0), said()
+
+
+@pytest.mark.parametrize("render", ["slurm", "genders"])
+def test_the_nodes_left_out_of_a_render_are_counted_rather_than_all_named(
+        rig, monkeypatch, tmp_path, render):
+    """
+    The log line names the first nodes left out and counts the rest, so it stays readable
+    when thousands of nodes have no group yet. The answer still names them all.
+    """
+    from tests.unit.test_daemon import _listening
+    from trixd.common import logging as trixlog
+
+    nodes = {"node001": {"group": "compute"},
+             **{f"node{number:03d}": {"group": None} for number in range(2, 32)}}
+    if render == "slurm":
+        from trixd.plugins.slurm.backend import Backend
+
+        _slurm(monkeypatch, nodes, tmp_path)
+        produce = Backend().render_config
+    else:
+        from trixd.plugins.genders.backend import Backend
+
+        _genders(monkeypatch, nodes, tmp_path)
+        produce = Backend().render_genders
+    with _listening(trixlog.get(render)) as records:
+        answer = produce()
+
+    said = [record.getMessage() for record in records if "left out" in record.getMessage()]
+    assert len(answer["skipped"]) == 30 and len(said) == 1, (answer, said)
+    assert "node002, node003" in said[0], said
+    assert "node031" not in said[0] and "more" in said[0], \
+        f"the line names every node left out: {said[0]}"
+    assert sum(name in said[0] for name in answer["skipped"]) + int(
+        said[0].split(" and ")[-1].split()[0]) == 30, f"the count is not what was left: {said}"

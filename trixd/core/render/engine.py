@@ -31,6 +31,7 @@ __status__      = "Production"
 
 import threading
 import time
+from datetime import datetime, timezone
 
 from sqlalchemy import select
 
@@ -42,6 +43,8 @@ from trixd.db import models
 
 LOGGER = trixlog.get("render")
 PUT_OFF_WARNING = 60.0  # seconds a render may be put off before that is said as a warning
+# What the stored note says of a render that has not rendered yet, as 0 does in memory.
+NEVER: datetime = datetime.fromtimestamp(0, timezone.utc)
 
 
 class NotNow(BackendFailure):
@@ -359,7 +362,7 @@ class Engine:
 
     def _record(self, item: Render) -> None:
         """
-        Keep the local note of when this last ran. Never fatal.
+        Keep the local note of when this last rendered and how its last run went. Never fatal.
         """
         try:
             handle = database.session()
@@ -374,9 +377,10 @@ class Engine:
             row = handle.scalar(select(models.RenderState)
                                 .where(models.RenderState.render == item.key))
             if row is None:
-                row = models.RenderState(render=item.key)
+                row = models.RenderState(render=item.key, rendered_at=NEVER)
                 handle.add(row)
-            row.rendered_at = models.now()
+            if not item.last_error:
+                row.rendered_at = models.now()
             row.last_error = item.last_error
             handle.commit()
         except Exception as error:

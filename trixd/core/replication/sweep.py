@@ -40,6 +40,7 @@ from trixd.common.settings import current as settings
 from trixd.core.replication import outbox, tables
 from trixd.core.replication.peering import TIMEOUT, peer_token, trust
 from trixd.db import engine as database
+from trixd.utils import threads
 
 LOGGER = trixlog.get("sweep")
 
@@ -144,6 +145,14 @@ class Sweep:
         """
         return len([1 for count, *_ in self.stubborn.values() if count >= STUBBORN])
 
+    def unreconciled(self) -> int:
+        """
+        How many peers the last pass did not get through, whatever stopped it: a peer that
+        is away, or one that answered and whose pass failed all the same. For health.
+        """
+        return len([1 for result in (self.last or {}).get("results") or []
+                    if "error" in result])
+
     def pass_over(self, peer: str) -> dict:
         """
         Compare hashes with one peer and take whatever differs.
@@ -243,7 +252,7 @@ class Sweep:
             LOGGER.error("CA_FILE %s is missing and %s, so no peer can be verified and "
                          "every pass will fail", config.ca_file, error)
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-sweep", daemon=True)
+        self.thread = threads.Thread(target=self._loop, name="trixd-sweep", daemon=True)
         self.thread.start()
         LOGGER.info("reconciling with %s every %ss", ", ".join(config.peers), config.interval)
         return True

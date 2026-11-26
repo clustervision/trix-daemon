@@ -473,9 +473,9 @@ endpoints:
 
       A file both controllers hold is never changed. Those whose digests differ are
       counted as `differing` under `prometheus_hw_rules` in `GET /api/v1/system/health`,
-      beside `lacking`, the files a peer holds that are not held here. Each controller
-      generates from its own Prometheus and the digest is of the bytes, so a difference
-      is not a fault by itself.
+      beside `lacking`, the files a peer holds that are not held here. The rules of a
+      file are written in one order, so two files differ when the controllers generated
+      them from different data, or when one was written before that order was kept.
     response:
       description: One entry per rule file held
       example:

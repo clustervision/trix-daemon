@@ -699,8 +699,9 @@ class Backend:
 
         Copied, never generated: a file records the parts a node had when it was made, so
         one generated now would carry no alert for a part that has failed since. A file
-        both hold is never touched: each controller generates from its own Prometheus, so
-        differing is ordinary and is only counted.
+        both hold is never touched for the same reason, so one that differs is only counted:
+        the rules are written in one order, which leaves a difference meaning the two
+        controllers generated from different data.
 
         `halted` answers whether to stop, and is asked between files: a daemon shutting
         down is not kept waiting for the rest of a pass.
@@ -1080,6 +1081,9 @@ class Backend:
                            "disabled": bool(hardware.get("disabled", False))},
                 "annotations": {"description": HW_DESCRIPTION},
             })
+        # Prometheus answers the components in no particular order, and the other controller
+        # compares these files by their bytes.
+        rules.sort(key=lambda rule: rule["expr"])
         return {"groups": [{"name": HW_GROUP, "rules": rules}]}
 
     def _components(self, host: str) -> list:
@@ -1500,7 +1504,8 @@ class Backend:
             repaired.append(os.path.basename(target))
         if repaired or retired or superseded:
             LOGGER.info("hardware rules reconciled: repaired %s, retired %s, superseded %s",
-                        repaired, retired, superseded)
+                        *(trixlog.named(names) or "none"
+                          for names in (repaired, retired, superseded)))
         return {"repaired": repaired, "retired": retired, "superseded": superseded}
 
     def _write_rule_documents(self, stored: dict) -> list:

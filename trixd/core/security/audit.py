@@ -40,6 +40,7 @@ from trixd.common import logging as trixlog
 from trixd.common.settings import current as settings
 from trixd.db import engine as database
 from trixd.db import models
+from trixd.utils import threads
 
 LOGGER = trixlog.get("audit")
 
@@ -215,7 +216,7 @@ def start() -> None:
     if _writer is not None and _writer.is_alive():
         return
     _stop.clear()
-    _writer = threading.Thread(target=_loop, name="trixd-audit", daemon=True)
+    _writer = threads.Thread(target=_loop, name="trixd-audit", daemon=True)
     _writer.start()
 
 

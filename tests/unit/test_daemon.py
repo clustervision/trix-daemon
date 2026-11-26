@@ -4129,3 +4129,119 @@ def test_every_shipped_hook_handler_takes_the_payload_its_publisher_sends():
                 raise AssertionError(
                     f"{plugin}'s handler for {event} cannot take the payload it is sent "
                     f"({sorted(payload)}): {error}") from None
+
+
+def test_the_stored_note_of_a_render_keeps_when_it_last_rendered_across_a_failure(rig):
+    """
+    A failed run records its error and leaves the stored time of the last render alone, so
+    the table never shows a failing render as freshly rendered beside its error.
+    """
+    import time
+
+    from sqlalchemy import select
+
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    outcome = {"fail": False}
+
+    def producer():
+        """
+        A producer that answers until it is told not to.
+        """
+        if outcome["fail"]:
+            raise RuntimeError("luna is away")
+        return {"ok": True}
+
+    def noted(key: str):
+        """
+        The stored note for one render.
+        """
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.RenderState)
+                                .where(models.RenderState.render == key))
+            return row.rendered_at, row.last_error
+        finally:
+            handle.close()
+
+    engine = renders()
+    spec = Render(inputs=["stamped.thing"], coalesce="0s")
+    try:
+        item = engine.register("stamped", "renders/kept", spec, producer)
+        assert engine.run(item) is True
+        rendered, error = noted(item.key)
+        assert error == ""
+
+        time.sleep(0.01)
+        outcome["fail"] = True
+        assert engine.run(item) is False
+        assert noted(item.key) == (rendered, "luna is away"), \
+            "a run that failed moved the time the render is noted as having rendered"
+
+        never = engine.register("stamped", "renders/never", spec, producer)
+        assert engine.run(never) is False
+        assert noted(never.key)[0].year == 1970, \
+            f"a render that has never rendered is noted as rendered at {noted(never.key)[0]}"
+    finally:
+        engine.forget("stamped")
+
+
+def test_a_long_lived_thread_carries_its_name_where_the_kernel_shows_it(rig, monkeypatch):
+    """
+    Python's name for a thread is Python's alone. `ps -T` and `top -H` show the kernel's,
+    and that is where a spinning thread has to be told from the rest.
+    """
+    import time
+
+    from trixd.plugins.luna import hashes
+
+    def shown(thread) -> str:
+        """
+        The name the kernel holds for a thread.
+        """
+        with open(f"/proc/self/task/{thread.native_id}/comm", encoding="utf-8") as handle:
+            return handle.read().strip()
+
+    monkeypatch.setattr(hashes, "INTERVAL", 3600)
+    poller = hashes.LunaHashes()
+    assert poller.start() is True
+    try:
+        # The thread names itself once it runs, which start() does not wait for.
+        waited = time.monotonic() + 2
+        while shown(poller.thread) != poller.thread.name and time.monotonic() < waited:
+            time.sleep(0.01)
+        assert shown(poller.thread) == "trixd-hashes", \
+            f"the poller's thread is listed as {shown(poller.thread)!r}"
+    finally:
+        poller.shutdown()
+        poller.thread.join(2)
+
+
+def test_every_named_thread_is_started_so_that_the_kernel_knows_its_name():
+    """
+    Derived from the code, so a thread added later is covered as well. The kernel keeps
+    fifteen bytes of a name, and two names alike that far are one name there.
+    """
+    import ast as syntax
+
+    started = []
+    for folder, _, files in os.walk(os.path.dirname(trixd.__file__)):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            tree = syntax.parse(open(os.path.join(folder, name), encoding="utf-8").read())
+            for node in syntax.walk(tree):
+                if (isinstance(node, syntax.Call) and isinstance(node.func, syntax.Attribute)
+                        and node.func.attr == "Thread"):
+                    started.extend((syntax.unparse(node.func), word.value.value)
+                                   for word in node.keywords if word.arg == "name")
+    assert started, "no named thread was found, so this proves nothing"
+    plain = [name for call, name in started if call != "threads.Thread"]
+    assert not plain, f"started as a plain thread, so listed as the interpreter: {plain}"
+    shown = [name.encode()[:15] for _, name in started]
+    assert len(set(shown)) == len(started) and all(
+        len(name.encode()) <= 15 for _, name in started), \
+        f"not told apart in the fifteen bytes the kernel keeps: {sorted(shown)}"
