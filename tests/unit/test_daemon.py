@@ -2058,10 +2058,11 @@ def test_the_ini_account_signs_in_from_trixd_ini_alone(rig, client, monkeypatch)
         handle.close()
 
 
-def _aliasing_pam(monkeypatch) -> list:
+def _aliasing_pam(monkeypatch, spelt: dict = None) -> list:
     """
-    A PAM source whose name service spells two aliases back as the ini account's name, and
-    what principals warned about.
+    A PAM source whose name service spells two aliases back as the ini account's name, or
+    answers the names of `spelt` with the spelling each maps to, and what principals
+    warned about.
     """
     import sys
     from types import SimpleNamespace
@@ -2069,13 +2070,16 @@ def _aliasing_pam(monkeypatch) -> list:
     from trixd.core.security import principals
     from trixd.core.security.sources import pam as pam_source
 
+    known = spelt or {"TESTER": "tester", "tester@domain": "tester"}
+
     def getpwnam(name):
         """
         The entry for an alias, under the canonical name, or KeyError as pwd raises.
         """
-        if name not in ("TESTER", "tester@domain"):
+        if name not in known:
             raise KeyError(name)
-        return SimpleNamespace(pw_name="tester", pw_uid=1500, pw_gid=100, pw_shell="/bin/bash")
+        return SimpleNamespace(pw_name=known[name], pw_uid=1500, pw_gid=100,
+                               pw_shell="/bin/bash")
 
     conversation = SimpleNamespace(authenticate=lambda *args, **kwargs: True, reason="")
     monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwnam=getpwnam))
@@ -2121,6 +2125,34 @@ def test_a_token_for_an_alias_of_the_ini_account_is_not_rootus(rig, client, monk
     answer = client.get(f"{API_PREFIX}/identity/users", headers=held)
     assert answer.status_code == 401, answer.text
     assert [line for line in warned if "pam" in line and "tester@domain" in line], warned
+
+
+@pytest.mark.parametrize("name", ["o'brien", "j\u00fcrgen", "two words"])
+def test_a_name_the_api_cannot_write_gets_no_principal(rig, client, monkeypatch, name):
+    """
+    A source's name the identity routes would refuse is refused like a wrong password, at
+    sign-in and on a token, and leaves no row nobody could manage.
+    """
+    from trixd.core.security import tokens
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    warned = _aliasing_pam(monkeypatch, {name: name})
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": name, "password": "their own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
+    assert "username or password is incorrect" in answer.text
+    assert [line for line in warned if "pam" in line and repr(name) in line], warned
+    assert not [line for line in warned if "their own" in line], warned
+    handle = database.session()
+    try:
+        assert handle.query(models.Principal).filter(
+            models.Principal.name == name).count() == 0
+    finally:
+        handle.close()
+
+    held = {"x-access-tokens": tokens.mint(name, source="pam")}
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=held).status_code == 401
 
 
 def test_a_deleted_user_comes_back_fresh(rig, client, headers):

@@ -32,6 +32,7 @@ __status__      = "Production"
 import hashlib
 import hmac
 import os
+import re
 import time
 
 from sqlalchemy import select
@@ -47,6 +48,8 @@ LOGGER = trixlog.get("principals")
 
 DIGEST_SCHEME: str = "pbkdf2_sha256"
 DIGEST_ROUNDS: int = 200000
+# A login name as the chain's sources know it; an Active Directory one carries an @.
+LOGIN_NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
 
 
 def hash_password(password: str) -> str:
@@ -186,7 +189,7 @@ def resolve(handle: Session, name: str) -> Resolved:
     if cached is not None:
         return cached
     identity, source = chain.resolve(handle, name)
-    if identity is None or _borrowed(identity, source, name):
+    if identity is None or _borrowed(identity, source, name) or _unwritable(identity, source):
         return None
     row = row_for(handle, name)
     if row is not None and not row.enabled:
@@ -211,7 +214,7 @@ def authenticate(handle: Session, name: str, password: str) -> Resolved:
             return _ini_account(name)
         return None
     identity, source = chain.authenticate(handle, name, password)
-    if identity is None or _borrowed(identity, source, name):
+    if identity is None or _borrowed(identity, source, name) or _unwritable(identity, source):
         return None
     return _adopt(handle, identity, source)
 
@@ -225,6 +228,19 @@ def _borrowed(identity: dict, source: str, asked: str) -> bool:
         return False
     LOGGER.warning("source %s answered %s with the name of the ini account; refused",
                    source, asked)
+    return True
+
+
+def _unwritable(identity: dict, source: str) -> bool:
+    """
+    Whether a source answered with a name the API cannot write. Nobody could give that
+    principal a role, disable it or delete it, so it is refused.
+    """
+    name = identity.get("name") or ""
+    if LOGIN_NAME.match(name):
+        return False
+    LOGGER.warning("source %s answered with %r, which is not a login name; refused",
+                   source, name)
     return True
 
 
@@ -256,6 +272,8 @@ def vouched(handle: Session, name: str, source: str) -> tuple:
 
     if access.is_rootus(name):
         return None, f"{name} is the ini account, which signs in with its password only"
+    if _unwritable({"name": name}, source):
+        return None, f"{name} is not a login name"
     system = pam.Source(handle)
     known, said = system.resolve(name)
     if not known:

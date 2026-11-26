@@ -1181,11 +1181,13 @@ def test_peercred_signs_the_caller_in_as_their_own_account(rig, client, tmp_path
     ({"name": "tester"}, "ini account"),
     ({"back": 4242}, "leads back"),
     ({"account": (False, "Authentication token is no longer valid")}, "PAM refused"),
+    ({"name": "o'brien"}, "not a login name"),
 ])
 def test_peercred_refuses_and_says_why_in_the_trail(rig, tmp_path, monkeypatch, case, why):
     """
-    uid 0, a system account, the ini account, a name that leads to another uid and an
-    account PAM refuses get no token, and the trail says which.
+    uid 0, a system account, the ini account, a name that leads to another uid, an
+    account PAM refuses and a name the API cannot write get no token, and the trail says
+    which.
     """
     status, body = _peercred(monkeypatch, tmp_path, **case)
     assert status == 401 and "token" not in body, (status, body)
@@ -1342,6 +1344,84 @@ def test_ldap_knows_nobody_outside_the_directory(rig, monkeypatch):
     assert source.authenticate("*", "right")[0] is None, "the wildcard matched somebody"
     assert source.resolve("carol") == (True, {"name": "carol"})
     assert source.resolve("ghost")[0] is False
+
+
+def _ldap_entry(source, uid, password: str = "right") -> None:
+    """
+    One more person in that offline directory, under the first uid given.
+    """
+    import ldap3
+
+    first = uid if isinstance(uid, str) else uid[0]
+    setup = ldap3.Connection(source.ldap3.Server(source.uri), client_strategy=ldap3.MOCK_SYNC)
+    setup.strategy.add_entry(f"uid={first},ou=People,dc=cluster",
+                             {"uid": uid, "userPassword": password,
+                              "objectClass": ["inetOrgPerson"]})
+
+
+def test_ldap_names_a_person_as_the_directory_stores_them(rig, monkeypatch):
+    """
+    The directory's search ignores case, so the name is its own stored spelling, never
+    the one typed, also for a person stored under several names; an entry that shows no
+    such name is refused rather than taken as typed.
+    """
+    source = _ldap(monkeypatch)
+    _ldap_entry(source, ["two", "deux"])
+    for typed, stored in (("carol", "carol"), ("Carol", "carol"), ("CAROL", "carol"),
+                          ("DEUX", "deux"), ("Two", "two")):
+        assert source.authenticate(typed, "right") == (True, {"name": stored}), typed
+        assert source.resolve(typed) == (True, {"name": stored}), typed
+
+    connect = source.ldap3.Connection
+
+    def unreadable(server, **kwargs):
+        """
+        A connection whose search finds the entry and is shown none of its attributes.
+        """
+        connection = connect(server, **kwargs)
+        search = connection.search
+        connection.search = lambda base, query, attributes=None: search(base, query)
+        return connection
+
+    monkeypatch.setattr(source.ldap3, "Connection", unreadable)
+    verdict, said = source.authenticate("carol", "right")
+    assert verdict is False and "no uid that is carol" in said, (verdict, said)
+    verdict, said = source.resolve("carol")
+    assert verdict is False and "no uid that is carol" in said, (verdict, said)
+
+
+def test_ldap_spellings_of_one_person_are_one_principal(rig, client, headers, monkeypatch):
+    """
+    However the name is typed the person is one row, so disabling it stops every
+    spelling, and a spelling of the ini account's name is still not the ini account.
+    """
+    from trixd.core.security import chain
+
+    source = _ldap(monkeypatch)
+    _ldap_entry(source, "tester", "the entry's own")
+    monkeypatch.setattr(chain, "_source", lambda name, handle: source)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["ldap"])
+
+    for typed in ("carol", "CAROL"):
+        answer = client.post("/api/v1/auth/token",
+                             json={"username": typed, "password": "right"})
+        assert answer.status_code == 201, answer.text
+    handle = database.session()
+    try:
+        assert [row.name for row in handle.query(models.Principal).all()] == ["carol"]
+    finally:
+        handle.close()
+
+    assert client.put("/api/v1/identity/users/carol", json={"enabled": False},
+                      headers=headers).status_code == 200
+    for typed in ("carol", "CAROL"):
+        answer = client.post("/api/v1/auth/token",
+                             json={"username": typed, "password": "right"})
+        assert answer.status_code == 401, (typed, answer.text)
+
+    answer = client.post("/api/v1/auth/token",
+                         json={"username": "TESTER", "password": "the entry's own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
 
 
 def test_ldap_without_a_uri_or_base_refuses_to_start(rig):
