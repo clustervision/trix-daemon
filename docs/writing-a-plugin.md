@@ -207,6 +207,7 @@ reload endpoint answers 409 with the reason.
 | an endpoint takes `token: node` and its path carries no `node`, `name` or `hostname` | refused; the gate would have nothing to bind the token to, so one node's token would answer for another |
 | a `replicate` endpoint only reads, or is also a render, `forward: true` or `public: true` | refused; a read has nothing to carry, and the other three are already carried or must not be |
 | a `replicate` endpoint serves a read alongside its write | refused; replication is applied per verb, so the read would write an outbox row on every call |
+| a `replicate` endpoint declares a `query` parameter | refused; it would be written down as naming what the call is for, so two calls for one node would not be kept in order |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | an endpoint handler takes a positional-only argument the route could not fill | refused; everything is handed over by keyword |
 | a hook handler takes a positional-only argument the payload could not fill | refused |

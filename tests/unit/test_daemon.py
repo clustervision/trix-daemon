@@ -4532,3 +4532,41 @@ def test_every_named_thread_is_started_so_that_the_kernel_knows_its_name():
     assert len(set(shown)) == len(started) and all(
         len(name.encode()) <= 15 for _, name in started), \
         f"not told apart in the fifteen bytes the kernel keeps: {sorted(shown)}"
+
+
+def test_a_replicating_endpoint_cannot_declare_a_query_parameter():
+    """
+    What is written down for the peer is the path variables and the body. A query parameter
+    is handed over beside the path variables, so it is written down as one of them: it
+    becomes part of what the call is taken to be for, and two calls for one node that
+    differ in it are no longer kept in order.
+    """
+    document = {"plugin": "example", "endpoints": [
+        {"path": "rules/<node>", "methods": ["PATCH"], "handler": "rules",
+         "minimum": "manager", "replicate": True,
+         "query": {"detail": {"description": "How much to answer"}}}]}
+    with pytest.raises(PluginRefused, match="cannot also declare the query parameter detail"):
+        parse(document)
+
+    del document["endpoints"][0]["replicate"]
+    assert parse(document).endpoints[0].query, "a query parameter is refused on its own"
+
+
+def test_no_shipped_endpoint_replicates_and_takes_a_query_parameter():
+    """
+    Every shipped manifest still parses under that rule, read from the plugins that ship
+    rather than from a list of them.
+    """
+    import glob
+
+    from trixd.core.plugins.manifest import read_yaml
+
+    found = sorted(glob.glob(os.path.join(os.path.dirname(trixd.__file__), "plugins", "*",
+                                          "manifest.yaml")))
+    assert found, "no shipped manifest was found, so nothing was checked"
+    replicating = 0
+    for path in found:
+        for endpoint in parse(read_yaml(path)).endpoints:
+            replicating += 1 if endpoint.replicate else 0
+            assert not (endpoint.replicate and endpoint.query), (path, endpoint.path)
+    assert replicating, "no shipped endpoint replicates, so nothing was checked"

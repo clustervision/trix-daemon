@@ -348,6 +348,11 @@ def _check_replicate(endpoint: Endpoint) -> None:
         raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
                             f"serve {', '.join(reads)}: a read that replicated "
                             f"would write an outbox row for every call")
+    if endpoint.query:
+        raise PluginRefused(f"{endpoint.path or '/'} replicates, so it cannot also "
+                            f"declare the query parameter {', '.join(endpoint.query)}: "
+                            f"it would be written down as naming what the call is for, "
+                            f"and two calls for one node would not be kept in order")
 
 
 def _check_render(endpoint: Endpoint) -> None:

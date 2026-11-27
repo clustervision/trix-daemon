@@ -467,9 +467,11 @@ def replication_table(name: str = Path(description="principal or declaration",
                 "`/system/health` carries the counts and takes no token; this carries the "
                 "peers and the rows and therefore does, because naming the other "
                 "controllers is not something an unauthenticated port should do.\n\n"
-                "A row listed as `failed` has been given up on and stops everything behind "
-                "it for that peer: later actions assume the earlier one landed, so carrying "
-                "on would write over a prerequisite that never happened."),
+                "A row listed as `failed` has been given up on. Where its path names a "
+                "node, it holds the actions already waiting behind it for that node at "
+                "that peer: they assume the earlier one landed, so carrying on would write "
+                "over a prerequisite that never happened. The next action for that node "
+                "clears it, and after a day it is let go of with what it holds."),
             responses=docs.answers({"not_answering": [],
                                     "actions": [{"peer": "ctrl2", "plugin": "prometheus",
                                                  "path": "hw-rules/<node>",
