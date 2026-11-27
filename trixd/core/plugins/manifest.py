@@ -35,7 +35,7 @@ import re
 from datetime import date
 from typing import Any, Optional
 
-from pydantic import BaseModel, ConfigDict, Field, create_model
+from pydantic import BaseModel, ConfigDict, Field, PrivateAttr, create_model, model_validator
 
 from trixd.common.constants import (HOOK_EVENT_PARTS, HTTP_VERBS, MINIMUMS,
                                    NODE_PATH_PARAMS, TOKEN_KIND_NODE, TOKEN_KIND_USER)
@@ -46,11 +46,18 @@ PATH_VARIABLE = re.compile(r"<(?:(path):)?([a-zA-Z_][a-zA-Z0-9_]*)>")
 
 # What a declared query parameter may be; the document shows it and FastAPI checks it.
 QUERY_TYPES: dict = {"string": str, "integer": int, "boolean": bool}
+# What a path variable is, always: the only type a `params` entry may declare.
+PATH_TYPE: str = "string"
 # Names the binder hands a handler itself, so a query parameter cannot take them.
 RESERVED_ARGUMENTS: tuple = ("body", "caller", "request")
 # The verbs that carry a body. The binder reads this to decide what to ask FastAPI for,
 # and the parse refuses a schema on anything else, so the two cannot drift apart.
 BODY_VERBS: tuple = ("POST", "PATCH", "PUT")
+# What a render's `serve` may say: nothing, or the one form the reader answers in.
+SERVES: tuple = ("", "json")
+# A caller chooses the names of the fields it sends, so a log line bounds what it repeats.
+UNDECLARED_SHOWN: int = 10
+UNDECLARED_NAME_LENGTH: int = 64
 
 TYPES: dict = {
     "string": str,
@@ -61,6 +68,54 @@ TYPES: dict = {
     "object": dict,
     "array": list,
 }
+
+
+class Rule(BaseModel):
+    """
+    One field of a declared schema: the keys a rule may carry, which the parse and the
+    published schema both enumerate from here.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    type: str = "string"
+    items: str = "string"
+    optional: bool = False
+    pattern: str = ""
+    description: str = ""
+    example: Any = None
+
+
+class RequestBody(BaseModel):
+    """
+    What every request model is built on: it remembers the names of the fields a caller
+    sent that the schema does not declare, which validation then drops as it always has.
+    """
+
+    _undeclared: tuple = PrivateAttr(default=())
+
+    @model_validator(mode="wrap")
+    @classmethod
+    def _note_undeclared(cls, data, handler):
+        """
+        Validate as declared, then keep the names that were left out.
+        """
+        body = handler(data)
+        if isinstance(data, dict):
+            body._undeclared = tuple(str(key) for key in data if key not in cls.model_fields)
+        return body
+
+
+def undeclared(body) -> str:
+    """
+    The fields a body carried that its schema does not declare, or nothing. By name and
+    never by value, since a body carries passwords; quoted and bounded, since the caller
+    chose the names.
+    """
+    names = getattr(body, "_undeclared", ())
+    shown = ", ".join(repr(name[:UNDECLARED_NAME_LENGTH]) for name in names[:UNDECLARED_SHOWN])
+    more = len(names) - UNDECLARED_SHOWN
+    return f"{shown} and {more} more" if more > 0 else shown
 
 
 class Render(BaseModel):
@@ -217,9 +272,11 @@ def parse(document: dict) -> Manifest:
 
     if not manifest.plugin:
         raise PluginRefused("manifest names no plugin")
+    _check_schemas(manifest)
     for endpoint in manifest.endpoints:
         # In the order an author meets them: each check raises on the first thing it
         # finds, so this order is which refusal a manifest breaking two rules answers.
+        _check_path(endpoint)
         _check_verbs(endpoint)
         _check_token_kind(endpoint)
         _check_handler(endpoint)
@@ -259,6 +316,46 @@ def duplicates(manifest: Manifest) -> list:
                              f"a path variable, so only {first} is ever matched")
             seen.setdefault(key, where)
     return twice
+
+
+def _check_schemas(manifest: Manifest) -> None:
+    """
+    Refuse a schema that declares nothing, and a rule the request model would not honour.
+    """
+    for name, fields in manifest.schemas.items():
+        if not isinstance(fields, dict) or not fields:
+            # Its model would take any body at all and hand the handler an empty one.
+            raise PluginRefused(f"schema {name} declares no fields, so every body sent to "
+                                f"it would be accepted and reach the handler empty")
+        for field, rule in fields.items():
+            if rule is None:
+                continue
+            where = f"schema {name} field {field}"
+            if not isinstance(rule, dict):
+                raise PluginRefused(f"{where} is not a rule: write it as "
+                                    f"{{{', '.join(Rule.model_fields)}}}")
+            unknown = [str(key) for key in rule if key not in Rule.model_fields]
+            if unknown:
+                # Dropped in silence otherwise: `required: false` reads as optional and
+                # the field stays required.
+                raise PluginRefused(f"{where} declares {', '.join(unknown)}, which is not "
+                                    f"one of {', '.join(Rule.model_fields)}")
+            for key in ("type", "items"):
+                if key in rule and str(rule[key]) not in TYPES:
+                    # Taken as a string otherwise, so the body is checked as something
+                    # the manifest does not say.
+                    raise PluginRefused(f"{where} has {key} {rule[key]}; "
+                                        f"one of {', '.join(TYPES)}")
+
+
+def _check_path(endpoint: Endpoint) -> None:
+    """
+    Refuse a path variable spelled the router's way, which the binder does not see.
+    """
+    if "{" in endpoint.path or "}" in endpoint.path:
+        # The router would match it as a variable while the handler is never handed it.
+        raise PluginRefused(f"{endpoint.path} carries a brace: a path variable is written "
+                            f"<name>, and <path:name> for the rest of the path")
 
 
 def _check_verbs(endpoint: Endpoint) -> None:
@@ -314,6 +411,9 @@ def _check_minimum(endpoint: Endpoint) -> None:
     """
     Refuse a guarded user-token route that names no role for the gate to read.
     """
+    if endpoint.render is not None and not endpoint.render.serve and not endpoint.minimum:
+        # A render that serves nothing answers no route, so no gate reads a role for it.
+        return
     if (not endpoint.public and not endpoint.forward and endpoint.token == TOKEN_KIND_USER
             and endpoint.minimum not in MINIMUMS):
         raise PluginRefused(
@@ -361,6 +461,10 @@ def _check_render(endpoint: Endpoint) -> None:
     """
     if endpoint.render is None:
         return
+    if endpoint.render.serve not in SERVES:
+        # Anything said here is served as JSON, whatever it names.
+        raise PluginRefused(f"{endpoint.path or '/'} is a render that serves "
+                            f"{endpoint.render.serve}; json, or nothing at all")
     _check_render_inputs(endpoint)
     _check_render_arguments(endpoint)
     _check_render_body(endpoint)
@@ -522,6 +626,12 @@ def _check_docs(endpoint: Endpoint) -> None:
     unknown = [name for name in endpoint.params if name not in endpoint.variables]
     if unknown:
         raise PluginRefused(f"{where} documents {', '.join(unknown)}, which its path does not have")
+    typed = [f"{name} as {item.type}" for name, item in endpoint.params.items()
+             if item.type != PATH_TYPE]
+    if typed:
+        # A path variable reaches the handler as text whatever is declared for it.
+        raise PluginRefused(f"{where} documents path variable {', '.join(typed)}; a path "
+                            f"variable is always a {PATH_TYPE}")
     # A query parameter by one of these names is already refused below. A path variable by
     # one of them was not, and for a public endpoint nothing else catches it: the handler is
     # handed the path's value where it expects the caller, and answers 500 on its first call.
@@ -566,7 +676,8 @@ def build_models(manifest: Manifest) -> dict:
             else:
                 spec[field] = (kind, Field(**constraints))
         try:
-            models[name] = create_model(f"{manifest.plugin.title()}{name.title()}", **spec)
+            models[name] = create_model(f"{manifest.plugin.title()}{name.title()}",
+                                        __base__=RequestBody, **spec)
         except Exception as error:
             raise PluginRefused(f"schema {name} does not build: {error}") from None
     return models

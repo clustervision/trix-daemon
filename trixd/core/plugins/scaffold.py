@@ -32,10 +32,10 @@ __status__      = "Production"
 import os
 import re
 
-from trixd.common.constants import RESERVED_PLUGINS
+from trixd.common.constants import PLUGIN_NAME_PATTERN, RESERVED_PLUGINS
 from trixd.common.errors import BadRequest, Conflict
 
-NAME_RULE = re.compile(r"^[a-z][a-z0-9-]*$")
+NAME_RULE = re.compile(PLUGIN_NAME_PATTERN)
 
 MANIFEST: str = '''plugin: {name}
 backend: backend

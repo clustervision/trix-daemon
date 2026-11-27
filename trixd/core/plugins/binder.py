@@ -42,7 +42,8 @@ from trixd.common import logging as trixlog
 from trixd.common.constants import API_PREFIX
 from trixd.common.errors import Forbidden, PluginRefused, Unauthenticated
 from trixd.core import tasks
-from trixd.core.plugins.manifest import BODY_VERBS, QUERY_TYPES, Endpoint, Manifest
+from trixd.core.plugins.manifest import (BODY_VERBS, QUERY_TYPES, Endpoint, Manifest,
+                                         undeclared)
 from trixd.core.replication import outbox
 from trixd.core.security.gate import Caller, admit, guard, stamp
 
@@ -92,6 +93,25 @@ def signature_problems(handler, endpoint: Endpoint, supplied: tuple = SUPPLIED) 
     return problems
 
 
+def replication_problems(handler, endpoint: Endpoint) -> list:
+    """
+    What the other controller could not give this handler when it applies the call: it
+    hands over the path variables, and the body where a schema declares one, and has
+    neither the caller nor the request. Each would be a 500 there on every delivery.
+    """
+    try:
+        accepted = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return []
+    return [f"{endpoint.handler} needs {name}, which the other controller does not hand "
+            f"over when it applies a replicated call"
+            for name in SUPPLIED
+            if name in accepted and accepted[name].default is inspect.Parameter.empty
+            and accepted[name].kind not in (inspect.Parameter.VAR_POSITIONAL,
+                                            inspect.Parameter.VAR_KEYWORD)
+            and not (name == "body" and endpoint.body_schema)]
+
+
 def endpoint_problems(manifest: Manifest, backend, endpoint: Endpoint) -> list:
     """
     What one endpoint could not be bound to: a handler the backend does not have, or a
@@ -115,7 +135,10 @@ def endpoint_problems(manifest: Manifest, backend, endpoint: Endpoint) -> list:
             return [f"{where}: {endpoint.handler} does not take the websocket"]
         return [f"{where}: {problem}"
                 for problem in signature_problems(handler, endpoint, supplied=SOCKET_SUPPLIED)]
-    return [f"{where}: {problem}" for problem in signature_problems(handler, endpoint)]
+    problems = signature_problems(handler, endpoint)
+    if endpoint.replicate:
+        problems += replication_problems(handler, endpoint)
+    return [f"{where}: {problem}" for problem in problems]
 
 
 def _call(handler, supplied: dict):
@@ -128,7 +151,7 @@ def _call(handler, supplied: dict):
     return handler(**{key: value for key, value in supplied.items() if key in accepted})
 
 
-def _arguments(kwargs: dict) -> dict:
+def _arguments(kwargs: dict, route: str = "") -> dict:
     """
     What the backend is handed: path variables, the body as a dict, the caller, and the
     request itself for a handler that asks for it.
@@ -136,9 +159,15 @@ def _arguments(kwargs: dict) -> dict:
     A verb that carries no body hands one anyway, as None: that is how a handler serving
     both a read and a write tells them apart, and leaving it out answered 500 on the read
     for a handler that declares `body` without a default.
+
+    `route` is only for saying which one was sent a field its schema does not declare.
     """
     caller = kwargs.pop("caller", None)
     body = kwargs.pop("body", None)
+    extra = undeclared(body)
+    if extra:
+        LOGGER.warning("%s was sent %s, which its schema does not declare, so the handler "
+                       "is not handed it", route, extra)
     supplied = dict(kwargs)
     supplied["body"] = body.model_dump() if isinstance(body, BaseModel) else body
     supplied["caller"] = caller
@@ -217,12 +246,13 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
     """
     Build a path operation whose signature FastAPI can introspect.
     """
+    route = f"{verb} {plugin} {endpoint.path}"
     if inspect.iscoroutinefunction(handler):
         async def operation(**kwargs):
             """
             The path operation FastAPI awaits, for a handler that is itself async.
             """
-            supplied = _arguments(kwargs)
+            supplied = _arguments(kwargs, route)
             answer = await _call(handler, supplied)
             if endpoint.replicate:
                 return _replicated(endpoint, plugin, verb, supplied, answer)
@@ -232,7 +262,7 @@ def _endpoint_function(handler, endpoint: Endpoint, body_model, plugin: str = ""
             """
             The path operation FastAPI calls, which hands the backend its arguments.
             """
-            supplied = _arguments(kwargs)
+            supplied = _arguments(kwargs, route)
             answer = _call(handler, supplied)
             if endpoint.replicate:
                 return _replicated(endpoint, plugin, verb, supplied, answer)

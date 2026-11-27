@@ -85,10 +85,10 @@ list of the same entries a manifest has (and optionally `name`, `schemas` and
 
 | Field | Meaning | Required |
 |---|---|---|
-| `plugin` | the name, which must match the directory | yes |
+| `plugin` | the name, which must match the directory. Lower case, digits and dashes, starting with a letter: any other name still loads, with a warning in the log, because the published schema and an editor reading it do not accept it | yes |
 | `backend` | the module holding the `Backend` class, default `backend` | no |
 | `description` | one or two lines, for whoever reads the manifest | no |
-| `schemas` | request bodies, each a set of fields with a type, built once at load; a field may carry a `description` and an `example`, which the docs page shows | no |
+| `schemas` | request bodies, each a set of at least one field, built once at load. A field's rule may carry `type` (`string`, `integer`, `number`, `boolean`, `date`, `object`, `array`; default `string`), `items` for what an array holds, `optional`, `pattern`, and a `description` and an `example`, which the docs page shows; any other key or type is refused | no |
 | `endpoints` | what to serve | yes |
 | `hooks` | changes published elsewhere that the plugin acts on | no |
 
@@ -96,11 +96,11 @@ Each endpoint:
 
 | Field | Meaning | Required |
 |---|---|---|
-| `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable | yes |
+| `path` | under `/api/v1/<plugin>/`, with `<name>` for a variable; never `{name}`, which is refused | yes |
 | `methods` | any of `GET`, `POST`, `PATCH`, `DELETE` | no, default `[GET]` |
-| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, and only, on a user-token route; `public`, `forward` and `token: node` check no role and are refused with one |
+| `minimum` | the lowest role admitted: `none`, `reader`, `operator`, `manager`, or `rootus` for the ini account only | yes, and only, on a user-token route; `public`, `forward` and `token: node` check no role and are refused with one. A render with no `serve` answers no route and may leave it out |
 | `handler` | the method on the backend that answers | yes, unless `render` |
-| `schema` | a name from `schemas`; the body is validated against it before the handler runs | no; only POST and PATCH carry a body |
+| `schema` | a name from `schemas`; the body is validated against it before the handler runs. A field the schema does not declare is not handed to the handler, and the log names it, by name only, in a warning | no; only POST and PATCH carry a body |
 | `token` | `user`, or `node` to accept only that node's own token, which the path has to carry as `node`, `name` or `hostname` for the gate to bind it to | no |
 | `public` | no token at all | no |
 | `render` | a derived output; see "Renders" | no |
@@ -109,10 +109,10 @@ Each endpoint:
 | `websocket` | a WebSocket, opened by a `GET`; see "A WebSocket endpoint" | no |
 | `summary` | one line for the published document | no |
 | `description` | Markdown for `/api/v1/docs`: what the route does, what to send, what comes back | no, but see below |
-| `params` | each path variable: `description` and `example` | no |
+| `params` | each path variable: `description` and `example`. A path variable is always a string, so a `type` other than `string` is refused | no |
 | `query` | each query parameter the handler reads: `type` (`string`, `integer`, `boolean`), `description`, `example` | no |
 | `request_example` | an example body | no |
-| `response` | what a success answers: `description`, `example`, and `media_type` when it is not JSON | no |
+| `response` | what a success answers: `description`, `example`, and `media_type` when it is not JSON. `media_type` labels the documented example only; it does not change what the route sends | no |
 | `errors` | status: when this route's own work answers it, such as `404` or `502`; 401 and 403 are added for you | no |
 
 ### backend.py
@@ -193,10 +193,16 @@ reload endpoint answers 409 with the reason.
 |---|---|
 | the plugin is named `luna` | refused; that name is the pass-through to Luna |
 | the manifest calls itself something other than its directory | refused |
-| a user endpoint declares no minimum role, or one not on the ladder | refused |
+| a user endpoint declares no minimum role, or one not on the ladder | refused; only a render with no `serve` may leave it out |
+| a path carries `{` or `}` | refused; a variable is written `<name>` |
 | an endpoint names a handler the backend does not have | refused |
 | a schema does not parse, or a verb is not one of the four | refused |
+| a schema declares no fields | refused; every body would be accepted and reach the handler empty |
+| a schema field has a `type` or `items` that is not one of the seven, or a key that is not a rule's | refused; the first was checked as a string and the second dropped, both in silence |
+| a `params` entry declares a `type` other than `string` | refused; a path variable reaches the handler as text |
 | a render names no producer on the backend, or a `coalesce` that is not a duration | refused |
+| a render's producer is `async def`, or cannot be called with no arguments | refused; the engine calls it with none and never awaits it |
+| a render's `serve` is anything but `json` | refused; whatever it named would be served as JSON |
 | a render declares no `inputs`, or one with an empty segment such as `luna.` | refused; nothing would wake it |
 | a render also declares a `schema`, or a verb other than `GET` and `HEAD` | refused; the reader is handed neither |
 | a render declares a path variable or a query parameter | refused; the reader takes no arguments, so one document would answer for every value |
@@ -208,6 +214,7 @@ reload endpoint answers 409 with the reason.
 | a `replicate` endpoint only reads, or is also a render, `forward: true` or `public: true` | refused; a read has nothing to carry, and the other three are already carried or must not be |
 | a `replicate` endpoint serves a read alongside its write | refused; replication is applied per verb, so the read would write an outbox row on every call |
 | a `replicate` endpoint declares a `query` parameter | refused; it would be written down as naming what the call is for, so two calls for one node would not be kept in order |
+| a `replicate` handler needs `caller` or `request`, or needs `body` on a route with no `schema` | refused; the other controller hands over the path variables and a declared body only, so give the argument a default |
 | a `hooks` entry is not named `<source>.<object>.<event>`, or names a missing handler | refused |
 | an endpoint handler takes a positional-only argument the route could not fill | refused; everything is handed over by keyword |
 | a hook handler takes a positional-only argument the payload could not fill | refused |

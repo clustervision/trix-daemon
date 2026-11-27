@@ -45,7 +45,7 @@ from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused, ServiceUnavailable
 from trixd.core import hooks, serving, tasks
-from trixd.core.plugins import loader
+from trixd.core.plugins import loader, manifest as manifests
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import applied, outbox, tables
 from trixd.core.replication.sweep import current as sweep
@@ -570,10 +570,17 @@ def replication_apply(body: Action = Body(openapi_examples=docs.example(
             # on left the handler a string where it expected a number, and a missing key
             # where the route it was written against guarantees one - which is the 500 this
             # check exists to stop.
-            checked = model(**(body.body or {})).model_dump()
+            taken = model(**(body.body or {}))
+            checked = taken.model_dump()
         except ValidationError as error:
             raise BadRequest(f"{body.plugin} {body.method} {body.path} does not accept the "
                              f"body {body.origin} sent: {error}") from error
+        extra = manifests.undeclared(taken)
+        if extra:
+            # Said, not refused: a peer a release ahead sends what this build drops.
+            LOGGER.warning("%s %s %s was sent %s by %s, which its schema does not declare, "
+                           "so the handler is not handed it", body.method, body.plugin,
+                           body.path, extra, body.origin)
 
     # No user token reaches a node endpoint, not even rootus; this route does, because
     # applying for the node is the whole job. The peer and a person share the account, so
