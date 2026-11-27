@@ -21,6 +21,13 @@ include:
   - project: 'ClusterVision/gitlab-cicd-pipelines'
     file: '/pip-package-pipeline.yml'
     ref: 'main'
+    inputs:
+      RPM_REPO: "trixd"
+      RPM_SUMMARY: "TrinityX control-plane daemon"
+      # Where the stack and its users have always found the daemon.
+      RPM_LINKS: "/trinity/local/trixd/daemon=trixd"
+      RPM_SERVICE: "trixd"
+      RPM_CHECK: "/trinity/local/python/bin/python3 -c 'import trixd.server'"
 
 # Tests run beside the build; nothing is published unless every one passes.
 unit-and-e2e:
@@ -51,3 +58,7 @@ platform-el10:
 
 publish-job:
   needs: ["build-job", "unit-and-e2e", "platform-el8", "platform-el9", "platform-el10"]
+
+# The package waits for the same tests as the wheel; a local needs replaces the pipeline's own.
+rpm-publish-job:
+  needs: ["rpm-job", "rpm-check", "unit-and-e2e", "platform-el8", "platform-el9", "platform-el10"]
