@@ -284,7 +284,7 @@ def test_the_scaffold_refuses_a_reserved_or_bad_name(rig):
             scaffold.new(reserved, settings().plugins.directory)
     for shipped in ("luna", "prometheus"):
         with pytest.raises(Conflict, match="shipped plugin"):
-            scaffold.new(shipped, str(settings().plugins.site_directory),
+            scaffold.new(shipped, str(settings().plugins.custom_directory),
                          settings().plugins.directory)
     with pytest.raises(BadRequest):
         scaffold.new("Not A Name", settings().plugins.directory)
@@ -1664,17 +1664,17 @@ def prometheus_module_file() -> str:
     return prometheus.__file__
 
 
-def test_a_site_plugin_lives_outside_the_package_and_loads(rig, client, headers):
+def test_a_custom_plugin_lives_outside_the_package_and_loads(rig, client, headers):
     """
-    A plugin in SITE_DIRECTORY loads beside the shipped ones, and an upgrade, which only
+    A plugin in CUSTOM_DIRECTORY loads beside the shipped ones, and an upgrade, which only
     replaces the package, never touches it.
     """
     from trixd.common.settings import current as settings
     from trixd.core.plugins import loader, scaffold
 
-    site = settings().plugins.site_directory
-    scaffold.new("hello", site)
-    assert loader.discover()["hello"].startswith(site)
+    custom = settings().plugins.custom_directory
+    scaffold.new("hello", custom)
+    assert loader.discover()["hello"].startswith(custom)
     assert loader.load(rig, "hello").state == "loaded"
     assert client.get(f"{API_PREFIX}/hello", headers=headers).status_code == 200
 
@@ -2349,20 +2349,20 @@ def test_a_swap_and_an_unload_each_tell_the_dropped_backend_once(rig, tmp_path):
     assert registry().get("talker").backend is None, "a failing close stopped the unload"
 
 
-def test_a_site_plugin_cannot_take_a_shipped_name(rig):
+def test_a_custom_plugin_cannot_take_a_shipped_name(rig):
     """
-    A site copy of services would replace shipped code unseen, so the shipped one wins.
+    A custom copy of services would replace shipped code unseen, so the shipped one wins.
     """
     from trixd.common.settings import current as settings
     from trixd.core.plugins import loader, scaffold
 
-    site = settings().plugins.site_directory
-    os.makedirs(site, exist_ok=True)
-    scaffold.new("services", site)
-    assert not loader.discover()["services"].startswith(site)
+    custom = settings().plugins.custom_directory
+    os.makedirs(custom, exist_ok=True)
+    scaffold.new("services", custom)
+    assert not loader.discover()["services"].startswith(custom)
 
 
-def test_the_scaffold_command_writes_into_the_site_directory(rig, tmp_path, capsys):
+def test_the_scaffold_command_writes_into_the_custom_directory(rig, tmp_path, capsys):
     """
     What `trixd.server plugin new` writes has to survive the next upgrade.
     """
@@ -2371,7 +2371,7 @@ def test_the_scaffold_command_writes_into_the_site_directory(rig, tmp_path, caps
 
     config = settings().config_file
     assert server.main(["--config", config, "plugin", "new", "kept"]) == 0
-    assert os.path.isfile(os.path.join(settings().plugins.site_directory, "kept",
+    assert os.path.isfile(os.path.join(settings().plugins.custom_directory, "kept",
                                        "manifest.yaml"))
     assert "[PLUGINS] ENABLED" in capsys.readouterr().out
 

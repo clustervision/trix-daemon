@@ -244,7 +244,7 @@ def test_every_user_endpoint_declares_a_minimum_role():
 def test_every_hook_a_shipped_plugin_wants_is_published_by_one():
     """
     The daemon holds no list of which events exist, so a plugin may subscribe to one
-    nobody publishes and simply never run. That is right for a site's own plugin and
+    nobody publishes and simply never run. That is right for a custom plugin and
     wrong for a shipped one, where it would be a typo nothing reports. Read from every
     manifest and every publisher, so a new plugin on either side is covered.
     """
@@ -317,17 +317,17 @@ def test_a_plugin_route_on_a_daemon_path_is_refused(rig, tmp_path, monkeypatch):
     """
     Defence in depth: even without the reserved list, a route the daemon serves is taken.
     """
-    site = tmp_path / "site-plugins" / "system"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "system"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def health(self):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: system\nbackend: backend\nendpoints:\n  - path: health\n"
         "    methods: [GET]\n    minimum: none\n    handler: health\n", encoding="utf-8")
     monkeypatch.setattr(loader, "RESERVED_PLUGINS", ())
     with pytest.raises(PluginRefused, match="already served by the daemon itself"):
-        loader.load(rig, "system", str(site))
+        loader.load(rig, "system", str(custom))
 
 
 def test_a_manifest_without_a_minimum_role_is_refused():
@@ -2533,16 +2533,16 @@ def test_a_handler_that_cannot_take_its_path_variable_is_refused_at_load(rig, tm
     """
     Refused when it is plugged in, with the reason, rather than a 500 at the first call.
     """
-    site = tmp_path / "site-plugins" / "mismatch"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "mismatch"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def show(self, name):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: mismatch\nbackend: backend\nendpoints:\n  - path: item/<node>\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
     with pytest.raises(PluginRefused, match="does not take the path variable node"):
-        loader.load(rig, "mismatch", str(site))
+        loader.load(rig, "mismatch", str(custom))
 
 
 def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig, tmp_path):
@@ -2553,10 +2553,10 @@ def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig,
     """
     from trixd.core.plugins.check import check
 
-    site = tmp_path / "site-plugins" / "strict"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    custom = tmp_path / "custom-plugins" / "strict"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "manifest.yaml").write_text(
         "plugin: strict\nbackend: backend\nendpoints:\n  - path: item/<name>\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
 
@@ -2564,21 +2564,21 @@ def test_a_handler_that_will_only_take_its_variable_positionally_is_refused(rig,
         """
         A backend whose handler takes its path variable exactly this way.
         """
-        (site / "backend.py").write_text(
+        (custom / "backend.py").write_text(
             f"class Backend:\n    def show(self, {signature}):\n        return {{}}\n",
             encoding="utf-8")
 
     backend("name, /")
-    assert [problem for problem in check(str(site)) if "positionally" in problem], \
-        f"the check passed a handler the route cannot call: {check(str(site))}"
+    assert [problem for problem in check(str(custom)) if "positionally" in problem], \
+        f"the check passed a handler the route cannot call: {check(str(custom))}"
     with pytest.raises(PluginRefused, match="positionally"):
-        loader.load(rig, "strict", str(site))
+        loader.load(rig, "strict", str(custom))
 
     # Not a blanket refusal. The same variable taken by keyword loads, and so does the
     # extra parameter with a default that lets one handler serve an in-process caller too.
     backend('name, was=""')
-    assert check(str(site)) == [], "a handler the route can call has to pass the check"
-    assert loader.load(rig, "strict", str(site)).state == "loaded"
+    assert check(str(custom)) == [], "a handler the route can call has to pass the check"
+    assert loader.load(rig, "strict", str(custom)).state == "loaded"
     loader.unload(rig, "strict")
 
 
@@ -2590,17 +2590,17 @@ def test_a_handler_serving_a_read_and_a_write_is_handed_a_body_on_both(rig, clie
     None, so a handler declaring `body` without a default answered 500 on the read while
     the write answered 200 - and the signature check calls `body` supplied either way.
     """
-    site = tmp_path / "site-plugins" / "both"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "both"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def setting(self, body):\n        return {'body': body}\n",
         encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: both\nbackend: backend\nschemas:\n  value:\n    held: {type: string}\n"
         "endpoints:\n  - path: setting\n    methods: [GET, PATCH]\n    minimum: manager\n"
         "    handler: setting\n    schema: value\n", encoding="utf-8")
-    assert loader.load(rig, "both", str(site)).state == "loaded"
+    assert loader.load(rig, "both", str(custom)).state == "loaded"
     try:
         read = client.get(f"{API_PREFIX}/both/setting", headers=headers)
         assert read.status_code == 200, read.text
@@ -2931,6 +2931,137 @@ def test_a_refused_body_leaves_no_audit_row_to_grow(rig, client, monkeypatch):
     assert len(widest.object) == columns["object"].type.length, len(widest.object)
 
 
+def test_an_answer_given_before_the_body_was_read_waits_for_that_body(rig, monkeypatch):
+    """
+    A route that takes no body, or a refusal made before one is read, answers while the
+    request body is still on its way, and the server closes a connection whose request it
+    has not read to the end without saying so. So what the application left unread is read
+    before the last response message goes out: all of it, or as far as the ceiling.
+    """
+    import asyncio
+
+    from trixd.api.limits import BodyLimit
+    from trixd.common.settings import current as settings
+
+    async def answers_unread(scope, receive, send) -> None:
+        """
+        An application that never asks for the body.
+        """
+        await send({"type": "http.response.start", "status": 401, "headers": []})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    def exchange(chunks: int, headers: list) -> list:
+        """
+        What happened, in order: a read per body message taken, the type per message sent.
+        """
+        order = []
+        left = [b"z" * 512] * chunks
+
+        async def receive() -> dict:
+            """
+            The next 512 bytes, then a caller with nothing more to say.
+            """
+            order.append("read")
+            if not left:
+                return {"type": "http.disconnect"}
+            return {"type": "http.request", "body": left.pop(), "more_body": bool(left)}
+
+        async def send(message) -> None:
+            """
+            Remembered, not sent.
+            """
+            order.append(message["type"])
+
+        scope = {"type": "http", "method": "POST", "path": "/", "headers": headers}
+        asyncio.run(BodyLimit(answers_unread)(scope, receive, send))
+        return order
+
+    monkeypatch.setattr(settings().api, "max_body", 2048)
+    order = exchange(3, [(b"content-length", b"1536")])
+    assert order == ["http.response.start", "read", "read", "read", "http.response.body"], (
+        f"the answer was completed with the body unread: {order}")
+
+    # A body that declares no length is read as far as the ceiling and the answer still
+    # goes out: an unread body must not become a way to make the daemon read without end.
+    order = exchange(8, [])
+    assert order.count("read") == 5 and order[-1] == "http.response.body", order
+
+    monkeypatch.setattr(settings().api, "max_body", 0)
+    order = exchange(8, [])
+    assert order.count("read") == 8 and order[-1] == "http.response.body", order
+
+
+def test_a_connection_survives_an_answer_given_before_its_body_arrived(rig):
+    """
+    The same through the real server and a socket, because the close is the server's and
+    only the server can show it gone: the headers, the start of the answer, the body late,
+    and then a second request on the same connection, which has to be answered.
+    """
+    import asyncio
+    import socket
+
+    from hypercorn.asyncio import serve
+    from hypercorn.config import Config
+
+    from trixd.api.limits import BodyLimit
+
+    async def answers_unread(scope, receive, send) -> None:
+        """
+        An application that never asks for the body.
+        """
+        if scope["type"] != "http":
+            return
+        await send({"type": "http.response.start", "status": 401,
+                    "headers": [(b"content-length", b"2")]})
+        await send({"type": "http.response.body", "body": b"{}"})
+
+    async def two_requests(port: int) -> tuple:
+        """
+        What came back for each, with a connection the server dropped read as no answer.
+        """
+        reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        first = second = b""
+        try:
+            writer.write(b"POST / HTTP/1.1\r\nHost: trixd\r\nContent-Length: 2\r\n\r\n")
+            first = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), 10)
+            writer.write(b"{}")
+            await asyncio.wait_for(reader.readexactly(2), 10)
+            writer.write(b"GET / HTTP/1.1\r\nHost: trixd\r\n\r\n")
+            second = await asyncio.wait_for(reader.read(1024), 10)
+        except (ConnectionError, asyncio.IncompleteReadError):
+            pass
+        finally:
+            writer.close()
+        return first, second
+
+    async def served() -> tuple:
+        """
+        The server on a socket of its own for as long as the two requests take.
+        """
+        listening = socket.socket()
+        listening.bind(("127.0.0.1", 0))
+        listening.listen()
+        port = listening.getsockname()[1]
+        config = Config()
+        # Handed over: the server closes the socket it serves from.
+        config.bind = [f"fd://{listening.detach()}"]
+        config.accesslog = config.errorlog = None
+        stop = asyncio.Event()
+        server = asyncio.ensure_future(
+            serve(BodyLimit(answers_unread), config, shutdown_trigger=stop.wait))
+        try:
+            return await two_requests(port)
+        finally:
+            stop.set()
+            await server
+
+    first, second = asyncio.run(served())
+    assert first.startswith(b"HTTP/1.1 401"), first
+    assert second.startswith(b"HTTP/1.1 401"), (
+        f"the connection was closed under the caller after an answer that did not say it "
+        f"would be: the second request got {second!r}")
+
+
 def test_one_failed_task_does_not_end_the_task_worker(rig, monkeypatch):
     """
     One worker, nothing starts a second, and the loop had nothing to catch an exception. So
@@ -3089,8 +3220,10 @@ def test_a_session_that_cannot_be_taken_is_said_rather_than_raised(rig, monkeypa
     # test_a_pass_that_cannot_run_is_said_once_and_the_next_one_still_runs.
     # trixd-hw-rules: each peer is compared inside a guard of its own, pinned by
     # test_a_dark_peer_costs_one_call_a_pass_and_is_said_once.
+    # trixd-watch: its look is guarded in the loop, pinned by
+    # test_a_look_that_fails_is_said_once_and_the_next_one_still_runs.
     assert workers == {"trixd-tasks", "trixd-audit", "trixd-sweep", "trixd-hashes",
-                       "trixd-osimage", "trixd-hw-rules"}, \
+                       "trixd-osimage", "trixd-hw-rules", "trixd-watch"}, \
         (f"the set of long-lived threads changed: {sorted(workers)}. Each runs with nothing "
          f"to restart it, so decide whether the new one's loop survives a failure, then "
          f"update this set")
@@ -3323,22 +3456,22 @@ def test_a_directory_cannot_take_a_reserved_prefix_through_its_manifest(rig, tmp
     manifest, so the two have to be made to agree: a plugin directory under any name at
     all would otherwise serve /api/v1/system by saying so in its manifest.
     """
-    site = tmp_path / "site-plugins" / "impostor"
-    site.mkdir(parents=True)
-    (site / "__init__.py").write_text("", encoding="utf-8")
-    (site / "backend.py").write_text(
+    custom = tmp_path / "custom-plugins" / "impostor"
+    custom.mkdir(parents=True)
+    (custom / "__init__.py").write_text("", encoding="utf-8")
+    (custom / "backend.py").write_text(
         "class Backend:\n    def show(self):\n        return {}\n", encoding="utf-8")
-    (site / "manifest.yaml").write_text(
+    (custom / "manifest.yaml").write_text(
         "plugin: system\nbackend: backend\nendpoints:\n  - path: shadow\n"
         "    methods: [GET]\n    minimum: reader\n    handler: show\n", encoding="utf-8")
 
     # The route table first, so the proof is the prefix and not only the wording.
     with contextlib.suppress(PluginRefused):
-        loader.load(rig, "impostor", str(site))
+        loader.load(rig, "impostor", str(custom))
     assert not _serves(rig, f"{API_PREFIX}/system/shadow"), \
         "a plugin built a route under the prefix the daemon reserves for itself"
     with pytest.raises(PluginRefused, match="calls itself system but sits at impostor"):
-        loader.load(rig, "impostor", str(site))
+        loader.load(rig, "impostor", str(custom))
 
 
 def test_a_manifest_cannot_take_a_service_token():

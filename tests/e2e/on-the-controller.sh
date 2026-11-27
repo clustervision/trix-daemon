@@ -69,7 +69,7 @@ echo "=== 4. the layout, as Luna's: only the daemon link ==="
 # Without this, a missing directory is an ls on stderr and an empty count, so the check
 # below reads "nothing beside daemon" off an installation that is not there at all.
 check "the install directory is there" "$([ -d /trinity/local/trixd ] && echo yes || echo no)" yes
-check "nothing beside daemon but a site's plugins" "$(ls /trinity/local/trixd 2>/dev/null | grep -vxE 'daemon|plugins' | wc -l)" 0
+check "nothing beside daemon but the custom plugins" "$(ls /trinity/local/trixd 2>/dev/null | grep -vxE 'daemon|custom_plugins' | wc -l)" 0
 check "daemon links into the shared python" "$(readlink /trinity/local/trixd/daemon | grep -c '^/trinity/local/python/')" 1
 
 echo "=== 4b. plugins ==="

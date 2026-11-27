@@ -10269,7 +10269,7 @@
     },
     "/api/v1/system/plugins/{name}/reload": {
       "post": {
-        "description": "Reads the plugin from disk again and swaps its routes in, with no restart: a request already running finishes on the old code, the next one sees the new. It also plugs in a plugin that is not loaded yet, such as a site's new one. When the plugin is refused, nothing changes and the answer is 409 with the reason.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
+        "description": "Reads the plugin from disk again and swaps its routes in, with no restart: a request already running finishes on the old code, the next one sees the new. It also plugs in a plugin that is not loaded yet, such as a new custom one. When the plugin is refused, nothing changes and the answer is 409 with the reason.\n\n**Access:** rootus only: the account trixd.ini names, and the other controller of a pair",
         "operationId": "reload_plugin_api_v1_system_plugins__name__reload_post",
         "parameters": [
           {

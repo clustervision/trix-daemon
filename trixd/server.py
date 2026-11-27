@@ -194,7 +194,7 @@ def keygen(config_file: str = "") -> int:
 
 def plugin_new(name: str, config_file: str = "") -> int:
     """
-    Write a plugin that loads, into the site's own plugins directory.
+    Write a plugin that loads, into the custom plugins directory.
     """
     from trixd.core.plugins import scaffold
 
@@ -202,7 +202,7 @@ def plugin_new(name: str, config_file: str = "") -> int:
     trixlog.setup(config.logger.level, "")
     trixlog.report(config.warnings)
     try:
-        written = scaffold.new(name, config.plugins.site_directory, config.plugins.directory)
+        written = scaffold.new(name, config.plugins.custom_directory, config.plugins.directory)
     except Exception as error:
         print(getattr(error, "message", str(error)))
         return 1

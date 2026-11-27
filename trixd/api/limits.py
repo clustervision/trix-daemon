@@ -58,6 +58,9 @@ class BodyLimit:
 
     The limit is read per request, as the gate reads its own settings, so changing it in
     the ini applies to the next request rather than the next restart. Zero means no ceiling.
+
+    A body the application answered without reading is read to its end, or to the ceiling,
+    before that answer completes, so the connection it came on stays usable.
     """
 
     def __init__(self, app) -> None:
@@ -74,8 +77,9 @@ class BodyLimit:
             await self.app(scope, receive, send)
             return
         maximum = settings().api.max_body
+        receive, drained = _drained(receive, send, maximum)
         if maximum <= 0:
-            await self.app(scope, receive, send)
+            await self.app(scope, receive, drained)
             return
         declared = _declared(scope)
         if declared is not None and declared > maximum:
@@ -93,7 +97,37 @@ class BodyLimit:
         # and that exception leaves this middleware before any response is sent.
         scope[SCOPE_STATE] = state
         await self.app(scope, _counted(receive, maximum, scope, state),
-                       _guarded(send, maximum, state))
+                       _guarded(drained, maximum, state))
+
+
+def _drained(receive, send, maximum: int):
+    """
+    The same pair, with what is left of the request body read before the answer completes.
+    """
+    state = {"left": True, "seen": 0}
+
+    async def reading():
+        """
+        One ASGI message, noting how much of the body has come and whether more follows.
+        """
+        message = await receive()
+        state["seen"] += len(message.get("body") or b"")
+        state["left"] = message.get("type") == "http.request" and message.get("more_body", False)
+        return message
+
+    async def sending(message) -> None:
+        """
+        One response message, the last of them held until the body is in or past the ceiling.
+        """
+        if message.get("type") == "http.response.body" and not message.get("more_body", False):
+            # The server closes a connection whose request it has not read to the end, and
+            # does not say so: the caller's next request on it is lost. An answer given
+            # before the body arrived - a refusal, a route that takes none - is that case.
+            while state["left"] and not 0 < maximum < state["seen"]:
+                await reading()
+        await send(message)
+
+    return reading, sending
 
 
 def _declared(scope) -> int:

@@ -68,12 +68,14 @@ lowest role it admits.
 
 - **Reload without a restart.** `POST /api/v1/system/plugins/<name>/reload`, or
   `systemctl reload trixd` for all of them, loads plugins from disk while the daemon runs.
-- **A site's plugins survive an upgrade.** They live in `[PLUGINS] SITE_DIRECTORY`, which
+  With `[PLUGINS] AUTO_RELOAD = yes` a custom plugin is loaded again by itself a few
+  seconds after its files change; it is off by default.
+- **Custom plugins survive an upgrade.** They live in `[PLUGINS] CUSTOM_DIRECTORY`, which
   an upgrade leaves alone.
 - **A broken plugin is contained.** One that cannot load is refused, with the reason in
   the log, and the daemon and the other plugins carry on.
 - **The core knows no plugin.** Nothing in the daemon's core imports a plugin, and a test
-  enforces it, so a site's plugin has the same interface as a shipped one.
+  enforces it, so a custom plugin has the same interface as a shipped one.
 - **Start from one that works.** `python -m trixd.server plugin new <name> --config <path>`
   writes a plugin that loads as it stands; `plugin check <name>` says why one will not.
   The guide is [docs/writing-a-plugin.md](docs/writing-a-plugin.md).
@@ -210,7 +212,7 @@ CHAIN = local
 
 [PLUGINS]
 DIRECTORY = trixd/plugins
-SITE_DIRECTORY = dev/plugins
+CUSTOM_DIRECTORY = dev/plugins
 ENABLED = services, genders
 ```
 
@@ -266,7 +268,7 @@ only `daemon`, a link into the shared Python, as `/trinity/local/luna` does, and
 configuration and the database (`daemon/var/trixd.db`) live inside it. Unlike `luna.ini`,
 `trixd.ini` is never in the wheel: the wheel ships `trixd.ini.sample`, which explains each
 key, so pip writes only the sample and an upgrade leaves the site's `trixd.ini` and its
-database as they were. A `plugins` folder appears beside `daemon` only when a site writes
+database as they were. A `custom_plugins` folder appears beside `daemon` only when a site writes
 a plugin of its own. Unlike Luna's tree there is no `utils`: no tool reads a `trixd.ini`
 from there. A missing file, an unknown algorithm or an unreadable duration stops the daemon with
 the key named. Durations take `s`, `m`, `h` or `d`; a bare number is seconds,
@@ -289,11 +291,17 @@ principal that holds `rootus`: without it the slurm and replication routes answe
 to every caller.
 
 Plugins load from two places: `[PLUGINS] DIRECTORY`, the shipped ones inside the
-package, and `SITE_DIRECTORY` (`/trinity/local/trixd/plugins`), a site's own, which an
+package, and `CUSTOM_DIRECTORY` (`/trinity/local/trixd/custom_plugins`), the custom ones, which an
 upgrade leaves alone and which cannot take a shipped plugin's name. A restart loads only
 what `ENABLED` lists, by default all six. An `ENABLED` that names nothing at all is the
 exception: it loads every plugin found rather than none, which is what an installed site
 already runs on, so the count it enabled is logged at startup.
+
+`[PLUGINS] AUTO_RELOAD = yes` watches `CUSTOM_DIRECTORY`, and only that one, and loads a
+plugin again once its `.py` and `.yaml` files have changed and stood still for a few
+seconds. A plugin that is serving is reloaded; a new one is plugged in only where a
+restart would load it; one that was unplugged stays unplugged. A plugin that does not
+load is refused once, with the reason in the log, and what was serving keeps serving.
 
 Clients get a `trixd.ini` of their own beside the `luna.ini` the installer writes for
 the alertx CLI, the On Demand apps and the node image. The Luna CLI and the luna2
@@ -393,7 +401,7 @@ The example and the capabilities are at the top of this page; the guide,
 [docs/writing-a-plugin.md](docs/writing-a-plugin.md), has the rest.
 
 `python -m trixd.server plugin new hello --config <path>` writes a working one into
-`SITE_DIRECTORY`, and rootus plugs it in without a restart; add it to `ENABLED` so a
+`CUSTOM_DIRECTORY`, and rootus plugs it in without a restart; add it to `ENABLED` so a
 restart keeps it:
 
 ```
@@ -505,7 +513,7 @@ python -m pytest
 | Kind | Where | What it covers |
 |---|---|---|
 | API and RBAC | `tests/unit/test_daemon.py` | tokens both ways with Luna, roles on every route, the audit trail, the task queue, the pass-through |
-| Plugins | `tests/unit/test_plugins.py` | each shipped plugin's handlers and renders, the scaffold, site plugins |
+| Plugins | `tests/unit/test_plugins.py` | each shipped plugin's handlers and renders, the scaffold, custom plugins |
 | slurm | `tests/unit/test_slurm_changes.py`, `test_slurm_ops.py`, `test_slurm_reconfigure.py` | the change routes as a person, the helper on slurm's own files, and what is put back when slurm refuses a reconfigure |
 | Replication | `tests/unit/test_replication.py` | table hashes, the merge, deletions, two controllers converging |
 | Integrations | `tests/unit/test_integrations.py` | Luna, the peer, PAM, LDAP, obol, the slurm and genders generators, each stood in for at its edge; the role gate on its own |

@@ -65,7 +65,7 @@ def openapi_document() -> dict:
                  "[DATABASE]", "URL = sqlite:///" + os.path.join(scratch, "trixd.db").replace(os.sep, "/"),
                  "[TRIGGERS]", "LUNA_HASHES = 0s",
                  "[PLUGINS]", "DIRECTORY = " + os.path.join(ROOT, "trixd", "plugins"),
-                 "SITE_DIRECTORY = " + os.path.join(scratch, "site"), "ENABLED ="]
+                 "CUSTOM_DIRECTORY = " + os.path.join(scratch, "custom"), "ENABLED ="]
         with open(ini, "w", encoding="utf-8") as handle:
             handle.write(chr(10).join(lines) + chr(10))
         configuration.set_current(configuration.load(ini))

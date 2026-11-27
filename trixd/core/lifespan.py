@@ -37,6 +37,7 @@ from trixd.common import logging as trixlog
 from trixd.common.settings import current as settings
 from trixd.core import tasks
 from trixd.core.plugins import loader
+from trixd.core.plugins.watch import current as watch
 from trixd.core.render.engine import current as renders
 from trixd.core.render import triggers
 from trixd.core.replication.sweep import current as sweep
@@ -75,6 +76,7 @@ def start(app: FastAPI) -> None:
     # answer a caller gets should come from a render, not from an empty cache.
     triggers.start_all()
     sweep().start()
+    watch().start(app)
 
 
 def stop(app: FastAPI) -> None:
@@ -83,6 +85,7 @@ def stop(app: FastAPI) -> None:
     """
     triggers.shutdown_all()
     sweep().shutdown()
+    watch().shutdown()
     audit.shutdown()
     LOGGER.info("shutting down")
 

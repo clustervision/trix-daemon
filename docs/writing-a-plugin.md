@@ -35,7 +35,7 @@ README's "Words used here".
 ```
 
 That writes `manifest.yaml`, `backend.py`, `__init__.py` and a README into the
-site's plugins directory, `[PLUGINS] SITE_DIRECTORY` (`/trinity/local/trixd/plugins` on
+custom plugins directory, `[PLUGINS] CUSTOM_DIRECTORY` (`/trinity/local/trixd/custom_plugins` on
 a controller). It loads as it stands, so the first thing you do is see it work and then
 edit it into shape.
 
@@ -54,10 +54,17 @@ Two things to know before you rely on it:
 
 - **Where a plugin lives decides whether it survives an upgrade.** The shipped plugins
   are in `[PLUGINS] DIRECTORY`, inside the installed package, which an upgrade
-  replaces. A site's own go in `SITE_DIRECTORY`, which an upgrade leaves alone. A site
+  replaces. Custom plugins go in `CUSTOM_DIRECTORY`, which an upgrade leaves alone. A custom
   plugin cannot take a shipped plugin's name: it is skipped, with a warning in the log.
 - **A restart loads only the plugins `[PLUGINS] ENABLED` lists.** Add yours there, or a
   plugin plugged in by hand is gone after the next restart.
+
+While you are writing one, `[PLUGINS] AUTO_RELOAD = yes` in `trixd.ini` saves the reload
+call: after a restart of the daemon, a plugin in `CUSTOM_DIRECTORY` is loaded again a few
+seconds after you save its `.py` or `.yaml` files. A save that does not load is refused
+once, with the reason in the log and in the plugin list, and the version that was serving
+keeps serving. A new plugin is still plugged in only where `ENABLED` lists it or lists
+nothing, and one you unplugged stays unplugged. It is off by default.
 
 ## The two files
 

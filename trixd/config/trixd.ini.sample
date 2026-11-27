@@ -141,17 +141,20 @@ COMMAND = /usr/bin/systemctl
 
 [PLUGINS]
 DIRECTORY = /trinity/local/trixd/daemon/plugins
-SITE_DIRECTORY = /trinity/local/trixd/plugins
+CUSTOM_DIRECTORY = /trinity/local/trixd/custom_plugins
 ENABLED = luna, directory, prometheus, services, slurm, genders, osimage
-; DIRECTORY holds the shipped plugins and is replaced on upgrade; a site's own go in
-; SITE_DIRECTORY, which is not, and cannot take a shipped plugin's name. A restart loads
+AUTO_RELOAD = no
+; DIRECTORY holds the shipped plugins and is replaced on upgrade; custom plugins go in
+; CUSTOM_DIRECTORY, which is not, and cannot take a shipped plugin's name. A restart loads
 ; only what ENABLED lists, unless ENABLED names nothing at all, which loads every plugin
 ; found rather than none; the count is logged at startup. slurm and genders write the same
 ; blocks luna2-daemon's node hook still writes, from the same node list. osimage builds
 ; OS image trees for Luna's osimage create in child processes; its paths, its limits and
 ; the mirrors map (the sources of a create by the record's distribution, release and
 ; architecture; with no entry the books build from what they hold) are set through its
-; settings route.
+; settings route. AUTO_RELOAD = yes loads a plugin in CUSTOM_DIRECTORY again a few seconds
+; after its files change, for writing one: a loaded plugin is reloaded, a new one is plugged
+; in only where a restart would load it, and one that was unplugged is left alone.
 
 ; Every section and key trixd reads is above. One it does not read - a misspelling, or a
 ; section meant for something else - is named at startup and otherwise ignored, so the
