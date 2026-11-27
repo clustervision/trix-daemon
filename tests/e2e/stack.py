@@ -44,8 +44,10 @@ from urllib.parse import quote
 import jwt
 import requests
 import urllib3
+import yaml
 
 from tests.e2e.fakeluna import FakeLuna
+from trixd.plugins.prometheus.backend import EXPORTERS
 
 urllib3.disable_warnings()
 
@@ -186,7 +188,14 @@ class Stack:
         if self.local:
             rules = os.path.join(self.scratch, "rules")
             os.makedirs(rules, exist_ok=True)
+            # The built-in exporters, as a file of the suite's own: on a controller the
+            # default path holds that site's baseline, which is not the suite's to read.
+            baseline = os.path.join(self.scratch, "exporters.yaml")
+            with open(baseline, "w", encoding="utf-8") as handle:
+                yaml.safe_dump({"nodes": {name: {"port": port}
+                                          for name, port in EXPORTERS.items()}}, handle)
             answer = self.call("PATCH", "/prometheus/config", self.rootus(), json={
+                "exporters_file": baseline,
                 "rules_directory": rules + os.sep,
                 "prometheus_url": f"http://127.0.0.1:{self.luna.server.server_address[1]}",
                 "reload_command": f"{sys.executable} -c pass"})

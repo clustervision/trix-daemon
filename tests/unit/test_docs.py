@@ -33,6 +33,7 @@ __status__      = "Production"
 import json
 import os
 import re
+import sys
 
 import pytest
 
@@ -312,3 +313,65 @@ def test_a_body_field_carries_its_description_and_example():
     force = _published()["components"]["schemas"]["PrometheusHw_Rules"]["properties"]["force"]
     assert force["description"].startswith("Generate the file afresh")
     assert force["examples"] == [False]
+
+
+def _references(value) -> list:
+    """
+    Every $ref in a document, wherever it sits.
+    """
+    if isinstance(value, dict):
+        return [found for key, held in value.items()
+                for found in ([held] if key == "$ref" and isinstance(held, str)
+                              else _references(held))]
+    if isinstance(value, list):
+        return [found for held in value for found in _references(held)]
+    return []
+
+
+def _resolves(document: dict, reference: str) -> bool:
+    """
+    Whether a $ref is a JSON pointer into this document that leads somewhere.
+    """
+    if not reference.startswith("#/"):
+        return False
+    held = document
+    for part in reference[2:].split("/"):
+        part = part.replace("~1", "/").replace("~0", "~")
+        if isinstance(held, list) and part.isdigit() and int(part) < len(held):
+            held = held[int(part)]
+        elif isinstance(held, dict) and part in held:
+            held = held[part]
+        else:
+            return False
+    return True
+
+
+def test_every_reference_in_the_document_leads_somewhere(monkeypatch):
+    """
+    A $ref to a model the document does not carry renders as an empty box on the page and
+    breaks every client generated from the file, and nothing that compares the committed
+    document with the built one sees it: both carry the same dangling pointer. Walked on
+    the document the code builds, with every shipped plugin loaded.
+    """
+    import importlib.util
+
+    from trixd.common import settings as configuration
+    from trixd.plugins.luna.config import LUNA_INI_ENV
+
+    # The build sets these for a process of its own; here they are put back afterwards.
+    monkeypatch.setattr(sys, "path", list(sys.path))
+    monkeypatch.setenv(LUNA_INI_ENV, "")
+    monkeypatch.setattr(configuration, "_current", configuration.current())
+    spec = importlib.util.spec_from_file_location(
+        "build_schemas", os.path.join(ROOT, "tools", "build_schemas.py"))
+    builder = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(builder)
+    document = builder.openapi_document()
+
+    found = _references(document)
+    assert document["paths"] and len(found) >= len(document["paths"]), \
+        (f"{len(found)} references under {len(document['paths'])} paths, so this walk "
+         f"proves nothing: the document is empty or it stopped pointing at its models")
+    dangling = sorted({reference for reference in found
+                       if not _resolves(document, reference)})
+    assert not dangling, f"the document points at what it does not carry: {dangling}"
