@@ -319,6 +319,21 @@
       },
       "DirectoryUser": {
         "properties": {
+          "commonname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The full name, LDAP's cn; the login name when left out",
+            "examples": [
+              "Alice Smith"
+            ],
+            "title": "Commonname"
+          },
           "expiry": {
             "anyOf": [
               {
@@ -507,6 +522,21 @@
       },
       "DirectoryUser_Change": {
         "properties": {
+          "commonname": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The full name, LDAP's cn; the login name when left out",
+            "examples": [
+              "Alice Smith"
+            ],
+            "title": "Commonname"
+          },
           "expiry": {
             "anyOf": [
               {
@@ -3399,7 +3429,7 @@
     },
     "/api/v1/directory/users": {
       "get": {
-        "description": "Every user obol finds in the cluster directory, as obol shows them: the LDAP\nattributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as\ntrixd's own users are.\n\n**Access:** manager or above: manager and rootus",
+        "description": "Every user obol finds in the cluster directory, as obol shows them: the LDAP\nattributes, with `memberOf` listing the user's groups. `passwordState` says whether\na password is set, `configured` or `unset`; the hash itself is never answered. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as\ntrixd's own users are.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_list_users_get_api_v1_directory_users_get",
         "responses": {
           "200": {
@@ -3415,6 +3445,7 @@
                       "alice",
                       "admins"
                     ],
+                    "passwordState": "configured",
                     "shadowExpire": "-1",
                     "shadowLastChange": "20658",
                     "shadowMax": "99999",
@@ -3510,6 +3541,7 @@
                     "alice",
                     "admins"
                   ],
+                  "passwordState": "configured",
                   "shadowExpire": "-1",
                   "shadowLastChange": "20658",
                   "shadowMax": "99999",
@@ -3714,7 +3746,7 @@
         "x-trixd-minimum": "manager"
       },
       "get": {
-        "description": "One user, as obol shows them: the LDAP attributes, with `memberOf` listing their\ngroups.\n\n**Access:** manager or above: manager and rootus",
+        "description": "One user, as obol shows them: the LDAP attributes, with `memberOf` listing their\ngroups and `passwordState` saying whether a password is set, `configured` or `unset`.\n\n**Access:** manager or above: manager and rootus",
         "operationId": "directory_get_user_get_api_v1_directory_users__name__get",
         "parameters": [
           {
@@ -3747,6 +3779,7 @@
                     "alice",
                     "admins"
                   ],
+                  "passwordState": "configured",
                   "shadowExpire": "-1",
                   "shadowLastChange": "20658",
                   "shadowMax": "99999",
@@ -3898,6 +3931,7 @@
                     "alice",
                     "admins"
                   ],
+                  "passwordState": "configured",
                   "shadowExpire": "-1",
                   "shadowLastChange": "20658",
                   "shadowMax": "99999",

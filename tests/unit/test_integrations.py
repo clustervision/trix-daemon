@@ -1713,6 +1713,52 @@ def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
         "the membership attribute stopped being answered under the name it is read by"
 
 
+def test_the_directory_answers_whether_a_password_is_set(rig, monkeypatch):
+    """
+    The users application shows a password as configured or unset. obol answers no
+    userPassword for a user who has none, and a group never carries the field.
+    """
+    from trixd.plugins.directory import backend as directory
+    from trixd.plugins.directory.backend import Backend
+
+    held = {"carol": {"uid": "carol", "userPassword": "{PBKDF2-SHA512}abc"},
+            "dave": {"uid": "dave"},
+            "erin": {"uid": "erin", "userpassword": ""},
+            "hpc": {"cn": "hpc", "uniqueMember": ["carol"]}}
+
+    def run_json(argv, *args, **kwargs):
+        """
+        obol -J: the users for a list, else the record named last.
+        """
+        if argv[-1] == "list":
+            return [dict(held[name]) for name in ("carol", "dave", "erin")]
+        return dict(held[argv[-1]])
+
+    _obol(monkeypatch, set(held))
+    monkeypatch.setattr(directory.shell, "run_json", run_json)
+
+    listed = {user["uid"]: user["passwordState"] for user in Backend().list_users()}
+    assert listed == {"carol": "configured", "dave": "unset", "erin": "unset"}
+    assert Backend().get_user("carol")["passwordState"] == "configured"
+    assert Backend().get_user("dave")["passwordState"] == "unset"
+    assert Backend().update_user("dave", {"shell": "/bin/zsh"})["passwordState"] == "unset"
+    assert "passwordState" not in Backend().get_group("hpc")
+
+
+def test_a_common_name_reaches_obol_as_cn(rig, monkeypatch):
+    """
+    The users application sets the full name; obol takes it as --cn.
+    """
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol"})
+    Backend().create_user({"username": "dave", "commonname": "Dave Doe"})
+    Backend().update_user("carol", {"commonname": "Carol Roe"})
+    writes = [call for call in calls if call[2] in ("add", "modify")]
+    assert writes == [["obol", "user", "add", "dave", "--cn", "Dave Doe"],
+                      ["obol", "user", "modify", "carol", "--cn", "Carol Roe"]]
+
+
 SLURM_FILES: tuple = ("slurm-nodes.conf", "slurm-partitions.conf", "slurm-gres.conf")
 
 

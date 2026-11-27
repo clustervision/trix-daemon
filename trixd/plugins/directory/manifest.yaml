@@ -28,6 +28,7 @@ schemas:
     home:       {type: string, optional: true, description: "The home directory", example: /trinity/home/alice}
     mail:       {type: string, optional: true, description: "An e-mail address", example: alice@example.com}
     phone:      {type: string, optional: true, description: "A telephone number", example: "+31 20 000 0000"}
+    commonname: {type: string, optional: true, description: "The full name, LDAP's cn; the login name when left out", example: Alice Smith}
     surname:    {type: string, optional: true, description: "The surname, LDAP's sn", example: Smith}
     givenname:  {type: string, optional: true, description: "The given name", example: Alice}
     expiry:     {type: integer, optional: true, description: "Days until the account expires", example: 365}
@@ -42,6 +43,7 @@ schemas:
     home:       {type: string, optional: true, description: "The home directory", example: /trinity/home/alice}
     mail:       {type: string, optional: true, description: "An e-mail address", example: alice@example.com}
     phone:      {type: string, optional: true, description: "A telephone number", example: "+31 20 000 0000"}
+    commonname: {type: string, optional: true, description: "The full name, LDAP's cn; the login name when left out", example: Alice Smith}
     surname:    {type: string, optional: true, description: "The surname, LDAP's sn", example: Smith}
     givenname:  {type: string, optional: true, description: "The given name", example: Alice}
     expiry:     {type: integer, optional: true, description: "Days until the account expires", example: 365}
@@ -62,12 +64,13 @@ endpoints:
     summary: Every user in the cluster directory
     description: |
       Every user obol finds in the cluster directory, as obol shows them: the LDAP
-      attributes, with `memberOf` listing the user's groups. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as
+      attributes, with `memberOf` listing the user's groups. `passwordState` says whether
+      a password is set, `configured` or `unset`; the hash itself is never answered. The cluster's users and groups live in its 389ds directory, and every route here works through obol, the tool that manages them, so nothing is kept in trixd itself. A manager's, as
       trixd's own users are.
     response:
       description: Every user
       example:
-        - {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
+        - {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins], passwordState: configured}
 
   - path: users/<name>
     methods: [GET]
@@ -76,12 +79,12 @@ endpoints:
     summary: One user in the cluster directory
     description: |
       One user, as obol shows them: the LDAP attributes, with `memberOf` listing their
-      groups.
+      groups and `passwordState` saying whether a password is set, `configured` or `unset`.
     params:
       name: {description: "The user name in the directory", example: alice}
     response:
       description: The user
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins], passwordState: configured}
     errors:
       400: The name is not one the directory takes
       404: No user has that name
@@ -100,7 +103,7 @@ endpoints:
     request_example: {username: alice, password: "a long passphrase", shell: /bin/bash, groups: [admins]}
     response:
       description: The user as created
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins], passwordState: configured}
     errors:
       400: The user exists already, no username was given, or a value is one obol would misread
       502: obol failed; the reason is in the journal
@@ -120,7 +123,7 @@ endpoints:
     request_example: {shell: /bin/zsh, groups: [admins, research]}
     response:
       description: The user as it now stands
-      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
+      example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins], passwordState: configured}
     errors:
       400: Nothing to change was sent, or a name or value is one obol would misread
       404: No user has that name
