@@ -29,7 +29,6 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-import re
 from typing import Optional
 
 from fastapi import APIRouter, Body, Depends, Path
@@ -53,8 +52,6 @@ router = APIRouter(prefix=f"{API_PREFIX}/identity", tags=["identity"])
 
 WRITE: str = "identity.write"
 
-# A login name as the chain's sources know it; an Active Directory one carries an @.
-NAME = re.compile(r"^[A-Za-z0-9_.@-]{1,255}$")
 # What the document shows for a user.
 USER_EXAMPLE: dict = {"name": "alice", "role": "reader", "enabled": True, "local": True}
 
@@ -75,7 +72,7 @@ def _named(name: str) -> str:
     """
     A name the API may write: well formed, and never the account the ini names.
     """
-    if not NAME.match(name or ""):
+    if not principals.LOGIN_NAME.match(name or ""):
         raise BadRequest(f"{name} is not a login name")
     if access.is_rootus(name):
         raise BadRequest(f"{name} is the account the ini names: it is rootus, set there")

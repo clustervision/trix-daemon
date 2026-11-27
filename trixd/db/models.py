@@ -167,7 +167,7 @@ class Outbox(Base):
 
 class RenderState(Base):
     """
-    When a render last ran here, and whether it worked. Local.
+    When a render last rendered here, and whether its last run worked. Local.
     """
 
     __tablename__ = "render_state"

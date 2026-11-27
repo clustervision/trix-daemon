@@ -44,7 +44,7 @@ from trixd.common.constants import (API_PREFIX, DAEMON_NAME, DAEMON_VERSION,
                                    HOOK_EVENT_PARTS, NODE_PATH_PARAMS, PLUGIN_STATE_LOADED,
                                    ROLE_OPERATOR, ROLE_READER, ROLE_ROOTUS)
 from trixd.common.errors import BadRequest, NotFound, PluginRefused, ServiceUnavailable
-from trixd.core import serving, tasks
+from trixd.core import hooks, serving, tasks
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import applied, outbox, tables
@@ -113,15 +113,21 @@ def _counts(state: dict) -> dict:
                 "render says when it last ran, as Unix time, 0 before its first run since "
                 "trixd or its plugin started, and whether that run worked. `triggers` carries one "
                 "entry per loaded trigger: `luna_hashes` says whether Luna answers its table "
-                "hashes, which it does on an HA master only, and `replication` when the last "
-                "sweep ran, 0 for never, with `not_converging` counting the peer and table "
+                "hashes, which it does on an HA master only: `inert` is 1 where Luna answered "
+                "and sent none, as the standby of a pair does by design, so `answering` false "
+                "with `inert` 0 is a Luna that could not be read. `replication` says when the "
+                "last sweep ran, 0 for never, with `not_converging` counting the peer and table "
                 "pairs that have still differed after several passes - which means neither "
-                "controller is taking the other's row. A trigger that keeps counts publishes "
-                "them beside those two: `prometheus_hw_rules` says whether the hardware rule "
+                "controller is taking the other's row - and `not_reconciled` the peers that "
+                "sweep did not get through: a peer that is away, or, with `not_answering` at "
+                "0, one that answered and whose pass failed all the same. A trigger that "
+                "keeps counts publishes them beside `answering` and `last_pass`: "
+                "`prometheus_hw_rules` says whether the hardware rule "
                 "files could last be compared with the other controller, with `lacking`, the "
                 "files a peer holds and this controller does not, and `differing`, the files "
-                "both hold whose bytes differ - which is ordinary, each controller writing "
-                "its own, and so is a number to read rather than a fault. `owed` counts the replicated calls still "
+                "both hold whose rules differ: the two controllers generated them from "
+                "different data, or one was written before the rules were kept in one order. "
+                "Neither file is changed for it. `owed` counts the replicated calls still "
                 "waiting for a peer, the ones given up on, the peers configured and the "
                 "peers not answering - counts only, and no peer is named, because this "
                 "route takes no token: `GET /system/replication/owed` says where, and "
@@ -138,11 +144,13 @@ def _counts(state: dict) -> dict:
                              "rendered_at": 1791545863.87, "ok": True},
                             {"render": "slurm/renders/config",
                              "rendered_at": 1791545864.38, "ok": True}],
-                "triggers": {"luna_hashes": {"answering": False, "last_pass": 1791545823.43},
-                             "prometheus_hw_rules": {"lacking": 0, "differing": 2,
+                "triggers": {"luna_hashes": {"inert": 1, "answering": False,
+                                             "last_pass": 1791545823.43},
+                             "prometheus_hw_rules": {"lacking": 0, "differing": 0,
                                                      "answering": True,
                                                      "last_pass": 1791545830.12},
-                             "replication": {"at": 1791545526.87, "not_converging": 0}},
+                             "replication": {"at": 1791545526.87, "not_converging": 0,
+                                             "not_reconciled": 0}},
                 "owed": {"pending": 0, "failed": 0, "peers": 1, "not_answering": 0,
                          "oldest_pending": 0},
                 "connections": {"closed_unanswered": 0}},
@@ -162,7 +170,8 @@ def health() -> dict:
                                    "last_pass": state.get("last_pass", 0)}
                             for name, state in triggers.states().items()},
                          "replication": {"at": (sweep().last or {}).get("at", 0),
-                                         "not_converging": sweep().stalled()}},
+                                         "not_converging": sweep().stalled(),
+                                         "not_reconciled": sweep().unreconciled()}},
             "owed": outbox.states(), "connections": serving.states()}
 
 
@@ -333,8 +342,8 @@ def notify(body: Change = Body(openapi_examples=docs.example(
                {"event": "luna.node.update", "payload": {"name": "node001"}})),
            caller: Caller = Depends(guard(ROLE_OPERATOR))) -> dict:
     """
-    Hand the change to whatever publishes that kind of event, which runs the plugins
-    that declared it and wakes the renders. With no event, wake every render.
+    Hand the change to the hook dispatcher, which runs the plugins that declared it and
+    wakes the renders. With no event, wake every render.
     """
     if not body.event:
         woken = renders().notify("")
@@ -346,7 +355,8 @@ def notify(body: Change = Body(openapi_examples=docs.example(
         raise BadRequest(f"{body.event} is not an event: name one as "
                          f"<source>.<object>.<event>, such as luna.node.update")
     dispatch = tasks.handler(parts[0])
-    if dispatch is None:
+    # The hook dispatcher alone: a plugin's own queue worker under that name is not rung.
+    if dispatch is not hooks.run:
         raise BadRequest(f"nothing here publishes {parts[0]} events")
     said = dispatch(body.event, json.dumps(body.payload or {}))
     LOGGER.info("notified of %s: %s", body.event, said)
@@ -390,7 +400,7 @@ def bulk(body: Changes = Body(openapi_examples=docs.example(
         if len(parts) != HOOK_EVENT_PARTS or not all(parts):
             raise BadRequest(f"{change.event} is not an event: name one as "
                              f"<source>.<object>.<event>, such as luna.node.update")
-        if tasks.handler(parts[0]) is None:
+        if tasks.handler(parts[0]) is not hooks.run:
             raise BadRequest(f"nothing here publishes {parts[0]} events")
 
     queued = [tasks.submit(change.event.split(".")[0], change.event,

@@ -196,7 +196,7 @@ class Backend:
         skipped = sorted(one["name"] for one in fullset if not one["group"])
         if skipped:
             LOGGER.error("no group in Luna, so left out of the genders file: %s",
-                         ", ".join(skipped))
+                         trixlog.named(skipped))
             fullset = [one for one in fullset if one["group"]]
         if not fullset:
             LOGGER.error("every node Luna holds is without a group, so there is nothing to "

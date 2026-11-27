@@ -36,6 +36,7 @@ import time
 from trixd.common import logging as trixlog
 from trixd.core.plugins.registry import current as registry
 from trixd.core.replication import outbox
+from trixd.utils import threads
 
 LOGGER = trixlog.get("prometheus.peer")
 
@@ -144,8 +145,8 @@ class PeerRules:
         # A thread asked to stop keeps its own event and ends by it, however long the
         # pass it is in still takes; this one starts beside it and waits for that pass.
         self.stop = threading.Event()
-        self.thread = threading.Thread(target=self._loop, args=(self.stop,),
-                                       name="trixd-hw-rules", daemon=True)
+        self.thread = threads.Thread(target=self._loop, args=(self.stop,),
+                                     name="trixd-hw-rules", daemon=True)
         self.thread.start()
         LOGGER.info("comparing the hardware rule files with %s every %ss",
                     ", ".join(outbox.peers()), INTERVAL)
@@ -159,8 +160,8 @@ class PeerRules:
 
     def state(self) -> dict:
         """
-        What the comparison is doing, for the health endpoint. Differing files are
-        ordinary, so the counts say how the pair stands and decide nothing here.
+        What the comparison is doing, for the health endpoint. A file both hold is never
+        changed, so the counts say how the pair stands and decide nothing here.
         """
         return {"interval": INTERVAL, "last_pass": self.last_pass,
                 "answering": not self.failing, "counts": dict(self.counts)}

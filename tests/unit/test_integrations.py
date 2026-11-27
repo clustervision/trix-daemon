@@ -1181,11 +1181,13 @@ def test_peercred_signs_the_caller_in_as_their_own_account(rig, client, tmp_path
     ({"name": "tester"}, "ini account"),
     ({"back": 4242}, "leads back"),
     ({"account": (False, "Authentication token is no longer valid")}, "PAM refused"),
+    ({"name": "o'brien"}, "not a login name"),
 ])
 def test_peercred_refuses_and_says_why_in_the_trail(rig, tmp_path, monkeypatch, case, why):
     """
-    uid 0, a system account, the ini account, a name that leads to another uid and an
-    account PAM refuses get no token, and the trail says which.
+    uid 0, a system account, the ini account, a name that leads to another uid, an
+    account PAM refuses and a name the API cannot write get no token, and the trail says
+    which.
     """
     status, body = _peercred(monkeypatch, tmp_path, **case)
     assert status == 401 and "token" not in body, (status, body)
@@ -1344,6 +1346,84 @@ def test_ldap_knows_nobody_outside_the_directory(rig, monkeypatch):
     assert source.resolve("ghost")[0] is False
 
 
+def _ldap_entry(source, uid, password: str = "right") -> None:
+    """
+    One more person in that offline directory, under the first uid given.
+    """
+    import ldap3
+
+    first = uid if isinstance(uid, str) else uid[0]
+    setup = ldap3.Connection(source.ldap3.Server(source.uri), client_strategy=ldap3.MOCK_SYNC)
+    setup.strategy.add_entry(f"uid={first},ou=People,dc=cluster",
+                             {"uid": uid, "userPassword": password,
+                              "objectClass": ["inetOrgPerson"]})
+
+
+def test_ldap_names_a_person_as_the_directory_stores_them(rig, monkeypatch):
+    """
+    The directory's search ignores case, so the name is its own stored spelling, never
+    the one typed, also for a person stored under several names; an entry that shows no
+    such name is refused rather than taken as typed.
+    """
+    source = _ldap(monkeypatch)
+    _ldap_entry(source, ["two", "deux"])
+    for typed, stored in (("carol", "carol"), ("Carol", "carol"), ("CAROL", "carol"),
+                          ("DEUX", "deux"), ("Two", "two")):
+        assert source.authenticate(typed, "right") == (True, {"name": stored}), typed
+        assert source.resolve(typed) == (True, {"name": stored}), typed
+
+    connect = source.ldap3.Connection
+
+    def unreadable(server, **kwargs):
+        """
+        A connection whose search finds the entry and is shown none of its attributes.
+        """
+        connection = connect(server, **kwargs)
+        search = connection.search
+        connection.search = lambda base, query, attributes=None: search(base, query)
+        return connection
+
+    monkeypatch.setattr(source.ldap3, "Connection", unreadable)
+    verdict, said = source.authenticate("carol", "right")
+    assert verdict is False and "no uid that is carol" in said, (verdict, said)
+    verdict, said = source.resolve("carol")
+    assert verdict is False and "no uid that is carol" in said, (verdict, said)
+
+
+def test_ldap_spellings_of_one_person_are_one_principal(rig, client, headers, monkeypatch):
+    """
+    However the name is typed the person is one row, so disabling it stops every
+    spelling, and a spelling of the ini account's name is still not the ini account.
+    """
+    from trixd.core.security import chain
+
+    source = _ldap(monkeypatch)
+    _ldap_entry(source, "tester", "the entry's own")
+    monkeypatch.setattr(chain, "_source", lambda name, handle: source)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["ldap"])
+
+    for typed in ("carol", "CAROL"):
+        answer = client.post("/api/v1/auth/token",
+                             json={"username": typed, "password": "right"})
+        assert answer.status_code == 201, answer.text
+    handle = database.session()
+    try:
+        assert [row.name for row in handle.query(models.Principal).all()] == ["carol"]
+    finally:
+        handle.close()
+
+    assert client.put("/api/v1/identity/users/carol", json={"enabled": False},
+                      headers=headers).status_code == 200
+    for typed in ("carol", "CAROL"):
+        answer = client.post("/api/v1/auth/token",
+                             json={"username": typed, "password": "right"})
+        assert answer.status_code == 401, (typed, answer.text)
+
+    answer = client.post("/api/v1/auth/token",
+                         json={"username": "TESTER", "password": "the entry's own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
+
+
 def test_ldap_without_a_uri_or_base_refuses_to_start(rig):
     """
     The chain skips a source that cannot work; this is how it learns that.
@@ -1354,10 +1434,16 @@ def test_ldap_without_a_uri_or_base_refuses_to_start(rig):
         ldap_source.Source()
 
 
-def _obol(monkeypatch, existing: set) -> list:
+OBOL_MISSES: dict = {"user": "[LookupError] User '{name}' does not exist",
+                     "group": "[LookupError] Group {name} does not exist"}
+
+
+def _obol(monkeypatch, existing: set, broken: str = "") -> list:
     """
-    obol, standing in: show answers for the names in existing, add and delete change
-    it, and every call is recorded.
+    obol, standing in: show answers for the names in existing and misses the rest in
+    obol's own words, add and delete change it, and every call is recorded. With broken,
+    every show fails with that on standard error instead, as obol does off a directory
+    that is not answering.
     """
     from trixd.plugins.directory import backend as directory
 
@@ -1368,10 +1454,11 @@ def _obol(monkeypatch, existing: set) -> list:
         Record the call; show fails for a name that does not exist.
         """
         calls.append(list(argv))
-        verb = argv[2] if argv[1] != "-J" else argv[3]
-        name = argv[3] if argv[1] != "-J" else argv[4]
+        kind, verb, name = argv[2:5] if argv[1] == "-J" else argv[1:4]
+        if verb == "show" and broken:
+            return Ran("", 1, broken)
         if verb == "show" and name not in existing:
-            return Ran("", 1, "not found")
+            return Ran("", 1, OBOL_MISSES[kind].format(name=name))
         if verb == "add":
             existing.add(name)
         if verb == "delete":
@@ -1420,7 +1507,7 @@ def test_a_password_does_not_reach_obol_as_an_argument(rig, monkeypatch):
         verb = argv[2] if argv[1] != "-J" else argv[3]
         name = argv[3] if argv[1] != "-J" else argv[4]
         if verb == "show" and name not in existing:
-            return Ran("", 1, "not found")
+            return Ran("", 1, OBOL_MISSES["user"].format(name=name))
         if verb == "add":
             existing.add(name)
         return Ran("{}")
@@ -1482,6 +1569,98 @@ def test_the_directory_changes_and_removes_what_exists(rig, monkeypatch):
         ["obol", "group", "modify", "hpc", "--gid", "5000"],
         ["obol", "group", "delete", "hpc"],
     ]
+
+
+def _written(calls: list) -> list:
+    """
+    The calls that would have changed the directory.
+    """
+    return [call for call in calls if call[2] in ("add", "modify", "delete")]
+
+
+def test_the_directory_hands_obol_no_name_it_would_misread(rig, monkeypatch):
+    """
+    obol puts a name into an LDAP filter as it stands and reads a leading dash as an
+    option, so a name outside the login-name rule is refused before obol is run at all.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol", "hpc"})
+    handlers = (
+        Backend().get_user, Backend().delete_user,
+        lambda name: Backend().update_user(name, {"shell": "/bin/zsh"}),
+        lambda name: Backend().create_user({"username": name}),
+        Backend().get_group, Backend().delete_group,
+        lambda name: Backend().update_group(name, {"members": ["carol"]}),
+        lambda name: Backend().create_group({"groupname": name}),
+    )
+    for name in ("*", "car*", "carol)(uid=*", "caro\\6c", "-J", "carol,hpc", "carol\n"):
+        for handler in handlers:
+            with pytest.raises(TrixdError) as refused:
+                handler(name)
+            assert not calls, f"obol was run with the name {name!r}: {calls}"
+            assert isinstance(refused.value, BadRequest), refused.value
+
+
+def test_the_directory_hands_obol_no_list_it_would_misread(rig, monkeypatch):
+    """
+    A list goes to obol joined with commas and each group named in it reaches a filter, so
+    an item that is not a name is refused: with a comma it would arrive as two.
+    """
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol", "hpc"})
+    for change in (
+            lambda: Backend().create_user({"username": "dave", "groups": ["hpc", "*"]}),
+            lambda: Backend().update_user("carol", {"groups": ["hpc,wheel"]}),
+            lambda: Backend().create_group({"groupname": "gpu", "members": ["carol,dave"]}),
+            lambda: Backend().update_group("hpc", {"members": ["carol", "*"]})):
+        with pytest.raises(BadRequest, match="not a name"):
+            change()
+    assert not _written(calls), f"a refused list still reached obol: {_written(calls)}"
+
+
+def test_the_directory_refuses_an_empty_password(rig, monkeypatch):
+    """
+    An empty password is not a way to send none: the user would be made, or changed,
+    with the password silently left out.
+    """
+    from trixd.plugins.directory.backend import Backend
+
+    calls = _obol(monkeypatch, {"carol"})
+    with pytest.raises(BadRequest, match="password"):
+        Backend().create_user({"username": "dave", "password": ""})
+    with pytest.raises(BadRequest, match="password"):
+        Backend().update_user("carol", {"password": "", "shell": "/bin/zsh"})
+    assert not _written(calls), f"a refused password still reached obol: {_written(calls)}"
+
+
+def test_only_obols_own_miss_is_a_missing_record(rig, monkeypatch):
+    """
+    A show that fails for any other reason is the directory not answering: a 502 whose
+    message carries none of obol's output, never a 404, and never a write on the strength
+    of it.
+    """
+    from trixd.common.errors import TrixdError
+    from trixd.plugins.directory.backend import Backend
+
+    said = "[SERVER_DOWN] {'desc': \"Can't contact LDAP server\"} bind-pass hunter2"
+    calls = _obol(monkeypatch, {"carol", "hpc"}, broken=said)
+    for handler in (
+            lambda: Backend().get_user("carol"),
+            lambda: Backend().update_user("carol", {"shell": "/bin/zsh"}),
+            lambda: Backend().delete_user("carol"),
+            lambda: Backend().create_user({"username": "dave"}),
+            lambda: Backend().get_group("hpc"),
+            lambda: Backend().update_group("hpc", {"members": ["carol"]}),
+            lambda: Backend().delete_group("hpc"),
+            lambda: Backend().create_group({"groupname": "gpu"})):
+        with pytest.raises(TrixdError) as refused:
+            handler()
+        assert isinstance(refused.value, BackendFailure), refused.value
+        assert "hunter2" not in str(refused.value), "obol's own output left in the answer"
+    assert not _written(calls), f"written to a directory that did not answer: {_written(calls)}"
 
 
 def test_the_directory_never_answers_the_password_hash(rig, monkeypatch):
@@ -1924,10 +2103,10 @@ def test_a_listing_asks_systemd_once_and_maps_each_record_by_name(rig, monkeypat
 
 def test_the_worker_checks_the_action_and_the_catalogue_itself(rig, monkeypatch):
     """
-    `act` checks both before it queues, but the worker is reachable without going through
-    it: `POST /system/notify` dispatches into the worker by the plugin's name alone, and a
-    catalogue can be rewritten between an action being queued and the worker reaching it.
-    So the checks are in the worker, beside the command they are protecting.
+    `act` checks both before it queues, but the worker runs what the queue holds, whoever
+    wrote it there, and a catalogue can be rewritten between an action being queued and
+    the worker reaching it. So the checks are in the worker, beside the command they are
+    protecting.
     """
     from trixd.plugins.services import backend as services
 
@@ -3373,3 +3552,67 @@ def test_delegate_sections_are_read_alike_and_are_not_unknown(tmp_path):
     assert delegates == {"LUNA": (DELEGATE, DELEGATE_PASSWORD, "luna-float.test:7050"),
                          "OTHER": ("them", "theirs", "")}
     assert [said for said in found if "[DELEGATE:OTHER] TOKEN" in said], found
+
+
+def test_health_tells_a_standby_luna_from_one_that_cannot_be_read(client, monkeypatch):
+    """
+    `answering` is false both on the standby of a pair, where Luna sends no table hashes by
+    design, and for a Luna that errors on every pass. `inert` in health tells them apart.
+    """
+    from trixd.core.render import triggers
+
+    def said() -> dict:
+        """
+        What health publishes for the poller now.
+        """
+        return client.get("/api/v1/system/health").json()["triggers"]["luna_hashes"]
+
+    poller, _ = _hashes(monkeypatch, {}, requests.ConnectionError("away"), {}, {"node": "1"})
+    monkeypatch.setitem(triggers._triggers, "luna_hashes", poller)
+
+    poller.once()
+    assert said()["answering"] is False
+    assert said().get("inert") == 1, f"a standby reads as a Luna that is broken: {said()}"
+
+    poller.once()
+    assert said()["answering"] is False
+    assert said().get("inert") == 0, f"a Luna that cannot be read reads as a standby: {said()}"
+
+    poller.once()
+    assert said().get("inert") == 1
+    poller.once()
+    assert (said()["answering"], said().get("inert")) == (True, 0), said()
+
+
+@pytest.mark.parametrize("render", ["slurm", "genders"])
+def test_the_nodes_left_out_of_a_render_are_counted_rather_than_all_named(
+        rig, monkeypatch, tmp_path, render):
+    """
+    The log line names the first nodes left out and counts the rest, so it stays readable
+    when thousands of nodes have no group yet. The answer still names them all.
+    """
+    from tests.unit.test_daemon import _listening
+    from trixd.common import logging as trixlog
+
+    nodes = {"node001": {"group": "compute"},
+             **{f"node{number:03d}": {"group": None} for number in range(2, 32)}}
+    if render == "slurm":
+        from trixd.plugins.slurm.backend import Backend
+
+        _slurm(monkeypatch, nodes, tmp_path)
+        produce = Backend().render_config
+    else:
+        from trixd.plugins.genders.backend import Backend
+
+        _genders(monkeypatch, nodes, tmp_path)
+        produce = Backend().render_genders
+    with _listening(trixlog.get(render)) as records:
+        answer = produce()
+
+    said = [record.getMessage() for record in records if "left out" in record.getMessage()]
+    assert len(answer["skipped"]) == 30 and len(said) == 1, (answer, said)
+    assert "node002, node003" in said[0], said
+    assert "node031" not in said[0] and "more" in said[0], \
+        f"the line names every node left out: {said[0]}"
+    assert sum(name in said[0] for name in answer["skipped"]) + int(
+        said[0].split(" and ")[-1].split()[0]) == 30, f"the count is not what was left: {said}"

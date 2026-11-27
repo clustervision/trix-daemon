@@ -35,6 +35,7 @@ import time
 
 from trixd.common import logging as trixlog
 from trixd.plugins.osimage import backend, jobs, push
+from trixd.utils import threads
 
 LOGGER = trixlog.get("osimage.supervisor")
 
@@ -189,7 +190,7 @@ class Supervisor:
             LOGGER.info("the image build supervisor is already running")
             return False
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-osimage", daemon=True)
+        self.thread = threads.Thread(target=self._loop, name="trixd-osimage", daemon=True)
         self.thread.start()
         LOGGER.info("supervising image builds every %ss", INTERVAL)
         return True

@@ -39,8 +39,10 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, or_, select
 
 from trixd.common import logging as trixlog
+from trixd.common.constants import PLUGIN_MODULE_PREFIXES
 from trixd.db import engine as database
 from trixd.db import models
+from trixd.utils import threads
 
 LOGGER = trixlog.get("tasks")
 
@@ -66,10 +68,34 @@ def request_id() -> str:
     return f"{int(time.time())}-{os.getpid()}-{uuid.uuid4().hex[:8]}"
 
 
-def register(subsystem: str, handler) -> None:
+def _plugin(handler) -> str:
+    """
+    The plugin whose code this handler is, read off the module that defines it, or nothing
+    where it is not a plugin's.
+    """
+    module = getattr(handler, "__module__", None) or ""
+    for prefix in PLUGIN_MODULE_PREFIXES:
+        if module.startswith(prefix):
+            return module[len(prefix):].split(".")[0]
+    return ""
+
+
+def register(subsystem: str, handler, replace: bool = False) -> None:
     """
     What runs a task of this kind. A plugin registers when it loads.
+
+    A plugin's handler is taken under that plugin's own name alone, where it replaces what
+    stood there, as a reload does: `unload` takes back that name and no other. Anything
+    else is refused a queue a different handler answers for, unless it says `replace`.
     """
+    owner = _plugin(handler)
+    if owner and owner != subsystem:
+        raise ValueError(f"{owner} cannot answer for {subsystem} tasks: a plugin's handler "
+                         f"is registered under the plugin's own name")
+    standing = _handlers.get(subsystem)
+    if not owner and not replace and standing is not None and standing is not handler:
+        raise ValueError(f"something else already answers for {subsystem} tasks, and "
+                         f"replacing it was not asked for")
     _handlers[subsystem] = handler
 
 
@@ -256,7 +282,7 @@ def start() -> None:
         return
     _requeue()
     _prune()
-    _worker = threading.Thread(target=_loop, name="trixd-tasks", daemon=True)
+    _worker = threads.Thread(target=_loop, name="trixd-tasks", daemon=True)
     _worker.start()
     LOGGER.info("task worker started")
 

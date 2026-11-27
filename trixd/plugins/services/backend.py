@@ -62,9 +62,9 @@ def run_task(action: str, unit: str) -> str:
     """
     What the worker runs for a queued service action.
 
-    Checked here and not in `act` alone because the worker is reachable without it:
-    `POST /system/notify` dispatches on an event's first segment, which is this plugin's
-    own name, and a catalogue can be rewritten between an action being queued and run.
+    Checked here and not in `act` alone because the worker runs what the queue holds,
+    whoever wrote it there, and a catalogue can be rewritten between an action being queued
+    and run.
     """
     if action not in ACTIONS:
         raise BadRequest(f'{action} is not one of {", ".join(ACTIONS)}')

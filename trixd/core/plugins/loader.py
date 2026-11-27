@@ -41,8 +41,8 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import (API_PREFIX, PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
-                                    RESERVED_PLUGINS)
+from trixd.common.constants import (API_PREFIX, PLUGIN_MODULE_PREFIXES, PLUGIN_STATE_DISABLED,
+                                    PLUGIN_STATE_LOADED, RESERVED_PLUGINS)
 from trixd.common.errors import NotFound, PluginRefused
 from trixd.common.settings import current as settings, seconds
 from trixd.core.plugins import binder, manifest as manifests
@@ -58,7 +58,7 @@ from trixd.db import models
 
 LOGGER = trixlog.get("loader")
 
-MODULE_PREFIX: str = "trixd_plugin_"
+MODULE_PREFIX: str = PLUGIN_MODULE_PREFIXES[0]
 
 # A reload from the control endpoint and one from SIGHUP arrive on different threads.
 # One at a time keeps the route table and the registry telling the same story.
@@ -408,7 +408,7 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if standing is None:
             tasks.unregister(name)
         else:
-            tasks.register(name, standing)
+            tasks.register(name, standing, replace=True)
         reason = error.message if isinstance(error, PluginRefused) else str(error)
         LOGGER.error("plugin %s refused: %s", name, reason)
         _remember(known.refuse(name, reason, path))

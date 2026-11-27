@@ -67,7 +67,9 @@ class Source:
             return None, f"{name} is not in the directory"
         if not password or not self._bind(entry["dn"], password):
             return False, f"the directory refused the password of {name}"
-        return True, self._identity(name, entry)
+        if entry["name"] is None:
+            return False, f"the directory shows no {self.user_attribute} that is {name}"
+        return True, self._identity(entry)
 
     def resolve(self, name: str = "") -> tuple:
         """
@@ -76,7 +78,9 @@ class Source:
         entry = self._search(name)
         if entry is None:
             return False, f"{name} is not in the directory"
-        return True, self._identity(name, entry)
+        if entry["name"] is None:
+            return False, f"the directory shows no {self.user_attribute} that is {name}"
+        return True, self._identity(entry)
 
     def _connection(self, user=None, password=None):
         """
@@ -92,11 +96,16 @@ class Source:
         """
         safe = self.ldap3.utils.conv.escape_filter_chars(name)
         with self._connection(self.bind_dn, self.bind_password) as connection:
-            # No attributes asked for: the entry's DN is all the bind needs.
-            connection.search(self.base, f"({self.user_attribute}={safe})")
+            connection.search(self.base, f"({self.user_attribute}={safe})",
+                              attributes=[self.user_attribute])
             if not connection.entries:
                 return None
-            return {"dn": connection.entries[0].entry_dn}
+            entry = connection.entries[0]
+            # Only the user attribute was asked for, so what came back is its values,
+            # under whatever spelling of its name the directory answers with.
+            stored = [value for values in entry.entry_attributes_as_dict.values()
+                      for value in values if value.casefold() == name.casefold()]
+            return {"dn": entry.entry_dn, "name": stored[0] if stored else None}
 
     def _bind(self, dn: str, password: str) -> bool:
         """
@@ -108,8 +117,9 @@ class Source:
         except self.ldap3.core.exceptions.LDAPBindError:
             return False
 
-    def _identity(self, name: str, entry: dict) -> dict:
+    def _identity(self, entry: dict) -> dict:
         """
-        The login name, which is all the chain needs.
+        The login name as the directory stores it, which is all the chain needs: its
+        search ignores case, and one person must be one name here however it was typed.
         """
-        return {"name": name}
+        return {"name": entry["name"]}

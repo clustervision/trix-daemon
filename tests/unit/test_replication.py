@@ -3079,3 +3079,43 @@ def test_the_drain_waits_as_long_as_the_sweep_rather_than_as_a_caller_would(rig,
     assert waited[1:] == [outbox.TIMEOUT], \
         f"a caller's thread was held for {waited[1:]}s, not the inline path's " \
         f"{outbox.TIMEOUT}s"
+
+
+def test_health_counts_a_peer_whose_pass_failed_although_it_answered(client, monkeypatch):
+    """
+    A pass that raises is survived on purpose, and its peer is neither away nor unconverged.
+    `not_reconciled` counts it, so a pair whose every pass fails does not read as healthy.
+    """
+    from trixd.core.replication import outbox
+    from trixd.core.replication.sweep import current as sweep
+
+    def unmergeable(*_):
+        """
+        A merge that cannot be done.
+        """
+        raise RuntimeError("the documents could not be merged")
+
+    def replication() -> dict:
+        """
+        What health says of the pair now.
+        """
+        body = client.get(f"{API_PREFIX}/system/health").json()
+        return {**body["triggers"]["replication"], **body["owed"]}
+
+    theirs = {"hashes": {"principal": "theirs"}, "documents": []}
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "drain", lambda peer: 0)
+    monkeypatch.setattr(sweep(), "_get", lambda peer, path: theirs)
+    monkeypatch.setattr(tables, "merge_table", unmergeable)
+
+    assert "error" in sweep().once()[0], "the pass did not fail, so this proves nothing"
+    said = replication()
+    assert said["not_answering"] == 0, "the peer reads as away, which is another count"
+    assert said.get("not_reconciled") == 1, f"a failed pass is in none of the counts: {said}"
+
+    monkeypatch.undo()
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "drain", lambda peer: 0)
+    monkeypatch.setattr(sweep(), "_get", lambda peer, path: {"hashes": {}})
+    assert "error" not in sweep().once()[0]
+    assert replication().get("not_reconciled") == 0, "a pass that worked is still counted"

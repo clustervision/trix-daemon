@@ -83,7 +83,9 @@ endpoints:
       description: The user
       example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
+      400: The name is not one the directory takes
       404: No user has that name
+      502: obol failed; the reason is in the journal
 
   - path: users
     methods: [POST]
@@ -100,8 +102,8 @@ endpoints:
       description: The user as created
       example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
-      400: The user exists already, or no username was given
-      502: obol failed; the message carries what it said
+      400: The user exists already, no username was given, or a value is one obol would misread
+      502: obol failed; the reason is in the journal
 
   - path: users/<name>
     methods: [PATCH]
@@ -120,9 +122,9 @@ endpoints:
       description: The user as it now stands
       example: {cn: alice, uid: alice, uidNumber: "1052", gidNumber: "1052", homeDirectory: /trinity/home/alice, loginShell: /bin/bash, shadowExpire: "-1", shadowLastChange: "20658", shadowMax: "99999", shadowMin: "0", shadowWarning: "7", sn: alice, memberOf: [alice, admins]}
     errors:
-      400: Nothing to change was sent
+      400: Nothing to change was sent, or a name or value is one obol would misread
       404: No user has that name
-      502: obol failed; the message carries what it said
+      502: obol failed; the reason is in the journal
 
   - path: users/<name>
     methods: [DELETE]
@@ -137,8 +139,9 @@ endpoints:
       description: What was done
       example: {message: user alice deleted}
     errors:
+      400: The name is not one the directory takes
       404: No user has that name
-      502: obol failed; the message carries what it said
+      502: obol failed; the reason is in the journal
 
   - path: groups
     methods: [GET]
@@ -167,7 +170,9 @@ endpoints:
       description: The group
       example: {cn: admins, gidNumber: "1050", member: [admin, alice]}
     errors:
+      400: The name is not one the directory takes
       404: No group has that name
+      502: obol failed; the reason is in the journal
 
   - path: groups
     methods: [POST]
@@ -183,8 +188,8 @@ endpoints:
       description: The group as created
       example: {cn: research, gidNumber: "1053", member: [alice]}
     errors:
-      400: The group exists already, or no groupname was given
-      502: obol failed; the message carries what it said
+      400: The group exists already, no groupname was given, or a value is one obol would misread
+      502: obol failed; the reason is in the journal
 
   - path: groups/<name>
     methods: [PATCH]
@@ -201,9 +206,9 @@ endpoints:
       description: The group as it now stands
       example: {cn: admins, gidNumber: "1050", member: [admin, alice]}
     errors:
-      400: Nothing to change was sent
+      400: Nothing to change was sent, or a name or value is one obol would misread
       404: No group has that name
-      502: obol failed; the message carries what it said
+      502: obol failed; the reason is in the journal
 
   - path: groups/<name>
     methods: [DELETE]
@@ -218,5 +223,6 @@ endpoints:
       description: What was done
       example: {message: group research deleted}
     errors:
+      400: The name is not one the directory takes
       404: No group has that name
-      502: obol failed; the message carries what it said
+      502: obol failed; the reason is in the journal

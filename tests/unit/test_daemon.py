@@ -1183,7 +1183,7 @@ def test_a_service_action_is_queued_and_polled(rig, client, headers, monkeypatch
     from trixd.plugins.services import backend as services
 
     monkeypatch.setattr(services, "run_task", lambda action, unit: f"{action} {unit} ok")
-    tasks.register("services", services.run_task)
+    tasks.register("services", services.run_task, replace=True)
 
     answer = client.post(f"{API_PREFIX}/services/slurmctld/actions/restart",
                          headers=headers)
@@ -1220,7 +1220,7 @@ def test_a_failing_action_is_recorded_as_failed(rig, client, headers, monkeypatc
         """
         raise BackendFailure(f"{unit} refused to {action}")
 
-    tasks.register("services", boom)
+    tasks.register("services", boom, replace=True)
     identifier = tasks.submit("services", "start", "brokend", "tester")
     tasks.drain()
 
@@ -1245,7 +1245,7 @@ def test_the_task_listing_filters_and_covers_only_the_kept_window(rig):
         """
         raise RuntimeError(f"{param} refused to {task}")
 
-    tasks.register("services", lambda task, param="": f"{task} {param} ok")
+    tasks.register("services", lambda task, param="": f"{task} {param} ok", replace=True)
     tasks.register("switches", boom)
     try:
         done = tasks.submit("services", "restart", "slurmctld", "alice")
@@ -1293,7 +1293,7 @@ def test_the_task_route_is_a_readers_and_shows_every_principals_work(rig, client
 
     nina = _principal(client, headers, "nina")
     rita = _principal(client, headers, "rita", "reader")
-    tasks.register("services", lambda task, param="": f"{task} {param} ok")
+    tasks.register("services", lambda task, param="": f"{task} {param} ok", replace=True)
     identifier = tasks.submit("services", "restart", "slurmctld", "alice")
     assert tasks.drain(), "the worker did not finish what was queued"
 
@@ -2058,6 +2058,103 @@ def test_the_ini_account_signs_in_from_trixd_ini_alone(rig, client, monkeypatch)
         handle.close()
 
 
+def _aliasing_pam(monkeypatch, spelt: dict = None) -> list:
+    """
+    A PAM source whose name service spells two aliases back as the ini account's name, or
+    answers the names of `spelt` with the spelling each maps to, and what principals
+    warned about.
+    """
+    import sys
+    from types import SimpleNamespace
+
+    from trixd.core.security import principals
+    from trixd.core.security.sources import pam as pam_source
+
+    known = spelt or {"TESTER": "tester", "tester@domain": "tester"}
+
+    def getpwnam(name):
+        """
+        The entry for an alias, under the canonical name, or KeyError as pwd raises.
+        """
+        if name not in known:
+            raise KeyError(name)
+        return SimpleNamespace(pw_name=known[name], pw_uid=1500, pw_gid=100,
+                               pw_shell="/bin/bash")
+
+    conversation = SimpleNamespace(authenticate=lambda *args, **kwargs: True, reason="")
+    monkeypatch.setitem(sys.modules, "pwd", SimpleNamespace(getpwnam=getpwnam))
+    monkeypatch.setitem(sys.modules, "pam", SimpleNamespace(pam=lambda: conversation))
+    monkeypatch.setattr(pam_source.Source, "_uid_min", lambda self: 1000)
+    monkeypatch.setattr(configuration.current().auth, "chain", ["pam"])
+    warned = []
+    monkeypatch.setattr(principals.LOGGER, "warning",
+                        lambda message, *args: warned.append(message % args))
+    return warned
+
+
+@pytest.mark.parametrize("alias", ["TESTER", "tester@domain"])
+def test_a_source_cannot_answer_an_alias_with_the_ini_account(rig, client, monkeypatch, alias):
+    """
+    Only trixd.ini's password is the ini account: a name a source spells back as it is
+    refused like a wrong password, and the exact name still signs in as rootus.
+    """
+    warned = _aliasing_pam(monkeypatch)
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": alias, "password": "the alias's own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
+    assert "username or password is incorrect" in answer.text
+    assert [line for line in warned if "pam" in line and alias in line], warned
+    assert not [line for line in warned if "the alias's own" in line], warned
+
+    own = client.post(f"{API_PREFIX}/auth/token",
+                      json={"username": "tester", "password": "secret"})
+    assert own.status_code == 201, own.text
+    said = client.get(f"{API_PREFIX}/auth/whoami",
+                      headers={"x-access-tokens": own.json()["token"]}).json()
+    assert said["rootus"] is True and said["source"] == "ini"
+
+
+def test_a_token_for_an_alias_of_the_ini_account_is_not_rootus(rig, client, monkeypatch):
+    """
+    A token whose subject a source resolves to the ini account's name passes no minimum.
+    """
+    from trixd.core.security import tokens
+
+    warned = _aliasing_pam(monkeypatch)
+    held = {"x-access-tokens": tokens.mint("tester@domain", source="pam")}
+    answer = client.get(f"{API_PREFIX}/identity/users", headers=held)
+    assert answer.status_code == 401, answer.text
+    assert [line for line in warned if "pam" in line and "tester@domain" in line], warned
+
+
+@pytest.mark.parametrize("name", ["o'brien", "j\u00fcrgen", "two words"])
+def test_a_name_the_api_cannot_write_gets_no_principal(rig, client, monkeypatch, name):
+    """
+    A source's name the identity routes would refuse is refused like a wrong password, at
+    sign-in and on a token, and leaves no row nobody could manage.
+    """
+    from trixd.core.security import tokens
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    warned = _aliasing_pam(monkeypatch, {name: name})
+    answer = client.post(f"{API_PREFIX}/auth/token",
+                         json={"username": name, "password": "their own"})
+    assert answer.status_code == 401 and "token" not in answer.json(), answer.text
+    assert "username or password is incorrect" in answer.text
+    assert [line for line in warned if "pam" in line and repr(name) in line], warned
+    assert not [line for line in warned if "their own" in line], warned
+    handle = database.session()
+    try:
+        assert handle.query(models.Principal).filter(
+            models.Principal.name == name).count() == 0
+    finally:
+        handle.close()
+
+    held = {"x-access-tokens": tokens.mint(name, source="pam")}
+    assert client.get(f"{API_PREFIX}/auth/whoami", headers=held).status_code == 401
+
+
 def test_a_deleted_user_comes_back_fresh(rig, client, headers):
     """
     Deleting takes the role and the password; setting the user again starts from none.
@@ -2629,26 +2726,48 @@ def test_the_check_command_needs_no_daemon_and_says_why(rig, tmp_path, capsys):
     assert server.main(["--config", config, "plugin", "check", "nosuch"]) == 1
 
 
-def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client, headers):
+def _subscriber(root, name: str, events: tuple) -> None:
     """
-    Core holds no list of sources: it reads the first part of the event and hands the
-    change to whatever registered that name, so a plugin publishing switches.port.down
-    works without the daemon learning anything. An event nobody declared is not an
-    error - the renders still run - but a source nobody publishes is, because the
-    caller would otherwise be told nothing happened and not know why.
+    A plugin that declares a hook on each of these events and keeps what it was handed.
     """
-    from trixd.core import tasks
+    plugin = root / "plugins" / name
+    plugin.mkdir()
+    declared = "".join(f"  {event}: moved\n" for event in events)
+    (plugin / "manifest.yaml").write_text(
+        f"plugin: {name}\nbackend: backend\nhooks:\n{declared}endpoints:\n"
+        "  - path: seen\n    methods: [GET]\n    minimum: none\n    handler: seen\n",
+        encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        'class Backend:\n    """A plugin that wants to hear of these changes."""\n\n'
+        '    def __init__(self):\n        """Nothing heard yet."""\n'
+        "        self.calls = []\n\n"
+        '    def moved(self, **payload):\n        """Remember."""\n'
+        "        self.calls.append(payload)\n        return 'noted'\n\n"
+        '    def seen(self):\n        """Show."""\n        return {"calls": self.calls}\n',
+        encoding="utf-8")
 
-    seen = []
-    tasks.register("switches", lambda event, param="": seen.append((event, param)) or "noted")
+
+def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client, headers,
+                                                                    tmp_path):
+    """
+    Core holds no list of sources: a source is answered for while a loaded plugin declares
+    a hook on one of its events, so a plugin acting on switches.port.down works without
+    the daemon learning anything. An event nobody declared is not an error - the renders
+    still run - but a source nobody declared a hook on is, because the caller would
+    otherwise be told nothing happened and not know why.
+    """
+    from trixd.core.plugins.registry import current as registry
+
+    _subscriber(tmp_path, "watcher", ("switches.port.down",))
+    loader.load(rig, "watcher")
     try:
         answer = client.post(f"{API_PREFIX}/system/notify", headers=headers,
                              json={"event": "switches.port.down", "payload": {"port": "eth0"}})
         assert answer.status_code == 200, answer.text
-        assert answer.json()["acted"] == "noted"
-        assert seen == [("switches.port.down", '{"port": "eth0"}')]
+        assert answer.json()["acted"] == "watcher: noted"
+        assert registry().get("watcher").backend.calls == [{"port": "eth0"}]
     finally:
-        tasks._handlers.pop("switches", None)
+        loader.unload(rig, "watcher")
 
     refused = client.post(f"{API_PREFIX}/system/notify", headers=headers,
                           json={"event": "switches.port.down"})
@@ -2660,35 +2779,55 @@ def test_the_doorbell_hands_a_change_to_whoever_publishes_that_kind(rig, client,
     assert shapeless.status_code == 400, "two parts is not an event"
 
 
+def _services_worker(monkeypatch) -> list:
+    """
+    Stand a recording worker in for the services plugin's own, and answer what reaches it.
+    """
+    from trixd.core import tasks
+
+    reached = []
+    assert tasks.handler("services") is not None, \
+        "the services plugin registered no worker, so there is nothing here to reach"
+    # Written into the table rather than registered, which works whatever register asks.
+    monkeypatch.setitem(tasks._handlers, "services",
+                        lambda task, param="": reached.append((task, param)) or "ran")
+    return reached
+
+
 def test_the_doorbell_cannot_reach_the_services_worker(rig, client, headers, monkeypatch):
     """
     The services plugin registers its worker for queued actions under the bare name
-    `services`, so an event beginning `services.` dispatches straight into it - past the
-    action list and the catalogue that `act` applies - and it runs the service command as
-    root on the request thread, relaying what the child said.
-
-    What has kept that harmless is the event grammar, which forces two dots into the verb
-    so no real action matches: luck, not a check. Nothing reaches the command.
+    `services`, and the doorbell is for hook sources alone: an event beginning `services.`
+    is refused as a source nothing publishes, rather than handed to a worker that would
+    then have only its own checks between any operator and the service command.
     """
-    from trixd.utils import shell
-
-    ran = []
-
-    def fake_run(argv, **kwargs):
-        """
-        Record the argv instead of running anything.
-        """
-        ran.append(argv)
-        return type("R", (), {"ok": True, "out": "", "err": "", "code": 0})()
-
-    monkeypatch.setattr(shell, "run", fake_run)
+    reached = _services_worker(monkeypatch)
 
     answer = client.post(f"{API_PREFIX}/system/notify", headers=headers,
                          json={"event": "services.unit.restart",
                                "payload": {"name": "slurmctld"}})
 
-    assert ran == [], f"a notify reached the service command: {ran}"
+    assert reached == [], f"a notify was handed to the services worker: {reached}"
     assert answer.status_code == 400, answer.text
+    assert "nothing here publishes services events" in answer.json()["message"]
+
+
+def test_a_pushed_set_cannot_reach_the_services_worker(rig, client, headers, monkeypatch):
+    """
+    The same for a set: a change naming a plugin's own queue is refused before anything is
+    queued, so the worker is never handed an event as though it were an action.
+    """
+    from trixd.core import tasks
+
+    reached = _services_worker(monkeypatch)
+
+    answer = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
+        {"event": "services.unit.restart", "payload": {"name": "slurmctld"}}]})
+    tasks.drain()
+
+    assert reached == [], f"a pushed change was handed to the services worker: {reached}"
+    assert answer.status_code == 400, answer.text
+    assert "nothing here publishes services events" in answer.json()["message"]
 
 
 def test_the_doorbell_is_not_the_administrator_alone(client, headers):
@@ -2707,7 +2846,8 @@ def test_the_doorbell_is_not_the_administrator_alone(client, headers):
     assert "rendered" in allowed.json()
 
 
-def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client, headers):
+def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client, headers,
+                                                                    tmp_path):
     """
     The difference from the doorbell, and the reason this route exists: acting on a
     change reads back from the source, so a source pushing from inside its own request
@@ -2715,9 +2855,10 @@ def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client,
     nothing run yet, which is what lets a hook push and carry on.
     """
     from trixd.core import tasks
+    from trixd.core.plugins.registry import current as registry
 
-    acted = []
-    tasks.register("switches", lambda event, param="": acted.append(event) or "noted")
+    _subscriber(tmp_path, "watcher", ("switches.port.down", "switches.port.up"))
+    loader.load(rig, "watcher")
     try:
         answer = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
             {"event": "switches.port.down", "payload": {"port": "eth0"}},
@@ -2737,13 +2878,13 @@ def test_a_pushed_set_is_queued_and_not_acted_on_inside_the_request(rig, client,
         assert held[0]["param"] == '{"port": "eth0"}'
 
         tasks.drain()
-        assert acted == ["switches.port.down", "switches.port.up"], \
+        assert registry().get("watcher").backend.calls == [{"port": "eth0"}, {"port": "eth1"}], \
             "the queued work did not run, or ran out of order"
     finally:
-        tasks._handlers.pop("switches", None)
+        loader.unload(rig, "watcher")
 
 
-def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
+def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers, tmp_path):
     """
     All or nothing. Half a set is the worst answer available: the caller is told it
     failed and retries, while the accepted half is already being acted on.
@@ -2754,7 +2895,8 @@ def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
     from trixd.db import engine as database
     from trixd.db import models
 
-    tasks.register("switches", lambda event, param="": "noted")
+    _subscriber(tmp_path, "watcher", ("switches.port.down",))
+    loader.load(rig, "watcher")
     try:
         refused = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": [
             {"event": "switches.port.down", "payload": {"port": "eth0"}},
@@ -2773,7 +2915,7 @@ def test_a_set_with_one_bad_change_queues_none_of_it(rig, client, headers):
         empty = client.post(f"{API_PREFIX}/system/bulk", headers=headers, json={"changes": []})
         assert empty.status_code == 400, "an empty set is a caller mistake, not a no-op"
     finally:
-        tasks._handlers.pop("switches", None)
+        loader.unload(rig, "watcher")
 
 
 def test_unplugging_the_publisher_leaves_the_other_plugins_hooks_dispatching(rig, tmp_path):
@@ -4011,6 +4153,115 @@ def test_a_reload_refused_before_the_import_leaves_the_queue_it_found(rig, tmp_p
         "the handler is registered but no longer runs the work"
 
 
+def test_a_queue_is_not_taken_over_by_a_second_registration(monkeypatch):
+    """
+    One handler answers for a queue. A different one registered under that name is refused
+    unless the caller says it means to replace, so a queue is never taken over silently;
+    the same handler registering again changes nothing.
+    """
+    from trixd.core import tasks
+
+    def first(task, param=""):
+        """
+        What answered first.
+        """
+        return "first"
+
+    def second(task, param=""):
+        """
+        What came after it.
+        """
+        return "second"
+
+    monkeypatch.setattr(tasks, "_handlers", {})
+    tasks.register("switches", first)
+    tasks.register("switches", first)
+    try:
+        tasks.register("switches", second)
+    except ValueError:
+        pass
+    assert tasks.handler("switches") is first, \
+        "a second registration took the queue over without saying so"
+
+    tasks.register("switches", second, replace=True)
+    assert tasks.handler("switches") is second, "a replacement that was asked for was not made"
+
+
+def test_a_plugin_registers_what_runs_tasks_under_its_own_name_only(rig, tmp_path):
+    """
+    A load and an unload settle the handler under the plugin's own name and no other, so a
+    handler a plugin registered elsewhere would be put back by no refusal and taken back
+    by no unload. It is refused, and what answered for that queue still does.
+    """
+    from trixd.core import tasks
+
+    plugin = tmp_path / "plugins" / "grabby"
+    plugin.mkdir()
+    (plugin / "manifest.yaml").write_text(
+        "plugin: grabby\nbackend: backend\nendpoints:\n  - path: seen\n"
+        "    methods: [GET]\n    minimum: none\n    handler: seen\n", encoding="utf-8")
+    (plugin / "backend.py").write_text(
+        "from trixd.core import tasks\n\n\n"
+        'class Backend:\n    """A plugin reaching for a queue that is not its own."""\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n\n\n'
+        'def run_task(task, param=""):\n    """Run one."""\n    return "grabbed"\n\n\n'
+        'tasks.register("services", run_task)\n', encoding="utf-8")
+    standing = tasks.handler("services")
+    assert standing is not None, "nothing answers for services, so there is nothing to take"
+
+    refusal = ""
+    try:
+        loader.load(rig, "grabby")
+    except PluginRefused as error:
+        refusal = error.message
+
+    assert tasks.handler("services") is standing, \
+        "a plugin took over the queue of another one"
+    assert "own name" in refusal, f"the load was not refused for it: {refusal!r}"
+
+
+def test_a_reload_replaces_the_plugins_own_task_handler(rig, tmp_path):
+    """
+    A reload imports the plugin again, which registers a new function under the plugin's
+    own name without asking to replace: the new one answers, and runs the new code. A
+    reload refused after that import puts back the one that was serving.
+    """
+    from trixd.core import tasks
+
+    plugin = tmp_path / "plugins" / "chatty"
+    plugin.mkdir()
+    sound = ("plugin: chatty\nbackend: backend\nendpoints:\n  - path: seen\n"
+             "    methods: [GET]\n    minimum: none\n    handler: seen\n")
+    backend = (
+        "from trixd.core import tasks\n\n\n"
+        'class Backend:\n    """A plugin with a queue of its own."""\n\n'
+        '    def seen(self):\n        """Show."""\n        return {}\n\n\n'
+        'def run_task(task, param=""):\n    """Run one."""\n'
+        '    return f"chatty ran {task}"\n\n\n'
+        'tasks.register("chatty", run_task)\n')
+    (plugin / "manifest.yaml").write_text(sound, encoding="utf-8")
+    (plugin / "backend.py").write_text(backend, encoding="utf-8")
+    loader.load(rig, "chatty")
+    first = tasks.handler("chatty")
+    assert first is not None, "the import registered nothing, so this proves nothing"
+
+    (plugin / "backend.py").write_text(backend.replace("chatty ran", "chatty ran again:"),
+                                       encoding="utf-8")
+    loader.load(rig, "chatty")
+    second = tasks.handler("chatty")
+    assert second is not first, "the reload left the handler of the load before it"
+    assert second("rebuild") == "chatty ran again: rebuild", "the new code does not answer"
+
+    # Refused at the hooks, which is after the backend is imported and has registered.
+    (plugin / "manifest.yaml").write_text(
+        sound.replace("endpoints:", "hooks:\n  luna.node.update: absent\nendpoints:"),
+        encoding="utf-8")
+    with pytest.raises(PluginRefused, match="names handler absent"):
+        loader.load(rig, "chatty")
+    assert tasks.handler("chatty") is second, \
+        "the refused reload did not put back the handler that was serving"
+
+
 def test_a_render_has_to_declare_an_input_that_could_wake_it():
     """
     A render is produced once at start-up and then only when an input changes, so a render
@@ -4165,3 +4416,119 @@ def test_every_shipped_hook_handler_takes_the_payload_its_publisher_sends():
                 raise AssertionError(
                     f"{plugin}'s handler for {event} cannot take the payload it is sent "
                     f"({sorted(payload)}): {error}") from None
+
+
+def test_the_stored_note_of_a_render_keeps_when_it_last_rendered_across_a_failure(rig):
+    """
+    A failed run records its error and leaves the stored time of the last render alone, so
+    the table never shows a failing render as freshly rendered beside its error.
+    """
+    import time
+
+    from sqlalchemy import select
+
+    from trixd.core.plugins.manifest import Render
+    from trixd.core.render.engine import current as renders
+    from trixd.db import engine as database
+    from trixd.db import models
+
+    outcome = {"fail": False}
+
+    def producer():
+        """
+        A producer that answers until it is told not to.
+        """
+        if outcome["fail"]:
+            raise RuntimeError("luna is away")
+        return {"ok": True}
+
+    def noted(key: str):
+        """
+        The stored note for one render.
+        """
+        handle = database.session()
+        try:
+            row = handle.scalar(select(models.RenderState)
+                                .where(models.RenderState.render == key))
+            return row.rendered_at, row.last_error
+        finally:
+            handle.close()
+
+    engine = renders()
+    spec = Render(inputs=["stamped.thing"], coalesce="0s")
+    try:
+        item = engine.register("stamped", "renders/kept", spec, producer)
+        assert engine.run(item) is True
+        rendered, error = noted(item.key)
+        assert error == ""
+
+        time.sleep(0.01)
+        outcome["fail"] = True
+        assert engine.run(item) is False
+        assert noted(item.key) == (rendered, "luna is away"), \
+            "a run that failed moved the time the render is noted as having rendered"
+
+        never = engine.register("stamped", "renders/never", spec, producer)
+        assert engine.run(never) is False
+        assert noted(never.key)[0].year == 1970, \
+            f"a render that has never rendered is noted as rendered at {noted(never.key)[0]}"
+    finally:
+        engine.forget("stamped")
+
+
+def test_a_long_lived_thread_carries_its_name_where_the_kernel_shows_it(rig, monkeypatch):
+    """
+    Python's name for a thread is Python's alone. `ps -T` and `top -H` show the kernel's,
+    and that is where a spinning thread has to be told from the rest.
+    """
+    import time
+
+    from trixd.plugins.luna import hashes
+
+    def shown(thread) -> str:
+        """
+        The name the kernel holds for a thread.
+        """
+        with open(f"/proc/self/task/{thread.native_id}/comm", encoding="utf-8") as handle:
+            return handle.read().strip()
+
+    monkeypatch.setattr(hashes, "INTERVAL", 3600)
+    poller = hashes.LunaHashes()
+    assert poller.start() is True
+    try:
+        # The thread names itself once it runs, which start() does not wait for.
+        waited = time.monotonic() + 2
+        while shown(poller.thread) != poller.thread.name and time.monotonic() < waited:
+            time.sleep(0.01)
+        assert shown(poller.thread) == "trixd-hashes", \
+            f"the poller's thread is listed as {shown(poller.thread)!r}"
+    finally:
+        poller.shutdown()
+        poller.thread.join(2)
+
+
+def test_every_named_thread_is_started_so_that_the_kernel_knows_its_name():
+    """
+    Derived from the code, so a thread added later is covered as well. The kernel keeps
+    fifteen bytes of a name, and two names alike that far are one name there.
+    """
+    import ast as syntax
+
+    started = []
+    for folder, _, files in os.walk(os.path.dirname(trixd.__file__)):
+        for name in files:
+            if not name.endswith(".py"):
+                continue
+            tree = syntax.parse(open(os.path.join(folder, name), encoding="utf-8").read())
+            for node in syntax.walk(tree):
+                if (isinstance(node, syntax.Call) and isinstance(node.func, syntax.Attribute)
+                        and node.func.attr == "Thread"):
+                    started.extend((syntax.unparse(node.func), word.value.value)
+                                   for word in node.keywords if word.arg == "name")
+    assert started, "no named thread was found, so this proves nothing"
+    plain = [name for call, name in started if call != "threads.Thread"]
+    assert not plain, f"started as a plain thread, so listed as the interpreter: {plain}"
+    shown = [name.encode()[:15] for _, name in started]
+    assert len(set(shown)) == len(started) and all(
+        len(name.encode()) <= 15 for _, name in started), \
+        f"not told apart in the fifteen bytes the kernel keeps: {sorted(shown)}"

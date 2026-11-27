@@ -763,7 +763,7 @@ class Backend:
         skipped = sorted(one["name"] for one in fullset if not _usable(one))
         if skipped:
             LOGGER.error("no usable name or group in Luna, so left out of the slurm "
-                         "configuration: %s", ", ".join(skipped))
+                         "configuration: %s", trixlog.named(skipped))
             fullset = [one for one in fullset if _usable(one)]
         if not fullset:
             LOGGER.error("every node Luna holds is without a usable name or group, so "

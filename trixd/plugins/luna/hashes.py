@@ -35,6 +35,7 @@ import time
 from trixd.common import logging as trixlog
 from trixd.core.render.engine import current as renders
 from trixd.plugins.luna.client import current as luna
+from trixd.utils import threads
 
 LOGGER = trixlog.get("luna.hashes")
 
@@ -109,7 +110,7 @@ class LunaHashes:
         for table in changed:
             woken.extend(renders().notify(f"luna.{table}"))
         if changed:
-            LOGGER.info("Luna tables changed: %s; woke %s",
+            LOGGER.info("Luna tables changed: %s; rendered %s",
                         ", ".join(changed), ", ".join(woken) or "nothing")
         return woken
 
@@ -142,7 +143,7 @@ class LunaHashes:
             LOGGER.info("the Luna hash fallback is already running")
             return False
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-hashes", daemon=True)
+        self.thread = threads.Thread(target=self._loop, name="trixd-hashes", daemon=True)
         self.thread.start()
         LOGGER.info("comparing Luna table hashes every %ss", INTERVAL)
         return True
@@ -160,7 +161,10 @@ class LunaHashes:
         return {"interval": INTERVAL,
                 "last_pass": self.last_pass,
                 "tables_seen": len(self.seen),
-                "answering": not self.quiet and not self.failing and bool(self.seen)}
+                "answering": not self.quiet and not self.failing and bool(self.seen),
+                # Luna answered and sent no hashes: not answering by design, where a Luna
+                # that cannot be read is not answering with this at 0.
+                "counts": {"inert": int(self.quiet and not self.failing)}}
 
 
 _hashes: LunaHashes = LunaHashes()

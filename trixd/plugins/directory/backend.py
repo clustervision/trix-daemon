@@ -30,13 +30,16 @@ __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
 from trixd.common import logging as trixlog
-from trixd.common.errors import BadRequest, NotFound
+from trixd.common.errors import BackendFailure, BadRequest, NotFound
+from trixd.core.security import principals
 from trixd.utils import shell
 
 LOGGER = trixlog.get("directory")
 
 OBOL: str = "obol"
 TIMEOUT: int = 30
+# How obol's error line opens for a name the directory does not hold.
+MISSING: str = "[LookupError]"
 
 # The password is deliberately absent: obol would take it as --password, where it sits in
 # /proc for the life of the call, readable by anyone with a login on the controller. It goes
@@ -71,6 +74,8 @@ def _apart(body: dict, mapping: dict) -> tuple:
     """
     sent = dict(body or {})
     password = sent.pop("password", None)
+    if password == "":
+        raise BadRequest("password must not be empty")
     argv = _flags(sent, mapping)
     if password:
         argv.append("--prompt-password")
@@ -87,9 +92,35 @@ def _flags(body: dict, mapping: dict) -> list:
         if value is None:
             continue
         if isinstance(value, (list, tuple)):
-            value = ",".join(str(item) for item in value)
+            value = ",".join(_named(item) for item in value)
         argv += [flag, str(value)]
     return argv
+
+
+def _named(name: str) -> str:
+    """
+    A name obol may be handed. obol puts it into an LDAP filter as it stands, reads one that
+    opens with a dash as an option, and splits a list of them on the comma.
+    """
+    if (not isinstance(name, str) or not principals.LOGIN_NAME.fullmatch(name)
+            or name.startswith("-")):
+        raise BadRequest(f"{name} is not a name the directory takes")
+    return name
+
+
+def _held(kind: str, name: str) -> bool:
+    """
+    Whether the directory holds the user or group. Only obol's own miss is a no: any other
+    failure is the directory not answering, which must not read as the record being absent.
+    """
+    result = shell.run([OBOL, "-J", kind, "show", _named(name)], TIMEOUT)
+    if not result.ok and MISSING not in result.err:
+        # Journal only, as shell.run does for a checked command: obol can echo its bind
+        # credentials on a failure.
+        LOGGER.error("%s exited %s: %s", OBOL, result.code, result.err or result.out)
+        raise BackendFailure(f"{OBOL} failed with exit status {result.code}; "
+                             f"the reason is in the journal")
+    return result.ok
 
 
 def _normalise(record: dict) -> dict:
@@ -126,8 +157,7 @@ class Backend:
         """
         One user, or 404.
         """
-        result = shell.run([OBOL, "-J", "user", "show", name], TIMEOUT)
-        if not result.ok:
+        if not _held("user", name):
             raise NotFound(f"no user named {name}")
         return _normalise(shell.run_json([OBOL, "-J", "user", "show", name], TIMEOUT) or {})
 
@@ -138,7 +168,7 @@ class Backend:
         name = (body or {}).get("username")
         if not name:
             raise BadRequest("username is required")
-        if shell.run([OBOL, "-J", "user", "show", name], TIMEOUT).ok:
+        if _held("user", name):
             raise BadRequest(f"user {name} already exists")
         argv, secret = _apart(body, USER_FLAGS)
         shell.run([OBOL, "user", "add", name] + argv, TIMEOUT, check=True,
@@ -150,7 +180,7 @@ class Backend:
         """
         Change the fields that were sent, and leave the rest alone.
         """
-        if not shell.run([OBOL, "-J", "user", "show", name], TIMEOUT).ok:
+        if not _held("user", name):
             raise NotFound(f"no user named {name}")
         argv, secret = _apart(body, USER_FLAGS)
         if not argv:
@@ -164,7 +194,7 @@ class Backend:
         """
         Remove a user.
         """
-        if not shell.run([OBOL, "-J", "user", "show", name], TIMEOUT).ok:
+        if not _held("user", name):
             raise NotFound(f"no user named {name}")
         shell.run([OBOL, "user", "delete", name], TIMEOUT, check=True)
         LOGGER.info("deleted user %s", name)
@@ -181,7 +211,7 @@ class Backend:
         """
         One group, or 404.
         """
-        if not shell.run([OBOL, "-J", "group", "show", name], TIMEOUT).ok:
+        if not _held("group", name):
             raise NotFound(f"no group named {name}")
         return _normalise(shell.run_json([OBOL, "-J", "group", "show", name], TIMEOUT) or {})
 
@@ -192,7 +222,7 @@ class Backend:
         name = (body or {}).get("groupname")
         if not name:
             raise BadRequest("groupname is required")
-        if shell.run([OBOL, "-J", "group", "show", name], TIMEOUT).ok:
+        if _held("group", name):
             raise BadRequest(f"group {name} already exists")
         shell.run([OBOL, "group", "add", name] + _flags(body, GROUP_FLAGS), TIMEOUT, check=True)
         LOGGER.info("created group %s", name)
@@ -202,7 +232,7 @@ class Backend:
         """
         Change the fields that were sent.
         """
-        if not shell.run([OBOL, "-J", "group", "show", name], TIMEOUT).ok:
+        if not _held("group", name):
             raise NotFound(f"no group named {name}")
         argv = _flags(body, GROUP_FLAGS)
         if not argv:
@@ -215,7 +245,7 @@ class Backend:
         """
         Remove a group.
         """
-        if not shell.run([OBOL, "-J", "group", "show", name], TIMEOUT).ok:
+        if not _held("group", name):
             raise NotFound(f"no group named {name}")
         shell.run([OBOL, "group", "delete", name], TIMEOUT, check=True)
         LOGGER.info("deleted group %s", name)
