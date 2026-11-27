@@ -40,6 +40,7 @@ from trixd.common.errors import PluginRefused
 from trixd.common.settings import current as settings
 from trixd.core.plugins import loader
 from trixd.core.plugins.registry import current as registry
+from trixd.utils import threads
 
 LOGGER = trixlog.get("watch")
 
@@ -162,7 +163,7 @@ class Watch:
             return False
         self.baseline(app)
         self.stop.clear()
-        self.thread = threading.Thread(target=self._loop, name="trixd-watch", daemon=True)
+        self.thread = threads.Thread(target=self._loop, name="trixd-watch", daemon=True)
         self.thread.start()
         LOGGER.info("[PLUGINS] AUTO_RELOAD is on: a changed plugin in %s is loaded again "
                     "within %ss", settings().plugins.custom_directory, 2 * INTERVAL)

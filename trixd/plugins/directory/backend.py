@@ -51,6 +51,7 @@ USER_FLAGS: dict = {
     "home": "--home",
     "mail": "--mail",
     "phone": "--phone",
+    "commonname": "--cn",
     "surname": "--sn",
     "givenname": "--givenName",
     "expiry": "--expire",
@@ -61,6 +62,10 @@ GROUP_FLAGS: dict = {
     "gid": "--gid",
     "members": "--users",
 }
+
+# What a user's passwordState says: whether a password is set, never the hash.
+CONFIGURED: str = "configured"
+UNSET: str = "unset"
 
 
 def _apart(body: dict, mapping: dict) -> tuple:
@@ -141,6 +146,18 @@ def _normalise(record: dict) -> dict:
     return record
 
 
+def _user(record: dict) -> dict:
+    """
+    A user on its way out: the hash is dropped, and whether there was one is answered as
+    passwordState, which is all the users application shows of a password.
+    """
+    shown = _normalise(record)
+    if isinstance(record, dict):
+        held = any(key.lower() == "userpassword" and value for key, value in record.items())
+        shown["passwordState"] = CONFIGURED if held else UNSET
+    return shown
+
+
 class Backend:
     """
     One method per handler the manifest declares, and nothing else.
@@ -151,7 +168,7 @@ class Backend:
         Every user obol can see.
         """
         records = shell.run_json([OBOL, "-J", "user", "list"], TIMEOUT) or []
-        return [_normalise(item) for item in records] if isinstance(records, list) else records
+        return [_user(item) for item in records] if isinstance(records, list) else records
 
     def get_user(self, name: str) -> dict:
         """
@@ -159,7 +176,7 @@ class Backend:
         """
         if not _held("user", name):
             raise NotFound(f"no user named {name}")
-        return _normalise(shell.run_json([OBOL, "-J", "user", "show", name], TIMEOUT) or {})
+        return _user(shell.run_json([OBOL, "-J", "user", "show", name], TIMEOUT) or {})
 
     def create_user(self, body: dict) -> dict:
         """
