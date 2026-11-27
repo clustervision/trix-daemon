@@ -30,7 +30,9 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
-from trixd.common.constants import HTTP_VERBS, MINIMUMS, TOKEN_KIND_NODE, TOKEN_KIND_USER
+from trixd.common.constants import (HTTP_VERBS, MINIMUMS, PLUGIN_NAME_PATTERN, TOKEN_KIND_NODE,
+                                    TOKEN_KIND_USER)
+from trixd.core.plugins.manifest import PATH_TYPE, QUERY_TYPES, SERVES, TYPES
 
 SCHEMA_ID: str = "https://gitlab.taurusgroup.one/clustervision/trix-daemon/docs/manifest.schema.json"
 
@@ -47,7 +49,7 @@ def manifest_schema() -> dict:
                        "description": "luna.<table> or a declaration of this plugin"},
             "coalesce": {"type": "string", "pattern": "^[0-9]+[smhd]?$",
                          "description": "how long a burst of changes is gathered, e.g. 2s"},
-            "serve": {"type": "string", "enum": ["", "json"],
+            "serve": {"type": "string", "enum": list(SERVES),
                       "description": "json answers GET from the last result, which for a "
                                      "reconcile is a report of what it last wrote"},
             "reconcile": {"type": "boolean",
@@ -65,7 +67,23 @@ def manifest_schema() -> dict:
         "properties": {
             "description": {"type": "string"},
             "example": {},
-            "type": {"enum": ["string", "integer", "boolean"], "default": "string"},
+            "type": {"enum": list(QUERY_TYPES), "default": "string"},
+        },
+    }
+    # A path variable is text whatever is said of it, so that is all it may say.
+    variable = {**doc, "properties": {**doc["properties"],
+                                      "type": {"enum": [PATH_TYPE], "default": PATH_TYPE}}}
+    rule = {
+        "type": ["object", "null"],
+        "additionalProperties": False,
+        "properties": {
+            "type": {"enum": list(TYPES), "default": "string"},
+            "items": {"enum": list(TYPES), "default": "string",
+                      "description": "what an array holds"},
+            "optional": {"type": "boolean", "default": False},
+            "pattern": {"type": "string"},
+            "description": {"type": "string"},
+            "example": {},
         },
     }
     endpoint = {
@@ -101,7 +119,7 @@ def manifest_schema() -> dict:
             "description": {"type": "string",
                             "description": "Markdown for /api/v1/docs: what the route does, "
                                            "what to send and what comes back"},
-            "params": {"type": "object", "additionalProperties": doc,
+            "params": {"type": "object", "additionalProperties": variable,
                        "description": "each path variable: what it is and an example"},
             "query": {"type": "object", "additionalProperties": doc,
                       "description": "query parameters the route reads"},
@@ -126,11 +144,12 @@ def manifest_schema() -> dict:
         "additionalProperties": False,
         "required": ["plugin", "endpoints"],
         "properties": {
-            "plugin": {"type": "string", "pattern": "^[a-z][a-z0-9-]*$"},
+            "plugin": {"type": "string", "pattern": PLUGIN_NAME_PATTERN},
             "backend": {"type": "string", "default": "backend"},
             "description": {"type": "string"},
             "schemas": {"type": "object",
-                        "additionalProperties": {"type": "object"},
+                        "additionalProperties": {"type": "object", "minProperties": 1,
+                                                 "additionalProperties": rule},
                         "description": "request bodies by name: field -> {type, optional, items, "
                                        "pattern, description, example}"},
             "endpoints": {"type": "array", "items": endpoint},

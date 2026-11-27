@@ -560,6 +560,12 @@ def _declares_every_table_beneath(key: str, declared: dict, seen: set) -> None:
                  f"luna.{table} - so nothing wakes it when that table alone moves")
 
 
+class _LunaWasRead(Exception):
+    """
+    What a stand-in node_set raises once Luna has been read, so a render stops before it writes.
+    """
+
+
 def test_every_render_declares_the_luna_tables_its_producer_reads(rig, tmp_path, monkeypatch):
     """
     What a render declares is kept by hand beside what its producer reads, and the two had
@@ -569,9 +575,11 @@ def test_every_render_declares_the_luna_tables_its_producer_reads(rig, tmp_path,
     with nothing to say so.
 
     Driven from the shipped manifests, against a Luna whose records note what was read of
-    them, so a field read without its tables declared fails here. What it cannot see is a
-    field read from anything but the node document, and a table whose contribution to a
-    field changes at Luna; NODE_DOCUMENT is where that is written down.
+    them, so a field read without its tables declared fails here. Every render declaring a
+    Luna table is run through the handler its manifest names, so the next one to declare
+    one arrives here by itself. What it cannot see is a field read from anything but the
+    node document, and a table whose contribution to a field changes at Luna; NODE_DOCUMENT
+    is where that is written down.
     """
     import glob as globbing
 
@@ -581,15 +589,18 @@ def test_every_render_declares_the_luna_tables_its_producer_reads(rig, tmp_path,
     from trixd.plugins.slurm import backend as slurm
 
     here = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-    declared = {}
+    declared, reading = {}, {}
     for found in sorted(globbing.glob(os.path.join(here, "trixd/plugins/*/manifest.yaml"))):
         with open(found, encoding="utf-8") as handle:
             document = yaml.safe_load(handle)
         for endpoint in document.get("endpoints") or []:
             if endpoint.get("render"):
-                declared[f"{document['plugin']}/{endpoint['path']}"] = \
-                    set(endpoint["render"].get("inputs") or [])
+                key = f"{document['plugin']}/{endpoint['path']}"
+                declared[key] = set(endpoint["render"].get("inputs") or [])
+                if any(one.startswith("luna.") for one in declared[key]):
+                    reading[key] = (document["plugin"], endpoint["handler"])
     assert len(declared) >= 4, f"the manifests declared no renders to check: {declared}"
+    assert len(reading) >= 4, f"hardly a render declares a Luna table: {sorted(reading)}"
 
     record = {"hostname": "node001.cluster", "group": "compute",
               "provision_interface": "BOOTIF",
@@ -599,26 +610,53 @@ def test_every_render_declares_the_luna_tables_its_producer_reads(rig, tmp_path,
     held = {}
     backend = _prometheus_rig(tmp_path, monkeypatch, held)
     _hw_file(tmp_path, "node001.cluster", "compute")
-    for key, produce in (("prometheus/renders/targets", backend.render_targets),
-                         ("prometheus/renders/rule-files", backend.render_rule_files)):
-        seen = set()
+
+    def through_prometheus(handler: str, seen: set) -> None:
+        """
+        The whole render, against the one watched node.
+        """
         held.clear()
         held["node001"] = _Watched(record, seen)
-        produce()
-        _declares_every_table_beneath(key, declared, seen)
+        getattr(backend, handler)()
 
     # The genders render reads the slurm plugin's node_set by its canonical path, so one
-    # stand-in covers both; a genders plugin that grows its own reader fails here first.
+    # reader covers both; a genders plugin that grows its own reader fails here first.
     assert genders.node_set is slurm.node_set, \
         "genders no longer reads the slurm plugin's node_set, so it needs its own run here"
-    seen = set()
-    monkeypatch.setattr(slurm, "luna",
-                        lambda: SimpleNamespace(nodes=lambda: {"node001": _Watched(record,
-                                                                                   seen)}))
-    slurm.node_set()
-    for key in sorted(declared):
-        if key.startswith(("slurm/", "genders/")):
+    node_set = slurm.node_set
+    # Nowhere a save could hold a lock, so the slurm render goes straight to its read.
+    slurm.Backend().config({"nodes_file": str(tmp_path / "slurm" / "slurm-nodes.conf")})
+
+    def through_node_set(module):
+        """
+        The render as far as node_set, which is all it reads of Luna; what follows writes
+        the files from the plain pairs node_set answered.
+        """
+        def read_and_stop():
+            node_set()
+            raise _LunaWasRead()
+
+        def produce(handler: str, seen: set) -> None:
+            with monkeypatch.context() as patch:
+                patch.setattr(slurm, "luna", lambda: SimpleNamespace(
+                    nodes=lambda: {"node001": _Watched(record, seen)}))
+                patch.setattr(module, "node_set", read_and_stop)
+                with pytest.raises(_LunaWasRead):
+                    getattr(module.Backend(), handler)()
+        return produce
+
+    producers = {"prometheus": through_prometheus, "slurm": through_node_set(slurm),
+                 "genders": through_node_set(genders)}
+    exercised = set()
+    for key, (plugin, handler) in sorted(reading.items()):
+        if plugin in producers:
+            seen = set()
+            producers[plugin](handler, seen)
             _declares_every_table_beneath(key, declared, seen)
+            exercised.add(key)
+    assert exercised == set(reading), \
+        (f"{sorted(set(reading) - exercised)} declare a Luna table and nothing here runs "
+         f"them, so what they read of Luna goes unchecked: give the plugin a producer")
 
 
 def test_a_renamed_node_keeps_its_hardware_rules(rig, tmp_path, monkeypatch):

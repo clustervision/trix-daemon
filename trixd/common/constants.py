@@ -48,6 +48,8 @@ API_PREFIX: str = f"/api/{API_VERSION}"
 LUNA_PLUGIN: str = "luna"
 # No plugin may take these: the daemon serves /api/v1/<name> itself.
 RESERVED_PLUGINS: tuple = ("auth", "identity", "system", "docs")
+# What the manifest schema publishes for a plugin's name, and what the scaffold writes.
+PLUGIN_NAME_PATTERN: str = "^[a-z][a-z0-9-]*$"
 # The names a plugin's modules are imported under: the loader's own, then the canonical one
 # its modules import each other by.
 PLUGIN_MODULE_PREFIXES: tuple = ("trixd_plugin_", "trixd.plugins.")

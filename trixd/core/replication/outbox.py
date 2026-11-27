@@ -153,6 +153,9 @@ def chain_of(target: str) -> str:
     One definition, because `drain` and the inline send hold a chain behind an action that
     has not landed and `submit` clears one, and any two of them disagreeing would leave
     rows nothing can clear, or send a node's actions out of order.
+
+    A call whose path names nothing has only its digest, so its chain is that one body: it
+    is no node's chain, and no call with another body waits behind it.
     """
     return target.split("|")[0]
 
@@ -345,7 +348,8 @@ def submit(peer: str, plugin: str, path: str, method: str, variables: dict, body
     wedge for everything else that node needs.
     """
     mark = target_of(variables, body)
-    payload = json.dumps({"variables": variables or {}, "body": body})
+    # As `target_of` reads it, so a body the digest could be taken of is one that is kept.
+    payload = json.dumps({"variables": variables or {}, "body": body}, default=str)
     handle = database.session()
     try:
         _clear_refused(handle, peer, plugin, chain_of(mark))
@@ -396,14 +400,29 @@ def _send(peer: str, row, may_sign_in: bool = True) -> tuple:
     patience = PEER_TIMEOUT if may_sign_in else TIMEOUT
     if not may_sign_in and not held_token(peer):
         return QUEUED, "no token held for the peer, so the sweep will sign in", NOT_ATTEMPTED
-    held = json.loads(row.payload or "{}")
+    try:
+        held = json.loads(row.payload or "{}")
+        if not isinstance(held, dict):
+            raise ValueError("it is not an object")
+    except ValueError as error:
+        # Terminal, not raised: no pass can read it either, and raising ended every pass
+        # at this row with everything behind it for this peer never offered.
+        LOGGER.error("what was written down for %s %s (request %s) for %s cannot be read, "
+                     "so it is never offered: %s", row.method, row.path, row.request_id,
+                     peer, error)
+        return FAILED, f"what was written down for it cannot be read: {error}", ANSWERED
     envelope = {"plugin": row.plugin, "path": row.path, "method": row.method,
                 "variables": held.get("variables") or {}, "body": held.get("body"),
                 "origin": row.origin, "request_id": row.request_id}
     url = f"{settings().api.protocol}://{peer}{API_PREFIX}/system/replication/apply"
     for attempt in (1, 2):
         if may_sign_in:
-            token = peer_token(peer, renew=attempt == 2)
+            try:
+                token = peer_token(peer, renew=attempt == 2)
+            except Exception as error:
+                # Nothing was offered, so the row waits and the breaker is not fed: a
+                # sign-in that fails says nothing about whether the peer would take it.
+                return QUEUED, f"could not sign in at the peer: {error}", NOT_ATTEMPTED
         else:
             # Held or nothing: never a sign-in on a request path.
             token = held_token(peer)
@@ -476,9 +495,10 @@ def _release(row_id: int) -> None:
         _sending.discard(row_id)
 
 
-def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> None:
+def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> str:
     """
-    Write down what happened to one row, counting the attempt.
+    Write down what happened to one row, counting the attempt. Answers the state it stored,
+    which is not the one it was handed when this is the attempt that gives up on the row.
 
     `learned` is what the attempt learned about the peer, and it is what decides whether a
     row still queued is allowed to stay queued for ever. The peer answering and not doing
@@ -489,7 +509,7 @@ def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> N
     try:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
         if row is None:
-            return
+            return state
         row.attempts += 1
         row.message = message[:2048]
         owed_for = (datetime.now(timezone.utc).replace(tzinfo=None)
@@ -515,13 +535,15 @@ def _finish(row_id: int, state: str, message: str, learned: str = ANSWERED) -> N
         if state == FAILED:
             # The row is not permanent evidence - the next action for this node discards it
             # - so what the peer said has to reach the log as it happens.
-            LOGGER.error("%s refused %s %s (%s): %s - it holds this node's later actions "
-                         "until a newer one arrives", row.peer, row.method, row.path,
-                         row.target, message)
+            LOGGER.error("%s refused %s %s (%s): %s - where its path names a node it holds "
+                         "that node's later actions until a newer one arrives, and after "
+                         "%d hours it is let go of with what it holds", row.peer,
+                         row.method, row.path, row.target, message, KEEP_REFUSED // 3600)
         row.state = state
         if state in (DONE, FAILED):
             row.finished = datetime.now(timezone.utc).replace(tzinfo=None)
         handle.commit()
+        return state
     finally:
         handle.close()
 
@@ -545,7 +567,8 @@ class _Held:
 
 def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
     """
-    One try at one row, updating the breaker from the outcome. Answers (state, learned).
+    One try at one row, updating the breaker from the outcome. Answers (state, learned,
+    message), the state being the one the row was left in.
 
     What the row learned about the peer is what tells a row the peer answered badly for
     apart from a peer that has stopped answering. They look the same from the row - neither
@@ -563,7 +586,7 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
     try:
         row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
         if row is None:
-            return FAILED, ANSWERED
+            return FAILED, ANSWERED, ""
         if row.state != QUEUED:
             # Its own state, where this answered DONE for anything that was no longer
             # queued. A caller's inline attempt can refuse a row between the sweep taking
@@ -571,7 +594,7 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
             # of any size - and reading that back as done counted it as sent, left
             # its chain unheld, and offered the next action for that node over a
             # prerequisite the peer had refused.
-            return row.state, ANSWERED
+            return row.state, ANSWERED, row.message
         held = _Held(row)
     finally:
         handle.close()
@@ -581,10 +604,10 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
         # either marks it, so the same call went to the peer twice. Its own outcome, not
         # ANSWERED: nothing was offered to the peer, and saying it answered badly for this
         # row put a sentence in the log that had not happened.
-        return QUEUED, IN_FLIGHT
+        return QUEUED, IN_FLIGHT, ""
     try:
         state, message, learned = _send(peer, held, may_sign_in)
-        _finish(row_id, state, message, learned)
+        state = _finish(row_id, state, message, learned)
     finally:
         # After the outcome is written, not before: released first, the row was unclaimed
         # and still queued for as long as the write took, which is the window the claim
@@ -596,7 +619,7 @@ def _attempt(peer: str, row_id: int, may_sign_in: bool = True) -> tuple:
         # Only silence counts: a refusal, a 5xx and a decline are all the peer answering,
         # and blaming the socket for them opened the breaker on a healthy peer.
         record_failure(peer)
-    return state, learned
+    return state, learned, message
 
 
 def replicate(plugin: str, path: str, method: str, variables: dict, body,
@@ -651,20 +674,26 @@ def drain(peer: str) -> dict:
     Everything still owed to one peer, oldest intent first. The sweep calls this; nothing
     else does, and nothing runs between passes.
 
+    It raises when it could not sign in at the peer, once the pass has been accounted for:
+    the rows keep waiting, and the sweep leaves that peer for its next pass.
+
     A row the peer refused outright stops the rest of **that target's** chain rather than
     being stepped over: the later actions for a target assume the earlier one landed - a
-    rename assumes the file it renames was written - so carrying on would apply them over a
+    repair assumes the file it rewrites was written - so carrying on would apply them over a
     prerequisite that never happened, turning a loud failure into quiet wrong state.
 
     It stops that node's chain and nothing else. A refusal naming one node says nothing
     about another node, or another plugin, and blocking those would make one malformed
-    action an outage for everything this controller owes.
+    action an outage for everything this controller owes. A call whose path names no node
+    is no node's chain: it holds nothing but itself, and nothing holds it.
 
     Which actions are relative was read rather than assumed: `repair` and `rename` take the
     file that is already there, relabel it and move it - `rename_hw_rules` is
     `repair_hw_rules(node, was=...)` and does nothing at all when no file exists. Only the
-    PATCH routes write a file from scratch. So a rename behind a refused write would
-    silently do nothing, which is the case this exists for.
+    PATCH routes write a file from scratch. So a repair behind a refused write would
+    silently do nothing, which is the case this exists for. A rename is not held that way:
+    its path carries the new name and the write it follows was queued under the old one, so
+    the two are different chains.
 
     What clears a refused row is the next action for the same node, whatever its body:
     `submit` discards it, and the hold goes with it. So a refusal holds the actions that
@@ -687,6 +716,9 @@ def drain(peer: str) -> dict:
     finally:
         handle.close()
     sent, refused, blocked, holding, in_flight, deferred = 0, 0, 0, 0, 0, 0
+    # Refusals this pass met, as against the ones it found standing, and why it could not
+    # sign in when it could not.
+    met, no_sign_in = 0, ""
     stuck = set()
     now = datetime.now(timezone.utc).replace(tzinfo=None)
     for row_id, state, chain, created, attempts in rows:
@@ -709,7 +741,7 @@ def drain(peer: str) -> dict:
             stuck.add(chain)
             deferred += 1
             continue
-        outcome, learned = _attempt(peer, row_id)
+        outcome, learned, message = _attempt(peer, row_id)
         if outcome == DONE:
             sent += 1
         elif learned == IN_FLIGHT:
@@ -718,6 +750,10 @@ def drain(peer: str) -> dict:
             # comes after this row assumes it landed and its outcome is not known yet.
             stuck.add(chain)
             in_flight += 1
+        elif learned == NOT_ATTEMPTED:
+            # No token to offer it with, and the next row would only ask for one again.
+            no_sign_in = message
+            break
         elif learned != ANSWERED:
             # Nothing came back. Everything from here, this row included, keeps its place
             # for the next pass: offering the rest would be one whole timeout per row
@@ -736,9 +772,10 @@ def drain(peer: str) -> dict:
                 # Terminal, and counted the same whether this pass met the refusal or read
                 # it from the row: the pass that met it used to report nothing at all.
                 refused += 1
+                met += 1
             else:
                 holding += 1
-    reaped = _reap(peer)
+    reaped, let_go = _reap(peer)
     _prune()
     # Everything this peer still owes after the pass, refusals and held rows included, and
     # after the reap: counted before it, this included the rows the same pass had just let
@@ -747,13 +784,19 @@ def drain(peer: str) -> dict:
     left = max(0, len(rows) - sent - reaped)
     if sent:
         LOGGER.info("sent %d owed action(s) to %s", sent, peer)
-    if refused:
-        LOGGER.error("%s refused %d action(s); the next action for a held node clears the "
-                     "refusal and the hold", peer, refused)
+    if met:
+        LOGGER.error("%s refused %d action(s) in this pass; the next action for a node one "
+                     "of them names clears that refusal and its hold, and after %d hours "
+                     "each is let go of with what it holds", peer, met,
+                     KEEP_REFUSED // 3600)
+    if refused - met - let_go > 0:
+        # Said as an error by the pass that met them, and by `_finish` as each happened.
+        LOGGER.debug("%s still has %d action(s) it refused in an earlier pass", peer,
+                     refused - met - let_go)
     if holding:
         LOGGER.warning("%s did not take %d action(s) it answered for; they keep their place "
-                       "and hold their own node's later actions, and the rest of what it "
-                       "owes was offered", peer, holding)
+                       "and hold the later actions for the node their path names, where it "
+                       "names one, and the rest of what it owes was offered", peer, holding)
     if blocked:
         LOGGER.warning("%d action(s) at %s are held behind a refusal or a decline for the "
                        "same node(s)", blocked, peer)
@@ -765,13 +808,18 @@ def drain(peer: str) -> dict:
         # and a line per pass per peer would bury the ones above it. What is still owed by
         # a deferred row is in `left`, which is what health reports.
         LOGGER.debug("%d action(s) at %s wait for their next offer", deferred, peer)
+    if no_sign_in:
+        # Raised, so the sweep goes no further with this peer: its own pass would sign in
+        # again, a second count against the account or a second whole timeout.
+        raise RuntimeError(no_sign_in)
     return {"sent": sent, "left": left, "refused": refused, "blocked": blocked,
             "in_flight": in_flight, "deferred": deferred}
 
 
-def _reap(peer: str) -> int:
+def _reap(peer: str) -> tuple:
     """
-    Let go of a refusal nothing has cleared, and of what it was holding.
+    Let go of a refusal nothing has cleared, and of what it was holding. Answers how many
+    rows went, and how many of those were refusals.
 
     What is held behind it goes with it rather than being sent: those actions assume the
     refused one landed, so offering them now is the quiet wrong state the hold exists to
@@ -805,11 +853,11 @@ def _reap(peer: str) -> int:
             handle.delete(row)
             gone += 1 + len(behind)
         handle.commit()
-        return gone
+        return gone, len(stale)
     except Exception as error:
         handle.rollback()
         LOGGER.error("could not let go of refused actions for %s: %s", peer, error)
-        return 0
+        return 0, 0
     finally:
         handle.close()
 
@@ -818,12 +866,13 @@ def _prune() -> None:
     """
     Forget rows that are done. A failed one is evidence and is kept.
     """
-    cutoff = datetime.now(timezone.utc).replace(tzinfo=None).timestamp() - KEEP_SECONDS
+    cutoff = (datetime.now(timezone.utc).replace(tzinfo=None)
+              - timedelta(seconds=KEEP_SECONDS))
     handle = database.session()
     try:
         handle.execute(delete(models.Outbox).where(
             models.Outbox.state == DONE,
-            models.Outbox.finished < datetime.fromtimestamp(cutoff)))
+            models.Outbox.finished < cutoff))
         handle.commit()
     except Exception as error:
         handle.rollback()

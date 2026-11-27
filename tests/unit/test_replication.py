@@ -29,6 +29,8 @@ __maintainer__  = "Sumit Sharma"
 __email__       = "sumit.sharma@clustervision.com"
 __status__      = "Production"
 
+import contextlib
+
 import pytest
 from sqlalchemy import create_engine, select, text
 from sqlalchemy.orm import sessionmaker
@@ -1781,7 +1783,7 @@ def test_a_fresh_refusal_is_kept_as_evidence(rig):
     finally:
         handle.close()
 
-    assert outbox._reap("ctrl2") == 0
+    assert outbox._reap("ctrl2") == (0, 0)
     handle = database.session()
     try:
         assert handle.scalar(select(models.Outbox)) is not None
@@ -2602,7 +2604,7 @@ def test_the_reap_leaves_an_intent_newer_than_the_refusal_it_lets_go_of(rig):
     finally:
         handle.close()
 
-    assert outbox._reap("ctrl2") == 1, "the newer intent was let go of with the refusal"
+    assert outbox._reap("ctrl2") == (1, 1), "the newer intent was let go of with the refusal"
 
     handle = database.session()
     try:
@@ -3119,3 +3121,383 @@ def test_health_counts_a_peer_whose_pass_failed_although_it_answered(client, mon
     monkeypatch.setattr(sweep(), "_get", lambda peer, path: {"hashes": {}})
     assert "error" not in sweep().once()[0]
     assert replication().get("not_reconciled") == 0, "a pass that worked is still counted"
+
+
+@contextlib.contextmanager
+def _outbox_listening():
+    """
+    Every record the outbox logs inside the block, at any level.
+
+    Through a handler on its own logger: the daemon's loggers stop propagating once
+    anything has configured them, so pytest's capture sees them only in a test run alone.
+    """
+    import logging as logmodule
+
+    from trixd.core.replication import outbox
+
+    records = []
+    handler = logmodule.Handler()
+    handler.emit = records.append
+    previous = outbox.LOGGER.level
+    outbox.LOGGER.setLevel(logmodule.DEBUG)
+    outbox.LOGGER.addHandler(handler)
+    try:
+        yield records
+    finally:
+        outbox.LOGGER.removeHandler(handler)
+        outbox.LOGGER.setLevel(previous)
+
+
+def _outbox_said(records: list) -> list:
+    """
+    What the outbox logged, as (level, message) in the order it was said.
+    """
+    return [(record.levelname, record.getMessage()) for record in records]
+
+
+def _refuse(row_id: int, finished=None) -> None:
+    """
+    Leave one row as a refusal an earlier pass met.
+    """
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.state = "failed"
+        row.message = "400: malformed"
+        row.finished = finished or datetime_now()
+        handle.commit()
+    finally:
+        handle.close()
+
+
+class _Applied:
+    """
+    What the apply route answers when the peer did the work.
+    """
+    status_code = 200
+    text = ""
+
+    def json(self):
+        return {"applied": "prometheus hw-rules/<node>", "origin": "tester",
+                "result": {"changed": True}}
+
+
+def test_a_healthy_pass_says_and_sends_exactly_what_it_did(rig, monkeypatch):
+    """
+    Both controllers up, one account, nothing declined: the pass offers each owed row once,
+    in the order it was written down, says one line and answers the same six counts. Pinned
+    whole, because everything a monitor or the other controller sees of a pass is here.
+    """
+    from trixd.core.replication import outbox
+
+    for node in ("node001", "node002"):
+        outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                      {"node": node}, {"force": True}, f"req-{node}", "tester")
+    posted, signed = [], []
+    monkeypatch.setattr(outbox.requests, "post",
+                        lambda url, **kw: posted.append((url, kw["json"])) or _Applied())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token",
+                        lambda peer, renew=False: signed.append(renew) or "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    with _outbox_listening() as heard:
+        result = outbox.drain("ctrl2")
+
+    assert result == {"sent": 2, "left": 0, "refused": 0, "blocked": 0, "in_flight": 0,
+                      "deferred": 0}, result
+    assert _outbox_said(heard) == [("INFO", "sent 2 owed action(s) to ctrl2")], \
+        _outbox_said(heard)
+    assert [sent for _, sent in posted] == [
+        {"plugin": "prometheus", "path": "hw-rules/<node>", "method": "PATCH",
+         "variables": {"node": node}, "body": {"force": True}, "origin": "tester",
+         "request_id": f"req-{node}"} for node in ("node001", "node002")], posted
+    assert signed == [False, False], f"the token was asked for as {signed}"
+    assert not outbox._failures and not outbox._open, "a healthy pass fed the breaker"
+    handle = database.session()
+    try:
+        rows = handle.scalars(select(models.Outbox).order_by(models.Outbox.id)).all()
+        assert [(row.state, row.attempts, row.message) for row in rows] == \
+            [("done", 1, ""), ("done", 1, "")]
+        assert all(row.finished is not None for row in rows)
+    finally:
+        handle.close()
+
+
+def test_a_standing_refusal_is_an_error_once_and_not_every_pass(rig, monkeypatch):
+    """
+    A refusal stands for up to a day, and an error for it on every pass buries the errors
+    that are new. The pass that meets one says so as an error; the passes after it count it
+    all the same, and say it where somebody looking for it finds it.
+    """
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-refused", "tester")
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.FAILED, "400: malformed", outbox.ANSWERED))
+    with _outbox_listening() as heard:
+        met = outbox.drain("ctrl2")
+    assert met["refused"] == 1, met
+    assert [said for level, said in _outbox_said(heard)
+            if level == "ERROR" and "1 action(s)" in said], \
+        f"the pass that met the refusal did not say so as an error: {_outbox_said(heard)}"
+
+    with _outbox_listening() as heard:
+        standing = outbox.drain("ctrl2")
+    assert standing["refused"] == 1, f"a standing refusal left the count: {standing}"
+    said = _outbox_said(heard)
+    assert [line for level, line in said if level == "ERROR"] == [], \
+        f"a refusal already said was an error again on the next pass: {said}"
+    assert [line for level, line in said if level == "DEBUG" and "1 action(s)" in line], \
+        f"the standing refusal was not said at all: {said}"
+    assert row_id
+
+
+def test_a_refusal_says_when_it_is_let_go_of(rig):
+    """
+    What clears a refusal is the next action for its node, or a day. The line that says a
+    row was refused is the only place an operator reads that, so it names both.
+    """
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-refused", "tester")
+    with _outbox_listening() as heard:
+        outbox._finish(row_id, outbox.FAILED, "400: malformed")
+    said = [line for level, line in _outbox_said(heard) if level == "ERROR"]
+    assert len(said) == 1, said
+    assert f"{outbox.KEEP_REFUSED // 3600} hours" in said[0], said[0]
+
+
+def test_the_pass_that_lets_go_of_a_refusal_does_not_count_it_as_standing(
+        rig, monkeypatch):
+    """
+    The reap says a refusal is gone. The same pass then saying the peer has refused that
+    action reads as a row still there, about one that was deleted a line earlier.
+    """
+    from datetime import timedelta
+
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-old", "tester")
+    _refuse(row_id, datetime_now() - timedelta(seconds=outbox.KEEP_REFUSED + 60))
+    with _outbox_listening() as heard:
+        outbox.drain("ctrl2")
+
+    handle = database.session()
+    try:
+        assert handle.scalar(select(models.Outbox)) is None, "the refusal was not let go of"
+    finally:
+        handle.close()
+    said = [line for _, line in _outbox_said(heard)]
+    assert len([line for line in said if line.startswith("letting go of")]) == 1, said
+    assert [line for line in said if "refused" in line
+            and not line.startswith("letting go of")] == [], \
+        f"a row that had just been let go of was still said to be refused: {said}"
+
+
+def test_the_pass_that_gives_up_on_a_row_counts_it_as_refused(rig, monkeypatch):
+    """
+    A row the peer has answered for long enough is made terminal by the attempt that finds
+    it so. That pass used to report what the peer answered rather than what the row became:
+    nothing refused, and a warning that the row keeps its place when it no longer does.
+    """
+    from trixd.core.replication import outbox
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-declined", "tester")
+    age_past_the_span(row_id)
+    monkeypatch.setattr(outbox, "_send", lambda peer, row, may_sign_in=True:
+                        (outbox.QUEUED, f"{outbox.DECLINED}: not in Luna", outbox.ANSWERED))
+    with _outbox_listening() as heard:
+        result = outbox.drain("ctrl2")
+
+    handle = database.session()
+    try:
+        state = handle.scalar(select(models.Outbox)).state
+    finally:
+        handle.close()
+    assert state == outbox.FAILED, f"the row was not given up on, so this proves nothing: {state}"
+    assert result["refused"] == 1, f"the pass that gave up on the row reported {result}"
+    assert [line for _, line in _outbox_said(heard) if "keep their place" in line] == [], \
+        "a row that had just been given up on was said to keep its place"
+
+
+def test_a_body_only_the_digest_could_read_is_still_written_down(rig, monkeypatch):
+    """
+    The target is a digest of the body taken leniently, and the row has to be written the
+    same way: a body carrying a date was digested and then refused by the write, so the
+    call was never owed to anybody and the peer was never told.
+    """
+    from datetime import datetime
+
+    from trixd.core.replication import outbox
+
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "held_token", lambda peer: "")
+    when = datetime(2026, 1, 2, 3, 4, 5)
+    said = outbox.replicate("prometheus", "hw-rules/<node>", "PATCH", {"node": "node001"},
+                            {"since": when}, {"changed": True}, "req-date", "tester")
+    assert said["peers"] == {"ctrl2": outbox.QUEUED}, said
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox))
+        assert row is not None, "nothing was written down for the peer"
+        assert str(when) in row.payload, row.payload
+    finally:
+        handle.close()
+
+
+@pytest.mark.parametrize("unreadable", ["{not json", "[1, 2]"])
+def test_a_row_that_cannot_be_read_is_given_up_on_and_the_pass_goes_on(
+        rig, monkeypatch, unreadable):
+    """
+    A payload nothing can read is one no later pass can read either. Raising for it ended
+    every pass at that row, so everything written down after it for that peer was never
+    offered, with only a line saying the peer was not reconciled.
+    """
+    import json
+    from trixd.core.replication import outbox
+
+    broken = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-broken", "tester")
+    outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                  {"node": "node002"}, {"force": True}, "req-fine", "tester")
+    handle = database.session()
+    try:
+        handle.scalar(select(models.Outbox).where(
+            models.Outbox.id == broken)).payload = unreadable
+        handle.commit()
+    finally:
+        handle.close()
+    monkeypatch.setattr(outbox.requests, "post", lambda url, **kw: _Applied())
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", lambda peer, renew=False: "a-token")
+    outbox._failures.clear()
+    outbox._open.clear()
+    with _outbox_listening() as heard:
+        try:
+            result = outbox.drain("ctrl2")
+        except (json.JSONDecodeError, AttributeError) as error:
+            raise AssertionError(f"one unreadable row ended the pass: {error!r}") from None
+
+    assert result["sent"] == 1 and result["refused"] == 1, result
+    handle = database.session()
+    try:
+        states = {row.request_id: row.state for row in handle.scalars(select(models.Outbox))}
+    finally:
+        handle.close()
+    assert states == {"req-broken": outbox.FAILED, "req-fine": outbox.DONE}, states
+    assert [line for level, line in _outbox_said(heard)
+            if level == "ERROR" and "req-broken" in line and "cannot be read" in line], \
+        f"nothing loud named the row: {_outbox_said(heard)}"
+    assert not outbox._failures, "a row of ours that cannot be read was blamed on the peer"
+
+
+def test_a_sign_in_that_fails_leaves_the_rows_waiting_and_is_tried_once_a_pass(
+        rig, monkeypatch):
+    """
+    Not being let in is not the peer refusing a row, and not silence either: the rows wait
+    however long it lasts, the breaker is not fed, and the row says why it is waiting. One
+    sign-in a pass is all a peer is asked for, the sweep's own included - a second counts
+    against the account again, or is a second whole timeout at a peer that is dark.
+    """
+    from trixd.common.errors import Unauthenticated
+    from trixd.core.replication import outbox
+    from trixd.core.replication import sweep as replication
+
+    asked = []
+
+    def turned_away(peer, renew=False):
+        """
+        A peer that does not take the account this controller offers.
+        """
+        asked.append(peer)
+        raise Unauthenticated(f"{peer} refused the account trixd.ini names: 401")
+
+    for node in ("node001", "node002"):
+        row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                               {"node": node}, {"force": True}, f"req-{node}", "tester")
+        # Owed for longer than a peer may answer without applying, which this is not.
+        age_past_the_span(row_id)
+    monkeypatch.setattr(outbox, "peers", lambda: ["ctrl2"])
+    monkeypatch.setattr(outbox, "trust", lambda: True)
+    monkeypatch.setattr(outbox, "peer_token", turned_away)
+    monkeypatch.setattr(replication, "peer_token", turned_away)
+    monkeypatch.setattr(replication, "trust", lambda: True)
+    outbox._failures.clear()
+    outbox._open.clear()
+    try:
+        results = replication.Sweep().once()
+        fed = dict(outbox._failures)
+    finally:
+        outbox._failures.clear()
+        outbox._open.clear()
+
+    handle = database.session()
+    try:
+        rows = handle.scalars(select(models.Outbox).order_by(models.Outbox.id)).all()
+        kept = [(row.state, row.attempts, row.message) for row in rows]
+    finally:
+        handle.close()
+    assert [state for state, _, _ in kept] == [outbox.QUEUED, outbox.QUEUED], kept
+    assert kept[0][2].startswith("could not sign in at the peer: "), \
+        f"the row does not say why it is waiting: {kept[0]}"
+    assert "refused the account" in kept[0][2], kept[0]
+    assert kept[1][1:] == (0, ""), f"a row behind the one that found out was touched: {kept[1]}"
+    assert asked == ["ctrl2"], f"the peer was asked to sign this controller in {len(asked)} times"
+    assert fed == {}, "a sign-in that failed was counted as the peer not answering"
+    assert "could not sign in" in results[0].get("error", ""), results
+
+
+def test_done_rows_are_pruned_on_the_hour_across_a_clock_change(rig, monkeypatch):
+    """
+    `finished` is naive UTC and so is the cutoff it is compared with. Taken through local
+    time and back, the cutoff lands an hour out in the night the clocks move, and a row
+    past its hour is kept for another.
+    """
+    import time
+    from datetime import datetime, timedelta
+
+    from trixd.core.replication import outbox
+
+    class _Night(datetime):
+        """
+        A clock standing in the night Amsterdam skips an hour, as naive UTC reads it.
+        """
+
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 3, 29, 3, 30, tzinfo=tz)
+
+    row_id = outbox.submit("ctrl2", "prometheus", "hw-rules/<node>", "PATCH",
+                           {"node": "node001"}, {"force": True}, "req-done", "tester")
+    handle = database.session()
+    try:
+        row = handle.scalar(select(models.Outbox).where(models.Outbox.id == row_id))
+        row.state = outbox.DONE
+        row.finished = datetime(2026, 3, 29, 3, 30) - timedelta(seconds=outbox.KEEP_SECONDS
+                                                                + 1800)
+        handle.commit()
+    finally:
+        handle.close()
+
+    monkeypatch.setenv("TZ", "Europe/Amsterdam")
+    time.tzset()
+    try:
+        assert time.localtime(1774750000).tm_isdst == 1, \
+            "this box does not know the zone, so the night is not the one meant"
+        monkeypatch.setattr(outbox, "datetime", _Night)
+        outbox._prune()
+    finally:
+        monkeypatch.undo()
+        time.tzset()
+
+    handle = database.session()
+    try:
+        assert handle.scalar(select(models.Outbox)) is None, \
+            "a row done an hour and a half ago was kept"
+    finally:
+        handle.close()

@@ -34,6 +34,7 @@ import importlib
 import importlib.util
 import inspect
 import os
+import re
 import sys
 import threading
 
@@ -41,8 +42,9 @@ from fastapi import FastAPI
 from sqlalchemy import select
 
 from trixd.common import logging as trixlog
-from trixd.common.constants import (API_PREFIX, PLUGIN_MODULE_PREFIXES, PLUGIN_STATE_DISABLED,
-                                    PLUGIN_STATE_LOADED, RESERVED_PLUGINS)
+from trixd.common.constants import (API_PREFIX, PLUGIN_MODULE_PREFIXES, PLUGIN_NAME_PATTERN,
+                                    PLUGIN_STATE_DISABLED, PLUGIN_STATE_LOADED,
+                                    RESERVED_PLUGINS)
 from trixd.common.errors import NotFound, PluginRefused
 from trixd.common.settings import current as settings, seconds
 from trixd.core.plugins import binder, manifest as manifests
@@ -258,6 +260,18 @@ def _render_producer(endpoint, backend):
         raise PluginRefused(
             f"{endpoint.path} declares a render with no producer named {method} "
             "on the backend")
+    if inspect.iscoroutinefunction(producer):
+        raise PluginRefused(f"{endpoint.path}: {method} is async; the engine calls a "
+                            f"producer and never awaits it")
+    try:
+        accepted = inspect.signature(producer)
+    except (TypeError, ValueError):
+        return producer
+    try:
+        accepted.bind()
+    except TypeError:
+        raise PluginRefused(f"{endpoint.path}: {method} takes arguments, and the engine "
+                            f"calls a producer with none") from None
     return producer
 
 
@@ -376,6 +390,12 @@ def load(app: FastAPI, name: str, path: str = "") -> LoadedPlugin:
         if manifest.plugin != name:
             raise PluginRefused(
                 f"manifest calls itself {manifest.plugin} but sits at {name}")
+        if not re.match(PLUGIN_NAME_PATTERN, name):
+            # Said, not refused: it loads as it always has, and only the published schema
+            # and the tools that read it disagree.
+            LOGGER.warning("plugin %s is not named as the manifest schema asks, %s: it "
+                           "loads, and an editor checking the manifest will flag it",
+                           name, PLUGIN_NAME_PATTERN)
         # Only the command-line check looked for these, and a reload does not run it.
         twice = manifests.duplicates(manifest)
         if twice:

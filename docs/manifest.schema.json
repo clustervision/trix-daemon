@@ -73,9 +73,7 @@
                 "type": {
                   "default": "string",
                   "enum": [
-                    "string",
-                    "integer",
-                    "boolean"
+                    "string"
                   ]
                 }
               },
@@ -217,6 +215,52 @@
     },
     "schemas": {
       "additionalProperties": {
+        "additionalProperties": {
+          "additionalProperties": false,
+          "properties": {
+            "description": {
+              "type": "string"
+            },
+            "example": {},
+            "items": {
+              "default": "string",
+              "description": "what an array holds",
+              "enum": [
+                "string",
+                "integer",
+                "number",
+                "boolean",
+                "date",
+                "object",
+                "array"
+              ]
+            },
+            "optional": {
+              "default": false,
+              "type": "boolean"
+            },
+            "pattern": {
+              "type": "string"
+            },
+            "type": {
+              "default": "string",
+              "enum": [
+                "string",
+                "integer",
+                "number",
+                "boolean",
+                "date",
+                "object",
+                "array"
+              ]
+            }
+          },
+          "type": [
+            "object",
+            "null"
+          ]
+        },
+        "minProperties": 1,
         "type": "object"
       },
       "description": "request bodies by name: field -> {type, optional, items, pattern, description, example}",

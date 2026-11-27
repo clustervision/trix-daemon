@@ -122,18 +122,29 @@ def test_no_listener_at_all_stops_the_start():
         server.build_config(_settings(protocol="http"))
 
 
-def test_start_up_is_given_longer_than_hypercorn_allows_by_itself():
+def test_the_timeouts_chosen_are_the_three_meant_and_each_is_longer_than_hypercorns():
     """
     Start-up runs the migrations, loads every plugin and produces every render before a
     socket exists, and hypercorn's own default kills the process part way - which systemd
     restarts into the same wait. How much longer is a judgement; inheriting is the defect.
+
+    Every timeout hypercorn has is compared, not the ones named here: one of the three
+    going back to the default fails this, and so does a fourth being chosen without this
+    test being told.
     """
     from hypercorn.config import Config
 
     shipped = configuration.ApiSettings()
     served = server.build_config(_settings(bind=shipped.bind, insecure_bind=shipped.insecure_bind,
                                            protocol="http"))
-    assert served.startup_timeout > Config().startup_timeout
+    inherited = Config()
+    timeouts = sorted(name for name in dir(inherited) if name.endswith("_timeout"))
+    assert len(timeouts) >= 3, f"hypercorn's configuration shows no timeouts: {timeouts}"
+    chosen = {name for name in timeouts if getattr(served, name) != getattr(inherited, name)}
+    assert chosen == {"startup_timeout", "graceful_timeout", "keep_alive_timeout"}
+    for name in sorted(chosen):
+        assert getattr(served, name) > getattr(inherited, name), \
+            f"{name} is shorter than hypercorn gives by itself"
 
 
 def test_replication_follows_the_protocol_too(monkeypatch):
